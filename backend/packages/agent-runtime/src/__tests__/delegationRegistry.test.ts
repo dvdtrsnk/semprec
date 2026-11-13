@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import type { Pool } from "pg";
 import {
   createRuntimeRolePool,
@@ -11,7 +11,7 @@ import {
   getTestPool,
   resetDatabase,
 } from "@semprec/data/testSupport";
-import { createAgentRun, finishAgentRun, seedSystem, TASKS_MODULE_ID } from "@semprec/data";
+import { AgentRunError, createAgentRun, finishAgentRun, seedSystem, TASKS_MODULE_ID } from "@semprec/data";
 import { runInTenant } from "@semprec/shared";
 import {
   BUSY_ERROR_MESSAGE,
@@ -19,6 +19,7 @@ import {
   type ReconstructDelegatedHistory,
   UNKNOWN_DELEGATION_TARGET_MESSAGE,
 } from "../delegationRegistry.js";
+import { logger } from "../logger.js";
 import type { AgentMessage, AgentSession, ConversationEntry, CreateAgentSession } from "../types.js";
 
 /** `vi.waitFor` guards against `expire()`'s pending DB writes finishing asynchronously relative to when we check. */
@@ -58,6 +59,44 @@ function poolWithFailingQuery(sqlPrefix: string, error: Error, matchParams?: (pa
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
+}
+
+/**
+ * Wraps the real pool so its next `connect()` after `failNextConnect()` rejects with `error`; every
+ * other call delegates. The close of a failed run opens its transaction through `connect()`.
+ */
+function poolWithFailableConnect(error: Error): { pool: Pool; failNextConnect: () => void } {
+  let armed = false;
+  const wrapped = new Proxy(pool, {
+    get(target, prop, receiver) {
+      if (prop === "connect") {
+        return () => {
+          if (!armed) return target.connect();
+          armed = false;
+          return Promise.reject(error);
+        };
+      }
+      const value: unknown = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return {
+    pool: wrapped,
+    failNextConnect: () => {
+      armed = true;
+    },
+  };
+}
+
+/** Everything the spies recorded as one string; an `Error` is expanded, which `JSON.stringify` alone drops. */
+function loggedText(...spies: MockInstance[]): string {
+  return JSON.stringify(
+    spies.map((spy) => spy.mock.calls),
+    (_key, value: unknown) =>
+      value instanceof Error
+        ? { name: value.name, message: value.message, stack: value.stack, cause: value.cause }
+        : value,
+  );
 }
 
 let pool: Pool;
@@ -340,7 +379,7 @@ describe("DelegationRegistry", () => {
       targetProjectItemId,
     ]);
     const runId = runs[0]!.id;
-    expect(await finishAgentRun(pool, runId, "error", "closed elsewhere", "internal")).toBe(true);
+    expect(await finishAgentRun(pool, runId, "error", "internal")).toBe(true);
 
     await waitFor(async () => {
       const { rows } = await pool.query<{ status: string }>(
@@ -1009,7 +1048,7 @@ describe("DelegationRegistry", () => {
     );
     expect(rows).toHaveLength(1);
     expect(rows[0]!.status).toBe("error");
-    expect(rows[0]!.result).toBe("boom");
+    expect(rows[0]!.result).toBe("internal");
     expect(rows[0]!.error_code).toBe("internal");
 
     // The failed session must not be left registered for reuse — a retry creates a fresh one.
@@ -1027,6 +1066,73 @@ describe("DelegationRegistry", () => {
     expect(retry).toEqual({ ok: true, message: "recovered" });
 
     registry.clear();
+  });
+
+  it("keeps the exception message and the task out of the stored row and out of every log line when the run fails", async () => {
+    const sentinel = "sentinel-6b1e";
+    const registry = new DelegationRegistry(pool);
+    const supervisorRunId = await newSupervisorRunId();
+    const targetProjectItemId = await createTestProjectItem(pool);
+    const createAgentSession: CreateAgentSession = (): AgentSession => ({
+      async *messages() {
+        yield { kind: "turn_start" };
+        throw new AgentRunError("modelError", `provider said ${sentinel}`);
+      },
+    });
+    const spies = [vi.spyOn(logger, "error"), vi.spyOn(logger, "warn"), vi.spyOn(logger, "info")];
+    try {
+      await expect(
+        registry.delegate({ createAgentSession, supervisorRunId, targetProjectItemId, task: `look up ${sentinel}` }),
+      ).rejects.toThrow(sentinel);
+
+      const { rows } = await pool.query<{ status: string; result: string | null; error_code: string | null }>(
+        `SELECT status, result, error_code FROM agent_runs WHERE project_item_id = $1`,
+        [targetProjectItemId],
+      );
+      expect(rows).toEqual([{ status: "error", result: "modelError", error_code: "modelError" }]);
+      expect(loggedText(...spies)).not.toContain(sentinel);
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+      registry.clear();
+    }
+  });
+
+  it("logs the run's code and the name of the close error, never the close error itself, when closing an errored run fails", async () => {
+    const sentinel = "sentinel-c40d";
+    const failable = poolWithFailableConnect(new Error(`could not write the row of ${sentinel}`));
+    const registry = new DelegationRegistry(failable.pool);
+    const supervisorRunId = await newSupervisorRunId();
+    const targetProjectItemId = await createTestProjectItem(pool);
+    const createAgentSession: CreateAgentSession = (): AgentSession => ({
+      async *messages() {
+        yield { kind: "turn_start" };
+        failable.failNextConnect();
+        throw new AgentRunError("modelError", `provider said ${sentinel}`);
+      },
+    });
+    const errorSpy = vi.spyOn(logger, "error");
+    try {
+      await expect(
+        registry.delegate({ createAgentSession, supervisorRunId, targetProjectItemId, task: `look up ${sentinel}` }),
+      ).rejects.toThrow(sentinel);
+
+      const { rows } = await pool.query<{ id: string; status: string }>(
+        `SELECT id, status FROM agent_runs WHERE project_item_id = $1`,
+        [targetProjectItemId],
+      );
+      // The close never ran, so the row stays open for the next startup repair; the caller still gets the model error.
+      expect(rows).toEqual([{ id: expect.any(String), status: "running" }]);
+      expect(errorSpy.mock.calls).toEqual([
+        [
+          { errorName: "Error", errorCode: "modelError", agentRunId: rows[0]!.id },
+          "DelegationRegistry: failed to close errored run",
+        ],
+      ]);
+      expect(loggedText(errorSpy)).not.toContain(sentinel);
+    } finally {
+      errorSpy.mockRestore();
+      registry.clear();
+    }
   });
 
   it("closes a reused session's agent_runs row as error and drops the entry when a later turn throws", async () => {
@@ -1061,7 +1167,7 @@ describe("DelegationRegistry", () => {
     );
     expect(rows).toHaveLength(1);
     expect(rows[0]!.status).toBe("error");
-    expect(rows[0]!.result).toBe("second turn boom");
+    expect(rows[0]!.result).toBe("internal");
 
     registry.clear();
   });
@@ -1092,7 +1198,7 @@ describe("DelegationRegistry", () => {
     );
     expect(rows).toHaveLength(1);
     expect(rows[0]!.status).toBe("error");
-    expect(rows[0]!.result).toMatch(/does not support continuation/);
+    expect(rows[0]!.result).toBe("internal");
 
     // The entry must be gone, not left busy=false-but-broken — a fresh delegation succeeds.
     const { createAgentSession: retrySession } = scriptedSession([

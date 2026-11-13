@@ -87,7 +87,7 @@ describe("repairInterruptedRuns across tenants", () => {
       [zero, tenantZero],
       [b, tenantB],
     ] as const) {
-      expect(await runState(seed.orphanId)).toMatchObject({ status: "error", result: "interrupted_by_restart" });
+      expect(await runState(seed.orphanId)).toMatchObject({ status: "error", result: "interrupted" });
       expect(await toolResults(seed.orphanId)).toEqual([{ tenant_id: tenant }]);
       expect((await runState(seed.mcpId)).status).toBe("running");
     }
@@ -118,7 +118,7 @@ describe("repairInterruptedRuns across tenants", () => {
 
     expect(failure).toBeInstanceOf(AggregateError);
     expect((failure as AggregateError).errors).toHaveLength(1);
-    expect(await runState(zero.orphanId)).toMatchObject({ status: "error", result: "interrupted_by_restart" });
+    expect(await runState(zero.orphanId)).toMatchObject({ status: "error", result: "interrupted" });
     expect(await toolResults(zero.orphanId)).toHaveLength(1);
     expect((await runState(b.orphanId)).status).toBe("running");
     expect(await toolResults(b.orphanId)).toEqual([]);

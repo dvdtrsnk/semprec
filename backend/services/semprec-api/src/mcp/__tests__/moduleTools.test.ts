@@ -93,6 +93,64 @@ describe("restricted MCP module tools", () => {
       createMcpRequestListener(pool, createGenericOperationGateway(pool, metadata), new Set(), collision),
     ).rejects.toThrow(/collides/);
   });
+  it("offers no tool that requires approval over MCP, whatever its approval value, and calls it unknown (issue #1791)", async () => {
+    const gatedRegistry = new ModuleRegistry(() => new Set(["gatedTools"]));
+    await gatedRegistry.loadModule(
+      new URL(
+        "../../../../../packages/module-registry/src/__tests__/fixtures/approvalGatedToolsModule.js",
+        import.meta.url,
+      ).href,
+    );
+    const tenant = await createTestTenant(admin);
+    const user = await createUser(admin, {
+      tenantId: tenant,
+      email: `${randomUUID()}@example.test`,
+      passwordHash: await hashPassword("mcp-test-password"),
+    });
+    const credential = await runInTenant(tenant, async () =>
+      withTransaction(pool, async (client) =>
+        mintMcpRunCredential(client, {
+          projectItemId: await createTestProjectItem(pool),
+          capabilities: ["core.item.read"],
+          userId: user.id,
+        }),
+      ),
+    );
+    const gatedServer = createServer(
+      await createMcpRequestListener(
+        pool,
+        createGenericOperationGateway(pool, metadata),
+        new Set(CAPABILITY_IDS),
+        gatedRegistry,
+      ),
+    );
+    await new Promise<void>((resolve) => gatedServer.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = gatedServer.address();
+      if (!address || typeof address === "string") throw new Error("Missing gated server address");
+      const endpoint = `http://127.0.0.1:${address.port}/mcp`;
+      const rpc = async (method: string, params?: unknown) => {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${credential.token}` },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+        });
+        return record(await response.json());
+      };
+
+      const list = record((await rpc("tools/list")).result);
+      if (!Array.isArray(list.tools)) throw new Error("Missing tools");
+      const names = list.tools.map((entry: unknown) => record(entry).name);
+      // The tool that needs no approval is offered, so the absence of the others is not an empty list.
+      expect(names).toContain("semprec.gated.free");
+      for (const gated of ["semprec.gated.apply", "semprec.gated.noSnapshot", "semprec.gated.noneApproval"]) {
+        expect(names).not.toContain(gated);
+        expect(record((await rpc("tools/call", { name: gated, arguments: { value: "x" } })).error).code).toBe(-32601);
+      }
+    } finally {
+      await new Promise<void>((resolve) => gatedServer.close(() => resolve()));
+    }
+  });
   it("lists and invokes only the real run's admitted tools within its tenant and project", async () => {
     const tenantA = await createTestTenant(admin);
     const tenantB = await createTestTenant(admin);

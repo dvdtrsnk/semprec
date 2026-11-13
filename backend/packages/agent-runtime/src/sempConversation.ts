@@ -165,9 +165,6 @@ interface ThreadConversation {
   dropped?: boolean;
 }
 
-/** The error a wake run is closed with when its tenant is deactivated. */
-const ACCOUNT_DEACTIVATED_MESSAGE = "account deactivated";
-
 function conversationKey(tenantId: string, threadId: string): string {
   return `${tenantId}:${threadId}`;
 }
@@ -240,7 +237,7 @@ export class SempConversation {
   /**
    * Discards every thread conversation of `tenantId` after its tenant was deactivated, clearing
    * their TTL timers; other tenants are untouched. Each thread is then handled independently.
-   * With no turn in flight, the wake run is closed as `error` ("account deactivated") and the entry
+   * With no turn in flight, the wake run is closed as `error` with the code `cancelled` and the entry
    * removed. With a turn in flight (`busy` or `waking`), the conversation is marked dropped and the
    * turn is not aborted: once it settles, its run is closed as `error` and its entry discarded
    * instead of being kept. A TTL pause in progress also holds the entry `busy`: it checks the drop
@@ -277,12 +274,7 @@ export class SempConversation {
     entry.busy = true;
     try {
       await runInTenant(tenantId, async () => {
-        const closed = await finishAgentRunWithErrorNotification(
-          this.pool,
-          entry.agentRunId,
-          ACCOUNT_DEACTIVATED_MESSAGE,
-          "cancelled",
-        );
+        const closed = await finishAgentRunWithErrorNotification(this.pool, entry.agentRunId, "cancelled");
         await pushClosedRunStatus(this.pool, entry.agentRunId, closed, "error");
       });
       if (state.entry === entry) state.entry = null;
@@ -291,7 +283,7 @@ export class SempConversation {
       // Only the error's name: a Postgres error's detail can carry the failing `agent_runs` row,
       // whose `task` is the user's prompt, and logs are not tenant-scoped.
       logger.error(
-        { errorName: errorName(err), tenantId, threadId, agentRunId: entry.agentRunId },
+        { errorName: errorName(err), errorCode: "cancelled", tenantId, threadId, agentRunId: entry.agentRunId },
         "SempConversation: failed to close dropped run, will retry",
       );
       entry.busy = false;

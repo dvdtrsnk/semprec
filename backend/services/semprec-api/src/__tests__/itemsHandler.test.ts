@@ -3007,6 +3007,372 @@ describe("item routes (issue #241)", () => {
     });
   });
 
+  describe("database facets (issue #1759)", () => {
+    /** The whole body of a successful facets read. */
+    const facetsBody = z
+      .object({
+        facets: z.array(
+          z
+            .object({
+              property: z.string().optional(),
+              path: z.tuple([z.string(), z.string()]).optional(),
+              all: z.number(),
+              open: z.number().optional(),
+              values: z.array(
+                z
+                  .object({
+                    value: z.union([z.string(), z.number(), z.boolean(), z.null()]),
+                    label: z.string().optional(),
+                    color: z.string().optional(),
+                    count: z.number(),
+                  })
+                  .strict(),
+              ),
+            })
+            .strict(),
+        ),
+      })
+      .strict();
+
+    async function postFacets(headers: Record<string, string>, databaseId: string, body: unknown): Promise<Response> {
+      return fetch(`${baseUrl}/api/databases/${databaseId}/facets`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    }
+
+    /** A session of a new user whose `users.locale` is `locale`. */
+    async function authHeaderIn(locale: string): Promise<{ Authorization: string }> {
+      const user = await createUser(pool, {
+        tenantId: await tenantForNextTestUser(pool),
+        email: `${randomUUID()}@example.com`,
+        passwordHash: await hashPassword(PASSWORD),
+        locale,
+      });
+      const { token } = await login(pool, { email: user.email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
+      return { Authorization: `Bearer ${token}` };
+    }
+
+    async function seededDatabase(key: string) {
+      const database = await withTransaction(pool, (client) => getDatabaseByModuleId(client, key));
+      if (!database) throw new Error(`The '${key}' database was not seeded`);
+      return database;
+    }
+
+    /** A board with a text, a select that is not status-like and a checkbox, and four cards. */
+    async function makeBoard() {
+      const db = await chokePoint.createDatabase({ name: "Board" });
+      await chokePoint.createProperty({ databaseId: db.id, key: "title", name: "Title", type: "text" });
+      await chokePoint.createProperty({
+        databaseId: db.id,
+        key: "stage",
+        name: "Stage",
+        type: "select",
+        config: { options: [{ key: "todo", label: "To do", color: "#FF9500" }, { key: "doing" }, { key: "done" }] },
+      });
+      await chokePoint.createProperty({ databaseId: db.id, key: "urgent", name: "Urgent", type: "checkbox" });
+      for (const properties of [
+        { title: "A", stage: "done", urgent: true },
+        { title: "B", stage: "todo", urgent: true },
+        { title: "C", stage: "done" },
+        { title: "D" },
+      ]) {
+        await chokePoint.createItem({ databaseId: db.id, properties });
+      }
+      return db;
+    }
+
+    it("rejects an unauthenticated request", async () => {
+      const res = await fetch(`${baseUrl}/api/databases/${randomUUID()}/facets`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ facets: ["status"] }),
+      });
+      expect(res.status).toBe(401);
+    });
+
+    it("returns the facets in request order, each under the filter without its own conditions, with the open count", async () => {
+      const db = await makeBoard();
+
+      const res = await postFacets(await authHeader(), db.id, {
+        filter: {
+          type: "and",
+          nodes: [
+            { type: "equals", property: "stage", value: "done" },
+            { type: "equals", property: "urgent", value: true },
+          ],
+        },
+        facets: ["stage", "urgent", "title"],
+        extra: { open: { type: "equals", property: "title", value: "A" } },
+      });
+
+      expect(res.status).toBe(200);
+      expect(facetsBody.parse(await res.json())).toEqual({
+        facets: [
+          // The urgent cards, whatever their stage: A (done) and B (to do).
+          {
+            property: "stage",
+            all: 2,
+            open: 1,
+            values: [
+              { value: "todo", label: "To do", color: "#FF9500", count: 1 },
+              { value: "done", label: "done", count: 1 },
+              { value: null, count: 0 },
+            ],
+          },
+          // The done cards, urgent or not: A and C.
+          {
+            property: "urgent",
+            all: 2,
+            open: 1,
+            values: [
+              { value: true, count: 1 },
+              { value: false, count: 1 },
+            ],
+          },
+          // Both conditions stay for the title: A alone.
+          { property: "title", all: 1, open: 1, values: [{ value: "A", count: 1 }] },
+        ],
+      });
+    });
+
+    it("lists every status of Projects inside an area in the user's language, and every area for the area facet, through the real composition root", async () => {
+      await seedSystem(pool, createViewTypeRegistry());
+      const projects = await seededDatabase("projects");
+      const areas = await seededDatabase("areas");
+      const [seededArea] = (await chokePoint.listItems(areas.id, { limit: 200 })).items;
+      if (!seededArea) throw new Error("The seeded area is missing");
+      const work = await chokePoint.createItem({
+        databaseId: areas.id,
+        properties: { name: "Work", color: "#007AFF" },
+      });
+      const home = await chokePoint.createItem({ databaseId: areas.id, properties: { name: "Home" } });
+      const areaProperty = (await chokePoint.listProperties(projects.id)).find((property) => property.key === "area");
+      if (!areaProperty) throw new Error("The Projects area relation is missing");
+      for (const [name, status, area] of [
+        ["Launch", "inProgress", work],
+        ["Audit", "done", work],
+        ["Garden", "inProgress", home],
+      ] as const) {
+        const project = await chokePoint.createItem({ databaseId: projects.id, properties: { name, status } });
+        await chokePoint.createRelation({
+          relationPropertyId: areaProperty.id,
+          callerItemId: project.id,
+          targetItemId: area.id,
+        });
+      }
+      const inProgress = { type: "equals", property: "status", value: "inProgress" };
+
+      // A new user's `users.locale` is `cs`.
+      const res = await postFacets(await authHeader(), projects.id, {
+        filter: {
+          type: "and",
+          nodes: [
+            { type: "is_empty", property: "systemActive" },
+            inProgress,
+            { type: "relation_contains", property: "area", value: work.id },
+          ],
+        },
+        facets: ["status", "area"],
+        extra: { open: inProgress },
+      });
+
+      expect(res.status).toBe(200);
+      const [workFirst, homeSecond] = work.id < home.id ? [work, home] : [home, work];
+      const areaChoice = (area: typeof work) => ({
+        value: area.id,
+        label: String(area.properties.name),
+        ...(area.id === work.id ? { color: "#007AFF" } : {}),
+        count: 1,
+      });
+      expect(facetsBody.parse(await res.json())).toEqual({
+        facets: [
+          {
+            property: "status",
+            all: 2,
+            open: 1,
+            values: [
+              { value: "inProgress", label: "Probíhá", color: "#007AFF", count: 1 },
+              { value: "longTerm", label: "Dlouhodobé", color: "#AF52DE", count: 0 },
+              { value: "done", label: "Hotovo", color: "#34C759", count: 1 },
+              { value: "archived", label: "Archivováno", color: "#8E8E93", count: 0 },
+              { value: null, count: 0 },
+            ],
+          },
+          {
+            property: "area",
+            all: 2,
+            open: 2,
+            values: [
+              areaChoice(workFirst),
+              areaChoice(homeSecond),
+              { value: seededArea.id, label: String(seededArea.properties.name), count: 0 },
+              { value: null, count: 0 },
+            ],
+          },
+        ],
+      });
+    });
+
+    it("labels the options in English for a user whose locale is en", async () => {
+      await seedSystem(pool, createViewTypeRegistry());
+      const projects = await seededDatabase("projects");
+
+      const res = await postFacets(await authHeaderIn("en"), projects.id, {
+        filter: { type: "is_empty", property: "systemActive" },
+        facets: ["status"],
+      });
+
+      expect(res.status).toBe(200);
+      const [status] = facetsBody.parse(await res.json()).facets;
+      expect(status?.values.map((choice) => choice.label)).toEqual([
+        "In progress",
+        "Long-term",
+        "Done",
+        "Archived",
+        undefined,
+      ]);
+    });
+
+    it("returns 400 naming filter for a condition on the facet itself under or and under not, and reads the same filter for another facet", async () => {
+      const db = await makeBoard();
+      const headers = await authHeader();
+      const done = { type: "equals", property: "stage", value: "done" };
+      const urgent = { type: "equals", property: "urgent", value: true };
+      for (const filter of [
+        { type: "or", nodes: [done, urgent] },
+        { type: "not", node: done },
+      ]) {
+        const res = await postFacets(headers, db.id, { filter, facets: ["title", "stage"] });
+        expect(res.status, filter.type).toBe(400);
+        expect(httpError.parse(await res.json()).error).toEqual({
+          code: "validation_failed",
+          details: { field: "filter" },
+        });
+        const other = await postFacets(headers, db.id, { filter, facets: ["title"] });
+        expect(other.status, filter.type).toBe(200);
+      }
+    });
+
+    it("returns 400 for more than 20 facets, and for none", async () => {
+      const db = await makeBoard();
+      const headers = await authHeader();
+      for (const length of [21, 0]) {
+        const res = await postFacets(headers, db.id, { facets: Array.from({ length }, () => "stage") });
+        expect(res.status, String(length)).toBe(400);
+        expect(httpError.parse(await res.json()).error).toEqual({
+          code: "validation_failed",
+          details: { field: "facets" },
+        });
+      }
+      const allowed = await postFacets(headers, db.id, { facets: Array.from({ length: 20 }, () => "stage") });
+      expect(allowed.status).toBe(200);
+      expect(facetsBody.parse(await allowed.json()).facets).toHaveLength(20);
+    });
+
+    it("returns 400 naming facets for an unknown key, a property that cannot be a facet and an unresolvable path", async () => {
+      const db = await makeBoard();
+      await chokePoint.createProperty({ databaseId: db.id, key: "note", name: "Note", type: "longText" });
+      const headers = await authHeader();
+      for (const facet of ["missing", "note", { path: ["stage", "title"] }]) {
+        const res = await postFacets(headers, db.id, { facets: [facet] });
+        expect(res.status, JSON.stringify(facet)).toBe(400);
+        expect(httpError.parse(await res.json()).error).toEqual({
+          code: "validation_failed",
+          details: { field: "facets" },
+        });
+      }
+    });
+
+    it.each([
+      ["a missing facet list", {}, "facets"],
+      ["an unknown body key", { facets: ["stage"], q: "text" }, "q"],
+      ["a database id in the body", { facets: ["stage"], databaseId: randomUUID() }, "databaseId"],
+      ["an empty facet key", { facets: ["stage", ""] }, "facets.1"],
+      [
+        "an extra with another key",
+        { facets: ["stage"], extra: { open: { type: "is_empty", property: "title" }, top: 5 } },
+        "extra",
+      ],
+    ])("returns 400 for %s", async (_name, body, field) => {
+      const db = await makeBoard();
+      const res = await postFacets(await authHeader(), db.id, body);
+      expect(res.status).toBe(400);
+      expect(httpError.parse(await res.json()).error).toEqual({ code: "validation_failed", details: { field } });
+    });
+
+    it("refuses a malformed filter, in filter and in extra.open, with the answer the database query gives for it", async () => {
+      const db = await makeBoard();
+      const headers = await authHeader();
+      for (const filter of [{ type: "nope" }, { type: "relation_path_contains", path: ["only"], value: "x" }]) {
+        const query = await fetch(`${baseUrl}/api/databases/${db.id}/query`, {
+          method: "POST",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({ filter }),
+        });
+        expect(query.status).toBe(400);
+        const queryAnswer: unknown = await query.json();
+        for (const body of [
+          { facets: ["stage"], filter },
+          { facets: ["stage"], extra: { open: filter } },
+        ]) {
+          const res = await postFacets(headers, db.id, body);
+          expect(res.status).toBe(400);
+          const answer: unknown = await res.json();
+          expect(answer, JSON.stringify(body)).toEqual(queryAnswer);
+        }
+      }
+    });
+
+    it("returns 400 for a body that is not a JSON object, and for a database id that is not a UUID as the database query does", async () => {
+      const db = await makeBoard();
+      const headers = await authHeader();
+      const list = await postFacets(headers, db.id, ["stage"]);
+      expect(list.status).toBe(400);
+      expect(z.object({ error: z.object({ code: z.string() }) }).parse(await list.json()).error.code).toBe(
+        "validation_failed",
+      );
+
+      const query = await fetch(`${baseUrl}/api/databases/not-a-uuid/query`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: "{}",
+      });
+      expect(query.status).toBe(400);
+      const queryAnswer: unknown = await query.json();
+      const res = await postFacets(headers, "not-a-uuid", { facets: ["stage"] });
+      expect(res.status).toBe(400);
+      const answer: unknown = await res.json();
+      expect(answer).toEqual(queryAnswer);
+    });
+
+    it("answers an unknown database exactly as the database query does", async () => {
+      const headers = await authHeader();
+      const unknown = randomUUID();
+      const query = await fetch(`${baseUrl}/api/databases/${unknown}/query`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: "{}",
+      });
+      expect(query.status).toBe(404);
+      const queryAnswer: unknown = await query.json();
+      expect(queryAnswer).toEqual({
+        error: { code: "not_found", details: { resource: "database", databaseId: unknown } },
+      });
+
+      for (const body of [
+        { facets: ["stage"] },
+        { facets: [{ path: ["project", "area"] }], extra: { open: { type: "is_empty", property: "title" } } },
+      ]) {
+        const res = await postFacets(headers, unknown, body);
+        expect(res.status).toBe(404);
+        const answer: unknown = await res.json();
+        expect(answer).toEqual(queryAnswer);
+      }
+    });
+  });
+
   describe("include=links (issue #1403)", () => {
     /** A file linked to a task, as the later propagation issue (#1593) will leave it; written through the store because nothing in product code writes links yet. */
     async function makeLinkedFile(options: { extraSource?: boolean; broken?: boolean } = {}) {

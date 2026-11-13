@@ -83,7 +83,9 @@ function shareLocalDefinitions(schema: Record<string, unknown>, holder: "filter"
  *
  * `item.count` carries the filter tree in each entry, so its schema shares local definitions under
  * `properties.items`; it has this one schema and no compact mode
- * (docs/adr/2026-11-10-item-count-schema-shares-local-definitions.md).
+ * (docs/adr/2026-11-10-item-count-schema-shares-local-definitions.md). `database.facets` (issue #1759) carries the
+ * filter tree in `filter` and again below its root in `extra.open`, so it gets the treatment that decision asks of
+ * a later operation: one schema, with the definitions under `properties.filter`.
  */
 export function operationInputJsonSchema(
   operation: GenericOperationName,
@@ -97,5 +99,7 @@ export function operationInputJsonSchema(
   }
   if (operation === "item.count")
     return shareLocalDefinitions(z.toJSONSchema(input, { io: "input", reused: "ref" }), "items");
+  if (operation === "database.facets")
+    return shareLocalDefinitions(z.toJSONSchema(input, { io: "input", reused: "ref" }), "filter");
   return z.toJSONSchema(input, { io: "input" });
 }

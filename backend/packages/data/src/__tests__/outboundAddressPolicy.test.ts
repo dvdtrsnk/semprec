@@ -119,10 +119,17 @@ describe("createOutboundHttp().fetch against a real server (issue #1034)", () =>
   });
 });
 
+/** The source fields of a notification whose source has no durable identity (issue #1829), so no collapse key. */
+const NO_IDENTITY_SOURCE = {
+  sourceTable: "project_heartbeats",
+  sourceId: "heartbeat-1",
+  kind: "heartbeat_error",
+} as const;
+
 describe("sendWebPushNotification under the default policy (issue #1034)", () => {
   const vapid = webpush.generateVAPIDKeys();
   const config = { publicKey: vapid.publicKey, privateKey: vapid.privateKey, subject: "mailto:ops@example.test" };
-  const payload = { notificationId: "notif-1", title: "Title", body: null, linkHref: null };
+  const payload = { notificationId: "notif-1", ...NO_IDENTITY_SOURCE, title: "Title", body: null, linkHref: null };
 
   function subscription(endpoint: string) {
     const ecdh = createECDH("prime256v1");

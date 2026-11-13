@@ -34,6 +34,8 @@ export interface SchemaDatabaseProjection {
   clientVisible: boolean;
   /** True while the user hides the database from the overview (issue #2002). */
   overviewHidden: boolean;
+  /** True for a system database whose data an agent must not read or write by default (issue #1808). */
+  sensitive: boolean;
   properties: ResolvedProperty[];
   /** The collection's quick-filter chips in display order, labels resolved for the locale; empty without declarations (issue #1647). */
   quickFilters: SchemaQuickFilterProjection[];
@@ -198,6 +200,7 @@ export async function generateSchemaProjection(
       name: resolveDatabaseName(db.name, db.key, db.id, catalogs, locale),
       searchPlaceholder: await resolveDatabasePlaceholderForRow(catalogResolver, db, locale),
       ...metadataResolver.resolve(db),
+      sensitive: db.sensitive,
       properties: properties.map((p) => resolveProperty(p, db.key, catalogs, locale, relationDefinitions)),
       ...resolveDatabaseViewHints(
         db.system && db.key !== null ? descriptorsByKey.get(db.key) : undefined,

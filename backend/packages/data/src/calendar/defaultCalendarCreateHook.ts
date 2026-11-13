@@ -2,7 +2,9 @@
 // to the tenant's default calendar, the scope through which a caller names another calendar, and the
 // helper that creates an Event inside that scope. The hook runs inside the create's transaction after a
 // real insert and not on an idempotency-key replay, so the calendar edge commits or rolls back with the Event.
+// A create that names the Event's calendar in its own relations writes that edge itself (issue #1777).
 // Constrained by: docs/adr/2026-11-11-new-events-get-their-calendar-in-a-create-hook.md,
+// docs/adr/2026-11-12-create-hooks-are-given-the-initial-relations-of-their-create.md,
 // docs/adr/2026-10-09-item-create-domain-hooks.md
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { PoolClient } from "pg";
@@ -124,19 +126,24 @@ async function lockDefaultCalendar(client: PoolClient, calendarsDatabaseId: stri
  *   chosen calendar is not checked.
  * - An Event that already has a calendar edge when the hook runs keeps it and gets no other, and a chosen
  *   calendar is not checked.
+ * - An Event whose create names the `calendar` relation in its initial relations
+ *   (`createItemWithRelationsWithClient`) gets no edge from the hook, and a chosen calendar is not checked.
+ *   That create writes the relation after the hooks, as the write of its own writer, and throws when it
+ *   cannot.
  * - Otherwise the edge goes to the calendar chosen with `withChosenCalendar`, as `lockChosenCalendar`
  *   accepts it, or without a choice to the default calendar of `lockDefaultCalendar`.
  *
- * The default calendar is read only in the third case, when no calendar was chosen. There, a calendars
+ * The default calendar is read only in the last case, when no calendar was chosen. There, a calendars
  * database without a live default calendar fails the create with a plain error, which a transport answers
  * as a server error, after the error log line `default_calendar_missing` that carries the two ids. A
  * create with a chosen calendar is judged by that calendar alone, and one whose Event already has a
- * calendar edge writes nothing: neither reads the default, so a missing default fails neither. A calendars
- * database whose Events `calendar` relation is missing fails the create with a plain error in every case,
- * with a chosen calendar or without. The edge is written through `createRelationWithClient` without a
- * writer, so as a system write, with that write's guards and hooks.
+ * calendar edge or whose initial relations name the calendar writes nothing here: none of them reads the
+ * default, so a missing default fails none of them. A calendars database whose Events `calendar` relation
+ * is missing fails the create with a plain error in every case, with a chosen calendar or without. The
+ * hook writes its edge through `createRelationWithClient` without a writer, so as a system write, with that
+ * write's guards and hooks.
  */
-export const defaultCalendarCreateHook: ItemCreateHook = async ({ client, database, item }) => {
+export const defaultCalendarCreateHook: ItemCreateHook = async ({ client, database, item, initialRelations }) => {
   if (!database.system || database.ownerModuleId !== EVENTS_MODULE_ID) return;
   const calendars = await databasesStore.getDatabaseByModuleId(client, CALENDARS_MODULE_ID);
   if (!calendars) return;
@@ -146,6 +153,7 @@ export const defaultCalendarCreateHook: ItemCreateHook = async ({ client, databa
   if (!property || !definition) throw new Error("Events 'calendar' relation not found");
   const edges = await relationsStore.listRelationsForItem(client, definition.id, item.id);
   if (edges.length > 0) return;
+  if (initialRelations?.some((relation) => relation.relationPropertyId === property.id)) return;
 
   const chosen = chosenCalendarScope.getStore();
   let calendarId: string;

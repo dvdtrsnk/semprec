@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import type { Pool } from "pg";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall, type FauxProviderHandle } from "@earendil-works/pi-ai";
@@ -21,6 +21,7 @@ import {
   upsertMailMessageMeta,
 } from "@semprec/data/testSupport";
 import {
+  AgentRunError,
   CORE_AGENT_RUN_ACTION_ID,
   createAgentRun,
   createChokePoint,
@@ -76,6 +77,17 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs = 10_000): Promi
     await sleep(50);
   }
   expect(await check()).toBe(true);
+}
+
+/** Everything the spies recorded as one string; an `Error` is expanded, which `JSON.stringify` alone drops. */
+function loggedText(...spies: MockInstance[]): string {
+  return JSON.stringify(
+    spies.map((spy) => spy.mock.calls),
+    (_key, value: unknown) =>
+      value instanceof Error
+        ? { name: value.name, message: value.message, stack: value.stack, cause: value.cause }
+        : value,
+  );
 }
 
 let pool: Pool;
@@ -1011,7 +1023,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     await inTenantZero(() => enqueueJob(pool, AGENT_TASK_NAMES.AGENT_RUN, { agentRunId: run.id }));
 
     await waitFor(async () => (await runRow(run.id)).status !== "running");
-    expect(await runRow(run.id)).toEqual({ status: "error", result: "gateway refused: budget" });
+    expect(await runRow(run.id)).toEqual({ status: "error", result: "modelError" });
     const events = await runEvents(run.id);
     expect(events.at(-1)).toMatchObject({ kind: "run_status", payload: { status: "error" } });
     expect(await errorNotificationCount(run.id)).toBe(1);
@@ -1042,7 +1054,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
       expect(await getAgentRun(pool, run.id)).toMatchObject({
         status: "error",
         errorCode: "budgetExceeded",
-        result: "AI budget exceeded",
+        result: "budgetExceeded",
       });
       const diagnostic = (await runEvents(run.id)).find((event) => event.kind === "message");
       expect(diagnostic?.payload).toMatchObject({ errorMessage: "AI budget exceeded" });
@@ -1097,9 +1109,9 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
       expect(pending.map(({ runId }) => runId).sort()).toEqual([refused.id, failed.id].sort());
       expect(await getAgentRun(pool, refused.id)).toMatchObject({
         errorCode: "budgetExceeded",
-        result: "AI budget exceeded",
+        result: "budgetExceeded",
       });
-      expect(await getAgentRun(pool, failed.id)).toMatchObject({ errorCode: "modelError" });
+      expect(await getAgentRun(pool, failed.id)).toMatchObject({ errorCode: "modelError", result: "modelError" });
       const refusedEvent = (await runEvents(refused.id)).find((event) => event.kind === "message");
       const failedEvent = (await runEvents(failed.id)).find((event) => event.kind === "message");
       expect(refusedEvent?.payload).toMatchObject({ errorMessage: "AI budget exceeded" });
@@ -1150,7 +1162,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
         expect(await getAgentRun(pool, run.id)).toMatchObject({
           status: "error",
           errorCode: "modelError",
-          result: failure.message,
+          result: "modelError",
         });
       } finally {
         await new Promise<void>((resolve, reject) => gatewayServer.close((err) => (err ? reject(err) : resolve())));
@@ -1173,7 +1185,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     expect(requestHeaders).toEqual([]);
   });
 
-  it("closes the row as error with the composition error when the session cannot be composed", async () => {
+  it("closes the row as error with the code internal when the session cannot be composed", async () => {
     const projectItemId = await seededSemprecProjectItemId();
     const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "say hello" });
     composition.during = async () => {
@@ -1185,7 +1197,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
       runInTenant(getTenantZeroId(), () => task({ agentRunId: run.id }, { job: { id: "1" } })),
     ).rejects.toThrow("mcp grants unavailable");
 
-    expect(await runRow(run.id)).toEqual({ status: "error", result: "mcp grants unavailable" });
+    expect(await runRow(run.id)).toEqual({ status: "error", result: "internal" });
     expect((await getAgentRun(pool, run.id))?.errorCode).toBe("internal");
     const storedCode = await pool.query<{ error_code: string | null }>(
       "SELECT error_code FROM agent_runs WHERE id = $1",
@@ -1196,6 +1208,115 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     const events = await runEvents(run.id);
     expect(events).toEqual([{ kind: "run_status", payload: { kind: "run_status", status: "error" } }]);
     expect(requestHeaders).toEqual([]);
+  });
+
+  it("keeps the exception message and the task out of the row and of every log line when the session cannot be composed", async () => {
+    const sentinel = "sentinel-a8d3";
+    const projectItemId = await seededSemprecProjectItemId();
+    const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: `say hello ${sentinel}` });
+    composition.during = async () => {
+      throw new AgentRunError("modelError", `grants unavailable for ${sentinel}`);
+    };
+    const task = createAgentRunTask(pool, registry, fauxGateway, createInFlightAgentRuns());
+    const spies = [vi.spyOn(logger, "error"), vi.spyOn(logger, "warn"), vi.spyOn(logger, "info")];
+    try {
+      await expect(
+        runInTenant(getTenantZeroId(), () => task({ agentRunId: run.id }, { job: { id: "1" } })),
+      ).rejects.toThrow(sentinel);
+
+      expect(await runRow(run.id)).toEqual({ status: "error", result: "modelError" });
+      expect(loggedText(...spies)).not.toContain(sentinel);
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+  });
+
+  it("logs the run's code and the name of the close error, never the close error itself, when closing a run that could not be composed fails", async () => {
+    const sentinel = "sentinel-e41f";
+    const projectItemId = await seededSemprecProjectItemId();
+    const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: `say hello ${sentinel}` });
+    let failNextConnect = false;
+    const failablePool = new Proxy(pool, {
+      get(target, prop, receiver) {
+        if (prop === "connect") {
+          return () => {
+            if (!failNextConnect) return target.connect();
+            failNextConnect = false;
+            return Promise.reject(new Error(`could not write the row of ${sentinel}`));
+          };
+        }
+        const value: unknown = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    composition.during = async () => {
+      failNextConnect = true;
+      throw new AgentRunError("modelError", `grants unavailable for ${sentinel}`);
+    };
+    const task = createAgentRunTask(failablePool, registry, fauxGateway, createInFlightAgentRuns());
+    const errorSpy = vi.spyOn(logger, "error");
+    try {
+      await expect(
+        runInTenant(getTenantZeroId(), () => task({ agentRunId: run.id }, { job: { id: "1" } })),
+      ).rejects.toThrow(sentinel);
+
+      // The close never ran, so the row stays open for the next startup repair.
+      expect(await runRow(run.id)).toEqual({ status: "running", result: null });
+      expect(errorSpy.mock.calls).toEqual([
+        [
+          { errorName: "Error", errorCode: "modelError", agentRunId: run.id },
+          "Failed to close an agent run whose session could not be composed",
+        ],
+      ]);
+      expect(loggedText(errorSpy)).not.toContain(sentinel);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("logs the run's code and the name of the status error, never the status error itself, when a failed heartbeat run cannot record its error status", async () => {
+    const sentinel = "sentinel-5b92";
+    const projectItemId = await seededSemprecProjectItemId();
+    const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: `say hello ${sentinel}` });
+    let failNextEventInsert = false;
+    const failablePool = new Proxy(pool, {
+      get(target, prop, receiver) {
+        if (prop === "query") {
+          return (...args: unknown[]) => {
+            if (failNextEventInsert && String(args[0]).includes("INSERT INTO agent_run_events")) {
+              failNextEventInsert = false;
+              return Promise.reject(new Error(`could not write the event of ${sentinel}`));
+            }
+            return (target.query as (...queryArgs: unknown[]) => Promise<unknown>)(...args);
+          };
+        }
+        const value: unknown = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    composition.during = async () => {
+      failNextEventInsert = true;
+      throw new AgentRunError("modelError", `grants unavailable for ${sentinel}`);
+    };
+    const runAgent = createRunAgentForHeartbeats(failablePool, registry, fauxGateway, createInFlightAgentRuns());
+    const spies = [vi.spyOn(logger, "error"), vi.spyOn(logger, "warn"), vi.spyOn(logger, "info")];
+    try {
+      await expect(
+        runInTenant(getTenantZeroId(), () => runAgent({ agentRunId: run.id, projectItemId, task: run.task })),
+      ).rejects.toThrow(sentinel);
+
+      // The error status never reached agent_run_events; the caller (coreAgentRunAction) closes the row.
+      expect(await runEvents(run.id)).toEqual([]);
+      expect(spies[0]!.mock.calls).toEqual([
+        [
+          { errorName: "Error", errorCode: "modelError", agentRunId: run.id },
+          "Failed to record a failed agent run's run_status",
+        ],
+      ]);
+      expect(loggedText(...spies)).not.toContain(sentinel);
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
   });
 
   it("writes no error event for a run closed elsewhere before its failed composition closes it", async () => {
@@ -1378,26 +1499,26 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     return { run: runs[0]!, lastError: await lastError() };
   }
 
-  it("closes a heartbeat run as error with the composition error when its session cannot be composed", async () => {
+  it("closes a heartbeat run as error with the code internal when its session cannot be composed", async () => {
     composition.during = async () => {
       throw new Error("mcp grants unavailable");
     };
 
     const { run, lastError } = await fireFailingHeartbeat();
 
-    expect(run).toMatchObject({ status: "error", result: "mcp grants unavailable" });
+    expect(run).toMatchObject({ status: "error", result: "internal" });
     expect(lastError).toBe("mcp grants unavailable");
     expect(await errorNotificationCount(run.id)).toBe(1);
     expect(await runEvents(run.id)).toEqual([{ kind: "run_status", payload: { kind: "run_status", status: "error" } }]);
     expect(requestHeaders).toEqual([]);
   });
 
-  it("closes a heartbeat run as error with the model's error when the model call fails", async () => {
+  it("closes a heartbeat run as error with the code modelError when the model call fails", async () => {
     faux.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: "gateway refused: budget" })]);
 
     const { run, lastError } = await fireFailingHeartbeat();
 
-    expect(run).toMatchObject({ status: "error", result: "gateway refused: budget" });
+    expect(run).toMatchObject({ status: "error", result: "modelError" });
     expect(lastError).toBe("gateway refused: budget");
     expect(await errorNotificationCount(run.id)).toBe(1);
     const events = await runEvents(run.id);

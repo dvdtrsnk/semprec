@@ -1299,13 +1299,14 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     expect((await row(locked)).properties).toMatchObject({ date: day(0), since: day(-1) });
   });
 
-  describe("a task with a stale effectiveDate (synthetic: no production writer sets effectiveDate before #1780)", () => {
+  describe("a task with a stale effectiveDate (synthetic: the stale value is written directly)", () => {
     it("moves it once: one invalidation, and a second run the same day writes nothing", async () => {
       const id = await task({ date: day(-3) });
       await setSystemProperties(id, { effectiveDate: day(-2), hiddenUntil: today.minus({ hours: 1 }).toISO() });
       const first = await invalidationsDuring(run);
       const moved = await row(id);
-      expect(moved.properties).toMatchObject({ date: day(0), timeFrom: null, timeTo: null, effectiveDate: day(-2) });
+      // The Tasks transform stores the effective day with the new date (issue #1780), so the task is not selected again.
+      expect(moved.properties).toMatchObject({ date: day(0), timeFrom: null, timeTo: null, effectiveDate: day(0) });
       expect(first.get(id)).toBe(1);
       const second = await invalidationsDuring(run);
       expect(second.get(id)).toBeUndefined();

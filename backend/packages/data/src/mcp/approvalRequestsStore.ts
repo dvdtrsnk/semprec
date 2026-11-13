@@ -58,12 +58,41 @@ export interface ApprovalResourceSnapshot {
 export interface ApprovalDescription {
   key: string;
   params: Record<string, string | number | null>;
-  /** Links the action would end; filled by the value-link work, omitted until then. */
-  endsInheritance?: Array<{ itemId: string; propertyKey: string; sourceName: string }>;
+  /** The active value links the action would end, one entry per link and source (issue #1758); omitted when it ends none. */
+  breaksLinks?: BreaksLinkEntry[];
+  /** The links that follow a broken link's property and so lose the value it fed them; omitted when there are none. */
+  endsInheritance?: EndsInheritanceEntry[];
+}
+
+/**
+ * A value link a write would end: the item and property that follow `sourceItemId`, and the value the
+ * write sets. `propertyKey` is the canonical key. A link fed by a sender domain has no source item, so
+ * `sourceItemId` and `sourceDatabaseKey` are `null` and `sourceItemName` is the domain; a link without
+ * any source row has all three `null`. `newValueName` is `null` where the write sets no value.
+ */
+export interface BreaksLinkEntry {
+  itemId: string;
+  itemName: string | null;
+  propertyKey: string;
+  sourceItemId: string | null;
+  sourceItemName: string | null;
+  sourceDatabaseKey: string | null;
+  newValueName: string | null;
+}
+
+/** A link that follows the property of a broken link: `itemId` and `propertyKey` follow `sourceName`'s item. */
+export interface EndsInheritanceEntry {
+  itemId: string;
+  propertyKey: string;
+  sourceName: string | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNullableString(value: unknown): boolean {
+  return value === null || typeof value === "string";
 }
 
 function isInheritanceEntry(value: unknown): boolean {
@@ -71,7 +100,20 @@ function isInheritanceEntry(value: unknown): boolean {
     isRecord(value) &&
     typeof value.itemId === "string" &&
     typeof value.propertyKey === "string" &&
-    typeof value.sourceName === "string"
+    isNullableString(value.sourceName)
+  );
+}
+
+function isBreaksLinkEntry(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.itemId === "string" &&
+    typeof value.propertyKey === "string" &&
+    isNullableString(value.itemName) &&
+    isNullableString(value.sourceItemId) &&
+    isNullableString(value.sourceItemName) &&
+    isNullableString(value.sourceDatabaseKey) &&
+    isNullableString(value.newValueName)
   );
 }
 
@@ -83,7 +125,9 @@ export function assertDescriptionShape(value: unknown): ApprovalDescription | nu
       isRecord(value.params) &&
       Object.values(value.params).every((v) => v === null || typeof v === "string" || typeof v === "number") &&
       (value.endsInheritance === undefined ||
-        (Array.isArray(value.endsInheritance) && value.endsInheritance.every(isInheritanceEntry))),
+        (Array.isArray(value.endsInheritance) && value.endsInheritance.every(isInheritanceEntry))) &&
+      (value.breaksLinks === undefined ||
+        (Array.isArray(value.breaksLinks) && value.breaksLinks.every(isBreaksLinkEntry))),
     "description",
   );
   return value as unknown as ApprovalDescription;
@@ -146,12 +190,35 @@ export interface GenericOperationApprovalRequestPayload {
   resourceSnapshot: ApprovalResourceSnapshot;
 }
 
-export type ApprovalRequestPayload = McpInvokeApprovalRequestPayload | GenericOperationApprovalRequestPayload;
+/**
+ * The module-agent-tool payload shape (issue #1791): the tool's manifest name and the arguments the
+ * agent supplied, which the tool's own schema accepted when the request was created. The module that
+ * owns the tool is resolved from the name through `ModuleRegistry` at execution time, never stored.
+ */
+export interface ModuleToolApprovalRequestPayload {
+  moduleToolName: string;
+  args: Record<string, unknown>;
+}
+
+export type ApprovalRequestPayload =
+  McpInvokeApprovalRequestPayload | GenericOperationApprovalRequestPayload | ModuleToolApprovalRequestPayload;
 
 export function isGenericOperationApprovalRequestPayload(
   payload: ApprovalRequestPayload,
 ): payload is GenericOperationApprovalRequestPayload {
   return "operationName" in payload;
+}
+
+export function isMcpInvokeApprovalRequestPayload(
+  payload: ApprovalRequestPayload,
+): payload is McpInvokeApprovalRequestPayload {
+  return "mcpToolRegistrationId" in payload;
+}
+
+export function isModuleToolApprovalRequestPayload(
+  payload: ApprovalRequestPayload,
+): payload is ModuleToolApprovalRequestPayload {
+  return "moduleToolName" in payload;
 }
 
 interface ApprovalRequestRow {
@@ -259,6 +326,18 @@ export async function createPendingApprovalRequest(
   client: Queryable,
   input: CreatePendingApprovalRequestInput,
 ): Promise<ApprovalRequest> {
+  return (await insertPendingApprovalRequest(client, input)).request;
+}
+
+/**
+ * `createPendingApprovalRequest` that also says whether this call inserted the row (`inserted`) or
+ * returned the existing request of a repeated `(agentRunId, toolCallId)`, which wrote nothing. A
+ * caller that announces the creation (`approvalRequestRealtime.ts`) announces only an insert.
+ */
+export async function insertPendingApprovalRequest(
+  client: Queryable,
+  input: CreatePendingApprovalRequestInput,
+): Promise<{ request: ApprovalRequest; inserted: boolean }> {
   const toolCallId = input.toolCallId ?? null;
   const { rows } = await client.query<ApprovalRequestRow>(
     `INSERT INTO approval_requests (agent_run_id, tool_name, risk_class, payload, resource_snapshot, reason, tool_call_id, description)
@@ -281,7 +360,10 @@ export async function createPendingApprovalRequest(
       `SELECT * FROM approval_requests WHERE agent_run_id = $1 AND tool_call_id = $2`,
       [input.agentRunId, toolCallId],
     );
-    return rowToApprovalRequest(requireSingleRow(existing.rows, "approval_requests tool call lookup"));
+    return {
+      request: rowToApprovalRequest(requireSingleRow(existing.rows, "approval_requests tool call lookup")),
+      inserted: false,
+    };
   }
   const created = rowToApprovalRequest(requireSingleRow(rows, "approval_requests insert RETURNING"));
   // Raise the requesting run's thread to the top of the activity ordering (issue #1728). Runs in the
@@ -293,7 +375,7 @@ export async function createPendingApprovalRequest(
       WHERE id = (SELECT thread_id FROM agent_runs WHERE id = $1)`,
     [input.agentRunId],
   );
-  return created;
+  return { request: created, inserted: true };
 }
 
 /** `forUpdate` row-locks the request for the duration of the caller's transaction — `approvalExecute`'s locked revalidate-then-mutate protocol (issue #89) needs this so a concurrent decide/replay can't observe or race a half-finished execution. */
@@ -396,6 +478,37 @@ const LIST_STATUS_SQL = {
   decided: { predicate: "ar.status <> 'pending' AND ar.decided_at IS NOT NULL", orderedAt: "ar.decided_at" },
 } as const;
 
+/**
+ * The joins that derive the source of the request `ar` raised by the run `r`: the run's thread as
+ * `t`, and as `root` the `triggered_by` and `heartbeat_id` of the run that following `parent_run_id`
+ * reaches within `AGENT_RUN_ROOT_MAX_HOPS` hops (empty when the run has a thread). `hopsParameter`
+ * is the placeholder of the query that holds `AGENT_RUN_ROOT_MAX_HOPS`; only the constants of this
+ * module are passed, never a caller's value. Shared by the list and the count, so that both derive
+ * the kind of a request by one rule.
+ */
+function sourceJoinSql(hopsParameter: string): string {
+  return `LEFT JOIN semp_threads t ON t.tenant_id = r.tenant_id AND t.id = r.thread_id
+       LEFT JOIN LATERAL (
+         WITH RECURSIVE climb AS (
+           SELECT r.parent_run_id, r.triggered_by, r.heartbeat_id, 0 AS hops
+            WHERE t.id IS NULL
+           UNION ALL
+           SELECT parent.parent_run_id, parent.triggered_by, parent.heartbeat_id, climb.hops + 1
+             FROM climb
+             JOIN agent_runs parent ON parent.tenant_id = r.tenant_id AND parent.id = climb.parent_run_id
+            WHERE climb.hops < ${hopsParameter}::int
+         )
+         SELECT triggered_by, heartbeat_id FROM climb ORDER BY hops DESC LIMIT 1
+       ) root ON true`;
+}
+
+/** The kind of the source of the request, from the joins of `sourceJoinSql`: the rule of `loadApprovalSources`. */
+const SOURCE_KIND_SQL = `CASE WHEN t.kind = 'tick' THEN 'tick'
+                     WHEN t.id IS NOT NULL THEN 'chat'
+                     WHEN root.triggered_by = 'mcp' THEN 'mcp'
+                     WHEN root.triggered_by = 'heartbeat' THEN 'tick'
+                     ELSE 'chat' END`;
+
 /** The SQL of the two directions: the sort keyword, and the comparison that selects the rows after a cursor. */
 const LIST_ORDER_SQL = {
   asc: { direction: "ASC", after: ">" },
@@ -444,19 +557,7 @@ export async function listApprovalRequestsPage(
        FROM approval_requests ar
        JOIN agent_runs r ON r.tenant_id = ar.tenant_id AND r.id = ar.agent_run_id
        CROSS JOIN needle
-       LEFT JOIN semp_threads t ON t.tenant_id = r.tenant_id AND t.id = r.thread_id
-       LEFT JOIN LATERAL (
-         WITH RECURSIVE climb AS (
-           SELECT r.parent_run_id, r.triggered_by, r.heartbeat_id, 0 AS hops
-            WHERE t.id IS NULL
-           UNION ALL
-           SELECT parent.parent_run_id, parent.triggered_by, parent.heartbeat_id, climb.hops + 1
-             FROM climb
-             JOIN agent_runs parent ON parent.tenant_id = r.tenant_id AND parent.id = climb.parent_run_id
-            WHERE climb.hops < $8::int
-         )
-         SELECT triggered_by, heartbeat_id FROM climb ORDER BY hops DESC LIMIT 1
-       ) root ON true
+       ${sourceJoinSql("$8")}
        LEFT JOIN project_heartbeats h ON h.tenant_id = r.tenant_id
               AND h.id = COALESCE(t.heartbeat_id,
                                   CASE WHEN root.triggered_by = 'heartbeat' THEN root.heartbeat_id END)
@@ -464,12 +565,7 @@ export async function listApprovalRequestsPage(
               AND subject.id = t.subject_inbox_item_id AND subject.deleted_at IS NULL
       WHERE r.actor_user_id = $1
         AND ${predicate}
-        AND ($2::text[] IS NULL
-             OR CASE WHEN t.kind = 'tick' THEN 'tick'
-                     WHEN t.id IS NOT NULL THEN 'chat'
-                     WHEN root.triggered_by = 'mcp' THEN 'mcp'
-                     WHEN root.triggered_by = 'heartbeat' THEN 'tick'
-                     ELSE 'chat' END = ANY($2::text[]))
+        AND ($2::text[] IS NULL OR ${SOURCE_KIND_SQL} = ANY($2::text[]))
         AND ($3::timestamptz IS NULL OR (${orderedAt}, ar.id) ${after} ($3::timestamptz, $4::uuid))
         AND (needle.pattern IS NULL
              OR unaccent(ar.tool_name) ILIKE needle.pattern ESCAPE '\\'
@@ -501,6 +597,29 @@ export async function listApprovalRequestsPage(
     nextCursor:
       rows.length > input.limit && last ? Buffer.from(`${last.cursor_at}|${last.id}`).toString("base64url") : null,
   };
+}
+
+/**
+ * How many requests `listApprovalRequestsPage` returns over all its pages for `status: "pending"`,
+ * no search and the same `ownerUserId` and `sourceKinds` (issue #1786): the pending requests whose
+ * run has `ownerUserId` as its actor and whose source is of one of `sourceKinds`, or of any kind
+ * when that is `null`. The status predicate and the source rule are those of the list.
+ */
+export async function countPendingApprovalRequests(
+  client: Queryable,
+  input: { ownerUserId: string; sourceKinds: readonly ApprovalRequestSourceKind[] | null },
+): Promise<number> {
+  const { rows } = await client.query<{ count: number }>(
+    `SELECT count(*)::int AS count
+       FROM approval_requests ar
+       JOIN agent_runs r ON r.tenant_id = ar.tenant_id AND r.id = ar.agent_run_id
+       ${sourceJoinSql("$3")}
+      WHERE r.actor_user_id = $1
+        AND ${LIST_STATUS_SQL.pending.predicate}
+        AND ($2::text[] IS NULL OR ${SOURCE_KIND_SQL} = ANY($2::text[]))`,
+    [input.ownerUserId, input.sourceKinds === null ? null : [...input.sourceKinds], AGENT_RUN_ROOT_MAX_HOPS],
+  );
+  return requireSingleRow(rows, "approval_requests pending count").count;
 }
 
 /**

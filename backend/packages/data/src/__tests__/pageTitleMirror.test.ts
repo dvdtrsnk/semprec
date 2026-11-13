@@ -105,8 +105,8 @@ async function titleOf(itemId: string): Promise<string | undefined> {
   });
 }
 
-async function trash(itemId: string): Promise<void> {
-  const databaseId = await inTransaction(async (client) => {
+async function databaseIdOf(itemId: string): Promise<string> {
+  return inTransaction(async (client) => {
     const { rows } = await client.query<{ database_id: string }>(`SELECT database_id FROM items WHERE id = $1`, [
       itemId,
     ]);
@@ -114,7 +114,16 @@ async function trash(itemId: string): Promise<void> {
     if (!row) throw new Error(`Missing item ${itemId}`);
     return row.database_id;
   });
+}
+
+async function trash(itemId: string): Promise<void> {
+  const databaseId = await databaseIdOf(itemId);
   await inTenant(() => cp.softDeleteItem(databaseId, itemId));
+}
+
+async function restore(itemId: string): Promise<void> {
+  const databaseId = await databaseIdOf(itemId);
+  await inTenant(() => cp.restoreItem(databaseId, itemId));
 }
 
 async function versionOf(itemId: string): Promise<string | undefined> {
@@ -274,8 +283,11 @@ describe("subpage title mirror (issue #1715)", () => {
   it("completes without writing for a missing item, a trashed item, an item without a page and a tenant without Pages", async () => {
     const trashedParent = await host("Trashed parent");
     const page = await subpage(trashedParent, "Kept");
-    await typeTitle(trashedParent, page.blockId, "Changed");
     await trash(trashedParent);
+    // The host's trash took the page and its block with it (issue #1763). Restored on its own and retitled, the page
+    // is live below the trashed host, so a job that went on for a trashed host would have a title to mirror.
+    await restore(page.pageItemId);
+    await typeTitle(trashedParent, page.blockId, "Changed");
     const noPage = await host("No page");
     const before = await versionOf(page.pageItemId);
 
@@ -836,9 +848,17 @@ describe("subpage title mirror (issue #1715)", () => {
     it("writes nothing when the host is trashed between the job's first read and its host reservation", async () => {
       const parent = await host("Racing parent");
       const page = await subpage(parent, "Kept");
-      await typeTitle(parent, page.blockId, "Changed");
       const hook = onStatements([
-        { match: (text) => /FROM items WHERE id = ANY/.test(text), inject: () => trash(parent) },
+        {
+          match: (text) => /FROM items WHERE id = ANY/.test(text),
+          inject: async () => {
+            await trash(parent);
+            // The host's trash took the page and its block with it (issue #1763). Restored on its own and retitled,
+            // the page is live below the trashed host, so a job that went on would have a title to mirror.
+            await restore(page.pageItemId);
+            await typeTitle(parent, page.blockId, "Changed");
+          },
+        },
       ]);
       try {
         await inTenant(() => handlePageTitleMirrorTask(pool, { itemId: parent }));

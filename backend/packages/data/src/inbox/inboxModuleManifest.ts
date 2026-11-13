@@ -8,7 +8,11 @@ import {
 import { SEMPREC_TICK_ACTION_ID } from "./inboxTickAction.js";
 
 export { createInboxProposalGetTool, inboxProposalGetArgsSchema } from "./inboxAgentTools.js";
-export { createConfirmProposalRouteHandler, createInboxTypesRouteHandler } from "./inboxRouteHandlers.js";
+export {
+  createConfirmProposalRouteHandler,
+  createInboxCardsRouteHandler,
+  createInboxTypesRouteHandler,
+} from "./inboxRouteHandlers.js";
 
 /**
  * Retrofit manifest (module-contract issue #227) for the Inbox pipeline (issues #101-#106):
@@ -76,6 +80,15 @@ export const manifest: ModuleManifest = {
       handlerExport: "createInboxTypesRouteHandler",
       // Shaped for exactly one consumer, the capture UI's type picker — not a generic
       // list-items-in-a-database query.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "listInboxCards",
+      method: "GET",
+      path: "/api/inbox/cards",
+      handlerExport: "createInboxCardsRouteHandler",
+      // The Inbox stack merges two sources (cards and pending approvals) in one fixed order — not a
+      // generic list-items-in-a-database query.
       justification: "single-consumer-read",
     },
   ],

@@ -6,12 +6,11 @@ The protocol that delivered batches 1-39 is in this file's Git history.
 
 ## Program state
 
-The owner stopped the program on 2026-11-12: chains in flight were finished
-and nothing new was started. 59 of the 310 sources of sequences 40-74 are
-completed: 41 went into `develop` with pull request #2055, and 18 more were
-landed after the program continued from `origin/develop` at `8d17af6e7`. The
-other 251 sources stay open, approved and routed; a later program continues
-from `develop` with this protocol.
+The program runs again on the owner's instruction of 2026-11-12. It continues
+from `origin/develop` at `ee38bd456`, where 59 of the 310 sources of
+sequences 40-74 are completed: 41 went into `develop` with pull request
+#2055 and 18 with pull request #2056. The other 251 sources are open,
+approved and routed.
 
 Open and not to be started without a decision:
 
@@ -27,8 +26,9 @@ Open and not to be started without a decision:
   and creates no link for a target that holds a value, which the Task
   presupposes otherwise.
 
-Started and not finished, with nothing kept in the repository: gh-1778 and
-gh-1765.
+gh-1778 and gh-1765 were started before the stop of 2026-11-12 and not
+finished; nothing of them is in the repository, and they start again as any
+other open source.
 
 Controller: BB thread `thr_hc2df5gf4u`, on the owner's instruction of
 2026-11-10. Scope is backend only. The integration branch is

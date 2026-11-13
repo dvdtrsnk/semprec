@@ -120,7 +120,7 @@ describe("the Tasks 1.1.0 to 1.2.0 data migration (issue #1657)", () => {
     await admin?.end();
   });
 
-  it("is the one registered converter for tasks 1.1.0 to 1.2.0, next to the 1.0.0 to 1.1.0 one", async () => {
+  it("is the one registered converter for tasks 1.1.0 to 1.2.0, between the 1.0.0 to 1.1.0 and 1.2.0 to 1.3.0 ones", async () => {
     const registry = await loadFullModuleRegistry();
     const tasks = (await registry.getDataMigrations()).filter((entry) => entry.databaseKey === "tasks");
     expect(tasks).toEqual([
@@ -137,6 +137,13 @@ describe("the Tasks 1.1.0 to 1.2.0 data migration (issue #1657)", () => {
         fromVersion: "1.1.0",
         toVersion: "1.2.0",
         converterExport: "normalizeTaskDatesAndTimes",
+      },
+      {
+        moduleId: "systemDatabases",
+        databaseKey: "tasks",
+        fromVersion: "1.2.0",
+        toVersion: "1.3.0",
+        converterExport: "backfillTaskEffectiveDate",
       },
     ]);
     const { converter } = await definition();

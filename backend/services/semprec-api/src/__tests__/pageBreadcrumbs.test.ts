@@ -298,6 +298,14 @@ describe("mirrored titles reach breadcrumbs and the trash (issue #1715)", () => 
       headers: harness.headersA,
     });
     expect(trashed.status).toBe(200);
+    // The project's trash took its subpage with it (issue #1763). Restored on its own, the page is live below the
+    // trashed project.
+    const restored = await fetch(`${harness.baseUrl}/api/items/${trashedParent.pageItemId}/restore`, {
+      method: "POST",
+      headers: harness.headersA,
+    });
+    expect(restored.status).toBe(200);
+    expect((await get(`/api/items/${project}`)).status).toBe(404);
 
     for (const [page, title] of [
       [trashedParent, "Under a trashed parent"],

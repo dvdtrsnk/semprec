@@ -1,7 +1,9 @@
-// Trash and restore of subpages (issue #1723): the choke point's delete and restore hooks for Pages items, and the
-// walk over the live pages below an item. A trashed page takes its live subpages with it and leaves its parent's
-// document; a restored page brings back the subpages trashed with it and its block.
+// Trash and restore of subpages (issues #1723 and #1763): the choke point's delete and restore hooks for Pages items
+// and for the items that host pages, and the walk over the live pages below an item. A trashed page takes its live
+// subpages with it and leaves its parent's document; a restored page brings back the subpages trashed with it and its
+// block. A trashed item of any other database takes its live subpages with it, and its restore brings them back.
 // Constrained by: docs/adr/2026-11-10-trashed-pages-leave-the-parent-document-and-record-their-position.md,
+// docs/adr/2026-11-12-a-trashed-host-takes-its-subpages-into-its-deletion-epoch.md,
 // docs/adr/2026-10-29-subpages-are-items-of-a-hidden-pages-database.md,
 // docs/adr/2026-11-07-item-delete-and-restore-domain-hooks.md,
 // docs/adr/2026-11-08-restore-hooks-carry-exact-deletion-epochs.md
@@ -12,6 +14,7 @@ import { z } from "zod";
 import { MAX_INDENT, MIN_INDENT, deleteBlocks, getBlocksMap, insertBlocks, readPageBlocks } from "@semprec/block-model";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import type { ItemDeleteHook, ItemRestoreHook } from "../chokePoint/hooks.js";
+import { lockItemTrashEpoch } from "../chokePoint/itemsStore.js";
 import { itemDeleteWithClient, restoreItemWithClient } from "../chokePoint/itemTrash.js";
 import type { WriterIdentity, WriterKind } from "../chokePoint/writerKind.js";
 import { createActionQueueAffinity } from "../scheduler/actions.js";
@@ -51,7 +54,7 @@ function storedBlocks(doc: Y.Doc) {
 
 /**
  * The ids of the live Pages items whose `parentItemId` is one of `parentItemIds`, in id order. A read without row
- * locks, for the walk of `collectSubpageTree`; the delete hook selects its subpages with `lockLiveChildPageIds`.
+ * locks, for the walk of `collectSubpageTree`; the delete hooks select their subpages with `lockLiveChildPageIds`.
  */
 async function listLiveChildPageIds(
   client: PoolClient,
@@ -69,10 +72,11 @@ async function listLiveChildPageIds(
 
 /**
  * The ids of the live Pages items that name `parentItemId` as their parent, in id order. The same statement locks them
- * `FOR UPDATE`, so the trash of a page holds the row of every live subpage before it trashes the first of them. A
- * subpage whose own trash committed while this statement waited for its row is no longer live and is left out.
+ * `FOR UPDATE`, so the trash of a page or of a host holds the row of every live subpage before it trashes the first of
+ * them. A subpage whose own trash committed while this statement waited for its row is no longer live and is left out.
+ * `replacePageMarkdown` (#1765) takes the same locks before it loads the host's document, for the same reason.
  */
-async function lockLiveChildPageIds(
+export async function lockLiveChildPageIds(
   client: PoolClient,
   pagesDatabaseId: string,
   parentItemId: string,
@@ -165,6 +169,27 @@ function removePageBlock(doc: Y.Doc, pageId: string): void {
 }
 
 /**
+ * Moves the recorded neighbor of every `trashedPages` entry of `doc` whose neighbor is a key of `places` to the block
+ * `places` gives for it (`null`: the start of the document). A caller that deletes blocks of a page after pages were
+ * trashed from it (the replace of #1765 deletes the blocks its new Markdown no longer pairs) names, for each deleted
+ * block, the block after which its place now lies, so a restore still finds a neighbor and puts the page back at its
+ * place instead of at the end of the document. An entry that is not a valid position, or whose neighbor is not a key
+ * of `places`, is left as it is.
+ */
+export function repointTrashedPagePositions(doc: Y.Doc, places: ReadonlyMap<string, string | null>): void {
+  if (places.size === 0) return;
+  const trashedPages = doc.getMap<unknown>(TRASHED_PAGES_MAP_NAME);
+  for (const [pageId, stored] of [...trashedPages.entries()]) {
+    const parsed = trashedPagePositionSchema.safeParse(stored);
+    if (!parsed.success || parsed.data.afterBlockId === null) continue;
+    const place = places.get(parsed.data.afterBlockId);
+    if (place === undefined) continue;
+    const moved: TrashedPagePosition = { ...parsed.data, afterBlockId: place };
+    trashedPages.set(pageId, moved);
+  }
+}
+
+/**
  * Puts the `page` block of `pageId` back into `doc`, with `title` as its text, and deletes the page's `trashedPages`
  * entry. A document that already holds a block for the page gets no second one. With a recorded position the block
  * returns with its recorded indent, as the first block when it was the first, otherwise after its recorded neighbor;
@@ -193,10 +218,12 @@ function restorePageBlock(doc: Y.Doc, pageId: string, title: string): void {
  * the trash cascade's transaction, after the page's own soft delete, and acts on rows of the Pages system database
  * only:
  *
- * 1. the live direct subpages are selected and locked `FOR UPDATE` in one statement, in id order, and then each is
- *    trashed in that order through the choke point's `itemDeleteWithClient` with this trash's writer and acting user,
- *    so its own run of this hook trashes its subpages and removes its block in turn, and all of them share this
- *    transaction's `deleted_at`;
+ * 1. the live direct subpages are selected and locked `FOR UPDATE` in one statement, in id order, the page's own
+ *    deletion epoch is read at full precision (a page without live subpages skips that read), and then each subpage is
+ *    trashed in that order through the choke point's `itemDeleteWithClient` with this trash's writer and acting user
+ *    and with that epoch as its `deleted_at`, so its own run of this hook trashes its subpages and removes its block
+ *    in turn, and every page of the tree keeps the epoch of the page the trash started at. That epoch is this
+ *    transaction's `now()` unless the page joined an earlier one, as the subpage of a host does;
  * 2. the page's block is removed from the document of the item its `parentItemId` names, and its position is
  *    recorded there, in one document update authored by the writer kind (`user`, `ai_agent` or `system`).
  *
@@ -213,11 +240,17 @@ function restorePageBlock(doc: Y.Doc, pageId: string, title: string): void {
 export const pageItemDeleteHook: ItemDeleteHook = async (context) => {
   const { client, database, item } = context;
   if (!database.system || database.ownerModuleId !== PAGES_MODULE_ID) return;
-  for (const childId of await lockLiveChildPageIds(client, database.id, item.id)) {
+  const childIds = await lockLiveChildPageIds(client, database.id, item.id);
+  // The page's own epoch is this transaction's `now()` in a plain trash, and an earlier one when the page joined the
+  // epoch of its host (`hostItemDeleteHook`); the pages below it join the epoch the page has either way.
+  const deletedAtExact = childIds.length === 0 ? null : await lockItemTrashEpoch(client, database.id, item.id);
+  if (childIds.length > 0 && deletedAtExact === null) throw new Error(`Trashed page ${item.id} has no deletion epoch`);
+  for (const childId of childIds) {
     await itemDeleteWithClient(client, database.id, childId, {
       queueAffinity: createActionQueueAffinity(),
       actingUserId: context.actingUserId,
       writer: writerOf(context),
+      ...(deletedAtExact === null ? {} : { deletedAtExact }),
     });
   }
   const parentDocId = await parentPageDocId(client, item);
@@ -264,4 +297,79 @@ export const pageItemRestoreHook: ItemRestoreHook = async (context) => {
   await mutateDocWithClient(client, parentDocId, ORIGIN_BY_WRITER_KIND[context.writerKind], (doc) =>
     restorePageBlock(doc, item.id, typeof title === "string" ? title : ""),
   );
+};
+
+/**
+ * The choke point's delete hook for the subpages of a host (issue #1763), registered by `../domainWriteHooks.ts`. It
+ * runs inside the trash cascade's transaction, after the row's own soft delete, for every row the cascade trashes, and
+ * acts on a row of any database except the Pages system database, whose rows are `pageItemDeleteHook`'s:
+ *
+ * 1. the live Pages items whose `parentItemId` is the row are selected and locked `FOR UPDATE` in one statement, in id
+ *    order;
+ * 2. the row's own deletion epoch is read at full precision, and each of those subpages is trashed in that order
+ *    through the choke point's `itemDeleteWithClient` with this trash's writer and acting user and with that epoch as
+ *    its `deleted_at`. `hostItemRestoreHook` finds the subpages by that epoch, also when the host's trash joined an
+ *    earlier one. Each subpage's own run of `pageItemDeleteHook` trashes the live pages below it into the same
+ *    epoch and takes the subpage's block out of the host's document.
+ *
+ * The hook returns before its first statement for a row of the Pages database, after one read when the tenant has no
+ * Pages database, and after a second read when the row has no live subpage; that second read matches no row, so it
+ * locks none. An error from a nested trash rolls the whole trash of the host back. The nested trash takes the
+ * production queue routing, since a delete hook's context carries none.
+ *
+ * The cascade holds the host's row before this hook runs, and the hook locks the rows of all live subpages before it
+ * trashes the first of them, for the reason `pageItemDeleteHook` states: that trash ends with a lock on the host's
+ * document. docs/adr/2026-11-12-a-trashed-host-takes-its-subpages-into-its-deletion-epoch.md records the order.
+ */
+export const hostItemDeleteHook: ItemDeleteHook = async (context) => {
+  const { client, database, item } = context;
+  if (database.system && database.ownerModuleId === PAGES_MODULE_ID) return;
+  const pagesDatabase = await getDatabaseByModuleId(client, PAGES_MODULE_ID);
+  if (!pagesDatabase) return;
+  const childIds = await lockLiveChildPageIds(client, pagesDatabase.id, item.id);
+  if (childIds.length === 0) return;
+  const deletedAtExact = await lockItemTrashEpoch(client, database.id, item.id);
+  if (deletedAtExact === null) throw new Error(`Trashed host ${item.id} has no deletion epoch`);
+  for (const childId of childIds) {
+    await itemDeleteWithClient(client, pagesDatabase.id, childId, {
+      queueAffinity: createActionQueueAffinity(),
+      actingUserId: context.actingUserId,
+      writer: writerOf(context),
+      deletedAtExact,
+    });
+  }
+};
+
+/**
+ * The choke point's restore hook for the subpages of a host (issue #1763), registered by `../domainWriteHooks.ts`. It
+ * runs inside the restore cascade's transaction, after the row's own restore, for every row the cascade restores, and
+ * acts on a row of any database except the Pages system database, whose rows are `pageItemRestoreHook`'s. Every Pages
+ * item whose `parentItemId` is the row and that is in the Trash with exactly the row's deletion epoch
+ * (`deletedAtExact`, compared by Postgres) is selected and locked `FOR UPDATE` in one statement, in id order, and
+ * restored through the choke point's `restoreItemWithClient` with this restore's queue routing, writer and acting user.
+ * Each subpage's own run of `pageItemRestoreHook` restores the pages of that epoch below it and puts the subpage's
+ * block back into the host's document. The subpages are restored in descending id order, the reverse of the order
+ * `hostItemDeleteHook` trashed them in, for the reason `pageItemRestoreHook` states. A subpage trashed at another
+ * instant stays in the Trash.
+ *
+ * The hook returns before its first statement for a row of the Pages database, after one read when the tenant has no
+ * Pages database, and after a second read when the row has no subpage of that epoch. An error from a nested restore
+ * rolls the whole restore of the host back.
+ */
+export const hostItemRestoreHook: ItemRestoreHook = async (context) => {
+  const { client, database, item } = context;
+  if (database.system && database.ownerModuleId === PAGES_MODULE_ID) return;
+  const pagesDatabase = await getDatabaseByModuleId(client, PAGES_MODULE_ID);
+  if (!pagesDatabase) return;
+  const epochChildIds = await lockChildPageIdsOfEpoch(client, pagesDatabase.id, item.id, context.deletedAtExact);
+  for (const childId of [...epochChildIds].reverse()) {
+    await restoreItemWithClient(
+      client,
+      pagesDatabase.id,
+      childId,
+      context.queueAffinity,
+      context.actingUserId,
+      writerOf(context),
+    );
+  }
 };

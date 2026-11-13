@@ -509,10 +509,23 @@ describe("page.rename (issue #1725)", () => {
   it("writes the block of a parent that is in the trash, so the titles agree when it is restored", async () => {
     const { project, checklist } = await projectWithChecklist();
     const projectDatabaseId = await databaseIdOf(project);
+    const pagesDatabaseId = await databaseIdOf(checklist.pageItemId);
     const trashed = await runInTenant(tenant, () =>
       createChokePoint(runtime).softDeleteItem(projectDatabaseId, project),
     );
     expect(trashed).not.toBeNull();
+    // The project's trash took the page with it (issue #1763). Restored on its own, the page is live below the
+    // trashed project, with its block back in the project's notes.
+    const restored = await runInTenant(tenant, () =>
+      createChokePoint(runtime).restoreItem(pagesDatabaseId, checklist.pageItemId),
+    );
+    expect(restored?.deletedAt).toBeNull();
+    const { rows } = await inTenant((client) =>
+      client.query<{ trashed: boolean }>(`SELECT deleted_at IS NOT NULL AS trashed FROM items WHERE id = $1`, [
+        project,
+      ]),
+    );
+    expect(rows[0]?.trashed).toBe(true);
 
     const renamed = await rename(checklist.pageItemId, "Release plan");
 

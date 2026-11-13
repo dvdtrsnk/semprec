@@ -17,6 +17,7 @@
   "approval.itemDelete": "Delete \"{itemName}\" from \"{databaseName}\" ({databaseKey}); {linkedCount} linked items, retained for {restorableDays} days. {projectName}",
   "approval.itemPatch": "Update \"{itemName}\" in \"{databaseName}\" ({databaseKey}).",
   "approval.changesSeries": "Change the recurrence of \"{taskName}\" from {fromRule} to {toRule}.",
+  "approval.breaksLink": "Set {propertyName} of \"{itemName}\" ({databaseKey}) to \"{newValueName}\". This ends the link to \"{sourceItemName}\" ({sourceDatabaseKey}); the item stops following it.",
   "approval.relationPut": "Link \"{fromItemName}\" ({fromDatabaseKey}) to \"{toItemName}\" ({toDatabaseKey}).",
   "approval.relationSet": "Change relation \"{propertyName}\" on \"{fromItemName}\" ({fromDatabaseKey}).",
   "approval.propertyDelete": "Delete \"{propertyName}\" from \"{databaseName}\" ({databaseKey}); {affectedCount} items affected.",
@@ -25,6 +26,7 @@
   "approval.relationDelete": "Remove the link from \"{fromItemName}\" ({fromDatabaseKey}) to \"{toItemName}\" ({toDatabaseKey}).",
   "approval.pageRestore": "Restore \"{itemName}\" in \"{databaseName}\" ({databaseKey}).",
   "approval.mcpInvoke": "Call \"{toolName}\" on MCP server \"{serverName}\".",
+  "approval.moduleTool": "Run the module tool \"{toolName}\".",
   "notification.body.canUndo": "This can be undone later.",
   "notification.body.cannotUndo": "Semp cannot undo this action."
 }

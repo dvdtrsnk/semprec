@@ -17,6 +17,10 @@ import {
 } from "../library/libraryMetadataActions.js";
 import {
   BOOKS_LIBRARY_CONTRACT,
+  COVER_OVERRIDE_KEY,
+  COVER_REMOVED_KEY,
+  COVER_SOURCE_KEY,
+  LIBRARY_COVER_SOURCES,
   MOVIES_LIBRARY_CONTRACT,
   type LibraryModuleContract,
 } from "../library/libraryModuleContract.js";
@@ -47,6 +51,26 @@ export function ratingFilterPresetsConfig(databaseKey: typeof BOOKS_MODULE_ID | 
     })),
     emptyPreset: { labelKey: `property.${databaseKey}.rating.preset.none`, matchZero: true },
   };
+}
+
+/**
+ * The user-owned cover properties of Books and Movies (issue #1793). The system-owned `cover` has one writer, the
+ * library metadata job, so the cover a user chooses or removes lives in these three: the cover shown is nothing
+ * when `coverRemoved`, else `coverOverride` when set, else `cover`. `libraryCoverOverrideCutoverMigration.ts`
+ * adds the same properties to a tenant seeded before them.
+ */
+function coverOverrideSpecs(): PropSpec[] {
+  return [
+    { key: COVER_OVERRIDE_KEY, name: null, type: "image", owner: "user" },
+    { key: COVER_REMOVED_KEY, name: null, type: "checkbox", owner: "user" },
+    {
+      key: COVER_SOURCE_KEY,
+      name: null,
+      type: "select",
+      owner: "user",
+      config: selectConfig([...LIBRARY_COVER_SOURCES]),
+    },
+  ];
 }
 
 interface PropSpec {
@@ -140,6 +164,7 @@ export async function seedLibraryModuleInTransaction(
     { key: "isbn", name: null, type: "text", owner: "user" },
     // { blobId } over the shared `blobs` table (0004_ten_databases.sql) — coverKey.
     { key: "cover", name: null, type: "image", owner: "system" },
+    ...coverOverrideSpecs(),
     { key: "rating", name: null, type: "number", owner: "user", config: ratingFilterPresetsConfig(BOOKS_MODULE_ID) },
     {
       key: "status",
@@ -170,6 +195,7 @@ export async function seedLibraryModuleInTransaction(
     { key: "type", name: null, type: "select", owner: "user", config: selectConfig(["movie", "series"]) },
     // { blobId } over the shared `blobs` table (0004_ten_databases.sql) — coverKey.
     { key: "cover", name: null, type: "image", owner: "system" },
+    ...coverOverrideSpecs(),
     { key: "rating", name: null, type: "number", owner: "user", config: ratingFilterPresetsConfig(MOVIES_MODULE_ID) },
     { key: "secondaryRating", name: null, type: "number", owner: "system" },
     { key: "sourceUrl", name: null, type: "url", owner: "system" },

@@ -8,6 +8,7 @@ import {
   registerItemDeleteApprovalGuard,
   registerItemPreWriteTransform,
   registerItemUpdateHook,
+  registerItemUpdatePreLockHook,
   registerRelationEdgeChangedHook,
   registerAutomationBatchReader,
   registerItemDeleteHook,
@@ -18,10 +19,12 @@ import {
   runRelationEdgeChangedHooks,
   runItemPreWriteTransforms,
   runItemUpdateHooks,
+  runItemUpdatePreLockHooks,
   type ItemDeleteHookContext,
   type ItemPreWriteTransformContext,
   type ItemRestoreHookContext,
   type ItemUpdateHookContext,
+  type ItemUpdatePreLockHookContext,
   type RelationEdgeChangedHookContext,
 } from "../hooks.js";
 import { ValidationError } from "../../errors.js";
@@ -92,6 +95,7 @@ const CONTEXT: ItemUpdateHookContext = {
     icon: null,
     color: null,
     overviewHidden: false,
+    sensitive: false,
     archivedAt: null,
   },
   item: { id: "item", databaseId: "db", properties: {}, computed: {}, createdAt: "", updatedAt: "", deletedAt: null },
@@ -274,6 +278,87 @@ describe("chokePoint/hooks item pre-write transform registry", () => {
     clearHooksForTests();
 
     expect(hasItemPreWriteTransform("events")).toBe(false);
+  });
+});
+
+const PRE_LOCK_CONTEXT: ItemUpdatePreLockHookContext = {
+  client: offlineClient,
+  database: CONTEXT.database,
+  itemId: "item",
+  patch: { title: "a" },
+};
+
+describe("chokePoint/hooks item update pre-lock registry", () => {
+  beforeEach(() => {
+    clearHooksForTests();
+  });
+
+  it("runs nothing for a module that registered no hook", async () => {
+    await expect(runItemUpdatePreLockHooks("events", PRE_LOCK_CONTEXT)).resolves.toBeUndefined();
+  });
+
+  it("passes the exact context to a module's hooks, in registration order", async () => {
+    const seen: Array<[string, ItemUpdatePreLockHookContext]> = [];
+    registerItemUpdatePreLockHook("events", async (context) => {
+      seen.push(["first", context]);
+    });
+    registerItemUpdatePreLockHook("events", async (context) => {
+      seen.push(["second", context]);
+    });
+
+    await runItemUpdatePreLockHooks("events", PRE_LOCK_CONTEXT);
+
+    expect(seen.map(([name]) => name)).toEqual(["first", "second"]);
+    expect(seen.every(([, context]) => context === PRE_LOCK_CONTEXT)).toBe(true);
+  });
+
+  it("runs a hook registered twice only once", async () => {
+    let calls = 0;
+    const hook = async () => {
+      calls += 1;
+    };
+    registerItemUpdatePreLockHook("events", hook);
+    registerItemUpdatePreLockHook("events", hook);
+
+    await runItemUpdatePreLockHooks("events", PRE_LOCK_CONTEXT);
+
+    expect(calls).toBe(1);
+  });
+
+  it("keeps each module's hooks apart", async () => {
+    let calls = 0;
+    registerItemUpdatePreLockHook("events", async () => {
+      calls += 1;
+    });
+
+    await runItemUpdatePreLockHooks("tasks", PRE_LOCK_CONTEXT);
+
+    expect(calls).toBe(0);
+  });
+
+  it("propagates the first rejection and runs no later hook of the module", async () => {
+    let laterRan = false;
+    registerItemUpdatePreLockHook("events", async () => {
+      throw new Error("boom");
+    });
+    registerItemUpdatePreLockHook("events", async () => {
+      laterRan = true;
+    });
+
+    await expect(runItemUpdatePreLockHooks("events", PRE_LOCK_CONTEXT)).rejects.toThrow("boom");
+    expect(laterRan).toBe(false);
+  });
+
+  it("is cleared by clearHooksForTests", async () => {
+    let calls = 0;
+    registerItemUpdatePreLockHook("events", async () => {
+      calls += 1;
+    });
+
+    clearHooksForTests();
+    await runItemUpdatePreLockHooks("events", PRE_LOCK_CONTEXT);
+
+    expect(calls).toBe(0);
   });
 });
 

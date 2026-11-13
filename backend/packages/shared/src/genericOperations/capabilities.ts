@@ -60,7 +60,7 @@ const destructive = (requiresCapability: CapabilityId, reversible: boolean): Ope
 });
 
 /**
- * Exhaustive over the 44 literal operation names, capability and approval/risk metadata checked
+ * Exhaustive over the 46 literal operation names, capability and approval/risk metadata checked
  * together in one object literal per operation: assigning this object literal to a type with
  * exactly these keys is what makes an operation missing (or an extra, misspelled one) a compile
  * error rather than a runtime gap.
@@ -69,6 +69,8 @@ export const OPERATION_METADATA: { [K in GenericOperationName]: OperationMetadat
   "database.list": nonDestructive("core.database.read", "read"),
   "database.get": nonDestructive("core.database.read", "read"),
   "database.query": nonDestructive("core.database.read", "read"),
+  // Counts the items of the database, so it takes the item-read capability, as `item.count` does (issue #1759).
+  "database.facets": nonDestructive("core.item.read", "read"),
   "database.create": nonDestructive("core.database.write", "write"),
   "database.patch": nonDestructive("core.database.write", "write"),
   "database.archive": destructive("core.database.write", true),
@@ -116,6 +118,11 @@ export const OPERATION_METADATA: { [K in GenericOperationName]: OperationMetadat
   "page.rename": nonDestructive("core.item.write", "write"),
   // Additive: it destroys no content and its blocks carry the caller as `created_by` (docs/adr/2026-10-29-agent-page-write-policy.md).
   "page.insert": nonDestructive("core.page.write", "write"),
+  // Discards the current body and trashes the subpages whose links vanished; the trash is restorable and an earlier
+  // version can be restored, so `reversible`. docs/adr/2026-10-28-page-operation-family.md and
+  // docs/adr/2026-10-29-agent-page-write-policy.md classify it destructive. It is a REST-only operation until #1844
+  // wires the approval of page operations (`REST_ONLY_OPERATION_NAMES`), so no agent call reaches it unapproved.
+  "page.replace": destructive("core.page.write", true),
   // Restorable by another restore to an earlier instant, so `reversible` (issue #1617).
   "page.restoreVersion": destructive("core.page.write", true),
 };

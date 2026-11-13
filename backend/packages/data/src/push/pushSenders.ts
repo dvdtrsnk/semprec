@@ -1,7 +1,18 @@
+import type { NotificationKind } from "../notifications/notificationKinds.js";
 import type { ApnsEnvironment } from "./types.js";
 
 /** The APNs `interruption-level` the device should use for this push. Web Push ignores it. */
 export type NotificationInterruptionLevel = "passive" | "active" | "time-sensitive";
+
+/**
+ * What only an APNs push carries beyond the shared payload (issue #1831): the category the app registered
+ * its notification actions against and the id of the request those actions decide. Web Push ignores it.
+ * `interruptionLevel` of the payload stays where issue #1443 put it.
+ */
+export interface NotificationApnsFields {
+  category?: string;
+  approvalRequestId?: string;
+}
 
 export interface NotificationPushPayload {
   notificationId: string;
@@ -11,6 +22,12 @@ export interface NotificationPushPayload {
   linkHref: string | null;
   /** Decided by the fanout job from the user's preferences and the kind's policy (issue #1443). */
   interruptionLevel?: NotificationInterruptionLevel;
+  /** The notification's `source_table` and `source_id` (issue #1829): what the thing it is about is called. */
+  sourceTable: string;
+  sourceId: string;
+  kind: NotificationKind;
+  /** Set by the fanout job for an approval notification only (issue #1831). */
+  apns?: NotificationApnsFields;
 }
 
 export interface WebPushTarget {
@@ -49,4 +66,14 @@ export type PushSendResult =
 export interface PushSenders {
   sendWebPush: (target: WebPushTarget, payload: NotificationPushPayload) => Promise<PushSendResult>;
   sendApns: (target: ApnsTarget, payload: NotificationPushPayload) => Promise<PushSendResult>;
+}
+
+/**
+ * The seam between the `pushDismiss` job and the network (issue #1826), shaped like `PushSenders`. A dismiss
+ * names the notifications whose visible push the device should remove and has no other content. A result
+ * means what it means for `PushSenders`.
+ */
+export interface PushDismissSenders {
+  sendWebPushDismiss: (target: WebPushTarget, notificationIds: readonly string[]) => Promise<PushSendResult>;
+  sendApnsDismiss: (target: ApnsTarget, notificationIds: readonly string[]) => Promise<PushSendResult>;
 }

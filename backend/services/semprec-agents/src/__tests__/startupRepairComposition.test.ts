@@ -162,7 +162,7 @@ describe("semprec-agents startup repair (issue #642)", () => {
       [[orphan.id, mcpRun.id]],
     );
     const byId = new Map(runs.map((r) => [r.id, r]));
-    expect(byId.get(orphan.id)).toEqual({ id: orphan.id, status: "error", result: "interrupted_by_restart" });
+    expect(byId.get(orphan.id)).toEqual({ id: orphan.id, status: "error", result: "interrupted" });
     expect(byId.get(mcpRun.id)).toEqual({ id: mcpRun.id, status: "running", result: null });
 
     const { rows: orphanEvents } = await pool.query<{

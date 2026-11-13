@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import type { ModuleRegistry } from "@semprec/module-registry";
 import { createLogger } from "@semprec/shared";
 import { withTransaction } from "../db/pool.js";
 import { getAgentRun } from "../agentRuns/agentRunsStore.js";
@@ -6,6 +7,7 @@ import {
   claimApprovalRequestExecution,
   getApprovalRequest,
   isGenericOperationApprovalRequestPayload,
+  isModuleToolApprovalRequestPayload,
   recordApprovalRequestOutcome,
   settleStaleApprovalRequestClaim,
   type ApprovalRequest,
@@ -15,6 +17,8 @@ import {
 import { resolveGrantedMcpTool } from "./mcpToolInvocation.js";
 import { executeMcpInvocation } from "./mcpToolExecution.js";
 import { postApprovalOutcomeMessage } from "./approvalOutcomeMessage.js";
+import { publishApprovalRequestChange } from "./approvalRequestRealtime.js";
+import { executeClaimedModuleToolApproval } from "./moduleToolApprovalExecution.js";
 
 const logger = createLogger("mcp");
 
@@ -83,11 +87,17 @@ export interface HandleApprovalRequestExecuteInput {
  * `projectItemId`, no resolved target, or a resolved target whose server or tool no longer matches
  * the snapshotted payload are all treated identically: recorded as a `conflict` outcome, no
  * connection opened.
+ *
+ * A moduleTool payload (issue #1791) follows the same claim, stale-claim and outcome-guard steps as
+ * an mcpInvoke payload; once claimed it is handed to `executeClaimedModuleToolApproval`, which
+ * resolves the tool through `moduleRegistry`, compares the snapshot and runs the handler at most
+ * once. Without a `moduleRegistry` the request ends in an error outcome and nothing runs.
  */
 export async function handleApprovalRequestExecuteTask(
   pool: Pool,
   input: HandleApprovalRequestExecuteInput,
   genericOperationApprovalReplay?: GenericOperationApprovalReplay,
+  moduleRegistry?: ModuleRegistry,
 ): Promise<void> {
   const request = await withTransaction(pool, (client) => getApprovalRequest(client, input.approvalRequestId));
   if (!request) return;
@@ -104,7 +114,10 @@ export async function handleApprovalRequestExecuteTask(
         error: true,
         result: "No generic-operation approval replay handler is configured for this worker.",
       });
-      if (changed) await postApprovalOutcomeMessage(client, request, "conflict");
+      if (changed) {
+        await postApprovalOutcomeMessage(client, request, "conflict");
+        await publishApprovalRequestChange(client, request);
+      }
       return changed;
     });
     if (!recorded) {
@@ -126,7 +139,10 @@ export async function handleApprovalRequestExecuteTask(
         input.approvalRequestId,
         MCP_APPROVAL_CLAIM_STALE_AFTER_MS,
       );
-      if (settled === "settled") await postApprovalOutcomeMessage(client, request, "conflict");
+      if (settled === "settled") {
+        await postApprovalOutcomeMessage(client, request, "conflict");
+        await publishApprovalRequestChange(client, request);
+      }
       return settled;
     });
     if (verdict === "settled") {
@@ -139,6 +155,10 @@ export async function handleApprovalRequestExecuteTask(
     if (verdict === "in_flight") {
       throw new Error(`approval request ${input.approvalRequestId} execution claim is still in flight; retrying later`);
     }
+    return;
+  }
+  if (isModuleToolApprovalRequestPayload(claimed.payload)) {
+    await executeClaimedModuleToolApproval(pool, moduleRegistry, claimed, claimed.payload);
     return;
   }
   // `isGenericOperationApprovalRequestPayload(claimed.payload)` can never be true here — the
@@ -176,7 +196,10 @@ export async function handleApprovalRequestExecuteTask(
 
   const recorded = await withTransaction(pool, async (client) => {
     const changed = await recordApprovalRequestOutcome(client, claimed.id, outcome);
-    if (changed) await postApprovalOutcomeMessage(client, claimed, outcome.error ? "conflict" : "executed");
+    if (changed) {
+      await postApprovalOutcomeMessage(client, claimed, outcome.error ? "conflict" : "executed");
+      await publishApprovalRequestChange(client, claimed);
+    }
     return changed;
   });
   if (!recorded) {

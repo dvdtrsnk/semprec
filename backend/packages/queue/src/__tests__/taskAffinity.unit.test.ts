@@ -59,6 +59,24 @@ describe("CORE_TASK_AFFINITY", () => {
     expect(TASK_TENANCY[CORE_TASK_NAMES.DERIVED_VALUES_INVALIDATE]).toBe("tenant");
   });
 
+  it("declares the tenant-scoped pushDismiss task in the API set (issue #1826)", () => {
+    expect(CORE_TASK_NAMES.PUSH_DISMISS).toBe("pushDismiss");
+    expect(CORE_TASK_AFFINITY[CORE_TASK_NAMES.PUSH_DISMISS]).toBe("api");
+    expect(TASK_TENANCY[CORE_TASK_NAMES.PUSH_DISMISS]).toBe("tenant");
+  });
+
+  it("declares the system-scoped pageOrphanSweep task in the API set (issue #1749)", () => {
+    expect(CORE_TASK_NAMES.PAGE_ORPHAN_SWEEP).toBe("pageOrphanSweep");
+    expect(CORE_TASK_AFFINITY[CORE_TASK_NAMES.PAGE_ORPHAN_SWEEP]).toBe("api");
+    expect(TASK_TENANCY[CORE_TASK_NAMES.PAGE_ORPHAN_SWEEP]).toBe("system");
+  });
+
+  it("declares the tenant-scoped taskHostEventEnded task in the API set (issue #1782)", () => {
+    expect(CORE_TASK_NAMES.TASK_HOST_EVENT_ENDED).toBe("taskHostEventEnded");
+    expect(CORE_TASK_AFFINITY[CORE_TASK_NAMES.TASK_HOST_EVENT_ENDED]).toBe("api");
+    expect(TASK_TENANCY[CORE_TASK_NAMES.TASK_HOST_EVENT_ENDED]).toBe("tenant");
+  });
+
   it("no longer declares the retired credentialReencryptSweep (issue #1069)", () => {
     expect(Object.values(CORE_TASK_NAMES)).not.toContain("credentialReencryptSweep");
     expect(Object.keys(CORE_TASK_AFFINITY)).not.toContain("credentialReencryptSweep");

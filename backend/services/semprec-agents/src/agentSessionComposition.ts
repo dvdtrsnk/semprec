@@ -1,4 +1,8 @@
-import { createCollectionMetadataResolver } from "@semprec/data";
+import {
+  createCollectionMetadataResolver,
+  createModuleToolApprovalRequest,
+  describeModuleToolFailure,
+} from "@semprec/data";
 import type { Pool } from "pg";
 import type { AgentTool, StreamFn } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
@@ -152,13 +156,20 @@ function isArgumentsObject(value: unknown): value is Record<string, unknown> {
 
 type ComposedAgentTool = AgentTool & { toolEventMetadata?: ToolEventMetadata };
 
+/** What the model reads for a module tool call that was deferred to a human; shaped like the MCP tool's. */
+function moduleToolPendingApprovalText(toolName: string, approvalRequestId: string): string {
+  return `Tool '${toolName}' requires human approval before it can run. Approval request ${approvalRequestId} has been created and is awaiting a decision; this call has not been executed.`;
+}
+
 async function createModuleTools(
   pool: Pool,
   registry: ModuleRegistry,
   runId: string,
   projectItemId: string,
 ): Promise<ComposedAgentTool[]> {
-  const definitions = await resolveModuleAgentToolsForRun(pool, registry, runId, projectItemId);
+  const definitions = await resolveModuleAgentToolsForRun(pool, registry, runId, projectItemId, undefined, {
+    includeApprovalGated: true,
+  });
   return definitions.map(
     (definition) =>
       ({
@@ -166,14 +177,37 @@ async function createModuleTools(
         label: definition.name,
         description: `Semprec module tool '${definition.name}'.`,
         parameters: Type.Unsafe(definition.argumentSchema),
-        async execute(_toolCallId, params) {
+        async execute(toolCallId, params) {
           if (!definition.acceptsArguments(params))
             return { content: [{ type: "text", text: "Invalid tool arguments." }], details: { error: true } };
           try {
+            if (definition.requiresApproval) {
+              // Nothing runs here: the handler runs only after a person approves the request (issue #1791).
+              if (!isArgumentsObject(params))
+                return {
+                  content: [{ type: "text", text: "Tool arguments must be a JSON object." }],
+                  details: { error: true },
+                };
+              const request = await createModuleToolApprovalRequest(pool, {
+                agentRunId: runId,
+                toolName: definition.name,
+                riskClass: definition.riskClass,
+                args: params,
+                snapshotSha256: await definition.snapshotOf(params),
+                toolCallId,
+              });
+              return {
+                content: [{ type: "text", text: moduleToolPendingApprovalText(definition.name, request.id) }],
+                details: { error: false, approvalRequestId: request.id },
+              };
+            }
             const result = await definition.invoke(params);
             return { content: [{ type: "text", text: result.result }], details: { error: result.error } };
-          } catch {
-            logger.warn({ toolName: definition.name }, "Module tool execution failed");
+          } catch (err) {
+            logger.warn(
+              { ...describeModuleToolFailure(err), toolName: definition.name, runId },
+              "Module tool execution failed",
+            );
             return { content: [{ type: "text", text: "Module tool failed." }], details: { error: true } };
           }
         },

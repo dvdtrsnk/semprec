@@ -3,11 +3,13 @@ import type { CollectionMetadataResolver } from "@semprec/data";
 import { createServer, type Server } from "node:http";
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import {
+  createRuntimeRolePool,
   createTenantZeroUser,
   createTestProjectItem,
+  createTestTenant,
   getTenantZeroId,
   getTestPool,
   resetDatabase,
@@ -17,6 +19,7 @@ import {
   createChokePoint,
   createUser,
   createViewTypeRegistry,
+  getAgentRun,
   hashPassword,
   login,
   mintMcpRunCredential,
@@ -25,7 +28,7 @@ import {
   type ChokePoint,
 } from "@semprec/data";
 import { createGenericOperationGateway, type GenericOperationGateway } from "@semprec/application";
-import { CAPABILITY_IDS, currentTenantScope, type CapabilityId } from "@semprec/shared";
+import { CAPABILITY_IDS, currentTenantScope, runAsSystem, runInTenant, type CapabilityId } from "@semprec/shared";
 import { createMcpRequestListener } from "../mcpHandler.js";
 import { SESSION_COOKIE_NAME } from "../../authHandler.js";
 
@@ -255,7 +258,19 @@ describe("createMcpRequestListener (issue #220)", () => {
       expect(
         JSON.stringify(stableSessions(afterHuman.sessions)) === JSON.stringify(stableSessions(before.sessions)),
       ).toBe(true);
-      expect(JSON.stringify(afterRun) === JSON.stringify(afterHuman)).toBe(true);
+      // The run credential's client named its own run (issue #1788); nothing else changed.
+      const withClientName = (value: unknown): unknown => {
+        if (!Array.isArray(value)) throw new Error("Expected run snapshot array");
+        return value.map((row: unknown) => {
+          if (typeof row !== "object" || row === null || Array.isArray(row)) throw new Error("Invalid run row");
+          if (!("id" in row) || typeof row.id !== "string") throw new Error("Missing run id");
+          return row.id === credential.run.id ? { ...row, mcp_client_name: "c" } : row;
+        });
+      };
+      expect(
+        JSON.stringify(afterRun) === JSON.stringify({ ...afterHuman, runs: withClientName(afterHuman.runs) }),
+      ).toBe(true);
+      expect(await getAgentRun(pool, credential.run.id)).toMatchObject({ mcpClientName: "c" });
     });
 
     it.each(["2025-06-18", "2025-03-26", "2024-11-05"])("echoes the supported version %s", async (version) => {
@@ -334,6 +349,141 @@ describe("createMcpRequestListener (issue #220)", () => {
 
       expect(res.status).toBe(200);
       expect(await count()).toBe(before);
+    });
+
+    describe("client name of a run credential (issue #1788)", () => {
+      const initializeAs = (clientInfo: unknown) => ({
+        jsonrpc: "2.0",
+        id: 7,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          ...(clientInfo === undefined ? {} : { clientInfo }),
+        },
+      });
+
+      async function mintRun(): Promise<{ headers: { Authorization: string }; runId: string }> {
+        const userId = await tenantZeroUserId();
+        const projectItemId = await createTestProjectItem(pool);
+        const minted = await withTransaction(pool, (client) =>
+          mintMcpRunCredential(client, { projectItemId, capabilities: ["core.item.read"], userId }),
+        );
+        return { headers: { Authorization: `Bearer ${minted.token}` }, runId: minted.run.id };
+      }
+
+      async function storedName(runId: string): Promise<string | null> {
+        const run = await getAgentRun(pool, runId);
+        if (!run) throw new Error("The run is missing");
+        return run.mcpClientName;
+      }
+
+      it("stores the client's name on the credential's run and answers the handshake", async () => {
+        const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+        servers.push(server);
+        const { headers, runId } = await mintRun();
+        const other = await mintRun();
+
+        const res = await rpc(baseUrl, headers, initializeAs({ name: "Claude Desktop", version: "1.2.3" }));
+
+        expect(res.status).toBe(200);
+        const body: unknown = await res.json();
+        expect(body).toMatchObject({
+          id: 7,
+          result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "semprec" } },
+        });
+        expect(await storedName(runId)).toBe("Claude Desktop");
+        expect(await storedName(other.runId)).toBeNull();
+      });
+
+      it("replaces the name with the one of a second initialize", async () => {
+        const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+        servers.push(server);
+        const { headers, runId } = await mintRun();
+        await rpc(baseUrl, headers, initializeAs({ name: "Claude Desktop" }));
+
+        const res = await rpc(baseUrl, headers, initializeAs({ name: "Cursor" }));
+
+        expect(res.status).toBe(200);
+        expect(await storedName(runId)).toBe("Cursor");
+      });
+
+      it("stores a name longer than 64 characters cut to 64", async () => {
+        const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+        servers.push(server);
+        const { headers, runId } = await mintRun();
+
+        const res = await rpc(baseUrl, headers, initializeAs({ name: `${"n".repeat(64)}tail` }));
+
+        expect(res.status).toBe(200);
+        expect(await storedName(runId)).toBe("n".repeat(64));
+      });
+
+      it.each([
+        ["control characters", "\u0000\u0007\u009f"],
+        ["whitespace", " \t\n "],
+      ])("leaves NULL for a name of only %s", async (_label, name) => {
+        const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+        servers.push(server);
+        const { headers, runId } = await mintRun();
+
+        const res = await rpc(baseUrl, headers, initializeAs({ name }));
+
+        expect(res.status).toBe(200);
+        expect(await storedName(runId)).toBeNull();
+      });
+
+      it.each([
+        ["no clientInfo", undefined],
+        ["a null clientInfo", null],
+        ["a clientInfo that is no object", "Claude Desktop"],
+        ["a clientInfo without a name", { version: "1" }],
+        ["a name that is no string", { name: 42 }],
+      ])("writes nothing for %s and answers the handshake", async (_label, clientInfo) => {
+        const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+        servers.push(server);
+        const { headers, runId } = await mintRun();
+        await rpc(baseUrl, headers, initializeAs({ name: "Earlier Client" }));
+
+        const res = await rpc(baseUrl, headers, initializeAs(clientInfo));
+
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({ result: { protocolVersion: "2025-06-18" } });
+        expect(await storedName(runId)).toBe("Earlier Client");
+      });
+
+      it("writes nothing when the handshake is refused for its params", async () => {
+        const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+        servers.push(server);
+        const { headers, runId } = await mintRun();
+
+        const res = await rpc(baseUrl, headers, {
+          jsonrpc: "2.0",
+          id: 7,
+          method: "initialize",
+          params: { clientInfo: { name: "Claude Desktop" } },
+        });
+
+        expect(await res.json()).toMatchObject({ error: { code: -32602 } });
+        expect(await storedName(runId)).toBeNull();
+      });
+
+      it("names no run for a human session and answers the handshake", async () => {
+        const { server, baseUrl } = await startServer(ALL_CAPABILITIES);
+        servers.push(server);
+        const named = await mintRun();
+        const unnamed = await mintRun();
+        await rpc(baseUrl, named.headers, initializeAs({ name: "Earlier Client" }));
+
+        const res = await rpc(baseUrl, await authHeader(), initializeAs({ name: "Claude Desktop" }));
+
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({
+          result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "semprec" } },
+        });
+        expect(await storedName(named.runId)).toBe("Earlier Client");
+        expect(await storedName(unnamed.runId)).toBeNull();
+      });
     });
   });
 
@@ -639,5 +789,96 @@ describe("createMcpRequestListener (issue #220)", () => {
         expect((await listTools(baseUrl, suspended.token)).status).toBe(200);
       });
     });
+  });
+});
+
+describe("the MCP client name under the runtime role (issue #1788)", () => {
+  let adminPool: Pool;
+  let runtimePool: Pool;
+  let server: Server;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    adminPool = getTestPool();
+    await resetDatabase(adminPool);
+    runtimePool = await createRuntimeRolePool(adminPool, "semprec_data");
+    const role = await runAsSystem("test:role", () =>
+      runtimePool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      ),
+    );
+    expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+    server = createServer(
+      await createMcpRequestListener(
+        runtimePool,
+        createGenericOperationGateway(runtimePool, testMetadataResolver),
+        ALL_CAPABILITIES,
+        new ModuleRegistry(() => new Set()),
+      ),
+    );
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+    baseUrl = `http://127.0.0.1:${address.port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server?.close(() => resolve()));
+    await runtimePool?.end();
+    await adminPool?.end();
+  });
+
+  it("lets a run credential name its own run only, in its own tenant", async () => {
+    const tenantA = await createTestTenant(adminPool);
+    const tenantB = await createTestTenant(adminPool);
+    // A tenant has one user, so both runs of tenant A act for the same one.
+    async function createUserOf(tenantId: string): Promise<string> {
+      const user = await createUser(adminPool, {
+        tenantId,
+        email: `${randomUUID()}@example.test`,
+        passwordHash: await hashPassword(PASSWORD),
+      });
+      return user.id;
+    }
+    async function mintIn(tenantId: string, userId: string): Promise<{ token: string; runId: string }> {
+      return runInTenant(tenantId, async () => {
+        const projectItemId = await createTestProjectItem(runtimePool);
+        const minted = await withTransaction(runtimePool, (client) =>
+          mintMcpRunCredential(client, { projectItemId, capabilities: ["core.item.read"], userId }),
+        );
+        return { token: minted.token, runId: minted.run.id };
+      });
+    }
+    const initializeWith = (token: string, name: string) =>
+      rpc(
+        baseUrl,
+        { Authorization: `Bearer ${token}` },
+        {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name } },
+        },
+      );
+    async function storedName(tenantId: string, runId: string): Promise<string | null> {
+      const run = await runInTenant(tenantId, () => getAgentRun(runtimePool, runId));
+      if (!run) throw new Error("The run is missing in its own tenant");
+      return run.mcpClientName;
+    }
+    const userA = await createUserOf(tenantA);
+    const own = await mintIn(tenantA, userA);
+    const sibling = await mintIn(tenantA, userA);
+    const foreign = await mintIn(tenantB, await createUserOf(tenantB));
+    expect((await initializeWith(foreign.token, "Tenant B Client")).status).toBe(200);
+
+    const res = await initializeWith(own.token, "Claude Desktop");
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ result: { protocolVersion: "2025-06-18" } });
+    expect(await storedName(tenantA, own.runId)).toBe("Claude Desktop");
+    expect(await storedName(tenantA, sibling.runId)).toBeNull();
+    expect(await storedName(tenantB, foreign.runId)).toBe("Tenant B Client");
+    // Tenant A's scope does not show tenant B's run at all.
+    expect(await runInTenant(tenantA, () => getAgentRun(runtimePool, foreign.runId))).toBeNull();
   });
 });

@@ -1,7 +1,8 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import {
+  AgentRunError,
   createAgentRun,
   setAgentRunEventHook,
   setDocUpdateHook,
@@ -27,7 +28,19 @@ import {
   runAgentSessionForRun,
   runAgentTurn,
 } from "../lifecycleAdapter.js";
+import { logger } from "../logger.js";
 import type { AgentMessage, AgentSession, CreateAgentSession } from "../types.js";
+
+/** Everything the spies recorded as one string; an `Error` is expanded, which `JSON.stringify` alone drops. */
+function loggedText(...spies: MockInstance[]): string {
+  return JSON.stringify(
+    spies.map((spy) => spy.mock.calls),
+    (_key, value: unknown) =>
+      value instanceof Error
+        ? { name: value.name, message: value.message, stack: value.stack, cause: value.cause }
+        : value,
+  );
+}
 
 let pool: Pool;
 
@@ -168,8 +181,33 @@ describe("runAgentSession", () => {
       "SELECT status, result, error_code FROM agent_runs WHERE task = 'fails'",
     );
     expect(rows[0]!.status).toBe("error");
-    expect(rows[0]!.result).toBe("boom");
+    expect(rows[0]!.result).toBe("internal");
     expect(rows[0]!.error_code).toBe("internal");
+  });
+
+  it("stores the code of a model error as the run's result, and keeps the exception message and the task out of the row and the logs", async () => {
+    const sentinel = "sentinel-91ac";
+    const createAgentSession: CreateAgentSession = (): AgentSession => ({
+      async *messages() {
+        yield { kind: "turn_start" };
+        throw new AgentRunError("modelError", `provider said ${sentinel}`);
+      },
+    });
+    const spies = [vi.spyOn(logger, "error"), vi.spyOn(logger, "warn"), vi.spyOn(logger, "info")];
+    try {
+      await expect(
+        runAgentSession(pool, { createAgentSession, task: `summarize ${sentinel}`, triggeredBy: "supervisor" }),
+      ).rejects.toThrow(sentinel);
+
+      const { rows } = await pool.query<{ status: string; result: string | null; error_code: string | null }>(
+        "SELECT status, result, error_code FROM agent_runs WHERE task = $1",
+        [`summarize ${sentinel}`],
+      );
+      expect(rows).toEqual([{ status: "error", result: "modelError", error_code: "modelError" }]);
+      expect(loggedText(...spies)).not.toContain(sentinel);
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
   });
 
   it("announces durable events as thin references and sends message_update only on the ephemeral stream", async () => {

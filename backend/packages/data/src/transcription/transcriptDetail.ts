@@ -18,6 +18,7 @@ import { readTranscriptionSourceFileItemId } from "./transcriptionJob.js";
 import { transcriptSpeakerCardContextSchema } from "./transcriptSpeakerCardContext.js";
 import { listTranscriptSpeakers, type TranscriptSpeaker } from "./transcriptionSpeakerEdges.js";
 import { parseStoredMeetingNotes, renderMeetingNotes } from "./meetingNotesRendering.js";
+import { listTranscriptActionItems } from "./transcriptActionItems.js";
 import { TRANSCRIPT_MEETING_NOTES_COMPUTED_KEY } from "./transcriptionComputedKeys.js";
 
 const segmentsSchema = z.array(
@@ -186,7 +187,13 @@ export async function readTranscriptDetail(client: PoolClient, transcriptId: str
     .parse(transcript.computed);
   // Issue #1695: rendered from the stored notes and the current speaker edges on every read.
   const storedNotes = parseStoredMeetingNotes(transcript.computed[TRANSCRIPT_MEETING_NOTES_COMPUTED_KEY]);
-  const meetingNotes = storedNotes ? await renderMeetingNotes(storedNotes, transcriptSpeakers, locale) : null;
+  const meetingNotes = storedNotes
+    ? {
+        ...(await renderMeetingNotes(storedNotes, transcriptSpeakers, locale)),
+        // Issue #1767: each action item also carries its state, its live task and whether it is the reader's own.
+        actionItems: await listTranscriptActionItems(client, transcript.id, locale),
+      }
+    : null;
   return {
     id: transcript.id,
     displayName: properties.name ?? null,

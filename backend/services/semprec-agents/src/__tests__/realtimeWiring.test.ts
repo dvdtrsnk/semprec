@@ -7,7 +7,9 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-work
 import {
   createAgentRun,
   createChokePoint,
+  createPendingApprovalRequestAndPublish,
   createPool,
+  createSempChatThread,
   createUser,
   finishAgentRunWithErrorNotification,
   insertAndNotifyAgentRunEvent,
@@ -431,9 +433,7 @@ describe("semprec-agents realtime wiring (issue #1383)", () => {
     const { userId, notificationId } = await runInTenant(tenantId, async () => {
       const user = await createUser(agentsPool, { email: "owner@example.test", passwordHash: "unused", tenantId });
       const run = await createAgentRun(agentsPool, { triggeredBy: "heartbeat", task: "fail" });
-      await withTransaction(agentsPool, (client) =>
-        finishAgentRunWithErrorNotification(client, run.id, "failed", "interrupted"),
-      );
+      await withTransaction(agentsPool, (client) => finishAgentRunWithErrorNotification(client, run.id, "interrupted"));
       const { rows } = await agentsPool.query<{ id: string }>(
         "SELECT id FROM notifications WHERE source_table = 'agent_runs' AND source_id = $1",
         [run.id],
@@ -475,6 +475,54 @@ describe("semprec-agents realtime wiring (issue #1383)", () => {
     const published = envelopes.filter((e) => e.message.type === "invalidation" && e.message.scope === "sempThread");
     expect(published.map((e) => e.message)).toEqual([{ type: "invalidation", scope: "sempThread", threadId }]);
     expect(published[0]!.tenantId).toBe(tenantId);
+    expect(envelopes.filter((e) => e.tenantId === otherTenantId)).toEqual([]);
+  });
+
+  it("publishes an approvalRequest invalidation of the writing tenant, addressed to the run's user, after commit (issue #1789)", async () => {
+    const tenantId = getTenantZeroId();
+    const otherTenantId = await createTestTenant(adminPool);
+    const envelopes = await collectEnvelopes(listener!);
+
+    const { userId, threadId, requestId } = await runInTenant(tenantId, async () => {
+      const user = await createUser(agentsPool, { email: "owner@example.test", passwordHash: "unused", tenantId });
+      const thread = await withTransaction(agentsPool, (client) => createSempChatThread(client));
+      const run = await createAgentRun(agentsPool, { triggeredBy: "user", task: "ask", threadId: thread });
+      const input = {
+        agentRunId: run.id,
+        toolName: "search",
+        riskClass: "write",
+        payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+        resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+      } as const;
+      await expect(
+        withTransaction(agentsPool, async (client) => {
+          await createPendingApprovalRequestAndPublish(client, input);
+          throw new Error("force rollback");
+        }),
+      ).rejects.toThrow("force rollback");
+      const request = await withTransaction(agentsPool, (client) =>
+        createPendingApprovalRequestAndPublish(client, input),
+      );
+      return { userId: user.id, threadId: thread, requestId: request.id };
+    });
+
+    await waitUntil(() => envelopes.some((e) => e.message.type === "invalidation" && e.message.scope === "sempThread"));
+    const published = envelopes.filter(
+      (e) =>
+        e.message.type === "invalidation" &&
+        (e.message.scope === "approvalRequest" || e.message.scope === "sempThread"),
+    );
+    expect(published).toEqual(
+      expect.arrayContaining([
+        {
+          tenantId,
+          message: { type: "invalidation", scope: "approvalRequest", approvalRequestId: requestId, userId },
+        },
+        { tenantId, message: { type: "invalidation", scope: "sempThread", threadId } },
+      ]),
+    );
+    // The rolled-back attempt published nothing: exactly one message of each scope exists.
+    expect(published).toHaveLength(2);
     expect(envelopes.filter((e) => e.tenantId === otherTenantId)).toEqual([]);
   });
 

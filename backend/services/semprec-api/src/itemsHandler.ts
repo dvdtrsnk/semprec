@@ -75,14 +75,15 @@ async function resolveRelationProperty(
  * The item endpoint family (rebased onto the generic-operation bindings by issue #219): `POST
  * /api/databases/:id/items`, `GET /api/items/:id` (with optional `?include=path`), `PATCH
  * /api/items/:id` with `ifVersion`-checked optimistic concurrency, `DELETE /api/items/:id` and
- * `POST /api/items/:id/restore`, `POST /api/databases/:id/query`, `POST /api/items/count` (issue #1709),
+ * `POST /api/items/:id/restore`, `POST /api/databases/:id/query`, `POST /api/databases/:id/facets` (issue #1759),
+ * `POST /api/items/count` (issue #1709),
  * `GET /api/items/:id/relations` (with optional `?propertyKey=`),
  * `PUT`/`DELETE /api/items/:id/relations/:propertyKey/:targetItemId`, and
  * `POST /api/items/:id/page/restore` (issue #1617, the page's `at` body field), `POST /api/items/:id/page/subpages`
  * (issue #1676), `POST /api/items/:id/page/duplicate` (issue #1722) and `PATCH /api/items/:id/page/title` (issue #1725).
  * Every route assembles a canonical command object and dispatches it through
  * `dispatchGenericOperation` against the injected `GenericApplicationPort` — no route constructs its
- * own `createChokePoint(pool)` for an operation the 44-operation catalog covers. `?include=path`'s breadcrumb chain
+ * own `createChokePoint(pool)` for an operation the 46-operation catalog covers. `?include=path`'s breadcrumb chain
  * (`chokePoint.getItemPath`) is the one read this family still reaches `pool` for directly: it has
  * no corresponding generic operation, so there is no binding to rebase it onto.
  */
@@ -232,6 +233,23 @@ export function createItemRoutes(
           includeCount: body.includeCount,
         });
         return { status: 200, body: await toItemQueryEnvelope(pool, result) };
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/databases/:id/facets",
+      handler: async (ctx) => {
+        const databaseId = requireUuidParam(ctx.params, "id");
+        const body = requireJsonObjectBody(ctx.body);
+        const unexpected = Object.keys(body).find((key) => key !== "filter" && key !== "facets" && key !== "extra");
+        if (unexpected !== undefined) throw new ValidationError("Unexpected facets field", { field: unexpected });
+        const facets = await dispatchGenericOperation(service, "database.facets", restActor(ctx.identity.user.id), {
+          databaseId,
+          filter: body.filter,
+          facets: body.facets,
+          extra: body.extra,
+        });
+        return { status: 200, body: { facets } };
       },
     },
     {

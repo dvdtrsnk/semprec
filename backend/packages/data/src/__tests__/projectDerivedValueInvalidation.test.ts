@@ -217,8 +217,8 @@ async function announcementOf(tenant: string, databaseId: string, itemId: string
 }
 
 function byItemId(left: Announcement, right: Announcement): number {
-  const leftId = left.event.scope === "schema" ? "" : left.event.itemId;
-  const rightId = right.event.scope === "schema" ? "" : right.event.itemId;
+  const leftId = "itemId" in left.event ? left.event.itemId : "";
+  const rightId = "itemId" in right.event ? right.event.itemId : "";
   return leftId.localeCompare(rightId);
 }
 

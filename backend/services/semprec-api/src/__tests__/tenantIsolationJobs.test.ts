@@ -1,9 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { createECDH, randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { escapeIdentifier, type Pool } from "pg";
 import * as Y from "yjs";
 import { z } from "zod";
@@ -42,6 +42,7 @@ import {
   createHeartbeat,
   createItemWithClient,
   createPendingApprovalRequest,
+  createTaskHostEventPutRouteHandler,
   createUser,
   decideAndEnqueueApprovalRequest,
   ensureItemAutomation,
@@ -63,6 +64,7 @@ import {
   recordHeartbeatFailure,
   requestTenantExport,
   resolveTaskAffinitySets,
+  revokeAllPushSubscriptionsForUser,
   sendSempMessage,
   setInvalidationHook,
   startSempMessageTurn,
@@ -183,6 +185,7 @@ let chokePoint: ChokePoint;
 let docStore: DocStore;
 let blobRoot: string;
 const previousEnv = new Map<string, string | undefined>();
+const VAPID_ENV = ["VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT"] as const;
 let tenantA: Tenant;
 let tenantB: Tenant;
 let tenantZero: Tenant;
@@ -421,12 +424,55 @@ async function rows<T extends Record<string, unknown>>(
   return inTenant(tenant, async () => (await pool.query<T>(sql, params)).rows);
 }
 
+/** Sets a VAPID configuration with a freshly generated key pair; `restoreVapidConfiguration` puts the previous one back. */
+function useVapidConfiguration(): void {
+  const keys = createECDH("prime256v1");
+  keys.generateKeys();
+  process.env.VAPID_PUBLIC_KEY = keys.getPublicKey().toString("base64url");
+  process.env.VAPID_PRIVATE_KEY = keys.getPrivateKey().toString("base64url");
+  process.env.VAPID_SUBJECT = "mailto:ops@example.test";
+}
+
+function restoreVapidConfiguration(): void {
+  for (const name of VAPID_ENV) {
+    const value = previousEnv.get(name);
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+}
+
+/** Whether the newest of `tenant`'s user's loopback Web Push registrations, the one `pushDismiss`'s case seeds, is revoked. */
+async function pushRegistrationRevoked(tenant: Tenant): Promise<boolean> {
+  const found = await rows<{ revoked: boolean }>(
+    tenant,
+    `SELECT revoked_at IS NOT NULL AS revoked FROM push_subscriptions
+     WHERE user_id = $1 AND endpoint LIKE 'https://127.0.0.1:9/%' ORDER BY created_at DESC, id DESC LIMIT 1`,
+    [tenant.userId],
+  );
+  if (found.length !== 1) throw new Error("expected a loopback push registration");
+  return found[0]?.revoked === true;
+}
+
 async function requireModuleDatabaseId(tenant: Tenant, moduleId: string): Promise<string> {
   const database = await inTenant(tenant, () =>
     withTransaction(pool, (client) => getDatabaseByModuleId(client, moduleId)),
   );
   if (!database) throw new Error(`expected the ${moduleId} database to be seeded`);
   return database.id;
+}
+
+/**
+ * Switches `muteSemp` of `tenant`'s sleep settings off. The fanout job reads the real clock, and with the
+ * mute on a run at night would hold the push until the wake time instead of delivering it (issue #1794).
+ */
+async function switchSleepMuteOff(tenant: Tenant): Promise<void> {
+  const databaseId = await requireModuleDatabaseId(tenant, "sleepSettings");
+  await inTenant(tenant, async () => {
+    const { items } = await chokePoint.listItems(databaseId, { limit: 2 });
+    const settings = items[0];
+    if (!settings || items.length !== 1) throw new Error("expected exactly one seeded sleep settings item");
+    await chokePoint.updateItem({ databaseId, itemId: settings.id, propertiesPatch: { muteSemp: false } });
+  });
 }
 
 async function seededSemprecProjectItemId(tenant: Tenant): Promise<string> {
@@ -589,6 +635,16 @@ async function lastContactOf(tenant: Tenant, personId: string): Promise<unknown>
   return found[0]?.last_contact;
 }
 
+async function hiddenUntilOf(tenant: Tenant, taskId: string): Promise<unknown> {
+  const found = await rows<{ hidden_until: unknown }>(
+    tenant,
+    "SELECT properties -> 'hiddenUntil' AS hidden_until FROM items WHERE id = $1",
+    [taskId],
+  );
+  if (found.length !== 1) throw new Error("expected the task to exist");
+  return found[0]?.hidden_until ?? null;
+}
+
 /** A date with a fixed past value, so the case does not depend on the wall clock. */
 const PAST_EVENT_DATE = "2025-06-15";
 
@@ -634,6 +690,33 @@ async function createProjectWithTask(tenant: Tenant): Promise<string> {
       targetItemId: project.id,
     });
     return project.id;
+  });
+}
+
+/**
+ * A task hidden in an Event, through the choke point, and then the Event moved into the past: the stored `hiddenUntil`
+ * is what a task holds when the end of its Event passes (issue #1782). The move is written directly because the
+ * choke point recomputes the task at once, and nothing but the clock reveals it in production.
+ */
+async function createTaskHiddenInPassedEvent(tenant: Tenant): Promise<string> {
+  const eventsId = await requireModuleDatabaseId(tenant, "events");
+  const tasksId = await requireModuleDatabaseId(tenant, "tasks");
+  return inTenant(tenant, async () => {
+    const hostEvent = await chokePoint.createItem({
+      databaseId: eventsId,
+      properties: { name: "Workshop", date: "2099-01-01" },
+    });
+    const task = await chokePoint.createItem({ databaseId: tasksId, properties: { name: "Prepare the workshop" } });
+    await createTaskHostEventPutRouteHandler(pool)({
+      params: { id: task.id, eventId: hostEvent.id },
+      body: {},
+      identity: { user: { id: tenant.userId } },
+    });
+    await pool.query("UPDATE items SET properties = properties || $2::jsonb WHERE id = $1", [
+      hostEvent.id,
+      JSON.stringify({ date: PAST_EVENT_DATE }),
+    ]);
+    return task.id;
   });
 }
 
@@ -1136,6 +1219,7 @@ const cases: Record<string, TaskCase> = {
   [CORE_TASK_NAMES.NOTIFICATION_FANOUT]: {
     tenancy: "tenant",
     async seed(tenant) {
+      await switchSleepMuteOff(tenant);
       return inTenant(tenant, async () => {
         await upsertWebPushSubscription(pool, {
           userId: tenant.userId,
@@ -1168,6 +1252,31 @@ const cases: Record<string, TaskCase> = {
         [requirePayloadString(payload, "notificationId")],
       );
       expect(deliveries).toEqual([{ settled: true }]);
+    },
+  },
+  [CORE_TASK_NAMES.PUSH_DISMISS]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      // The default senders reach the registration for real: a VAPID configuration and a registration with
+      // valid keys let the Web Push send build its request. Its endpoint is a loopback address, which the
+      // outbound address policy refuses at connect time without any network, so the provider verdict is
+      // "dead registration" and the job revokes it. Restored after each test.
+      useVapidConfiguration();
+      return inTenant(tenant, async () => {
+        // The registrations other cases left for this user would be sent to for real.
+        await revokeAllPushSubscriptionsForUser(pool, tenant.userId);
+        await upsertWebPushSubscription(pool, {
+          userId: tenant.userId,
+          sessionId: null,
+          endpoint: `https://127.0.0.1:9/${randomUUID()}`,
+          p256dh: createECDH("prime256v1").generateKeys().toString("base64url"),
+          authSecret: randomBytes(16).toString("base64url"),
+        });
+        return { userId: tenant.userId, notificationIds: [randomUUID()] };
+      });
+    },
+    async expectDone(tenant) {
+      expect(await pushRegistrationRevoked(tenant)).toBe(true);
     },
   },
   [CORE_TASK_NAMES.TENANT_EXPORT]: {
@@ -1468,6 +1577,17 @@ const cases: Record<string, TaskCase> = {
       );
     },
   },
+  [CORE_TASK_NAMES.TASK_HOST_EVENT_ENDED]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      const taskId = await createTaskHiddenInPassedEvent(tenant);
+      expect(await hiddenUntilOf(tenant, taskId)).not.toBeNull();
+      return { taskId };
+    },
+    async expectDone(tenant, payload) {
+      expect(await hiddenUntilOf(tenant, requirePayloadString(payload, "taskId"))).toBeNull();
+    },
+  },
   [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP]: {
     tenancy: "system",
     touchesTenantTables: true,
@@ -1478,6 +1598,30 @@ const cases: Record<string, TaskCase> = {
       const { personId, eventId } = await createPersonWithEvent(tenant, start.date, start.time);
       return marked([personId, eventId], async () => {
         expect(await lastContactOf(tenant, personId)).toBe(start.date);
+      });
+    },
+  },
+  [CORE_TASK_NAMES.PAGE_ORPHAN_SWEEP]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      const hostItemId = await seededSemprecProjectItemId(tenant);
+      const pageItemId = await inTenant(tenant, async () => {
+        const created = await docStore.createSubpage({ parent: { itemId: hostItemId }, title: "Orphan" }, "user");
+        const page = created.pages[0];
+        if (!page) throw new Error("expected the subpage to be created");
+        // An editor deletes the page block over the sync socket, which runs no domain code.
+        await docStore.deleteBlock(hostItemId, page.blockId, "user");
+        // Documents only age in real time; no production writer back-dates the last edit.
+        await pool.query("UPDATE docs SET last_edited_at = now() - interval '2 hours' WHERE item_id = $1", [
+          hostItemId,
+        ]);
+        return page.pageItemId;
+      });
+      return marked([pageItemId], async () => {
+        expect(
+          await rows(tenant, "SELECT deleted_at IS NOT NULL AS trashed FROM items WHERE id = $1", [pageItemId]),
+        ).toEqual([{ trashed: true }]);
       });
     },
   },
@@ -1667,7 +1811,7 @@ function casesWhere<T extends TaskCase>(guard: (c: TaskCase) => c is T): Array<[
   return Object.entries(cases).flatMap(([name, c]): Array<[string, T]> => (guard(c) ? [[name, c]] : []));
 }
 
-const ENV_OVERRIDES = ["AI_GATEWAY_INTERNAL_TOKEN", "FILES_STORAGE_DIR", "MAIL_ATTACHMENTS_DIR"] as const;
+const ENV_OVERRIDES = ["AI_GATEWAY_INTERNAL_TOKEN", "FILES_STORAGE_DIR", "MAIL_ATTACHMENTS_DIR", ...VAPID_ENV] as const;
 
 describe("background task isolation across two tenants: api runtime (issue #1056)", () => {
   beforeAll(async () => {
@@ -1732,6 +1876,8 @@ describe("background task isolation across two tenants: api runtime (issue #1056
     tenantA = await buildTenant(await createTestTenant(adminPool));
     tenantB = await buildTenant(await createTestTenant(adminPool));
   });
+
+  afterEach(restoreVapidConfiguration);
 
   afterAll(async () => {
     await pool?.end();
@@ -1931,6 +2077,10 @@ describe("background task isolation across two tenants: api runtime (issue #1056
             outcome: { attempts: null, lastError: null },
             effects: { rowCountDeltas: {}, changedTables: [], notificationKinds: [], queuedJobs: [] },
           });
+        }
+        if (name === CORE_TASK_NAMES.PUSH_DISMISS) {
+          // The registration of A's user is global data; only the user check keeps B's job from reaching it.
+          expect(await pushRegistrationRevoked(tenantA)).toBe(false);
         }
         if (name === CORE_TASK_NAMES.DERIVED_VALUES_INVALIDATE) {
           // The job only announces, which no fingerprint shows: neither run in B announced anything.

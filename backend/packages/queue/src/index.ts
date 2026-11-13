@@ -98,6 +98,9 @@ export const CORE_TASK_NAMES = {
   // Issue #151: fans out one committed notification to every active Web Push/APNs registration
   // for its user.
   NOTIFICATION_FANOUT: "notificationFanout",
+  // Issue #1826: tells the devices of one user to remove notifications that were resolved, with a silent push per
+  // registration. Best effort: it keeps no delivery record.
+  PUSH_DISMISS: "pushDismiss",
   // Issue #156: permanently deletes trashed items (and their cascade subtree) whose
   // `deleted_at` is older than the 30-day retention window.
   ITEM_TRASH_PURGE_SWEEP: "itemTrashPurgeSweep",
@@ -138,6 +141,11 @@ export const CORE_TASK_NAMES = {
   // Issue #1710: announces the items of one project after its area or company edge changed, since they
   // show that area or company as a derived value.
   DERIVED_VALUES_INVALIDATE: "derivedValuesInvalidate",
+  // Issue #1749: the daily sweep that sends the Pages items no document references any more to the Trash.
+  PAGE_ORPHAN_SWEEP: "pageOrphanSweep",
+  // Issue #1782: recomputes the host state of one task when the last Event it sits in ends, which writes the task
+  // and so announces that it is visible again.
+  TASK_HOST_EVENT_ENDED: "taskHostEventEnded",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 
@@ -177,6 +185,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE]: "api",
   [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: "api",
   [CORE_TASK_NAMES.NOTIFICATION_FANOUT]: "api",
+  [CORE_TASK_NAMES.PUSH_DISMISS]: "api",
   [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP]: "api",
   [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: "api",
   [CORE_TASK_NAMES.TRASH_PURGE]: "api",
@@ -196,6 +205,8 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_RECOMPUTE]: "api",
   [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP]: "api",
   [CORE_TASK_NAMES.DERIVED_VALUES_INVALIDATE]: "api",
+  [CORE_TASK_NAMES.PAGE_ORPHAN_SWEEP]: "api",
+  [CORE_TASK_NAMES.TASK_HOST_EVENT_ENDED]: "api",
 };
 
 /**
@@ -247,6 +258,7 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE]: "tenant",
   [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: "tenant",
   [CORE_TASK_NAMES.NOTIFICATION_FANOUT]: "tenant",
+  [CORE_TASK_NAMES.PUSH_DISMISS]: "tenant",
   [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP]: "system",
   [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: "system",
   [CORE_TASK_NAMES.TRASH_PURGE]: "system",
@@ -266,6 +278,8 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_RECOMPUTE]: "tenant",
   [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP]: "system",
   [CORE_TASK_NAMES.DERIVED_VALUES_INVALIDATE]: "tenant",
+  [CORE_TASK_NAMES.PAGE_ORPHAN_SWEEP]: "system",
+  [CORE_TASK_NAMES.TASK_HOST_EVENT_ENDED]: "tenant",
   [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: "tenant",
   [AGENT_TASK_NAMES.AGENT_RUN]: "tenant",
   [AGENT_TASK_NAMES.DELEGATED_AGENT_RUN]: "tenant",

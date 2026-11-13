@@ -50,6 +50,9 @@ import { runNewEmailSenderFilterCutoverMigration } from "../mail/newEmailSenderF
 import { runAreaNoteCutoverMigration } from "../docs/areaNoteCutoverMigration.js";
 import { runRecipesModuleCutoverMigration } from "../recipes/recipesModuleCutoverMigration.js";
 import { runMeetingNotesBackfillCutoverMigration } from "../transcription/meetingNotesBackfillCutoverMigration.js";
+import { runSleepModuleCutoverMigration } from "../sleep/sleepModuleCutoverMigration.js";
+import { runLibraryCoverOverrideCutoverMigration } from "../library/libraryCoverOverrideCutoverMigration.js";
+import { runSensitiveDatabasesCutoverMigration } from "../seed/sensitiveDatabasesCutoverMigration.js";
 
 /**
  * Runs the data-driven post-migration cutovers — the ones that read and write tenant rows — once
@@ -119,6 +122,16 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     // Recipes project exists, so this step writes that project's guidance row itself.
     await runRecipesModuleCutoverMigration(pool);
     await runMeetingNotesBackfillCutoverMigration(pool);
+    // Issue #1779: the sleep module for a tenant seeded before it. It needs no other step's result and stands
+    // after the steps of #1707 and #1712, before the area-note cutover that stays last.
+    await runSleepModuleCutoverMigration(pool);
+    // Issue #1793: the user-owned cover properties of Books and Movies. It needs no other step's result and stands
+    // after the library steps above, which created and upgraded those schemas, before the area-note cutover.
+    await runLibraryCoverOverrideCutoverMigration(pool);
+    // Issue #1808: marks Health records (and any sleep database a tenant already has) sensitive. The sleep
+    // cutover above creates the sleep databases of a tenant seeded before them already flagged, so this step
+    // only changes rows that existed without the flag.
+    await runSensitiveDatabasesCutoverMigration(pool);
     // Last: it converts each area in its own transaction and reports failed areas only after every area ran.
     await runAreaNoteCutoverMigration(pool);
   });

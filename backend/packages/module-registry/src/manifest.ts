@@ -156,6 +156,21 @@ export interface ModuleAgentToolDescriptor {
   approval: "none" | "always" | "unlessProjectPermitted";
   riskClass?: RiskClass;
   projectPermission?: string;
+  /**
+   * When `true`, an agent session that calls the tool does not run it: the call creates an approval
+   * request of kind `moduleTool` and the handler runs only after a person approves that request
+   * (`handleApprovalRequestExecuteTask`). A tool that sets it is offered only to a caller that asks
+   * for approval-gated tools (`ModuleRegistry.getAgentToolDefinitions`), whatever its `approval` is.
+   */
+  requiresApproval?: boolean;
+  /**
+   * Names an export of the module file with the shape of `handlerExport`: `(pool, ruleKinds)` returns
+   * `(runId, args)`, which resolves to a JSON-serialisable snapshot of the source the call would
+   * change. Its canonical JSON is hashed when the approval request is created and again before the
+   * handler runs; a different hash is a conflict and the handler does not run. Allowed only together
+   * with `requiresApproval: true`. A gated tool without it is never checked for a changed source.
+   */
+  snapshotExport?: string;
 }
 
 /**
@@ -554,8 +569,16 @@ const moduleAgentToolDescriptorSchema = z
     approval: z.enum(["none", "always", "unlessProjectPermitted"]),
     riskClass: z.enum(RISK_CLASSES).optional(),
     projectPermission: z.string().min(1).optional(),
+    requiresApproval: z.boolean().optional(),
+    snapshotExport: z.string().min(1).optional(),
   })
   .superRefine((tool, ctx) => {
+    if (tool.snapshotExport !== undefined && tool.requiresApproval !== true)
+      ctx.addIssue({
+        code: "custom",
+        message: "A snapshot export requires requiresApproval",
+        path: ["snapshotExport"],
+      });
     if (
       tool.approval === "none" &&
       tool.riskClass !== undefined &&

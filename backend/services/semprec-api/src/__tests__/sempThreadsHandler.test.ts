@@ -124,7 +124,7 @@ describe("durable Semp thread history", () => {
         userId: user.id,
         threadId,
       });
-      expect(await finishAgentRun(pool, failedRun.id, "error", null, "internal")).toBe(true);
+      expect(await finishAgentRun(pool, failedRun.id, "error", "internal")).toBe(true);
       const failed = await pool.query<{ id: string }>(
         "INSERT INTO semp_messages (thread_id, role, agent_run_id, status) VALUES ($1, 'assistant', $2, 'error') RETURNING id",
         [threadId, failedRun.id],

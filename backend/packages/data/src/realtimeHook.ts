@@ -20,6 +20,11 @@ import type { CreatedBy } from "./types.js";
  * recompute, a mail-sync job, ...) that has no single acting user to attribute; those reach every
  * socket of the publisher's tenant and never another tenant's, because the NOTIFY envelope carries
  * the tenant computed by Postgres from the publisher's scope.
+ *
+ * `scope: "approvalRequest"` names one approval request whose state changed (created, decided or
+ * finished executing); the client refetches it over REST. Its `userId` is the owner of the request
+ * (the actor user of its run), and `@semprec/realtime` delivers the frame to that user's sockets
+ * only, never to the rest of the tenant.
  */
 export type InvalidationEvent =
   | {
@@ -38,7 +43,8 @@ export type InvalidationEvent =
       op: "put" | "delete" | "metadata";
       userId?: string;
     }
-  | { scope: "schema"; databaseId: string; userId?: string };
+  | { scope: "schema"; databaseId: string; userId?: string }
+  | { scope: "approvalRequest"; approvalRequestId: string; userId?: string };
 
 export type InvalidationHook = (event: InvalidationEvent) => void;
 

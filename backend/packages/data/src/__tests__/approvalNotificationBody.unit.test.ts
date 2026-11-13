@@ -8,6 +8,14 @@ const paramsByKey: Record<string, string[]> = {
   "approval.itemDelete": ["itemName", "databaseKey", "databaseName", "projectName", "linkedCount", "restorableDays"],
   "approval.itemPatch": ["itemName", "databaseKey", "databaseName"],
   "approval.changesSeries": ["taskName", "fromRule", "toRule"],
+  "approval.breaksLink": [
+    "itemName",
+    "databaseKey",
+    "propertyName",
+    "sourceItemName",
+    "sourceDatabaseKey",
+    "newValueName",
+  ],
   "approval.relationPut": ["fromItemName", "fromDatabaseKey", "toItemName", "toDatabaseKey"],
   "approval.relationSet": ["fromItemName", "fromDatabaseKey", "propertyName"],
   "approval.propertyDelete": ["propertyName", "databaseKey", "databaseName", "affectedCount"],
@@ -16,6 +24,7 @@ const paramsByKey: Record<string, string[]> = {
   "approval.relationDelete": ["fromItemName", "fromDatabaseKey", "toItemName", "toDatabaseKey"],
   "approval.pageRestore": ["itemName", "databaseKey", "databaseName"],
   "approval.mcpInvoke": ["serverName", "toolName"],
+  "approval.moduleTool": ["toolName"],
 };
 const catalog = (locale: string) =>
   z
@@ -56,6 +65,19 @@ describe("approval notification body", () => {
       expect(JSON.stringify(body)).not.toContain("hidden");
     },
   );
+  it("renders a module tool request from its tool name only and promises no app undo", () => {
+    const body = approvalNotificationBody({
+      riskClass: "write",
+      description: { key: "approval.moduleTool", params: { toolName: "gated.apply" } },
+      payload: { moduleToolName: "gated.apply", args: { secret: "private value" } },
+    });
+    expect(body).toEqual({
+      bodyKey: "approval.moduleTool",
+      bodyParams: { toolName: "gated.apply" },
+      bodySuffixKey: "notification.body.cannotUndo",
+    });
+    expect(JSON.stringify(body)).not.toContain("private value");
+  });
   it.each([
     ["item.delete", "notification.body.canUndo"],
     ["property.delete", "notification.body.cannotUndo"],

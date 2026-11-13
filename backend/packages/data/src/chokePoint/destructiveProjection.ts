@@ -7,6 +7,7 @@ import { getItemDeleteApprovalGuard, getItemPatchApprovalContribution } from "./
 // belongs here.
 // Constrained by: docs/adr/2026-09-18-exactly-once-execution-of-approved-destructive-operations.md
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { DatabaseError, type PoolClient } from "pg";
 import { canonicalizeJson, currentTenantScope } from "@semprec/shared";
 import { ApprovalResourceBusyError, ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
@@ -24,6 +25,7 @@ import {
   loadRelationEdgeContext,
   normalizeRelationSides,
 } from "./relationEdgeContext.js";
+import { reserveBreakingLinks, reserveEdgeLinks, type BreakingValueLinks } from "./valueLinkApproval.js";
 
 /** The approval-gated destructive kinds a `resource_snapshot` can carry (issue #89; `page_restore` is issue #1617's, computed in `docs/docPageRestore.ts`). */
 export type ResourceSnapshotKind =
@@ -35,7 +37,8 @@ export type ResourceSnapshotKind =
   | "page_restore"
   | "item_patch"
   | "relation_put"
-  | "relation_set";
+  | "relation_set"
+  | "link_unlink";
 
 /** Persisted alongside every new destructive approval request, and re-derived at execution time to detect a resource that changed since approval was granted. */
 export interface ResourceSnapshot {
@@ -48,6 +51,12 @@ export interface ResourceSnapshot {
 export interface DestructiveResourceProjection {
   snapshot: ResourceSnapshot;
   currentResource: unknown;
+  /**
+   * The active value links the operation would end (issue #1758); absent when it ends none. For
+   * `item.patch`, `relation.put`, `relation.set` and `link.unlink` they are part of `snapshot`;
+   * for `relation.delete` they are reported only, and its snapshot does not cover them.
+   */
+  valueLinks?: BreakingValueLinks;
 }
 
 /** Hashes one projection into a `ResourceSnapshot`; exported so a destructive kind computed outside the choke point hashes the same way. */
@@ -76,7 +85,40 @@ export type DestructiveOperationCheck =
       operation: "relation.set";
       input: { relationPropertyId: string; callerItemId: string; targetItemId: string | null };
     }
-  | { operation: "relation.delete"; input: { relationPropertyId: string; callerItemId: string; targetItemId: string } };
+  | { operation: "relation.delete"; input: { relationPropertyId: string; callerItemId: string; targetItemId: string } }
+  | { operation: "link.unlink"; input: { itemId: string; propertyKey: string } };
+
+/**
+ * Reserves the live item of an approval check for the rest of the transaction. It requires a tenant-scoped
+ * READ COMMITTED transaction and a visible item, share-locks the item's database and then locks the item row,
+ * both without waiting (a held lock is `ApprovalResourceBusyError`). `subject` only words the scope errors.
+ */
+async function reserveItemForApproval(client: PoolClient, itemId: string, subject: string) {
+  requireManagedTransaction(client);
+  const scope = currentTenantScope();
+  if (scope?.kind !== "tenant") throw new Error(`${subject} approval requires a tenant scope`);
+  const transaction = await client.query<{ isolation: string; tenant: string | null }>(
+    "SELECT current_setting('transaction_isolation') AS isolation, nullif(current_setting('app.tenant_id', true), '') AS tenant",
+  );
+  if (transaction.rows[0]?.isolation !== "read committed" || transaction.rows[0]?.tenant !== scope.tenantId)
+    throw new Error(`${subject} approval requires a tenant-scoped READ COMMITTED transaction`);
+  const [visible] = await itemsStore.getItemsByIds(client, [itemId]);
+  if (!visible) throw new NotFoundError(`Item ${itemId} not found`);
+  let item: Awaited<ReturnType<typeof itemsStore.lockItemByIdNowait>>;
+  try {
+    await client.query("SELECT id FROM databases WHERE id = $1 FOR SHARE NOWAIT", [visible.databaseId]);
+    item = await itemsStore.lockItemByIdNowait(client, visible.databaseId, visible.id);
+  } catch (error) {
+    if (error instanceof DatabaseError && error.code === "55P03") {
+      const busy = new ApprovalResourceBusyError();
+      markManagedTransactionRollbackOnly(client, busy);
+      throw busy;
+    }
+    throw error;
+  }
+  if (!item || item.deletedAt) throw new NotFoundError(`Item ${itemId} not found`);
+  return item;
+}
 
 export async function computeDestructiveResourceProjection(
   client: PoolClient,
@@ -84,29 +126,7 @@ export async function computeDestructiveResourceProjection(
 ): Promise<DestructiveResourceProjection> {
   switch (check.operation) {
     case "item.patch": {
-      requireManagedTransaction(client);
-      const scope = currentTenantScope();
-      if (scope?.kind !== "tenant") throw new Error("Item approval requires a tenant scope");
-      const transaction = await client.query<{ isolation: string; tenant: string | null }>(
-        "SELECT current_setting('transaction_isolation') AS isolation, nullif(current_setting('app.tenant_id', true), '') AS tenant",
-      );
-      if (transaction.rows[0]?.isolation !== "read committed" || transaction.rows[0]?.tenant !== scope.tenantId)
-        throw new Error("Item approval requires a tenant-scoped READ COMMITTED transaction");
-      const [visible] = await itemsStore.getItemsByIds(client, [check.input.itemId]);
-      if (!visible) throw new NotFoundError(`Item ${check.input.itemId} not found`);
-      let item: Awaited<ReturnType<typeof itemsStore.lockItemByIdNowait>>;
-      try {
-        await client.query("SELECT id FROM databases WHERE id = $1 FOR SHARE NOWAIT", [visible.databaseId]);
-        item = await itemsStore.lockItemByIdNowait(client, visible.databaseId, visible.id);
-      } catch (error) {
-        if (error instanceof DatabaseError && error.code === "55P03") {
-          const busy = new ApprovalResourceBusyError();
-          markManagedTransactionRollbackOnly(client, busy);
-          throw busy;
-        }
-        throw error;
-      }
-      if (!item || item.deletedAt) throw new NotFoundError(`Item ${check.input.itemId} not found`);
+      const item = await reserveItemForApproval(client, check.input.itemId, "Item");
       const database = await databasesStore.getDatabase(client, item.databaseId);
       if (!database) throw new NotFoundError(`Database ${item.databaseId} not found`);
       if (database.archivedAt) throw new ForbiddenError("Database is archived", undefined, "database_archived");
@@ -117,12 +137,34 @@ export async function computeDestructiveResourceProjection(
       if (contribution && check.input.ifVersion !== undefined && check.input.ifVersion !== item.updatedAt) {
         throw new ConflictError("Item was modified since ifVersion was read", { current: item });
       }
+      // The properties this patch changes are the ones `updateItemWithClient` ends links for.
+      const patch = check.input.properties ?? {};
+      const changedKeys = Object.keys(patch).filter((key) => !isDeepStrictEqual(item.properties[key], patch[key]));
+      const valueLinks = await reserveBreakingLinks(
+        client,
+        changedKeys.map((propertyKey) => ({ itemId: item.id, propertyKey })),
+      );
       const projected = contribution
         ? { item, databaseArchivedAt: database.archivedAt, command: contribution.snapshot }
         : { item, databaseArchivedAt: database.archivedAt };
+      if (valueLinks.links.length === 0) {
+        return {
+          snapshot: buildResourceSnapshot("item_patch", item.id, projected),
+          currentResource: { ...projected, approvalDescription: contribution?.description },
+        };
+      }
+      // Replaces the item version: the request stands while the links and the linked values stay as they were.
+      const covered = {
+        ...(contribution ? projected : { databaseArchivedAt: database.archivedAt }),
+        valueLinks: valueLinks.links,
+        values: Object.fromEntries(
+          valueLinks.links.map((link) => [link.propertyKey, item.properties[link.propertyKey]]),
+        ),
+      };
       return {
-        snapshot: buildResourceSnapshot("item_patch", item.id, projected),
+        snapshot: buildResourceSnapshot("item_patch", item.id, covered),
         currentResource: { ...projected, approvalDescription: contribution?.description },
+        valueLinks,
       };
     }
     case "relation.put":
@@ -201,14 +243,33 @@ export async function computeDestructiveResourceProjection(
         if (failure instanceof ApprovalResourceBusyError) markManagedTransactionRollbackOnly(client, failure);
         throw failure;
       }
+      // The edges this write adds or removes decide which links it ends. A `relation.set` onto an empty
+      // relation removes nothing, so it ends none that a request would be asked for.
+      const heldTargets = new Set(edges.map((edge) => relationsStore.otherSide(edge, caller.id)));
+      const added =
+        targetId && !heldTargets.has(targetId)
+          ? normalizeRelationSides(context.reldef, relationPropertyId, caller.id, targetId)
+          : null;
+      const removed = edges.filter((edge) => relationsStore.otherSide(edge, caller.id) !== targetId);
+      const changing =
+        check.operation === "relation.put"
+          ? added
+            ? [added]
+            : []
+          : removed.length > 0
+            ? [...removed, ...(added ? [added] : [])]
+            : [];
+      const valueLinks = await reserveEdgeLinks(client, context.reldef, changing);
       const projected = { caller, target, property: context.property, definition: context.reldef, edges };
+      const covered = valueLinks.links.length > 0 ? { ...projected, valueLinks: valueLinks.links } : projected;
       return {
         snapshot: buildResourceSnapshot(
           check.operation === "relation.put" ? "relation_put" : "relation_set",
           caller.id,
-          projected,
+          covered,
         ),
         currentResource: projected,
+        ...(valueLinks.links.length > 0 ? { valueLinks } : {}),
       };
     }
     case "database.archive": {
@@ -342,7 +403,26 @@ export async function computeDestructiveResourceProjection(
           locked: property.locked,
         },
       };
-      return { snapshot: buildResourceSnapshot("relation_delete", edge.id, projected), currentResource: projected };
+      const valueLinks = await reserveEdgeLinks(client, edgeContext.reldef, [{ itemA, itemB }]);
+      return {
+        snapshot: buildResourceSnapshot("relation_delete", edge.id, projected),
+        currentResource: projected,
+        ...(valueLinks.links.length > 0 ? { valueLinks } : {}),
+      };
+    }
+    case "link.unlink": {
+      const item = await reserveItemForApproval(client, check.input.itemId, "Item");
+      const valueLinks = await reserveBreakingLinks(client, [
+        { itemId: item.id, propertyKey: check.input.propertyKey },
+      ]);
+      if (valueLinks.links.length === 0) {
+        throw new ConflictError("The value link is no longer active", { current: item });
+      }
+      return {
+        snapshot: buildResourceSnapshot("link_unlink", item.id, { valueLinks: valueLinks.links }),
+        currentResource: { item, valueLinks: valueLinks.links },
+        valueLinks,
+      };
     }
   }
 }

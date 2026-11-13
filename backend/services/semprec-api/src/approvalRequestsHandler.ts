@@ -3,10 +3,14 @@ import {
   APPROVAL_REQUEST_SOURCE_KINDS,
   withTransaction,
   ChokePointError,
+  countPendingApprovalRequests,
   decideAndEnqueueApprovalRequest,
+  getApprovalRequestForOwner,
+  isMcpInvokeApprovalRequestPayload,
   listApprovalRequestsQueue,
   listApprovalRequestsQueuePage,
   parseApprovalRequestListCursor,
+  toApprovalRequestArgumentValues,
   toApprovalRequestDecisionView,
   ValidationError,
   type ApprovalRequestSourceKind,
@@ -22,6 +26,9 @@ import { logger } from "./logger.js";
 const MAX_BODY_BYTES = 1 * 1024 * 1024;
 
 const APPROVAL_REQUEST_PATH = /^\/api\/approval-requests\/([^/]+)$/;
+
+/** The literal path of the count. It is served before `APPROVAL_REQUEST_PATH` is tried, which would take `count` for an id. */
+const APPROVAL_REQUEST_COUNT_PATH = "/api/approval-requests/count";
 
 /** The query parameters of `GET /api/approval-requests`; the presence of any one selects the paged answer. */
 const LIST_PARAMETERS = ["status", "source", "q", "order", "cursor", "limit"] as const;
@@ -88,6 +95,21 @@ function parseListQuery(query: URLSearchParams) {
 }
 
 /**
+ * The validated query of `GET /api/approval-requests/count` (issue #1786). `status` accepts only
+ * `pending` and is `pending` when absent; `source` is an optional comma list of the source kinds,
+ * every source when absent. A parameter of another value, or given twice, is a `ValidationError`
+ * that names it. Parameters other than these two are ignored, as on the list.
+ */
+function parseCountQuery(query: URLSearchParams) {
+  const status = singleQueryValue(query, "status");
+  if (status !== null && status !== "pending") {
+    throw new ValidationError("'status' must be pending", { field: "status" });
+  }
+  const rawSource = singleQueryValue(query, "source");
+  return { sourceKinds: rawSource === null ? null : parseSourceKinds(rawSource) };
+}
+
+/**
  * The authenticated-user approval surface: the global queue read (issue #132)
  * `GET /api/approval-requests` and the approve/reject write (issue #131)
  * `PATCH /api/approval-requests/:id`, body `{ decision: "approved" | "rejected" }`.
@@ -96,6 +118,15 @@ function parseListQuery(query: URLSearchParams) {
  * read answers `{ rows }` with the caller's pending requests, oldest first. With any of them it
  * answers `{ rows, nextCursor }` with one page of the list `parseListQuery` describes (issue
  * #1785); an invalid value of one of them is a 400 `validation_failed`.
+ *
+ * `GET /api/approval-requests/count?status=pending&source=chat,tick` answers `{ count }`, the number
+ * of the caller's pending requests that the list returns for the same `status` and `source` (issue
+ * #1786); `source` is optional and an absent one counts every source. `GET /api/approval-requests/:id`
+ * answers one request, in any status, with `toApprovalRequestDecisionView`, the view the `PATCH` answers (issue #1786),
+ * and for an `mcpInvoke` request alone also `arguments` and `argumentsTruncated`, its argument values redacted and bounded by
+ * `toApprovalRequestArgumentValues` (issue #2021). No other answer of this handler, and no other kind of request (a generic operation or a module tool), carries a value of an argument
+ * (`docs/adr/2026-11-12-mcp-argument-values-leave-the-server-only-in-the-owners-request-detail.md`). A request
+ * of another user, an unknown id and an id of another tenant answer the same 404.
  *
  * The decider recorded in `approval_requests.decided_by` is the authenticated session's user
  * (`authenticateRequest`), never a client-supplied value. A `decidedByUserId` body field, which
@@ -112,6 +143,9 @@ function parseListQuery(query: URLSearchParams) {
  *
  * Both 200 responses are `toApprovalRequestDecisionView`'s projection, not the stored row: the
  * payload is reduced to `safeSummary` (argument names, never values) exactly as on the queue read.
+ * The `PATCH` answer adds `outcome` (issue #2022): `decided` when this call made the transition and
+ * `unchanged` when the request was already decided. It describes that one call, so the list and the
+ * read of one request do not carry it.
  *
  * Every row of the queue read and both 200 responses of the write carry `source` (issue #1766),
  * derived in the session user's `users.locale`.
@@ -144,8 +178,21 @@ export function createApprovalRequestsRequestListener(pool: Pool) {
           return;
         }
 
+        if (url.pathname === APPROVAL_REQUEST_COUNT_PATH) {
+          if (req.method !== "GET") {
+            sendJson(res, 404, { error: "Not found" });
+            return;
+          }
+          const { sourceKinds } = parseCountQuery(url.searchParams);
+          const count = await withTransaction(pool, (client) =>
+            countPendingApprovalRequests(client, { ownerUserId: identity.user.id, sourceKinds }),
+          );
+          sendJson(res, 200, { count });
+          return;
+        }
+
         const match = url.pathname.match(APPROVAL_REQUEST_PATH);
-        if (!match || req.method !== "PATCH") {
+        if (!match || (req.method !== "PATCH" && req.method !== "GET")) {
           sendJson(res, 404, { error: "Not found" });
           return;
         }
@@ -153,6 +200,24 @@ export function createApprovalRequestsRequestListener(pool: Pool) {
         // Group 1 of the route pattern above is not optional, so a successful match always
         // captured it; a runtime check here would be unreachable code.
         const approvalRequestId = assertUuid(match[1]!, "id");
+        if (req.method === "GET") {
+          const detail = await withTransaction(pool, async (client) => {
+            const request = await getApprovalRequestForOwner(client, approvalRequestId, identity.user.id);
+            if (!request) return null;
+            const view = await toApprovalRequestDecisionView(client, request, identity.user.locale);
+            // The one answer that carries argument values, redacted and bounded, and only for an `mcpInvoke` request;
+            // a generic operation and a module tool request have none (the ADR names `mcpInvoke` alone).
+            return isMcpInvokeApprovalRequestPayload(request.payload)
+              ? { ...view, ...toApprovalRequestArgumentValues(request.payload.args) }
+              : view;
+          });
+          if (!detail) {
+            sendJson(res, 404, { error: "Not found" });
+            return;
+          }
+          sendJson(res, 200, detail);
+          return;
+        }
         const body = (await readJsonBody(req, { maxBytes: MAX_BODY_BYTES })) as { decision?: unknown };
         if (body.decision !== "approved" && body.decision !== "rejected") {
           sendJson(res, 400, { error: "'decision' must be 'approved' or 'rejected'" });
@@ -160,20 +225,22 @@ export function createApprovalRequestsRequestListener(pool: Pool) {
         }
         const decision = body.decision;
 
-        const view = await withTransaction(pool, async (client) => {
+        const answer = await withTransaction(pool, async (client) => {
           const decided = await decideAndEnqueueApprovalRequest(client, {
             approvalRequestId,
             decision,
             decidedByUserId: identity.user.id,
           });
-          return decided ? await toApprovalRequestDecisionView(client, decided.request, identity.user.locale) : null;
+          if (!decided) return null;
+          const view = await toApprovalRequestDecisionView(client, decided.request, identity.user.locale);
+          return { ...view, outcome: decided.outcome };
         });
 
-        if (!view) {
+        if (!answer) {
           sendJson(res, 404, { error: "Not found" });
           return;
         }
-        sendJson(res, 200, view);
+        sendJson(res, 200, answer);
       });
     } catch (err) {
       if (err instanceof PayloadTooLargeError) {

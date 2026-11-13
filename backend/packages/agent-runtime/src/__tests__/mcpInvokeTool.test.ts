@@ -5,11 +5,13 @@ import { Ajv } from "ajv";
 import {
   createRuntimeRolePool,
   createTestTenant,
+  getOrCreateTickThread,
   getTenantZeroId,
   getTestPool,
   resetDatabase,
 } from "@semprec/data/testSupport";
-import { runInTenant } from "@semprec/shared";
+import { createGenericOperationGateway } from "@semprec/application";
+import { CAPABILITY_IDS, runInTenant, type AuthenticatedActor } from "@semprec/shared";
 import {
   allowLoopbackOutboundForTests,
   startHttpContractServer,
@@ -19,15 +21,24 @@ import {
   type McpContractServer,
 } from "@semprec/data/testSupport/mcpContractServers";
 import {
+  ApprovalRequiredError,
+  CORE_AGENT_RUN_ACTION_ID,
   withTransaction,
   upsertMcpToolRegistration,
   setProjectMcpGrantForAgentPage,
   seedSystem,
   createViewTypeRegistry,
   createAgentRun,
+  createChokePoint,
+  createHeartbeat,
+  createSempChatThread,
   getApprovalRequest,
+  setInvalidationHook,
+  setSempThreadInvalidationHook,
   createUser,
   hashPassword,
+  type AgentRunRow,
+  type CollectionMetadataResolver,
   type McpConnectionConfig,
   type ViewTypeRegistry,
 } from "@semprec/data";
@@ -492,7 +503,8 @@ describe("MCP invoke adapter (issue #128)", () => {
           body: `Call "search_web" on MCP server "Contract server". Semp cannot undo this action.`,
           source_table: "approval_requests",
           transition_instance: firstRequestId,
-          link_href: `?page=approvals&user=${user.id}`,
+          // The run has no thread and a person started it, which is a chat source.
+          link_href: `?page=semp-chats&tab=semp&approvalRequestId=${firstRequestId}`,
         },
       ]);
       expect(JSON.stringify(afterFirst)).not.toContain("private-argument-sentinel");
@@ -511,7 +523,7 @@ describe("MCP invoke adapter (issue #128)", () => {
       );
     });
 
-    it("notifies the user of the tenant the request is created in, with a link naming that user (issue #1018)", async () => {
+    it("notifies the user of the tenant the request is created in, with a link that names the request and no user (issues #1018, #1787)", async () => {
       const runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(pool, "semprec_data"));
       try {
         const tenantB = await runInTenant(getTenantZeroId(), () => createTestTenant(pool));
@@ -577,14 +589,198 @@ describe("MCP invoke adapter (issue #128)", () => {
           {
             user_id: userB.id,
             kind: "approval_pending",
-            link_href: `?page=approvals&user=${userB.id}`,
+            link_href: `?page=semp-chats&tab=semp&approvalRequestId=${requestId}`,
             tenant_id: tenantB,
           },
         ]);
         expect(rows[0]?.user_id).not.toBe(earliestUser.id);
+        expect(rows[0]?.link_href).not.toContain(userB.id);
       } finally {
         await runtimePool.end();
       }
+    });
+
+    describe("realtime announcements (issue #1789)", () => {
+      let approvalAnnouncements: Array<{ approvalRequestId: string; userId: string | undefined }>;
+      let threadAnnouncements: Array<{ tenantId: string; threadId: string }>;
+
+      beforeEach(() => {
+        approvalAnnouncements = [];
+        threadAnnouncements = [];
+        setInvalidationHook((event) => {
+          if (event.scope === "approvalRequest")
+            approvalAnnouncements.push({ approvalRequestId: event.approvalRequestId, userId: event.userId });
+        });
+        setSempThreadInvalidationHook((event) => threadAnnouncements.push(event));
+      });
+
+      afterEach(() => {
+        setInvalidationHook(() => {});
+        setSempThreadInvalidationHook(() => {});
+      });
+
+      it("announces a deferred call to the owner of the run and to the thread of the run", async () => {
+        const contractServer = startStdioContractServer([SEARCH_TOOL]);
+        servers.push(contractServer);
+        const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
+        const threadId = await withTransaction(pool, (client) => createSempChatThread(client));
+        const run = await createAgentRun(pool, {
+          projectItemId,
+          triggeredBy: "user",
+          unit: "session",
+          task: "chat",
+          threadId,
+        });
+
+        const result = await createApprovalGatedMcpInvokeTool(
+          pool,
+          run.id,
+          projectItemId,
+          registration.id,
+        )({
+          query: "semprec",
+        });
+
+        expect(approvalAnnouncements).toEqual([
+          { approvalRequestId: result.approvalRequestId, userId: run.actorUserId },
+        ]);
+        expect(threadAnnouncements).toEqual([{ tenantId: getTenantZeroId(), threadId }]);
+      });
+
+      it("announces only the request when the run has no thread, and a redelivered tool call only once", async () => {
+        const contractServer = startStdioContractServer([SEARCH_TOOL]);
+        servers.push(contractServer);
+        const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
+        const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+        const invoke = createApprovalGatedMcpInvokeTool(pool, run.id, projectItemId, registration.id);
+
+        const first = await invoke({ query: "semprec" }, undefined, { toolCallId: "call_1" });
+        const redelivered = await invoke({ query: "semprec" }, undefined, { toolCallId: "call_1" });
+
+        expect(redelivered.approvalRequestId).toBe(first.approvalRequestId);
+        expect(approvalAnnouncements).toEqual([
+          { approvalRequestId: first.approvalRequestId, userId: run.actorUserId },
+        ]);
+        expect(threadAnnouncements).toEqual([]);
+      });
+
+      it("announces nothing for a call that creates no request", async () => {
+        const contractServer = startStdioContractServer([SEARCH_TOOL]);
+        servers.push(contractServer);
+        const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
+        const run = await createAgentRun(pool, { triggeredBy: "user", task: "test" });
+
+        const result = await createApprovalGatedMcpInvokeTool(
+          pool,
+          run.id,
+          projectItemId,
+          registration.id,
+        )({
+          query: "semprec",
+          semprecReason: "x".repeat(501),
+        });
+
+        expect(result.error).toBe(true);
+        expect(approvalAnnouncements).toEqual([]);
+        expect(threadAnnouncements).toEqual([]);
+      });
+    });
+
+    describe("approval notification link (issue #1787)", () => {
+      const SOURCES = [
+        ["a Semp chat", "chat", "?page=semp-chats&tab=semp&approvalRequestId="],
+        ["an automatic task tick", "tick", "?page=inbox&approvalRequestId="],
+        ["an MCP client", "mcp", "?page=inbox&approvalRequestId="],
+      ] as const;
+
+      const metadataResolver: CollectionMetadataResolver = {
+        resolve: () => ({
+          icon: null,
+          color: null,
+          overviewOrder: null,
+          switcherOrder: null,
+          clientVisible: true,
+          overviewHidden: false,
+        }),
+        collectionFilter: () => undefined,
+        overviewHideable: () => false,
+      };
+
+      /** A run of `projectItemId` with the given source, made by the production writers of threads, heartbeats and runs. */
+      async function runOfSource(source: (typeof SOURCES)[number][1], projectItemId: string): Promise<AgentRunRow> {
+        if (source === "chat") {
+          const threadId = await withTransaction(pool, (client) => createSempChatThread(client));
+          return createAgentRun(pool, { projectItemId, triggeredBy: "user", unit: "session", task: "chat", threadId });
+        }
+        if (source === "mcp") {
+          return createAgentRun(pool, { projectItemId, triggeredBy: "mcp", task: "MCP run-credential session" });
+        }
+        const tick = await withTransaction(pool, async (client) => {
+          const heartbeat = await createHeartbeat(client, {
+            projectItemId,
+            name: "Sunday planning",
+            rule: { kind: "weekly", days: ["sun"], at: "21:00" },
+            actionId: CORE_AGENT_RUN_ACTION_ID,
+            actionConfig: { task: "Plan the week" },
+          });
+          return { heartbeatId: heartbeat.id, threadId: (await getOrCreateTickThread(client, heartbeat.id)).id };
+        });
+        return createAgentRun(pool, { projectItemId, triggeredBy: "heartbeat", task: "Plan the week", ...tick });
+      }
+
+      /** The link of the one `approval_pending` notification about `requestId`. */
+      async function linkOf(requestId: string): Promise<string | null> {
+        const { rows } = await pool.query<{ link_href: string | null }>(
+          `SELECT link_href FROM notifications
+           WHERE kind = 'approval_pending' AND source_table = 'approval_requests' AND source_id = $1`,
+          [requestId],
+        );
+        const row = rows[0];
+        if (!row || rows.length !== 1) throw new Error(`Expected one notification, found ${rows.length}`);
+        return row.link_href;
+      }
+
+      it.each(SOURCES)(
+        "links an MCP request and a generic-operation request raised by %s to the same destination, each naming its own request",
+        async (_label, source, destination) => {
+          const contractServer = startStdioContractServer([SEARCH_TOOL]);
+          servers.push(contractServer);
+          const { registration, projectItemId } = await createGrantedTool(contractServer.connectionConfig);
+          const run = await runOfSource(source, projectItemId);
+
+          const mcp = await createApprovalGatedMcpInvokeTool(
+            pool,
+            run.id,
+            projectItemId,
+            registration.id,
+          )({ query: "semprec" });
+          if (mcp.approvalRequestId === undefined) throw new Error("Expected an MCP approval request");
+          const mcpLink = await linkOf(mcp.approvalRequestId);
+          expect(mcpLink).toBe(`${destination}${mcp.approvalRequestId}`);
+          expect(mcpLink).not.toContain(run.actorUserId);
+
+          const chokePoint = createChokePoint(pool);
+          const database = await chokePoint.createDatabase({ name: "Tasks" });
+          const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
+          const actor: AuthenticatedActor = {
+            userId: run.actorUserId,
+            runId: run.id,
+            agentProjectItemId: projectItemId,
+          };
+          const genericRequestId = await createGenericOperationGateway(pool, metadataResolver)
+            .invoke("item.delete", actor, new Set(CAPABILITY_IDS), { itemId: item.id })
+            .then(
+              () => {
+                throw new Error("Expected a generic-operation approval request");
+              },
+              (error: unknown) => {
+                if (error instanceof ApprovalRequiredError) return error.details.approvalRequestId;
+                throw error;
+              },
+            );
+          expect(await linkOf(genericRequestId)).toBe(`${destination}${genericRequestId}`);
+        },
+      );
     });
 
     it("rejects an invalid call before creating any approval request", async () => {

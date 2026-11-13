@@ -28,7 +28,7 @@ import type {
  * `dependency-cruiser.rules.json`) and stays ignorant of which transport (REST today, MCP/AgentTool
  * in #220) is calling it. A composition root (e.g. `semprec-api`'s `app.ts`) constructs one
  * instance per injected `Pool` and threads it through every binding dispatch; there is no other
- * path into the 44-operation catalog's business logic.
+ * path into the 46-operation catalog's business logic.
  */
 
 /**
@@ -444,6 +444,11 @@ export function createGenericApplicationService(
       return chokePoint.countItemsBatch(input.items, { resolver });
     },
 
+    /** The choke point resolves the database in the caller's tenant; labels that are not stored follow the locale of the user the actor is or acts for. */
+    async getDatabaseFacets(actor, input) {
+      return chokePoint.getDatabaseFacets(input, { locale: await chokePoint.findUserLocale(actor.userId) });
+    },
+
     // ---- relations ----
     async setRelation(actor, input) {
       return chokePoint.setRelation(input, writerIdentityOf(actor), actor.userId);
@@ -492,11 +497,10 @@ export function createGenericApplicationService(
     },
 
     async unlinkValue(actor, input) {
-      return chokePoint.unlinkValue(
-        input,
-        writerIdentityOf(actor).writerKind === "user" ? "user" : "agent",
-        actor.userId,
-      );
+      // The full identity, so an agent under a run is told from one without (issue #1758).
+      const writer = writerIdentityOf(actor);
+      if (writer.writerKind === "system") throw new Error("An actor never writes as the system");
+      return chokePoint.unlinkValue(input, { ...writer, writerKind: writer.writerKind }, actor.userId);
     },
     async relinkValue(actor, input) {
       return chokePoint.relinkValue(input, actor.userId);
@@ -571,6 +575,20 @@ export function createGenericApplicationService(
     async insertPage(actor, input) {
       const { itemId, placement, markdown, blockIds } = input;
       return docStore.insertPageMarkdown(itemId, { placement, markdown, blockIds, origin: toActor(actor).type });
+    },
+
+    /**
+     * Same origin split as `insertPage`. The subpages the replace trashes are trashed by the caller's writer identity and
+     * user, so the choke point's trash hooks see who asked for it.
+     */
+    async replacePage(actor, input) {
+      return docStore.replacePageMarkdown(input.itemId, {
+        markdown: input.markdown,
+        expectedEtag: input.expectedEtag,
+        origin: toActor(actor).type,
+        writer: writerIdentityOf(actor),
+        actingUserId: actor.userId,
+      });
     },
 
     // ---- pages ----

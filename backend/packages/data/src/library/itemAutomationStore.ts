@@ -199,6 +199,22 @@ export async function setItemAutomationLocked(
 }
 
 /**
+ * Sets the row back to `pending` from any status, `locked` included, and forgets the outcome that was recorded
+ * for it: `error`, `errorCode` and `source`. `attempts` and `lastAttemptAt` keep counting across the whole history.
+ * This is the user's request to look again (issue #1793), so unlike the job's writes above it does not skip a
+ * `locked` row. The row must exist (`ensureItemAutomation`); it is updated, and so row-locked, until the caller's
+ * transaction ends.
+ */
+export async function resetItemAutomationToPending(client: PoolClient, itemId: string): Promise<void> {
+  const result = await client.query(
+    `UPDATE item_automation SET status = 'pending', error = NULL, error_code = NULL, source = NULL
+     WHERE tenant_id = app_tenant_default() AND item_id = $1`,
+    [itemId],
+  );
+  if (result.rowCount !== 1) throw new Error(`item_automation row for item ${itemId} vanished before its reset`);
+}
+
+/**
  * Rows the daily retry sweep re-enqueues: every item under one of the given databases
  * whose whole 3-attempt batch has failed. Joins `items` to scope by database, since
  * `item_automation` itself carries no database_id (it is deliberately generic, not

@@ -3,7 +3,7 @@ import { EXAMPLE_ID } from "./exampleId.js";
 
 /**
  * `ROUTE_MATRIX` slice for the `/api/databases` path family. The entries under `/api/databases/:id/` that address
- * properties, views, items or a query are in `properties.ts`, `views.ts` and `items.ts`.
+ * properties, views, items, a query or facets are in `properties.ts`, `views.ts` and `items.ts`.
  */
 export const DATABASES_ROUTES: RouteMatrixEntry[] = [
   { name: "list databases", method: "GET", path: "/api/databases", surface: "api", public: false, tenancy: "tenant" },

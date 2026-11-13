@@ -1330,6 +1330,8 @@ describe("value link state on writes (issue #1516)", () => {
               expect(persistedProperties).toEqual({
                 name: "Old",
                 date: "2026-10-14",
+                // Issue #1780: a write that names `date` stores the effective day; with no host event it is the date.
+                effectiveDate: "2026-10-14",
                 timeFrom: "09:00",
                 timeTo: key === "timeTo" ? null : "10:00",
                 time: key === "timeTo" ? "09:00" : "09:00–10:00",

@@ -20,6 +20,8 @@ import {
   sendSempMessage,
   startSempMessageTurn,
   publishSempThreadInvalidation,
+  createPendingApprovalRequestAndPublish,
+  createSempChatThread,
   writeNotification,
   createChokePoint,
   createDocStore,
@@ -678,6 +680,131 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
       threadId: "not-a-uuid",
     });
     await notifyEnvelope(pool, "semprec_events", getTenantZeroId(), { type: "invalidation", scope: "sempThread" });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(received).toEqual([]);
+
+    clientA.close();
+  });
+
+  it("delivers an approvalRequest invalidation only to the owner's sockets inside the envelope's tenant (issue #1789)", async () => {
+    const otherTenant = await createTestTenant(pool);
+    const owner = await createTestUser();
+    const peer = await createTestUser();
+    identityByToken.set("owner", { tenantId: getTenantZeroId(), userId: owner, sessionId: "session-owner" });
+    identityByToken.set("peer", { tenantId: getTenantZeroId(), userId: peer, sessionId: "session-peer" });
+    // A socket of another tenant that carries the owner's user id still belongs to another tenant.
+    identityByToken.set("foreign", { tenantId: otherTenant, userId: owner, sessionId: "session-foreign" });
+    const ownerClient = await connect("owner");
+    const peerClient = await connect("peer");
+    const foreignClient = await connect("foreign");
+    const ownerFrames: string[] = [];
+    const others: string[] = [];
+    ownerClient.on("message", (d) => ownerFrames.push(messageText(d)));
+    peerClient.on("message", (d) => others.push(messageText(d)));
+    foreignClient.on("message", (d) => others.push(messageText(d)));
+
+    const approvalRequestId = randomUUID();
+    await notifyEnvelope(pool, "semprec_events", getTenantZeroId(), {
+      type: "invalidation",
+      scope: "approvalRequest",
+      approvalRequestId,
+      userId: owner,
+    });
+    await waitUntil(() => ownerFrames.length > 0);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(ownerFrames.map((text) => JSON.parse(text))).toEqual([
+      { type: "invalidate", scope: "approvalRequest", approvalRequestId },
+    ]);
+    expect(others).toEqual([]);
+
+    ownerClient.close();
+    peerClient.close();
+    foreignClient.close();
+  });
+
+  it("delivers the committed creation of a request once to its owner, with the thread of its run, and nothing for a rolled-back one (issue #1789)", async () => {
+    const owner = await createTestUser();
+    identityByToken.set("owner", { tenantId: getTenantZeroId(), userId: owner, sessionId: "session-owner" });
+    const ownerClient = await connect("owner");
+    const frames: Array<Record<string, unknown>> = [];
+    ownerClient.on("message", (d) => frames.push(JSON.parse(messageText(d)) as Record<string, unknown>));
+    wireRealtimeHooks(pool);
+
+    const threadId = await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, (client) => createSempChatThread(client)),
+    );
+    const run = await createAgentRun(pool, { triggeredBy: "user", task: "announce", userId: owner, threadId });
+    const input = {
+      agentRunId: run.id,
+      toolName: "search",
+      riskClass: "write",
+      payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+      resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+    } as const;
+    await expect(
+      runInTenant(getTenantZeroId(), () =>
+        withTransaction(pool, async (client) => {
+          await createPendingApprovalRequestAndPublish(client, input);
+          throw new Error("force rollback");
+        }),
+      ),
+    ).rejects.toThrow("force rollback");
+    const request = await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, (client) => createPendingApprovalRequestAndPublish(client, input)),
+    );
+
+    await waitUntil(() => frames.length >= 2);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(frames).toHaveLength(2);
+    expect(frames).toContainEqual({ type: "invalidate", scope: "approvalRequest", approvalRequestId: request.id });
+    expect(frames).toContainEqual({ type: "invalidate", scope: "sempThread", threadId });
+
+    ownerClient.close();
+  });
+
+  it("drops an approvalRequest invalidation that names no owner instead of widening it to the tenant (issue #1789)", async () => {
+    identityByToken.set("a", { tenantId: getTenantZeroId(), userId: await createTestUser(), sessionId: "session-a" });
+    const clientA = await connect("a");
+    const received: string[] = [];
+    clientA.on("message", (d) => received.push(messageText(d)));
+    realtimeWarn.mockClear();
+
+    await notifyEnvelope(pool, "semprec_events", getTenantZeroId(), {
+      type: "invalidation",
+      scope: "approvalRequest",
+      approvalRequestId: randomUUID(),
+    });
+    await vi.waitFor(() =>
+      expect(realtimeWarn).toHaveBeenCalledWith(
+        { type: "invalidation", scope: "approvalRequest" },
+        "realtime_approval_request_without_owner",
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(received).toEqual([]);
+
+    clientA.close();
+  });
+
+  it("drops a malformed approvalRequest invalidation without reaching any socket (issue #1789)", async () => {
+    const owner = await createTestUser();
+    identityByToken.set("a", { tenantId: getTenantZeroId(), userId: owner, sessionId: "session-a" });
+    const clientA = await connect("a");
+    const received: string[] = [];
+    clientA.on("message", (d) => received.push(messageText(d)));
+
+    await notifyEnvelope(pool, "semprec_events", getTenantZeroId(), {
+      type: "invalidation",
+      scope: "approvalRequest",
+      approvalRequestId: "not-a-uuid",
+      userId: owner,
+    });
+    await notifyEnvelope(pool, "semprec_events", getTenantZeroId(), {
+      type: "invalidation",
+      scope: "approvalRequest",
+      userId: owner,
+    });
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(received).toEqual([]);
 

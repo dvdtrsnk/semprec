@@ -4,7 +4,7 @@ import { filterNodeSchema, sortSpecSchema } from "./filterSort.js";
 import type { GenericOperationName } from "./operationNames.js";
 
 /**
- * Strict Zod input schemas for the 44-operation catalog (issues #252, #1404, #1676, #1679, #1709, #1722, #1725, #1699), extracted from #37's
+ * Strict Zod input schemas for the 46-operation catalog (issues #252, #1404, #1676, #1679, #1709, #1722, #1725, #1699, #1759, #1765), extracted from #37's
  * domain-command validators into transport-independent shape. Every schema below is a strict
  * object: an unrecognized key — including a spoofed `actor`/`userId`/`agentProjectItemId` or a
  * server-derived/protected field like `system`, `schemaLocked`, `ownerProjectItemId`,
@@ -378,6 +378,36 @@ export const ItemCountInputSchema = z
   .strict();
 export type ItemCountInput = z.infer<typeof ItemCountInputSchema>;
 
+/** Most facets one `database.facets` call takes. */
+const DATABASE_FACETS_MAX_FACETS = 20;
+
+const facetKey = z.string().min(1);
+
+/**
+ * The facets of one database (issue #1759). Each entry of `facets` is the key of a property of the database, or
+ * `{ path: [relationKey, relationKey] }`: a relation of the database and then a relation of the items it reaches.
+ * `filter` is the filter tree `database.query` takes, with the same size limits. `extra.open` is a second filter
+ * tree of that kind. Whether a key or a path names something that can be a facet is decided by the operation.
+ */
+export const DatabaseFacetsInputSchema = z
+  .object({
+    databaseId: canonicalUuid,
+    filter: filterNodeSchema.optional(),
+    facets: z
+      .array(
+        z.union([
+          facetKey,
+          // Explicit length also supplies minItems/maxItems to the input JSON Schema.
+          z.object({ path: z.tuple([facetKey, facetKey]).check(z.length(2)) }).strict(),
+        ]),
+      )
+      .min(1)
+      .max(DATABASE_FACETS_MAX_FACETS),
+    extra: z.object({ open: filterNodeSchema }).strict().optional(),
+  })
+  .strict();
+export type DatabaseFacetsInput = z.infer<typeof DatabaseFacetsInputSchema>;
+
 /** Matches the `view_items.position` `integer` (int4) column's range. */
 const viewItemPosition = z.number().int().min(0).max(2147483647);
 
@@ -557,6 +587,23 @@ export const PageInsertInputSchema = z
   .strict();
 export type PageInsertInput = z.infer<typeof PageInsertInputSchema>;
 
+/** Longest `expectedEtag` a replace accepts; a page version is a 43 character base64url SHA-256, so this only bounds the edge. */
+const PAGE_REPLACE_MAX_ETAG_LENGTH = 128;
+
+/**
+ * Replaces the whole body of the page of `itemId` with `markdown` (issue #1765) when the page still has the version
+ * `expectedEtag`, the token `page.get` with `format: "markdown"` returns. Whether the token is current, and whether
+ * every page link names a subpage of the page, is decided by the operation, not by this schema.
+ */
+export const PageReplaceInputSchema = z
+  .object({
+    itemId: canonicalUuid,
+    markdown: z.string().max(PAGE_INSERT_MAX_MARKDOWN_LENGTH),
+    expectedEtag: z.string().min(1).max(PAGE_REPLACE_MAX_ETAG_LENGTH),
+  })
+  .strict();
+export type PageReplaceInput = z.infer<typeof PageReplaceInputSchema>;
+
 /** The most entries one `page.changes` call returns, and what it returns without a `limit`. */
 const PAGE_CHANGES_MAX_LIMIT = 500;
 const PAGE_CHANGES_DEFAULT_LIMIT = 100;
@@ -589,7 +636,7 @@ export const PageRestoreVersionInputSchema = z
   .strict();
 export type PageRestoreVersionInput = z.infer<typeof PageRestoreVersionInputSchema>;
 
-/** Exhaustive mapped type over the 44 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 46 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
 export interface InputByOperation {
   "database.list": DatabaseListInput;
   "database.get": DatabaseGetInput;
@@ -631,10 +678,12 @@ export interface InputByOperation {
   "page.ensure": PageEnsureInput;
   "page.createSubpage": PageCreateSubpageInput;
   "page.insert": PageInsertInput;
+  "page.replace": PageReplaceInput;
   "page.changes": PageChangesInput;
   "item.count": ItemCountInput;
   "page.duplicate": PageDuplicateInput;
   "page.rename": PageRenameInput;
+  "database.facets": DatabaseFacetsInput;
 }
 
 /** Fails to compile if `InputByOperation`'s keys and `GenericOperationName`'s literals ever diverge in either direction. */

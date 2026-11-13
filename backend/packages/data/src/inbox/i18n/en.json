@@ -59,6 +59,7 @@
   "invalidReason.sourceDeleted": "The source Inbox item “{label}” was deleted, so this proposal can no longer be completed.",
   "invalidReason.targetArchived": "The target “{label}” was archived, so this proposal has nowhere to go. Choose another target or ask Semp to recompute.",
   "invalidReason.targetDeleted": "The target “{label}” was deleted, so this proposal has nowhere to go. Choose another target or ask Semp to recompute.",
+  "invalidReason.unknown": "This proposal can no longer be used.",
   "viewType.journal-inbox.name": "Journal inbox",
   "editor.mcp.name.label": "Name",
   "editor.mcp.name.placeholder": "Server name",
@@ -73,5 +74,16 @@
   "agentTool.inbox.proposal.get.label": "Read Inbox proposal",
   "inbox.recognition.chooseType": "Choose an item type.",
   "inbox.recognition.typeShortage": "Fewer than two valid active types are available.",
-  "inbox.recognition.changed": "The selected type or destination is unavailable or changed. Please clarify."
+  "inbox.recognition.changed": "The selected type or destination is unavailable or changed. Please clarify.",
+  "card.target.task": "Task",
+  "card.target.event": "Event",
+  "card.target.page": "Page",
+  "card.target.journal": "Journal",
+  "card.target.project": "Project",
+  "card.target.area": "Area",
+  "card.target.company": "Company",
+  "card.target.person": "Person",
+  "card.target.health": "Health record",
+  "card.target.file": "File",
+  "card.target.speaker": "Speaker"
 }

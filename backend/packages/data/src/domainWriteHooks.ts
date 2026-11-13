@@ -9,7 +9,8 @@ import { inboxTypeEdgeChangedHook } from "./inbox/inboxTypeEdgeHook.js";
 import { prepareProjectWrite, projectWriteTransform } from "./projects/projectWriteTransform.js";
 import { areaItemCreateHook, areaItemUpdateHook } from "./areas/areaWriteHook.js";
 import { booksPreWriteTransform } from "./library/booksPreWriteTransform.js";
-import { BOOKS_MODULE_ID } from "./seed/libraryModuleKeys.js";
+import { libraryCoverPreWriteTransform, prepareLibraryCoverWrite } from "./library/libraryCoverHooks.js";
+import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "./seed/libraryModuleKeys.js";
 import {
   mailboxConnectionLimitCreateHook,
   mailboxConnectionLimitUpdateHook,
@@ -30,6 +31,7 @@ import {
   registerItemUpdateCommand,
   registerItemPatchApprovalContribution,
   registerItemUpdateHook,
+  registerItemUpdatePreLockHook,
   registerRelationEdgeWriteHook,
   registerRelationEdgeDeleteHook,
   registerRelationEdgeChangedHook,
@@ -58,9 +60,17 @@ import {
 } from "./calendar/eventReminderValuesHook.js";
 import { eventParticipantEdgeWriteHook } from "./calendar/eventParticipantEdgeHook.js";
 import { defaultCalendarCreateHook } from "./calendar/defaultCalendarCreateHook.js";
+import {
+  calendarItemCreateHook,
+  calendarItemUpdateHook,
+  calendarItemUpdatePreLockHook,
+} from "./calendar/calendarRowHooks.js";
+import { CALENDARS_MODULE_ID } from "./seed/calendarsKeys.js";
 import { taskRecurrenceItemUpdateHook } from "./tasks/taskRecurrenceItemUpdateHook.js";
 import { prepareTaskProposal, taskPreWriteTransform } from "./tasks/taskPreWriteTransform.js";
 import { taskSourceEventLinkDetachEdgeChangedHook } from "./tasks/taskSourceEventLinkDetach.js";
+import { taskHostEventEdgeChangedHook, taskHostEventScheduleItemUpdateHook } from "./tasks/taskHostEventHooks.js";
+import { taskCompletedInEventHook } from "./tasks/taskCompletedInEventHook.js";
 import { threadValueEdgeDeleteHook, threadValueEdgeWriteHook } from "./mail/threadValueEdges.js";
 import { transcriptSpeakerEdgeWriteHook } from "./transcription/transcriptionSpeakerEdges.js";
 import { transcriptRestoreHook } from "./transcription/transcriptRestoreHook.js";
@@ -102,8 +112,15 @@ import {
   peopleLastContactItemUpdateHook,
 } from "./people/lastContactHooks.js";
 import { projectDerivedValueEdgeChangedHook } from "./derived/projectDerivedValueHook.js";
-import { pageItemDeleteHook, pageItemRestoreHook } from "./docs/pageTrash.js";
+import { hostItemDeleteHook, hostItemRestoreHook, pageItemDeleteHook, pageItemRestoreHook } from "./docs/pageTrash.js";
 import { mailboxItemRestoreHook } from "./mail/mailboxRestoreHook.js";
+import {
+  prepareSleepWrite,
+  sleepItemCreateHook,
+  sleepItemUpdateHook,
+  sleepPreWriteTransform,
+} from "./sleep/sleepWriteHooks.js";
+import { SLEEP_NIGHTS_MODULE_ID, SLEEP_PLANS_MODULE_ID, SLEEP_SETTINGS_MODULE_ID } from "./seed/sleepModuleKeys.js";
 
 registerItemPreWriteTransform(TASKS_MODULE_ID, taskPreWriteTransform, prepareTaskProposal);
 registerItemPatchApprovalContribution(TASKS_MODULE_ID, projectRecurrenceApproval);
@@ -121,6 +138,9 @@ registerItemPreWriteTransform(BOOKS_MODULE_ID, booksPreWriteTransform, async (co
   patch: await booksPreWriteTransform(context),
   deferredKeys: [],
 }));
+// Issue #1793: the user-owned cover properties of Books and Movies, after the Books year rule above.
+registerItemPreWriteTransform(BOOKS_MODULE_ID, libraryCoverPreWriteTransform, prepareLibraryCoverWrite);
+registerItemPreWriteTransform(MOVIES_MODULE_ID, libraryCoverPreWriteTransform, prepareLibraryCoverWrite);
 registerItemPreWriteTransform(PROJECTS_MODULE_ID, projectWriteTransform, prepareProjectWrite);
 registerItemPreWriteTransform(FILES_MODULE_ID, filesItemPreWriteTransform, async ({ stored, patch }) => ({
   patch,
@@ -242,3 +262,31 @@ registerRelationEdgeWriteHook(eventParticipantEdgeWriteHook);
 
 // Issue #1761: a new Event gets its calendar, after every Events rule registered above accepted it.
 registerItemCreateHook(defaultCalendarCreateHook);
+
+// Issue #1763: a trashed item of any database but Pages takes its live subpages with it, and its restore brings
+// back the subpages of its deletion epoch.
+registerItemDeleteHook(hostItemDeleteHook);
+registerItemRestoreHook(hostItemRestoreHook);
+
+// Issue #1778: the name, colour and single-default rules of a row of the Calendars database.
+registerItemCreateHook(calendarItemCreateHook);
+registerItemUpdateHook(calendarItemUpdateHook);
+// An update that names `isDefault` takes the lock of the default mark before it locks the calendar's row.
+registerItemUpdatePreLockHook(CALENDARS_MODULE_ID, calendarItemUpdatePreLockHook);
+
+// Issue gh-1784: the sleep databases store times as HH:MM, hold valid values, and allow one settings item and one
+// exception per night.
+for (const moduleId of [SLEEP_SETTINGS_MODULE_ID, SLEEP_PLANS_MODULE_ID, SLEEP_NIGHTS_MODULE_ID]) {
+  registerItemPreWriteTransform(moduleId, sleepPreWriteTransform, prepareSleepWrite);
+}
+registerItemCreateHook(sleepItemCreateHook);
+registerItemUpdateHook(sleepItemUpdateHook);
+
+// Issue #1780: a task's `hiddenUntil` and `effectiveDate` follow its host-event edges and those Events' dates and
+// times. The third trigger, the task's own `date` and its create, is the Tasks transform registered above.
+registerRelationEdgeChangedHook(taskHostEventEdgeChangedHook);
+registerItemUpdateHook(taskHostEventScheduleItemUpdateHook);
+
+// Issue #1781: a task set to `done` before the end of its last host event is completed in that event; setting it
+// back to `notDone` or `wontDo` removes the edge. After the host state hooks of issue #1780 and the recurrence advance.
+registerItemUpdateHook(taskCompletedInEventHook);

@@ -9,6 +9,7 @@
 // docs/adr/2026-10-29-events-hold-many-transcripts.md
 import type { PoolClient } from "pg";
 import * as itemsStore from "../chokePoint/itemsStore.js";
+import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import { loadRelationEdgeContext } from "../chokePoint/relationEdgeContext.js";
 import { deleteRelationWithClient } from "../chokePoint/relationOps.js";
@@ -93,4 +94,26 @@ export async function releaseTrashedEventEdges(
       actingUserId,
     );
   }
+}
+
+/**
+ * The live Event the transcript's `event` edge points to, or `null`: for a transcript without an edge, for
+ * one whose edge points to an Event in the Trash, and when the database `transcriptsDatabaseId` has no
+ * `event` relation. It takes no lock, so a later statement of the same transaction can find the Event
+ * moved to the Trash or restored.
+ */
+export async function readLiveTranscriptEventId(
+  client: PoolClient,
+  transcriptsDatabaseId: string,
+  transcriptId: string,
+): Promise<string | null> {
+  const property = await propertiesStore.getPropertyByKey(client, transcriptsDatabaseId, "event");
+  const definition = property && (await relationsStore.getRelationDefinitionByPropertyId(client, property.id));
+  if (!definition) return null;
+  const edges = await relationsStore.listRelationsForItem(client, definition.id, transcriptId);
+  const events = await itemsStore.getItemsByIds(
+    client,
+    edges.map((edge) => relationsStore.otherSide(edge, transcriptId)),
+  );
+  return events[0]?.id ?? null;
 }

@@ -43,7 +43,7 @@ describe("repairInterruptedRuns", () => {
     await pool?.end();
   });
 
-  it("closes every running run as error/interrupted_by_restart and leaves finished runs untouched", async () => {
+  it("closes every running run as error/interrupted and leaves finished runs untouched", async () => {
     const orphanA = await createAgentRun(pool, { triggeredBy: "heartbeat", task: "a" });
     const orphanB = await createAgentRun(pool, { triggeredBy: "user", task: "b" });
     const alreadyDone = await createAgentRun(pool, { triggeredBy: "mcp", task: "c" });
@@ -60,12 +60,12 @@ describe("repairInterruptedRuns", () => {
     const byId = new Map(rows.map((r) => [r.id, r]));
 
     expect(byId.get(orphanA.id)?.status).toBe("error");
-    expect(byId.get(orphanA.id)?.result).toBe("interrupted_by_restart");
+    expect(byId.get(orphanA.id)?.result).toBe("interrupted");
     expect((await getAgentRun(pool, orphanA.id))?.errorCode).toBe("interrupted");
     expect(byId.get(orphanA.id)?.finished_at).not.toBeNull();
 
     expect(byId.get(orphanB.id)?.status).toBe("error");
-    expect(byId.get(orphanB.id)?.result).toBe("interrupted_by_restart");
+    expect(byId.get(orphanB.id)?.result).toBe("interrupted");
 
     expect(byId.get(alreadyDone.id)?.status).toBe("done");
   });
@@ -251,7 +251,7 @@ describe("repairInterruptedRuns", () => {
     expect(byId.get(heartbeatRun.id)).toEqual({
       id: heartbeatRun.id,
       status: "error",
-      result: "interrupted_by_restart",
+      result: "interrupted",
     });
 
     const { rows: mcpEvents } = await pool.query<{ kind: string }>(

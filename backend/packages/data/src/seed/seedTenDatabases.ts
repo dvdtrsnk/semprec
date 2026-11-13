@@ -28,6 +28,7 @@ import {
   type TenDatabaseModuleId,
 } from "./tenDatabaseKeys.js";
 import { ensureUnplannedArea } from "./seedUnplannedArea.js";
+import { SENSITIVE_DATABASE_KEYS } from "./sensitiveDatabaseKeys.js";
 import { PROJECTS_OWNER_PROCESS } from "../projects/projectWriteTransform.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
 
@@ -56,7 +57,13 @@ interface PropSpec {
 
 /** `key` doubles as `databases.key` (issue #235) and `owner_module_id` — a system database's built-in `name` is always null; its display label comes from the future translation catalog (#146/#147). */
 async function createDb(client: PoolClient, key: TenDatabaseModuleId): Promise<DatabaseRow> {
-  return databasesStore.createDatabase(client, { name: null, key, system: true, ownerModuleId: key });
+  return databasesStore.createDatabase(client, {
+    name: null,
+    key,
+    system: true,
+    ownerModuleId: key,
+    sensitive: SENSITIVE_DATABASE_KEYS.includes(key),
+  });
 }
 
 async function createProps(client: PoolClient, databaseId: string, specs: PropSpec[]): Promise<void> {

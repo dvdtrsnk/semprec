@@ -48,3 +48,21 @@ describe("parseServerFrame sempThread invalidation (issue #1395)", () => {
     expect(parseServerFrame("{not json")).toBeNull();
   });
 });
+
+describe("parseServerFrame approvalRequest invalidation (issue #1789)", () => {
+  const approvalRequestId = "2f1d6a9e-3c1b-4f0e-9a52-7d3b8c1e4a60";
+
+  it("parses a well-formed approvalRequest invalidate frame", () => {
+    expect(
+      parseServerFrame(JSON.stringify({ type: "invalidate", scope: "approvalRequest", approvalRequestId })),
+    ).toEqual({ type: "invalidate", scope: "approvalRequest", approvalRequestId });
+  });
+
+  it.each([
+    ["a missing request id", { type: "invalidate", scope: "approvalRequest" }],
+    ["a non-string request id", { type: "invalidate", scope: "approvalRequest", approvalRequestId: 7 }],
+    ["a non-uuid request id", { type: "invalidate", scope: "approvalRequest", approvalRequestId: "request-1" }],
+  ])("ignores %s", (_label, frame) => {
+    expect(parseServerFrame(JSON.stringify(frame))).toBeNull();
+  });
+});

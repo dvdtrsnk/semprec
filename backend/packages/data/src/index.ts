@@ -27,7 +27,8 @@ export { enqueueMailThreadBackfill } from "./mail/mailThreadBackfillJob.js";
 
 export { createChokePoint, type ChokePoint } from "./chokePoint/chokePoint.js";
 export type { Actor } from "./chokePoint/authorization.js";
-export { createValueLinkOps } from "./chokePoint/valueLinkOps.js";
+export { changeValueLinkWithClient, createValueLinkOps, type ValueLinkWriter } from "./chokePoint/valueLinkOps.js";
+export type { BreakingValueLinks } from "./chokePoint/valueLinkApproval.js";
 export { VALUE_LINKS_OWNER_PROCESS } from "./chokePoint/valueLinkWrites.js";
 export { insertValueLink, type InsertValueLinkInput } from "./chokePoint/valueLinksStore.js";
 export type { ItemValueLinks, ValueLinkEntry, ValueLinkSource } from "./chokePoint/valueLinkReads.js";
@@ -166,14 +167,20 @@ export * from "./notifications/notificationsStore.js";
 export * from "./notifications/notificationPreferencesStore.js";
 export * from "./notifications/notificationFanoutJob.js";
 export { approvalNotificationBody } from "./notifications/approvalNotificationBody.js";
+export { approvalNotificationLinkHref } from "./notifications/approvalNotificationLink.js";
 
 export * from "./agentRuns/agentRunsStore.js";
+export { getAgentRunDetail } from "./agentRuns/agentRunDetail.js";
+export { agentRunErrorFields, agentRunErrorSummary } from "./agentRuns/agentRunErrorSummary.js";
+export { deriveRunDisplayStatus } from "./agentRuns/agentRunDisplayStatus.js";
+export type { AgentRunDisplayStatus } from "./agentRuns/agentRunDisplayStatus.js";
 export { AgentRunError, AiBudgetExceededError, agentRunErrorCodeOf } from "./agentRuns/agentRunErrorCodes.js";
 export * from "./agentRuns/agentRunEventsStore.js";
 export {
   AGENT_RUN_EVENTS_RETENTION_DAYS,
   handleAgentRunEventsRetentionTask,
 } from "./agentRuns/agentRunEventsRetention.js";
+export * from "./aiGateway/agentRunUsage.js";
 export * from "./aiGateway/aiGatewayCallsStore.js";
 export * from "./aiGateway/aiUsageReport.js";
 export * from "./aiGateway/aiUsageSummary.js";
@@ -190,6 +197,7 @@ export {
 export * from "./observability/systemHealthReport.js";
 export { seedSystem } from "./seed/seedSystem.js";
 export * from "./seed/tenDatabaseKeys.js";
+export { SENSITIVE_DATABASE_KEYS } from "./seed/sensitiveDatabaseKeys.js";
 export {
   enqueueTranscriptionJob,
   transcriptionJobPayloadSchema,
@@ -268,6 +276,7 @@ export {
   type ModuleWorkerInstanceReconciler,
 } from "./moduleWorkers.js";
 export { manifest as libraryModuleManifest } from "./library/libraryModuleManifest.js";
+export { createLibraryAutomationRetryRouteHandler } from "./library/libraryAutomationRouteHandlers.js";
 export {
   createMailLiveSyncRoot,
   createNoopMailLiveSyncLifecycleFactory,
@@ -424,7 +433,15 @@ export { runDocHistoryCutoverMigration } from "./docs/docHistoryCutoverMigration
 export { manifest as docsModuleManifest } from "./docs/docsModuleManifest.js";
 export { PAGES_MODULE_ID, ensurePagesDatabase } from "./docs/pagesDatabase.js";
 export { collectSubpageTree } from "./docs/pageTrash.js";
-export { docEtag, readPageMarkdown, type PageMarkdownRead } from "./docs/pageMarkdown.js";
+export {
+  docEtag,
+  PageVersionConflictError,
+  readPageMarkdown,
+  replacePageMarkdown,
+  type PageMarkdownRead,
+  type ReplacePageMarkdownInput,
+  type ReplacePageMarkdownResult,
+} from "./docs/pageMarkdown.js";
 export { readProjectNotes } from "./docs/projectNotesRead.js";
 export { listPageChanges, type PageChange, type PageChangeKind } from "./docs/pageChanges.js";
 export { PAGE_TITLE_MAX_LENGTH, normalizePageTitle } from "./docs/pageTitle.js";
@@ -464,6 +481,7 @@ export { extractAttachmentText, isTextExtractableContentType } from "./mail/atta
 export * from "./tasks/taskRecurrenceRule.js";
 export { taskDisplayDay } from "./tasks/taskDisplayDay.js";
 export { taskSinceRule } from "./tasks/taskSinceRule.js";
+export { computeTaskHostState, recomputeTaskHostState } from "./tasks/taskHostEventState.js";
 export { projectToolCallUsageStore } from "./guidanceDrift/projectToolCallUsageStore.js";
 export { loadGuidanceSections, saveGuidanceSections } from "./projectAgentGuidance/projectAgentGuidanceSections.js";
 export {
@@ -562,6 +580,7 @@ export {
 } from "./sleep/resolveSleepNights.js";
 export { createCalendarTimelineRouteHandler } from "./calendar/timelineRouteHandler.js";
 export { createListEventPeopleRouteHandler } from "./calendar/eventParticipantsRouteHandlers.js";
+export { createAreaOverviewRouteHandler } from "./areas/areaOverviewRouteHandler.js";
 export { createEventInCalendar } from "./calendar/defaultCalendarCreateHook.js";
 export { manifest as inboxPipelineModuleManifest } from "./inbox/inboxModuleManifest.js";
 
@@ -598,6 +617,7 @@ export * from "./auth/passwordChangeActions.js";
 export * from "./push/types.js";
 export * from "./push/pushSubscriptionsStore.js";
 export * from "./push/pushSubscriptionActions.js";
+export { handlePushDismissTask } from "./push/pushDismissJob.js";
 
 // `mcpGrantsAdminStore.ts`'s user-only grant/risk-class/approval mutations are deliberately
 // NOT exported here — see that file's header comment (issue #124).
@@ -641,9 +661,12 @@ export {
 } from "./mcp/mcpAgentPageGrants.js";
 export type {
   ApprovalDescription,
+  BreaksLinkEntry,
+  EndsInheritanceEntry,
   ApprovalRequest,
   ApprovalRequestPayload,
   McpInvokeApprovalRequestPayload,
+  ModuleToolApprovalRequestPayload,
   GenericOperationApprovalRequestPayload,
   ApprovalRequestStatus,
   ApprovalRequestDecision,
@@ -654,10 +677,13 @@ export type {
 export {
   APPROVAL_REQUEST_REASON_MAX_LENGTH,
   APPROVAL_REQUEST_SOURCE_KINDS,
+  countPendingApprovalRequests,
   createPendingApprovalRequest,
   getApprovalRequest,
+  getApprovalRequestForOwner,
   listPendingApprovalRequests,
   isGenericOperationApprovalRequestPayload,
+  isMcpInvokeApprovalRequestPayload,
   parseApprovalRequestListCursor,
   terminalizeApprovalRequestAsConflict,
   markApprovalRequestExecutionSucceeded,
@@ -669,10 +695,13 @@ export type {
   ApprovalRequestSource,
   DecidedApprovalRequestQueueEntry,
 } from "./mcp/approvalRequestsQueue.js";
+export type { ApprovalRequestArgumentValues } from "./mcp/approvalRequestArguments.js";
+export { toApprovalRequestArgumentValues } from "./mcp/approvalRequestArguments.js";
 export { buildDestructiveApprovalDescription, buildMcpInvokeApprovalDescription } from "./mcp/approvalDescription.js";
 export type { ApprovalConflictReason } from "./mcp/approvalConflictReason.js";
 export { approvalConflictReason } from "./mcp/approvalConflictReason.js";
 export {
+  getApprovalRequestSourceKind,
   listApprovalRequestsQueue,
   listApprovalRequestsQueuePage,
   toApprovalRequestDecisionView,
@@ -698,6 +727,9 @@ export type { GenericOperationApprovalReplay } from "./mcp/approvalRequestExecut
 // reachable from a route handler.
 export type { DecideApprovalRequestInput, DecideAndEnqueueResult } from "./mcp/approvalDecisionAction.js";
 export { decideAndEnqueueApprovalRequest } from "./mcp/approvalDecisionAction.js";
+export { createPendingApprovalRequestAndPublish, publishApprovalRequestChange } from "./mcp/approvalRequestRealtime.js";
+export type { CreateModuleToolApprovalRequestInput } from "./mcp/moduleToolApprovalRequest.js";
+export { createModuleToolApprovalRequest } from "./mcp/moduleToolApprovalRequest.js";
 
 // `mcpRunCredentialsStore.ts`'s raw hash-keyed lookup is deliberately NOT exported here, mirroring
 // `sessionsStore.ts`'s `getActiveSessionByTokenHash`: only the action-layer wrapper that hashes the
@@ -815,7 +847,9 @@ export {
 } from "./semp/sempMessagesStore.js";
 export { enqueueSempThreadTitleIfFirst, handleSempThreadTitle } from "./semp/sempThreadTitle.js";
 
+export type { ResolvedModuleAgentTool } from "./agentTools/moduleAgentTools.js";
 export { resolveModuleAgentToolsForRun } from "./agentTools/moduleAgentTools.js";
+export { describeModuleToolFailure } from "./agentTools/describeModuleToolFailure.js";
 
 export { createMailboxListRouteHandler, createMailboxDetailRouteHandler } from "./mail/mailboxRouteHandlers.js";
 export {

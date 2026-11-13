@@ -247,6 +247,10 @@ function relationFrame(side: "task" | "event", itemId: string, op: "put" | "dele
   };
 }
 
+/** The announcement of a stored change of the task itself, which the recomputation of its host state makes. */
+const taskItemFrame = (taskId: string) =>
+  expect.objectContaining({ scope: "item", databaseId: home.tasksId, itemId: taskId, op: "update" });
+
 const eventIdsOf = (response: { body: { hostEvents: Array<{ eventId: string }> } }): string[] =>
   response.body.hostEvents.map((entry) => entry.eventId);
 
@@ -364,13 +368,20 @@ describe("PUT /api/tasks/:id/host-events/:eventId (issue #1764)", () => {
     ]);
   });
 
-  it("announces the relation to the task and to the event", async () => {
+  it("announces the relation to the task and to the event, and the change of the task's host state", async () => {
     const [taskId, eventId] = [await task(), await event()];
     const { frames } = await framesOf(() => put(taskId, eventId));
-    expect(frames).toEqual([relationFrame("task", taskId, "put"), relationFrame("event", eventId, "put")]);
+    expect(frames).toHaveLength(3);
+    expect(frames).toEqual(
+      expect.arrayContaining([
+        relationFrame("task", taskId, "put"),
+        relationFrame("event", eventId, "put"),
+        taskItemFrame(taskId),
+      ]),
+    );
   });
 
-  it("puts a done task into an event and changes nothing else on it", async () => {
+  it("puts a done task into an event and changes only its host state", async () => {
     const [taskId, eventId] = [await task({ date: "2026-10-12" }), await event()];
     await runInTenant(home.id, () =>
       cp.updateItem({ databaseId: home.tasksId, itemId: taskId, propertiesPatch: { status: "done" } }),
@@ -378,7 +389,8 @@ describe("PUT /api/tasks/:id/host-events/:eventId (issue #1764)", () => {
     const before = await storedTask(taskId);
     expect(before.properties.status).toBe("done");
     expect(eventIdsOf(await put(taskId, eventId))).toEqual([eventId]);
-    expect(await storedTask(taskId)).toEqual(before);
+    // The event of 16 October is past: the task is not hidden, and its effective day is the later of the two days.
+    expect((await storedTask(taskId)).properties).toEqual({ ...before.properties, effectiveDate: "2026-10-16" });
   });
 
   it("puts a task whose recurrence was turned off into an event", async () => {
@@ -419,7 +431,14 @@ describe("PUT /api/tasks/:id/host-events/:eventId (issue #1764)", () => {
     expect(eventIdsOf(response)).toEqual([eventId]);
     const { result, frames } = await framesOf(() => removeOne(taskId.toUpperCase(), eventId.toUpperCase()));
     expect(result.body).toEqual({ taskId, hostEvents: [] });
-    expect(frames).toEqual([relationFrame("task", taskId, "delete"), relationFrame("event", eventId, "delete")]);
+    expect(frames).toHaveLength(3);
+    expect(frames).toEqual(
+      expect.arrayContaining([
+        relationFrame("task", taskId, "delete"),
+        relationFrame("event", eventId, "delete"),
+        taskItemFrame(taskId),
+      ]),
+    );
     expect(await storedEdges(taskId)).toEqual([]);
   });
 });
@@ -491,8 +510,15 @@ describe("DELETE /api/tasks/:id/host-events (issue #1764)", () => {
     expect(result).toEqual({ status: 200, body: { taskId, hostEvents: [] } });
     expect(await storedEdges(taskId)).toEqual([]);
     const after = await storedTask(taskId);
-    expect(after.properties).toMatchObject({ date: "2026-10-16", timeFrom: "09:00", time: "09:00" });
-    expect(frames).toHaveLength(5);
+    // With no host event left the effective day follows the task's own date, the new one.
+    expect(after.properties).toMatchObject({
+      date: "2026-10-16",
+      timeFrom: "09:00",
+      time: "09:00",
+      effectiveDate: "2026-10-16",
+    });
+    // Four relation frames, the recomputation after the last edge and the write of the new date.
+    expect(frames).toHaveLength(6);
     expect(frames).toEqual(
       expect.arrayContaining([
         relationFrame("task", taskId, "delete"),
@@ -502,6 +528,7 @@ describe("DELETE /api/tasks/:id/host-events (issue #1764)", () => {
         { scope: "item", databaseId: home.tasksId, itemId: taskId, op: "update", updatedAt: after.updatedAt, userId },
       ]),
     );
+    expect(frames.filter((frame) => frame.scope === "item")).toHaveLength(2);
   });
 
   it("changes nothing when the new time is refused", async () => {
@@ -518,7 +545,7 @@ describe("DELETE /api/tasks/:id/host-events (issue #1764)", () => {
     expect({ edges: await storedEdges(taskId), task: await storedTask(taskId) }).toEqual(before);
   });
 
-  it("removes every edge and leaves the task as it is when the body is empty", async () => {
+  it("removes every edge and leaves the task's own properties as they are when the body is empty", async () => {
     const taskId = await task({ date: "2026-10-12", timeFrom: "07:00" });
     const [first, second] = [await event(), await event()];
     await put(taskId, first);
@@ -526,13 +553,16 @@ describe("DELETE /api/tasks/:id/host-events (issue #1764)", () => {
     const before = await storedTask(taskId);
     const { frames } = await framesOf(() => removeAll(taskId, {}));
     expect(await storedEdges(taskId)).toEqual([]);
-    expect(await storedTask(taskId)).toEqual(before);
-    expect(frames).toHaveLength(3);
+    // Only the effective day moves, from the day of the events back to the task's own date.
+    expect(before.properties.effectiveDate).toBe("2026-10-16");
+    expect((await storedTask(taskId)).properties).toEqual({ ...before.properties, effectiveDate: "2026-10-12" });
+    expect(frames).toHaveLength(4);
     expect(frames).toEqual(
       expect.arrayContaining([
         relationFrame("task", taskId, "delete"),
         relationFrame("event", first, "delete"),
         relationFrame("event", second, "delete"),
+        taskItemFrame(taskId),
       ]),
     );
   });

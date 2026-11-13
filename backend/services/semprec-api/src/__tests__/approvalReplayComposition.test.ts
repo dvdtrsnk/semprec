@@ -24,6 +24,9 @@ import {
   decideAndEnqueueApprovalRequest,
   getApprovalRequest,
   hashPassword,
+  insertValueLink,
+  setInvalidationHook,
+  type InvalidationEvent,
   login,
   requireApprovalForWrite,
   loadFullModuleRegistry,
@@ -377,6 +380,131 @@ describe("createApiQueueRuntime generic-operation approval replay (issue #646)",
       expect(writers).toHaveLength(2);
     } finally {
       active = false;
+    }
+  });
+  /** A file whose `title` follows its task's `name` through an active value link (issue #1758). */
+  async function linkedFileFixture(cp: ReturnType<typeof createChokePoint>) {
+    const tasks = await cp.createDatabase({ name: "Link tasks" });
+    await cp.createProperty({ databaseId: tasks.id, key: "name", name: "Name", type: "text" });
+    const files = await cp.createDatabase({ name: "Link files" });
+    await cp.createProperty({ databaseId: files.id, key: "title", name: "Title", type: "text" });
+    const task = await cp.createItem({ databaseId: tasks.id, properties: { name: "Plan trip" } });
+    const file = await cp.createItem({ databaseId: files.id, properties: { title: "Old title" } });
+    await withTransaction(pool, (client) =>
+      insertValueLink(client, {
+        itemId: file.id,
+        propertyKey: "title",
+        ruleKey: "test",
+        sources: [{ kind: "item", sourceItemId: task.id, sourcePropertyKey: "name" }],
+      }),
+    );
+    return { file };
+  }
+
+  async function linkOf(itemId: string) {
+    const { rows } = await pool.query<{ state: string; broken_by: string | null }>(
+      "SELECT state, broken_by FROM value_links WHERE item_id = $1 AND property_key = 'title'",
+      [itemId],
+    );
+    return rows[0];
+  }
+
+  it("replays an agent write that ends a value link through the real approval worker once", async () => {
+    const cp = createChokePoint(pool);
+    const { file } = await linkedFileFixture(cp);
+    const projectItemId = randomUUID();
+    const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "retitle" });
+    const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+    const gateway = createGenericOperationGateway(pool, testMetadataResolver);
+    let requestId = "";
+    try {
+      await inTenantZero(async () =>
+        gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
+          itemId: file.id,
+          properties: { title: "Agent title" },
+          ifVersion: file.updatedAt,
+        }),
+      );
+      expect.unreachable("Expected approval");
+    } catch (err) {
+      if (!(err instanceof ApprovalRequiredError)) throw err;
+      requestId = err.details.approvalRequestId;
+    }
+    expect((await getApprovalRequest(pool, requestId))?.riskClass).toBe("breaksLink");
+    expect((await cp.findItem(file.id))?.properties.title).toBe("Old title");
+    expect(await linkOf(file.id)).toEqual({ state: "on", broken_by: null });
+    await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        decideAndEnqueueApprovalRequest(client, {
+          approvalRequestId: requestId,
+          decision: "approved",
+          decidedByUserId: run.actorUserId,
+        }),
+      ),
+    );
+
+    const events: InvalidationEvent[] = [];
+    setInvalidationHook((event) => events.push(event));
+    try {
+      runtime = await createApiQueueRuntime(pool, await loadFullModuleRegistry());
+      await waitFor(async () => (await getApprovalRequest(pool, requestId))?.executionStatus === "succeeded");
+    } finally {
+      setInvalidationHook(() => {});
+    }
+
+    expect((await cp.findItem(file.id))?.properties.title).toBe("Agent title");
+    expect(await linkOf(file.id)).toEqual({ state: "broken", broken_by: "agent" });
+    // The write and the announcement of the broken link are attributed to the user the run acts for.
+    const fileEvents = events.filter((event) => event.scope === "item" && event.itemId === file.id);
+    expect(fileEvents).not.toEqual([]);
+    for (const event of fileEvents) expect(event.userId).toBe(run.actorUserId);
+    const finished = await getApprovalRequest(pool, requestId);
+    await inTenantZero(() =>
+      enqueueJob(pool, CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE, { approvalRequestId: requestId }),
+    );
+    await waitFor(async () => (await countJobsByIdentifier(pool, CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE)) === 0);
+    expect(await getApprovalRequest(pool, requestId)).toEqual(finished);
+    expect((await cp.findItem(file.id))?.properties.title).toBe("Agent title");
+  });
+
+  it("executes the same write from a human /mcp session at once and breaks the link with broken_by agent", async () => {
+    const cp = createChokePoint(pool);
+    const { file } = await linkedFileFixture(cp);
+    const gateway = createGenericOperationGateway(pool, testMetadataResolver);
+    const server = createServer(
+      await createMcpRequestListener(pool, gateway, ALL_CAPABILITIES, new ModuleRegistry(() => new Set())),
+    );
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Expected TCP address");
+      const { token } = await login(pool, {
+        email: "approval@example.test",
+        password: "test-password",
+        platform: "ios",
+        ip: "127.0.0.1",
+      });
+      const response = await fetch(`http://127.0.0.1:${address.port}/mcp`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "semprec.item.patch",
+            arguments: { itemId: file.id, properties: { title: "Human title" }, ifVersion: file.updatedAt },
+          },
+        }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ jsonrpc: "2.0", id: 1, result: { content: expect.any(Array) } });
+      expect((await cp.findItem(file.id))?.properties.title).toBe("Human title");
+      expect(await linkOf(file.id)).toEqual({ state: "broken", broken_by: "agent" });
+      const requests = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM approval_requests");
+      expect(requests.rows[0]?.count).toBe("0");
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
     }
   });
 });

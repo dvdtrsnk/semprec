@@ -1,4 +1,5 @@
 import { insertInboxOriginNotes } from "./originNote.js";
+import { isDeepStrictEqual } from "node:util";
 import { DateTime } from "luxon";
 import { z } from "zod";
 import type { PoolClient } from "pg";
@@ -796,6 +797,118 @@ export async function rejectProposalWithClient(
   );
   await enqueueJournalInboxRecomputeForProposal(client, proposal.id);
   return updated;
+}
+
+/** What `settleSpeakerCardWithClient` did with the card: closed it as `confirmed` or `rejected`, or left it `untouched`. */
+export type SpeakerCardSettlement = "confirmed" | "rejected" | "untouched";
+
+/** A manual speaker assignment: `speaker` of `transcriptId` was assigned to `personId` by the user. */
+export interface SpeakerAssignment {
+  transcriptId: string;
+  speaker: string;
+  personId: string;
+}
+
+/**
+ * Settles the card that asks who a transcript's speaker is after the user assigned that speaker to a
+ * person by hand (issue #1770). Runs in the caller's transaction. It row-locks the card, which
+ * serializes it with a concurrent confirm, reject or revise of the same card, and settles it only while its status is
+ * `proposed` or `needsClarification`. A card that is `confirmed`, `rejected` or `invalid`, one in the
+ * Trash and one that no longer exists are left untouched and answered `untouched`.
+ *
+ * A card whose stored proposal is exactly this person for this speaker key becomes `confirmed`, with
+ * the person as its result in the shape `confirmProposalWithClient` stores for a speaker card; any other
+ * open card becomes `rejected`. Either way the card's history gains an entry saying that a manual
+ * assignment settled it. No edge is written here: the caller has written the `speakers` edge, and
+ * the Event participant edge a confirm adds is the caller's as well. Throws when the stored
+ * proposal is malformed, as `confirmProposalWithClient` does.
+ */
+export async function settleSpeakerCardWithClient(
+  client: PoolClient,
+  config: ProposalActionConfig,
+  proposalId: string,
+  assignment: SpeakerAssignment,
+  actingUserId?: string,
+): Promise<SpeakerCardSettlement> {
+  const proposal = await itemsStore.lockItemById(client, config.processingProposalsDatabaseId, proposalId);
+  if (!proposal || proposal.deletedAt) return "untouched";
+  const status = proposal.properties.status;
+  if (status !== "proposed" && status !== "needsClarification") return "untouched";
+
+  const envelope = parseStoredProposalEnvelope(proposal.properties.proposal, proposal.id);
+  const proposesThisAssignment =
+    envelope !== null &&
+    !("unknownKind" in envelope) &&
+    envelope.entityKind === "relation" &&
+    envelope.target === assignment.personId &&
+    envelope.properties.propertyKey === TRANSCRIPT_SPEAKERS_PROPERTY_KEY &&
+    isDeepStrictEqual(envelope.properties.metadata, { speaker: assignment.speaker });
+  if (!proposesThisAssignment) {
+    await updateItemWithClient(
+      client,
+      {
+        databaseId: config.processingProposalsDatabaseId,
+        itemId: proposal.id,
+        propertiesPatch: {
+          status: "rejected",
+          history: appendHistoryEntry(
+            proposal.properties.history,
+            "Settled by a manual assignment: the speaker was assigned to another person.",
+            "user",
+          ),
+        },
+      },
+      { allowedSystemKeys: ["status", "history"], writer: CONFIRMING_USER_WRITER, actingUserId },
+    );
+    await enqueueJournalInboxRecomputeForProposal(client, proposal.id);
+    return "rejected";
+  }
+
+  const [transcript] = await itemsStore.getItemsByIds(client, [assignment.transcriptId]);
+  const [person] = await itemsStore.getItemsByIds(client, [assignment.personId]);
+  if (!transcript) throw new Error("Source transcript disappeared while its speaker card was settled");
+  const transcripts = await databasesStore.getDatabase(client, transcript.databaseId);
+  if (!transcripts) throw new Error("Transcripts database disappeared while a speaker card was settled");
+  const personLabel = person ? await resolveResultLabel(client, person.databaseId, person) : assignment.personId;
+  const results: ConfirmationResult[] = [
+    {
+      ref: "primary",
+      itemId: transcript.id,
+      databaseKey: transcripts.key,
+      label: await resolveResultLabel(client, transcript.databaseId, transcript),
+      role: "primary",
+      date: null,
+      linkLabels: [personLabel],
+      followUp: null,
+      updatedAt: transcript.updatedAt,
+      blockIds: [],
+    },
+  ];
+  await updateItemWithClient(
+    client,
+    {
+      databaseId: config.processingProposalsDatabaseId,
+      itemId: proposal.id,
+      propertiesPatch: {
+        status: "confirmed",
+        resultItemId: assignment.personId,
+        resultLabel: personLabel,
+        results,
+        history: appendHistoryEntry(
+          proposal.properties.history,
+          "Settled by a manual assignment: the speaker was assigned to the proposed person.",
+          "user",
+        ),
+      },
+    },
+    {
+      allowedSystemKeys: ["status", "resultItemId", "resultLabel", "results", "history"],
+      writer: CONFIRMING_USER_WRITER,
+      actingUserId,
+    },
+  );
+  await enqueueJournalInboxRecomputeForProposal(client, proposal.id);
+  return "confirmed";
 }
 
 export interface ReviseProposalInput {

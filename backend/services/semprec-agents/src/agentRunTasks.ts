@@ -60,10 +60,6 @@ export async function withInFlightRegistration<T>(
   }
 }
 
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 /**
  * Closes a run whose session could not even be composed, so it is not left `running` until the
  * next startup repair. The close, its notification and the `error` event commit together, and the
@@ -73,12 +69,20 @@ function errorMessage(err: unknown): string {
 async function closeUncomposedRun(pool: Pool, run: AgentRunRow, cause: unknown): Promise<void> {
   try {
     await withTransaction(pool, async (client) => {
-      if (!(await finishAgentRunWithErrorNotification(client, run.id, errorMessage(cause), agentRunErrorCodeOf(cause))))
-        return;
+      if (!(await finishAgentRunWithErrorNotification(client, run.id, agentRunErrorCodeOf(cause)))) return;
       await pushRunStatus(client, run.id, "error");
     });
-  } catch (err) {
-    logger.error({ err, agentRunId: run.id }, "Failed to close an agent run whose session could not be composed");
+  } catch (closeErr) {
+    // The run's code and the close error's name only: a Postgres error's detail can carry the failing
+    // row, whose `task` is the user's prompt, and logs are not tenant-scoped.
+    logger.error(
+      {
+        errorName: closeErr instanceof Error ? closeErr.name : typeof closeErr,
+        errorCode: agentRunErrorCodeOf(cause),
+        agentRunId: run.id,
+      },
+      "Failed to close an agent run whose session could not be composed",
+    );
   }
 }
 
@@ -166,7 +170,14 @@ export function createRunAgentForHeartbeats(
       try {
         await pushRunStatus(pool, run.id, "error");
       } catch (statusErr) {
-        logger.error({ err: statusErr, agentRunId: run.id }, "Failed to record a failed agent run's run_status");
+        logger.error(
+          {
+            errorName: statusErr instanceof Error ? statusErr.name : typeof statusErr,
+            errorCode: agentRunErrorCodeOf(err),
+            agentRunId: run.id,
+          },
+          "Failed to record a failed agent run's run_status",
+        );
       }
       throw err;
     }

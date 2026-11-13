@@ -131,11 +131,12 @@ describe.each(["database.query", "view.query"] as const)("%s generated relation-
 
 // Recorded from the unchanged compiled shared generator at the repair base. `page.get` was re-recorded when issue #1678
 // added the `markdown` format to its `format` enum (an additive change), and `page.createSubpage` (#1676),
-// `page.insert` (#1679), `page.changes` (#1680), `page.duplicate` (#1722) and `page.rename` (#1725) were recorded when
-// they joined the catalog, and so was `item.count` (#1709), whose one schema shares local definitions, and so were the
+// `page.insert` (#1679), `page.replace` (#1765), `page.changes` (#1680), `page.duplicate` (#1722) and `page.rename`
+// (#1725) were recorded when they joined the catalog, and so was `item.count` (#1709), whose one schema shares local definitions, and so were the
 // REST-only `property.option.add` and `property.option.update` (#1699), whose schemas no MCP listing advertises.
 // `database.patch` was re-recorded when issue #2002 added the optional boolean `overviewHidden` to its patch (an
-// additive change).
+// additive change). `database.facets` (#1759) was recorded when it joined the catalog; its one schema shares local
+// definitions under `properties.filter`.
 const defaultHashes: Record<string, string> = {
   "database.list": "630c495e682d0545e7a780bc9b220ca45b18532d028f75c6c53b2e466c900c17",
   "database.get": "a396e67551c443d8954162aff82b55ec5ca6ade7c921a12925cb8a13f6ecbf78",
@@ -177,10 +178,12 @@ const defaultHashes: Record<string, string> = {
   "page.ensure": "d6c9e966fecd84b2add61a085f59ddf1d655d12d61ad36eff683abb96accb1fb",
   "page.createSubpage": "cc97079ec654aec1f2804c23835b13a78a08edaed8ed7c94813ff2ad0587b9ab",
   "page.insert": "d284651aff522abffd1f21dabefe7ff196fca8e5c028ef37316f3c5d51ea0ac8",
+  "page.replace": "f9ebb337c6fffa32c997dbe897847a45c251a851a7ae41d3916c739dd65a9b93",
   "page.changes": "f0ff5e6ad26a100a3ab35d676dcf5541d2a7906700cd94b225623e8f7865a384",
   "item.count": "2b1b1cac530e8917c376fee63e66098c6d8640341935e58b4b38ab14c2ed823f",
   "page.duplicate": "cf496713017be99d4da1acbc5863c5c057e45606f6d644070ca62c6708e990e6",
   "page.rename": "75be99147d9267ad2db8c9a90c6b2b76161ea30b7bbeb18d5a9c45aa41d667cb",
+  "database.facets": "235227f7c8f084dacb50f7f510123fec368bc59519700b48202c4cfae366ad56",
 };
 
 it("preserves every default operation schema byte for MCP callers", () => {
@@ -233,6 +236,7 @@ describe.each(["database.query", "view.query"] as const)("%s compact schema refe
 it("does not allow compact mode for a non-query operation", () => {
   expect(() => operationInputJsonSchema("database.patch", "agent-query-compact")).toThrow();
   expect(() => operationInputJsonSchema("item.count", "agent-query-compact")).toThrow();
+  expect(() => operationInputJsonSchema("database.facets", "agent-query-compact")).toThrow();
 });
 
 describe("item.count generated input", () => {
@@ -275,5 +279,64 @@ describe("item.count generated input", () => {
         return type === undefined ? [] : [resolve(type).const];
       });
     expect(groups).toEqual(["and", "or", "not"]);
+  });
+});
+
+describe("database.facets generated input", () => {
+  const root = operationInputJsonSchema("database.facets");
+  const properties = objectSchema.parse(root.properties);
+
+  function resolve(input: unknown): Record<string, unknown> {
+    const schema = objectSchema.parse(input);
+    if (typeof schema.$ref !== "string") return schema;
+    let target: unknown = root;
+    for (const key of schema.$ref.slice(2).split("/")) {
+      target = objectSchema.parse(target)[key.replaceAll("~1", "/").replaceAll("~0", "~")];
+    }
+    return resolve(target);
+  }
+
+  /** The `type` constants of the `and`, `or` and `not` groups a filter schema offers, in order. */
+  function groupTypes(filter: Record<string, unknown>): unknown[] {
+    return z
+      .array(z.unknown())
+      .parse(filter.anyOf)
+      .map(resolve)
+      .flatMap((member) => {
+        const type = member.properties === undefined ? undefined : objectSchema.parse(member.properties).type;
+        return type === undefined ? [] : [resolve(type).const];
+      });
+  }
+
+  it("keeps a finite, entirely local reference graph under the filter", () => {
+    expectFiniteLocalReferenceGraph(root, "filter");
+  });
+
+  it("requires the database and the facets, and offers the filter and the extra open filter", () => {
+    expect(root.required).toEqual(["databaseId", "facets"]);
+    expect(Object.keys(properties).sort()).toEqual(["databaseId", "extra", "facets", "filter"]);
+  });
+
+  it("advertises one to twenty facets, each a property key or a path of exactly two keys", () => {
+    const facets = resolve(properties.facets);
+    expect(facets).toMatchObject({ type: "array", minItems: 1, maxItems: 20 });
+    const [key, path] = z.array(z.unknown()).parse(resolve(facets.items).anyOf).map(resolve);
+    expect(key).toEqual({ type: "string", minLength: 1 });
+    expect(path).toMatchObject({ type: "object", required: ["path"], additionalProperties: false });
+    const keys = resolve(objectSchema.parse(path?.properties).path);
+    expect(keys).toMatchObject({ type: "array", minItems: 2, maxItems: 2 });
+    expect(z.array(z.unknown()).parse(keys.prefixItems).map(resolve)).toEqual([
+      { type: "string", minLength: 1 },
+      { type: "string", minLength: 1 },
+    ]);
+  });
+
+  it("advertises the same filter tree for the filter and for the open filter of a strict extra", () => {
+    const extra = resolve(properties.extra);
+    expect(extra).toMatchObject({ type: "object", required: ["open"], additionalProperties: false });
+    // Both name one shared definition, so neither carries a copy of the tree.
+    const openReference = z.string().parse(objectSchema.parse(objectSchema.parse(extra.properties).open).$ref);
+    expect(openReference).toBe(objectSchema.parse(properties.filter).$ref);
+    expect(groupTypes(resolve(properties.filter))).toEqual(["and", "or", "not"]);
   });
 });

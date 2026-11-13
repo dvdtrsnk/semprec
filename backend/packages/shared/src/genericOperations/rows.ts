@@ -48,6 +48,8 @@ export interface Database {
   color: string | null;
   /** True while the user hides the database from the client overview (issue #2002). */
   overviewHidden: boolean;
+  /** True for a system database whose data an agent must not read or write by default; set by the system only (issue #1808). */
+  sensitive: boolean;
   archivedAt: string | null;
 }
 
@@ -216,3 +218,28 @@ export interface ItemCountEntry {
   count: number;
   groups?: ItemCountGroup[];
 }
+
+/**
+ * One choice of a facet of `database.facets` (issue #1759). `value` is a stored option key, a stored text, the id
+ * of a related item, `true` or `false` of a checkbox, the name of a relative-date preset or the threshold of a
+ * number preset; `null` is the choice of the items without a value. `label` and `color` are present when the
+ * stored option, the stored preset or the related item supplies them. `count` is the number of items that hold
+ * the choice under the caller's filter without its conditions on the facet itself.
+ */
+export interface DatabaseFacetValue {
+  value: string | number | boolean | null;
+  label?: string;
+  color?: string;
+  count: number;
+}
+
+/**
+ * The answer to one requested facet of `database.facets`. `property` or `path` repeats the request. `all` is the
+ * number of items under the caller's filter without its conditions on the facet itself, and `open`, present
+ * exactly when the call carried `extra.open`, the number of those items that also match that filter.
+ */
+export type DatabaseFacet = ({ property: string } | { path: [string, string] }) & {
+  all: number;
+  open?: number;
+  values: DatabaseFacetValue[];
+};

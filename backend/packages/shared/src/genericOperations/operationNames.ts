@@ -1,5 +1,5 @@
 /**
- * The closed 44-operation catalog (issues #252, #1404, #1617, #1587, #1615, #1616, #1676, #1679, #1709, #1722, #1725, #1699). Every other file in `genericOperations` is
+ * The closed 46-operation catalog (issues #252, #1404, #1617, #1587, #1615, #1616, #1676, #1679, #1709, #1722, #1725, #1699, #1759, #1765). Every other file in `genericOperations` is
  * keyed off this exact list — adding or removing an operation means touching this array and
  * letting the compile-time exhaustiveness checks in `schemas.ts`, `port.ts`, `capabilities.ts`,
  * and `bindings.ts` point at whatever is now missing or extra.
@@ -48,22 +48,30 @@ export const GENERIC_OPERATION_NAMES = [
   "page.ensure",
   "page.createSubpage",
   "page.insert",
+  "page.replace",
   "page.changes",
   "item.count",
   "page.duplicate",
   "page.rename",
+  "database.facets",
 ] as const;
 
 export type GenericOperationName = (typeof GENERIC_OPERATION_NAMES)[number];
 
 /**
- * The catalog operations that REST alone dispatches (issue #1699,
- * docs/adr/2026-11-10-select-options-change-on-a-schema-locked-database.md): `GenericOperationGateway`, through
- * which the AgentTool and MCP transports list and call operations, neither lists nor dispatches them. An option
- * changes the schema of a database, so the assistant gets no tool for it; it will propose a new option on an Inbox
- * proposal that a person confirms (#1994).
+ * The catalog operations that REST alone dispatches: `GenericOperationGateway`, through which the AgentTool and MCP
+ * transports list and call operations, neither lists nor dispatches them.
+ * - `property.option.add` and `property.option.update` (issue #1699,
+ *   docs/adr/2026-11-10-select-options-change-on-a-schema-locked-database.md): an option changes the schema of a
+ *   database, so the assistant gets no tool for it; it will propose a new option on an Inbox proposal that a person
+ *   confirms (#1994).
+ * - `page.replace` (issue #1765, docs/adr/2026-11-12-page-replace-takes-the-etag-and-trashes-vanished-subpages.md):
+ *   replacing a page is an approval-gated destructive operation for agents
+ *   (docs/adr/2026-10-29-agent-page-write-policy.md), and the approval of page operations is delivered by #1844. Until
+ *   then no agent run and no MCP caller reaches it, so none can replace a page without approval.
  */
 export const REST_ONLY_OPERATION_NAMES = [
   "property.option.add",
   "property.option.update",
+  "page.replace",
 ] as const satisfies readonly GenericOperationName[];

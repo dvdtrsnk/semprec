@@ -44,6 +44,7 @@ import {
 import { runRelationEdgeChangedHooks, runRelationEdgeDeleteHooks, runRelationEdgeWriteHooks } from "./hooks.js";
 import { SYSTEM_WRITER, type WriterIdentity } from "./writerKind.js";
 
+import { requireApprovalForInsertedEdgeLinks, requireApprovalForReplacedEdgeLinks } from "./valueLinkApproval.js";
 import { breakValueLinksForRelationEdge, VALUE_LINKS_OWNER_PROCESS } from "./valueLinkWrites.js";
 import { withValueLinkRelationAdmission } from "./valueLinkRelationAdmission.js";
 import { assertNotDerivedValueWrite } from "./derivedValueGuard.js";
@@ -59,6 +60,11 @@ export interface CreateRelationInput {
   targetItemId: string;
   metadata?: Record<string, unknown>;
   actingUserId?: string;
+}
+
+export interface CreateRelationOptions {
+  /** Set only by `setRelationWithClient`, which has already asked for approval for the whole replacement. */
+  linkApprovalDecided?: boolean;
 }
 
 export interface UpdateRelationInput {
@@ -334,6 +340,7 @@ export async function createRelationWithClient(
   context?: SystemRelationWriteContext,
   writer: WriterIdentity = SYSTEM_WRITER,
   actingUserId?: string,
+  options: CreateRelationOptions = {},
 ): Promise<RelationEdge> {
   const edgeContext = await loadCreatableRelationEdgeContext(client, input, context, true);
   const hooks = (lockMode?: "nowait") =>
@@ -361,6 +368,11 @@ export async function createRelationWithClient(
       metadata: input.metadata,
     });
     if (inserted) {
+      // An agent under a run asks for approval before the edge ends a link (issue #1758); a replacement
+      // made by `setRelationWithClient` has decided that already.
+      if (!options.linkApprovalDecided) {
+        await requireApprovalForInsertedEdgeLinks(client, writer, { reldef: edgeContext.reldef, itemA, itemB });
+      }
       await breakValueLinksForRelationEdge(client, {
         reldef: edgeContext.reldef,
         itemA,
@@ -693,6 +705,17 @@ export async function setRelationWithClient(
     await loadCreatableRelationEdgeContext(client, { ...input, targetItemId: input.targetItemId }, undefined, true);
   }
   if (existing && oldTarget !== null) {
+    // Replacing or clearing an edge changes the value a link may feed: an agent under a run asks for approval
+    // first (issue #1758). Writing onto an empty relation removes no value and is not asked about.
+    const added =
+      input.targetItemId === null
+        ? null
+        : normalizeRelationSides(edgeContext.reldef, input.relationPropertyId, input.callerItemId, input.targetItemId);
+    await requireApprovalForReplacedEdgeLinks(client, writer, {
+      reldef: edgeContext.reldef,
+      removed: [existing],
+      added,
+    });
     await deleteRelationWithClient(client, { ...input, targetItemId: oldTarget }, undefined, writer, actingUserId);
   }
   if (input.targetItemId === null) return null;
@@ -702,6 +725,7 @@ export async function setRelationWithClient(
     undefined,
     writer,
     actingUserId,
+    { linkApprovalDecided: true },
   );
 }
 

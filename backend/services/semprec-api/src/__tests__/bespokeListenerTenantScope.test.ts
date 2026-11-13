@@ -50,6 +50,9 @@ function requestSpecFor(route: RouteMatrixEntry): RequestSpec {
     return { headers: { "Content-Type": "text/plain", "X-Filename": "note.txt" }, body: `content ${randomUUID()}` };
   }
   if (route.method === "GET") return { headers: {} };
+  if (route.method === "PUT" && route.path.endsWith("/page.md")) {
+    return { headers: { "Content-Type": "text/markdown", "If-Match": `"${"A".repeat(43)}"` }, body: "Scoped" };
+  }
   const json = (value: unknown): RequestSpec => ({
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(value),
@@ -154,7 +157,7 @@ describe("bespoke listeners run in the caller's tenant or an explicit system sco
   }
 
   it("covers every tenant-scoped listener route of the matrix", () => {
-    expect(tenantRoutes).toHaveLength(18);
+    expect(tenantRoutes).toHaveLength(21);
   });
 
   describe.each(tenantRoutes)("$name ($method $path)", (route) => {

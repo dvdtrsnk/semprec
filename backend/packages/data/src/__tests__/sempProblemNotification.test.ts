@@ -88,13 +88,21 @@ async function countInZero(text: string, values: unknown[] = []): Promise<number
   return Number(rows[0]?.count ?? 0);
 }
 
-/** Runs the fanout job for every notification of tenant zero, oldest first, as the queue would. */
+/**
+ * A Friday afternoon in Europe/Prague. A test that seeds the system gives tenant zero the sleep module, whose
+ * default plans would hold a push at night (issue #1794), so the fanout job does not run on the real clock.
+ */
+const FAN_OUT_AT = new Date("2026-10-16T14:00:00+02:00");
+
+/** Runs the fanout job for every notification of tenant zero, oldest first, as the queue would, at `FAN_OUT_AT`. */
 async function fanOutAll(senders: PushSenders): Promise<void> {
   const { rows } = await inZero((client) =>
     client.query<{ id: string }>(`SELECT id FROM notifications ORDER BY created_at, id`),
   );
   for (const row of rows) {
-    await runInTenant(tenantZero, () => handleNotificationFanoutTask(pool, { notificationId: row.id }, senders));
+    await runInTenant(tenantZero, () =>
+      handleNotificationFanoutTask(pool, { notificationId: row.id }, { ...senders, now: () => FAN_OUT_AT }),
+    );
   }
 }
 
@@ -148,6 +156,9 @@ describe("semp_problem notifications raised by raiseProblem (issue #1466)", () =
       body: null,
       linkHref: `?page=semp-status&id=${problemId}`,
       interruptionLevel: "time-sensitive",
+      sourceTable: "semp_problems",
+      sourceId: problemId,
+      kind: "semp_problem",
     });
   });
 

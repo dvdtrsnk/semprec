@@ -29,10 +29,20 @@ export interface AgentRunRow {
   heartbeatOccurrenceId: string | null;
   /** The Semp thread this run belongs to (issue #1452); `null` for an MCP run or a run with no thread. */
   threadId: string | null;
+  /**
+   * The name the MCP client that connected with this run's credential reported about itself (issue
+   * #1788), as `setAgentRunMcpClientName` stored it; `null` when no client name was stored. It is
+   * display text and no authorization decision reads it.
+   */
+  mcpClientName: string | null;
   triggeredBy: TriggeredBy;
   unit: AgentRunUnit;
   task: string;
   status: AgentRunStatus;
+  /**
+   * The result snapshot of a `done` run. A run closed as `error` since issue #1824 holds its
+   * `errorCode` here; a run closed before then keeps its legacy free text.
+   */
   result: string | null;
   /** Why the run failed: set for `status = 'error'` (a row closed before the column existed reads `internal`), `null` otherwise. */
   errorCode: AgentRunErrorCode | null;
@@ -61,6 +71,7 @@ type AgentRunDbRow = {
   heartbeat_occurrence_id: string | null;
   attempt: number;
   thread_id: string | null;
+  mcp_client_name: string | null;
   triggered_by: string;
   unit: string;
   task: string;
@@ -74,7 +85,7 @@ type AgentRunDbRow = {
 };
 
 const AGENT_RUN_ROW_COLUMNS =
-  "id, project_item_id, parent_run_id, heartbeat_id, retry_of_run_id, attempt, heartbeat_occurrence_id, thread_id, triggered_by, unit, task, status, result, error_code, error_detail, started_at, finished_at, actor_user_id";
+  "id, project_item_id, parent_run_id, heartbeat_id, retry_of_run_id, attempt, heartbeat_occurrence_id, thread_id, mcp_client_name, triggered_by, unit, task, status, result, error_code, error_detail, started_at, finished_at, actor_user_id";
 
 function mapErrorCode(row: AgentRunDbRow): AgentRunErrorCode | null {
   if (row.error_code !== null) return assertKnownValue(AGENT_RUN_ERROR_CODES, row.error_code, "error_code");
@@ -97,6 +108,7 @@ function mapRow(row: AgentRunDbRow): AgentRunRow {
     attempt: row.attempt,
     heartbeatOccurrenceId: row.heartbeat_occurrence_id,
     threadId: row.thread_id,
+    mcpClientName: row.mcp_client_name,
     triggeredBy: assertKnownValue(TRIGGERED_BY_VALUES, row.triggered_by, "triggered_by"),
     unit: assertKnownValue(AGENT_RUN_UNITS, row.unit, "unit"),
     task: row.task,
@@ -259,6 +271,10 @@ export async function getLatestRunOfOccurrence(
  * and the row keeps the first status, result and `finished_at`. Losing that race (the run was
  * already `done`/`error`) is a normal outcome the caller logs, not an error: it returns `false`.
  * Throws `NotFoundError` only when no run with that id exists at all.
+ *
+ * A `done` close stores the given result snapshot. An `error` close takes no free text: it stores
+ * the canonical `errorCode` as both `error_code` and `result`, so no exception text and no user
+ * content remain in the row (issue #1824). `errorDetail` is a plain object of ids and counters.
  */
 export function finishAgentRun(
   client: Pool | PoolClient,
@@ -270,7 +286,6 @@ export function finishAgentRun(
   client: Pool | PoolClient,
   agentRunId: string,
   status: "error",
-  result: string | null,
   errorCode: AgentRunErrorCode,
   errorDetail?: Record<string, unknown>,
 ): Promise<boolean>;
@@ -278,15 +293,16 @@ export async function finishAgentRun(
   client: Pool | PoolClient,
   agentRunId: string,
   status: "done" | "error",
-  result: string | null,
-  errorCode?: AgentRunErrorCode,
+  resultOrErrorCode: string | null,
   errorDetail?: Record<string, unknown>,
 ): Promise<boolean> {
   const detail = parseErrorDetail(errorDetail ?? null);
+  const errorCode =
+    status === "error" ? assertKnownValue(AGENT_RUN_ERROR_CODES, resultOrErrorCode ?? "", "error code") : null;
   const updated = await client.query(
     `UPDATE agent_runs SET status = $2, result = $3, error_code = $4, error_detail = $5, finished_at = now()
      WHERE id = $1 AND status = 'running'`,
-    [agentRunId, status, result, status === "error" ? (errorCode ?? null) : null, detail],
+    [agentRunId, status, errorCode ?? resultOrErrorCode, errorCode, detail],
   );
   if (updated.rowCount === 1) return true;
   const { rows } = await client.query<{ status: string }>(`SELECT status FROM agent_runs WHERE id = $1`, [agentRunId]);
@@ -315,7 +331,6 @@ export async function finishAgentRun(
 export async function finishAgentRunWithErrorNotification(
   client: Pool | PoolClient,
   agentRunId: string,
-  result: string | null,
   errorCode: AgentRunErrorCode,
   errorDetail?: Record<string, unknown>,
 ): Promise<boolean> {
@@ -323,11 +338,9 @@ export async function finishAgentRunWithErrorNotification(
   // source write it dedupes against) — a caller that only has a bare `pool` gets one opened here
   // so the close and the notification still land atomically together.
   if (client instanceof Pool) {
-    return withTransaction(client, (c) =>
-      finishAgentRunWithErrorNotification(c, agentRunId, result, errorCode, errorDetail),
-    );
+    return withTransaction(client, (c) => finishAgentRunWithErrorNotification(c, agentRunId, errorCode, errorDetail));
   }
-  const closed = await finishAgentRun(client, agentRunId, "error", result, errorCode, errorDetail);
+  const closed = await finishAgentRun(client, agentRunId, "error", errorCode, errorDetail);
   if (!closed) return false;
   const userId = await getTenantUserId(client);
   if (!userId) return true;
@@ -340,6 +353,42 @@ export async function finishAgentRunWithErrorNotification(
     transitionInstance: agentRunId,
   });
   return true;
+}
+
+/** The longest MCP client name a run stores, in characters as the check on `mcp_client_name` counts them. */
+const MCP_CLIENT_NAME_MAX_LENGTH = 64;
+
+/**
+ * What is stored for a name an MCP client reported: the name without control characters and without
+ * surrounding whitespace, cut to its first `MCP_CLIENT_NAME_MAX_LENGTH` characters (code points, so
+ * a character outside the basic plane is never cut in half) and without whitespace the cut left at
+ * its end. `null` when nothing is left.
+ */
+function sanitizeMcpClientName(name: string): string | null {
+  const cleaned = name.replace(/\p{Cc}/gu, "").trim();
+  let kept = "";
+  let length = 0;
+  for (const character of cleaned) {
+    if (length === MCP_CLIENT_NAME_MAX_LENGTH) break;
+    kept += character;
+    length += 1;
+  }
+  const sanitized = kept.trimEnd();
+  return sanitized === "" ? null : sanitized;
+}
+
+/**
+ * Stores the name an MCP client reported about itself on the run `runId` (issue #1788) and replaces
+ * a name stored before. The value written is `sanitizeMcpClientName(name)`, so a name of control
+ * characters and whitespace clears the column. Throws `NotFoundError` when the current tenant scope
+ * shows no run with that id.
+ */
+export async function setAgentRunMcpClientName(client: Pool | PoolClient, runId: string, name: string): Promise<void> {
+  const updated = await client.query(`UPDATE agent_runs SET mcp_client_name = $2 WHERE id = $1`, [
+    runId,
+    sanitizeMcpClientName(name),
+  ]);
+  if (updated.rowCount !== 1) throw new NotFoundError(`agent run ${runId} not found`);
 }
 
 /**

@@ -10,10 +10,12 @@ import {
   PageEnsureInputSchema,
   PageCreateSubpageInputSchema,
   PageInsertInputSchema,
+  PageReplaceInputSchema,
   PageChangesInputSchema,
   PageDuplicateInputSchema,
   PageRenameInputSchema,
   DatabaseCreateInputSchema,
+  DatabaseFacetsInputSchema,
   DatabaseGetInputSchema,
   DatabaseListInputSchema,
   DatabasePatchInputSchema,
@@ -62,7 +64,7 @@ export interface OperationBinding<I, O> {
   invoke(service: GenericApplicationPort, actor: AuthenticatedActor, input: I): Promise<O>;
 }
 
-/** Exhaustive over the 44 literal operation names — see the direct-literal-assignment note on `GENERIC_OPERATION_BINDINGS` below. */
+/** Exhaustive over the 46 literal operation names — see the direct-literal-assignment note on `GENERIC_OPERATION_BINDINGS` below. */
 export type GenericOperationBindings = {
   [K in GenericOperationName]: OperationBinding<InputByOperation[K], OutputByOperation[K]>;
 };
@@ -76,6 +78,10 @@ export type GenericOperationBindings = {
 export const GENERIC_OPERATION_BINDINGS: GenericOperationBindings = {
   "page.ensure": { input: PageEnsureInputSchema, invoke: (service, actor, input) => service.ensurePage(actor, input) },
   "page.insert": { input: PageInsertInputSchema, invoke: (service, actor, input) => service.insertPage(actor, input) },
+  "page.replace": {
+    input: PageReplaceInputSchema,
+    invoke: (service, actor, input) => service.replacePage(actor, input),
+  },
   "page.changes": {
     input: PageChangesInputSchema,
     invoke: (service, actor, input) => service.listPageChanges(actor, input),
@@ -231,5 +237,9 @@ export const GENERIC_OPERATION_BINDINGS: GenericOperationBindings = {
   "item.count": {
     input: ItemCountInputSchema,
     invoke: (service, actor, input) => service.countItems(actor, input),
+  },
+  "database.facets": {
+    input: DatabaseFacetsInputSchema,
+    invoke: (service, actor, input) => service.getDatabaseFacets(actor, input),
   },
 };

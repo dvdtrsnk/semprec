@@ -257,7 +257,11 @@ describe("Semp status report", () => {
           task: "first",
         }),
       );
-      await withTransaction(data, (client) => finishAgentRun(client, first.id, "error", "raw-secret", "internal"));
+      await withTransaction(data, async (client) => {
+        await finishAgentRun(client, first.id, "error", "internal");
+        // Raw SQL: a run closed before issue #1824 holds free text in `result`, which the close no longer writes.
+        await client.query("UPDATE agent_runs SET result = 'raw-secret' WHERE id = $1", [first.id]);
+      });
       const last = await withTransaction(data, (client) =>
         createChainedAgentRun(client, {
           projectItemId: project.id,
@@ -270,7 +274,11 @@ describe("Semp status report", () => {
         }),
       );
       if (!last) throw new Error("Missing chained run");
-      await withTransaction(data, (client) => finishAgentRun(client, last.id, "error", "raw-secret", "internal"));
+      await withTransaction(data, async (client) => {
+        await finishAgentRun(client, last.id, "error", "internal");
+        // Raw SQL: a run closed before issue #1824 holds free text in `result`, which the close no longer writes.
+        await client.query("UPDATE agent_runs SET result = 'raw-secret' WHERE id = $1", [last.id]);
+      });
       await withTransaction(data, (client) =>
         raiseProblem(client, {
           userId: ownUser,

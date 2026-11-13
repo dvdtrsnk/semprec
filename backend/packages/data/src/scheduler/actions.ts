@@ -1,6 +1,6 @@
 import type { Pool } from "pg";
 import { AGENT_TASK_NAMES, CORE_TASK_NAMES, type AgentTaskName, type CoreTaskName } from "@semprec/queue";
-import { createLogger, withTraceContext } from "@semprec/shared";
+import { withTraceContext } from "@semprec/shared";
 import { agentRunErrorCodeOf } from "../agentRuns/agentRunErrorCodes.js";
 import {
   createAgentRun,
@@ -15,9 +15,8 @@ import { withTransaction } from "../db/pool.js";
 import { tenantLane } from "../tenancy/tenantLane.js";
 import { SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME } from "../inbox/inboxTickKeys.js";
 import { parseItemRelationFilterConfig, passesItemRelationFilter } from "./itemRelationFilter.js";
+import { logger } from "./logger.js";
 import { parseSenderKnownFilterConfig, passesSenderKnownFilter } from "./senderKnownFilter.js";
-
-const logger = createLogger("scheduler");
 
 export interface ActionContext {
   heartbeatId: string;
@@ -160,7 +159,6 @@ export function coreAgentRunAction(pool: Pool, runAgent: RunAgentFn): ActionHand
           ...(context.itemId ? { itemId: context.itemId } : {}),
         });
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
         const errorCode = agentRunErrorCodeOf(err);
         // A non-final attempt closes its run silently: only the last attempt of a failed
         // occurrence writes the `agent_run_error` notification, so three retries of the same
@@ -170,26 +168,33 @@ export function coreAgentRunAction(pool: Pool, runAgent: RunAgentFn): ActionHand
         try {
           if (context.isFinalAttempt === false) {
             await withTransaction(pool, async (client) => {
-              const closed = await finishAgentRun(client, run.id, "error", message, errorCode);
+              const closed = await finishAgentRun(client, run.id, "error", errorCode);
               if (closed) publishSempThreadInvalidation(client, thread.tenantId, thread.id);
             });
           } else {
             // Same transaction as the source write, per issue #149: a crash between closing the
             // run and writing its `agent_run_error` notification never leaves one without the other.
-            // The final attempt also writes the error message into the tick thread.
+            // The final attempt also writes the run's assistant message into the tick thread.
             await withTransaction(pool, (client) =>
               finishTickRunWithMessage(client, {
                 thread,
                 agentRunId: run.id,
-                outcome: { status: "error", result: message, errorCode },
+                outcome: { status: "error", errorCode },
               }),
             );
           }
         } catch (closeErr) {
           // The close/notify write failing must never replace `err` — the caller's retry
           // decision and the job's `last_error` have to reflect the actual `runAgent` failure.
+          // The run's code and the close error's name only: a Postgres error's detail can carry the
+          // failing row, whose `task` is the user's prompt, and logs are not tenant-scoped.
           logger.error(
-            { err: closeErr, agentRunId: run.id, heartbeatId: context.heartbeatId },
+            {
+              errorName: closeErr instanceof Error ? closeErr.name : typeof closeErr,
+              errorCode,
+              agentRunId: run.id,
+              heartbeatId: context.heartbeatId,
+            },
             "core.agentRun: failed to record failed agent run lifecycle",
           );
         }

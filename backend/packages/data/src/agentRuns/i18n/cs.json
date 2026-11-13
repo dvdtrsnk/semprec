@@ -1,0 +1,7 @@
+{
+  "agentRun.error.budgetExceeded.summary": "Rozpočet na AI vyčerpán",
+  "agentRun.error.modelError.summary": "Chyba AI modelu",
+  "agentRun.error.cancelled.summary": "Zrušeno",
+  "agentRun.error.interrupted.summary": "Přerušeno restartem",
+  "agentRun.error.internal.summary": "Interní chyba"
+}
