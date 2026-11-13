@@ -198,6 +198,31 @@ export async function listAgentRunEventsForStepPage(
 }
 
 /**
+ * The number of tool steps and of approval steps in the events of a run still stored (issue #1847), for
+ * the summary of its `end` step. A tool step is one `toolCallId` of a stored call or result; an approval
+ * step is one whose result carries an `approvalRequestId` (`details` of the stored pi result). The
+ * counts are read in SQL because a page holds only some of the run's events.
+ */
+export async function countAgentRunToolSteps(
+  client: Pool | PoolClient,
+  agentRunId: string,
+): Promise<{ toolCount: number; approvalCount: number }> {
+  const { rows } = await client.query<{ tool_count: string; approval_count: string }>(
+    `SELECT count(DISTINCT payload->>'toolCallId') AS tool_count,
+            count(DISTINCT payload->>'toolCallId') FILTER (
+              WHERE kind = 'tool_result'
+                AND jsonb_typeof(payload #> '{result,details,approvalRequestId}') = 'string'
+            ) AS approval_count
+     FROM agent_run_events
+     WHERE agent_run_id = $1 AND kind IN ('tool_use', 'tool_result')
+       AND jsonb_typeof(payload->'toolCallId') = 'string'`,
+    [agentRunId],
+  );
+  const row = requireSingleRow(rows, "agent run tool step counts");
+  return { toolCount: Number(row.tool_count), approvalCount: Number(row.approval_count) };
+}
+
+/**
  * Whether events at the start of the run's history are gone (issue #1821): the run's first stored
  * event is not its opening `run_status` of `running`, which every run writes first. Retention
  * (`handleAgentRunEventsRetentionTask`) removes the events of a finished session run that precede a

@@ -66,8 +66,10 @@ import {
   resolveTaskAffinitySets,
   revokeAllPushSubscriptionsForUser,
   sendSempMessage,
+  setEventInvitationDelivery,
   setInvalidationHook,
   startSempMessageTurn,
+  SYSTEM_WRITER,
   upsertWebPushSubscription,
   withTransaction,
   writeNotification,
@@ -75,6 +77,7 @@ import {
   type DocStore,
   type BlobStorageWriter,
   type InvalidationEvent,
+  type MailTransportFactory,
 } from "@semprec/data";
 import {
   createRuntimeRolePool,
@@ -737,6 +740,108 @@ async function createExpiredTrash(tenant: Tenant): Promise<SeededWork> {
       [],
     );
   });
+}
+
+/** The queue name of the calendar module's invitation task (`calendarModuleManifest.ts`). */
+const CALENDAR_SEND_EVENT_INVITATION_TASK = "calendarSendEventInvitation";
+
+/** One message the recording transport was asked to send, with the tenant scope the send ran in. */
+interface InvitationSend {
+  tenantId: string | null;
+  mailboxId: string;
+  method: string | null;
+  from: string;
+  recipients: string[];
+}
+
+const invitationSends: InvitationSend[] = [];
+
+/**
+ * The transports `createApiQueueRuntime` binds for the invitation task, replaced by one that sends nothing and
+ * records each message with the mailbox it was asked for and the tenant scope of the job that sent it.
+ */
+const invitationTransports: MailTransportFactory = {
+  async forMailbox(mailboxId) {
+    return {
+      async send(message) {
+        const scope = currentTenantScope();
+        invitationSends.push({
+          tenantId: scope?.kind === "tenant" ? scope.tenantId : null,
+          mailboxId,
+          method: /^Content-Type: text\/calendar; method=(\w+)/im.exec(message.raw.toString("utf8"))?.[1] ?? null,
+          from: message.envelope.from,
+          recipients: message.envelope.recipients,
+        });
+        return {};
+      },
+    };
+  },
+};
+
+/** The invitation of `tenant`'s Event to its person, as the system writer stores it: pending, naming the mailbox. */
+interface SeededInvitation {
+  eventId: string;
+  personId: string;
+  mailboxId: string;
+  organizerEmail: string;
+  attendeeEmail: string;
+}
+
+/**
+ * A mailbox of `tenant` with an address of its own, an Event with a UID, and a person invited to it through the
+ * system writer, the way the invitation code stores it. The link queues a message of its own; it is discarded by the
+ * caller before the job under test is enqueued, as for every case.
+ */
+async function seedInvitation(tenant: Tenant): Promise<SeededInvitation> {
+  const mailboxesId = await requireModuleDatabaseId(tenant, "mailboxes");
+  const peopleId = await requireModuleDatabaseId(tenant, "people");
+  const eventsId = await requireModuleDatabaseId(tenant, "events");
+  const organizerEmail = `organizer-${randomUUID()}@example.test`;
+  const attendeeEmail = `attendee-${randomUUID()}@example.test`;
+  const mailboxId = await inTenant(tenant, () =>
+    withTransaction(pool, async (client) => {
+      const mailbox = await createItemWithClient(
+        client,
+        {
+          databaseId: mailboxesId,
+          properties: { name: `Mailbox ${randomUUID()}`, provider: "generic", addresses: organizerEmail },
+        },
+        { allowedSystemKeys: ["addresses"] },
+      );
+      return mailbox.id;
+    }),
+  );
+  return inTenant(tenant, async () => {
+    const person = await chokePoint.createItem({ databaseId: peopleId, properties: { name: "Invitee" } });
+    const event = await chokePoint.createItem({
+      databaseId: eventsId,
+      properties: { name: "Isolation meeting", date: "2099-01-15", timeFrom: "09:00", timeTo: "10:00" },
+    });
+    const peopleProperty = (await chokePoint.listProperties(eventsId)).find((property) => property.key === "people");
+    if (!peopleProperty) throw new Error("expected Events.people to be seeded");
+    await chokePoint.createRelation(
+      {
+        relationPropertyId: peopleProperty.id,
+        callerItemId: event.id,
+        targetItemId: person.id,
+        metadata: { invitation: { status: "pending", email: attendeeEmail, mailboxId } },
+      },
+      SYSTEM_WRITER,
+    );
+    return { eventId: event.id, personId: person.id, mailboxId, organizerEmail, attendeeEmail };
+  });
+}
+
+/** The `sentAt` stored on the invitation of the Event's edge to the person in `tenant`, or `null` when none is. */
+async function invitationSentAt(tenant: Tenant, eventId: string, personId: string): Promise<unknown> {
+  const found = await rows<{ sent_at: unknown }>(
+    tenant,
+    `SELECT metadata -> 'invitation' -> 'sentAt' AS sent_at FROM item_relations
+     WHERE (item_a = $1 AND item_b = $2) OR (item_a = $2 AND item_b = $1)`,
+    [eventId, personId],
+  );
+  if (found.length !== 1) throw new Error("expected exactly one edge between the Event and the person");
+  return found[0]?.sent_at ?? null;
 }
 
 let journalDaysSeeded = 0;
@@ -1793,6 +1898,36 @@ const cases: Record<string, TaskCase> = {
       };
     },
   },
+  [CALENDAR_SEND_EVENT_INVITATION_TASK]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      invitationSends.length = 0;
+      const { eventId, personId, mailboxId, attendeeEmail } = await seedInvitation(tenant);
+      return { method: "REQUEST", eventId, personId, mailboxId, attendeeEmail };
+    },
+    async expectDone(tenant, payload) {
+      const eventId = requirePayloadString(payload, "eventId");
+      const personId = requirePayloadString(payload, "personId");
+      const mailboxId = requirePayloadString(payload, "mailboxId");
+      const mailbox = await rows<{ addresses: string }>(
+        tenant,
+        "SELECT properties ->> 'addresses' AS addresses FROM items WHERE id = $1",
+        [mailboxId],
+      );
+      // One message left, from the mailbox of the job's own tenant, to the invited address, in that tenant's scope.
+      expect(invitationSends).toEqual([
+        {
+          tenantId: tenant.tenantId,
+          mailboxId,
+          method: "REQUEST",
+          from: mailbox[0]?.addresses,
+          recipients: [requirePayloadString(payload, "attendeeEmail")],
+        },
+      ]);
+      expect(typeof (await invitationSentAt(tenant, eventId, personId))).toBe("string");
+      invitationSends.length = 0;
+    },
+  },
 };
 
 function isTenantCase(c: TaskCase): c is TenantTaskCase {
@@ -1869,6 +2004,8 @@ describe("background task isolation across two tenants: api runtime (issue #1056
       undefined,
       titlePort,
     );
+    // The calendar's invitation task reads its pool and transports from the binding `createApiQueueRuntime` sets.
+    setEventInvitationDelivery({ pool, transports: invitationTransports });
     taskList = await mergeModuleTaskListForAffinity(coreTaskList, moduleRegistry, "api");
     assertTaskListMatchesAffinity(taskList, (await resolveTaskAffinitySets(moduleRegistry)).api, "api");
 
@@ -1880,6 +2017,7 @@ describe("background task isolation across two tenants: api runtime (issue #1056
   afterEach(restoreVapidConfiguration);
 
   afterAll(async () => {
+    setEventInvitationDelivery(null);
     await pool?.end();
     await adminPool?.end();
     if (blobRoot !== undefined) await rm(blobRoot, { recursive: true, force: true });
@@ -2073,6 +2211,14 @@ describe("background task isolation across two tenants: api runtime (issue #1056
           titlePortCalls.length = 0;
         }
         if (name === CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS) {
+          expect(foreign).toEqual({
+            outcome: { attempts: null, lastError: null },
+            effects: { rowCountDeltas: {}, changedTables: [], notificationKinds: [], queuedJobs: [] },
+          });
+        }
+        if (name === CALENDAR_SEND_EVENT_INVITATION_TASK) {
+          // The Event and the mailbox are A's: B's job reads neither, so it sends no message, for A's ids or random ones.
+          expect(invitationSends).toEqual([]);
           expect(foreign).toEqual({
             outcome: { attempts: null, lastError: null },
             effects: { rowCountDeltas: {}, changedTables: [], notificationKinds: [], queuedJobs: [] },

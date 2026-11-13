@@ -4,6 +4,9 @@ import { DateTime } from "luxon";
 import { z } from "zod";
 import type { PoolClient } from "pg";
 import { getSystemTimezone } from "../systemSettings.js";
+import { deriveEventTimeProperties, eventDateIsInstant } from "../calendar/eventTime.js";
+import { readProposalTimezone } from "./proposalComputedUpdates.js";
+import { assertEventCreateRules } from "../calendar/eventValidationHook.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
@@ -36,6 +39,7 @@ import { publishInboxCardChange } from "./inboxCardsRealtime.js";
 import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
 import { EVENTS_MODULE_ID, PEOPLE_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { releaseTrashedEventEdges } from "../transcription/transcriptEventEdges.js";
+import { addSpeakersAsEventParticipants } from "../transcription/transcriptEventParticipants.js";
 import { transcriptSpeakerCardContextSchema } from "../transcription/transcriptSpeakerCardContext.js";
 import { TRANSCRIPT_SPEAKERS_PROPERTY_KEY } from "../transcription/transcriptionSpeakerEdges.js";
 import { storeCredential, type CredentialType } from "../credentials/externalCredentialsStore.js";
@@ -300,7 +304,8 @@ async function resolveItemOriginSource(
  * and never switches between an Event shape
  * and a speaker mapping (`transcriptCardRole`). A link is checked against the relation's
  * integrity, ownership and edge-metadata rules now, with the same canonical errors the write
- * itself would raise. Returns the edge confirm must write for a transcript card (`null` for any
+ * itself would raise. A create-Event envelope also has to pass the Events create rules on its times
+ * (`assertEventCreateRules`, issue #1818). Returns the edge confirm must write for a transcript card (`null` for any
  * other card) alongside the envelope's target database row (`null` for a non-`'database'`
  * envelope).
  */
@@ -359,6 +364,14 @@ async function assertValidEnvelopeForCard(
       );
       if (envelope.target !== expectedDatabaseId) {
         throw new ValidationError("Invalid transcript proposal target", { field: "target" });
+      }
+      // The Event the confirm creates must pass the Events rules, so a revised start and end that confirm would
+      // refuse are refused now (issue #1818). The Events time transform runs first, as it does on the write.
+      if (role === "event") {
+        // The zone is read as every Inbox proposal preparation reads it: an invalid stored zone is a settings failure
+        // and propagates, it is not a 400 on the date the user entered (docs/adr/2026-11-07-proposal-preparation-uses-trusted-tenant-timezone.md).
+        const zone = eventDateIsInstant(envelope.properties.date) ? await readProposalTimezone(client) : undefined;
+        assertEventCreateRules(deriveEventTimeProperties(null, envelope.properties, zone));
       }
       break;
     }
@@ -442,15 +455,18 @@ async function assertValidEnvelopeForCard(
  * `PUT /api/items/:id/relations/:propertyKey/:targetItemId`, from the card's source item to
  * `envelope.target`, and the result is that existing item. A `kind = 'transcript'` card also
  * gets its Transcription<->Event edge: for `'relation'` that edge is the relation write itself;
- * for `'database'` it is written right after the Event is created. Both run in the caller's one
+ * for `'database'` it is written last, after the Event's envelope relations and its participants. Both run in the caller's one
  * transaction, so a failed edge write (e.g. `cardinality_violation` when the transcript is already
  * linked to another Event that is not in the Trash; an Event may hold many transcripts) leaves no Event, no
  * edge and the card still `proposed`. An edge from the transcript to an Event in the Trash is deleted in this
  * transaction right before the pairing edge is written (issue #1743, `releaseTrashedEventOfPairingCard`), so
  * it does not fail that write and comes back when the confirm rolls back.
- * A `'database'` envelope's `relations` (issue #1476) are written the same way, after
+ * A `'database'` envelope's `relations` (issue #1476) are written the same way, right after
  * the item, one edge per target id with the new item as caller; any failing edge aborts the item
- * and the earlier edges, and its error carries `details.field` = the relation key. A speaker-mapping transcript card (issue #185) writes its `speakers` edge with the
+ * and the earlier edges, and its error carries `details.field` = the relation key. An Event created
+ * by a transcript card also gets, before the transcript edge, an Events `people` edge for every person
+ * the transcript's `speakers` edges map at that moment except the tenant's own person
+ * (`addSpeakersAsEventParticipants`, issue #1818); a failing write there rolls everything back too. A speaker-mapping transcript card (issue #185) writes its `speakers` edge with the
  * envelope's `{ speaker }` metadata as the relation write itself — the user-owned mapping only
  * ever exists once a human confirmed it. A `fileFromAttachment` step (issue #1703) moves an attachment
  * of the card's source Inbox item into Files inside the same transaction; `executeProposalSteps` does it.
@@ -545,7 +561,22 @@ export async function confirmProposalWithClient(
         plaintext: credential.plaintext,
       });
     }
-    // A 'database' envelope on a transcript card is always its create-Event shape.
+    // A 'database' envelope on a transcript card is its create-Event shape, or a new person for a speaker card.
+    // The Event gets its envelope relations and its participants before the transcript's own edge (issue #1818).
+    // A multi-step envelope's relations live on its steps and were written by them.
+    if (!envelope.operations) {
+      await writeEnvelopeRelations(client, envelope.target, created.id, envelope.relations, actingUserId);
+    }
+    if (transcriptCardEdge?.role === "event") {
+      addedRelations.push(
+        ...(await addSpeakersAsEventParticipants(
+          client,
+          { transcriptId: transcriptCardEdge.transcriptId, eventId: created.id },
+          CONFIRMING_USER_WRITER,
+          actingUserId,
+        )),
+      );
+    }
     if (transcriptCardEdge) {
       await releaseTrashedEventOfPairingCard(client, transcriptCardEdge, actingUserId);
       await createRelationWithClient(
@@ -560,10 +591,6 @@ export async function confirmProposalWithClient(
         CONFIRMING_USER_WRITER,
         actingUserId,
       );
-    }
-    // A multi-step envelope's relations live on its steps and were written by them.
-    if (!envelope.operations) {
-      await writeEnvelopeRelations(client, envelope.target, created.id, envelope.relations, actingUserId);
     }
   } else if (envelope.entityKind === "relation") {
     // `assertValidEnvelopeForCard` above only accepts a 'relation' envelope on a transcript

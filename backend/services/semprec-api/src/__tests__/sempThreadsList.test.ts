@@ -758,7 +758,7 @@ describe("GET /api/semp/threads with q (issue #1737)", () => {
     expect(await search(session, "listky")).toEqual([]);
   });
 
-  it("searches the first 140 code points of the last message only", async () => {
+  it("searches the first 140 code points of the last message for text that is not a word or a word start", async () => {
     const session = await tenantSession({ seed: false });
     // "zebra" ends at code point 140 here, and starts at code point 137 in the next thread.
     const inside = await startThread(session, `${"😀".repeat(135)}zebra and the rest`);
@@ -768,33 +768,64 @@ describe("GET /api/semp/threads with q (issue #1737)", () => {
     const earlier = await startThread(session, "zebra at the start");
     await sendMessage(session, earlier, "a later message without it");
 
-    expect(await search(session, "zebra")).toEqual([inside]);
+    // "ebra" is no word and no word start, so only the substring rule of the title and the preview applies.
+    expect(await search(session, "ebra")).toEqual([inside]);
     expect(await search(session, "later message")).toEqual([earlier]);
+  });
+
+  it("finds a thread by a word beyond the preview window or in an earlier message (issue #1783)", async () => {
+    const session = await tenantSession({ seed: false });
+    const beyondWindow = await startThread(session, `${"word ".repeat(40)}zebra`);
+    const earlier = await startThread(session, "zebra at the start");
+    await sendMessage(session, earlier, "a later message without it");
+    await startThread(session, "Nothing of the kind");
+
+    expect(await search(session, "zebra")).toEqual([earlier, beyondWindow]);
+  });
+
+  it("finds a thread whose messages together hold every word of q, and none that holds only some (issue #1783)", async () => {
+    const session = await tenantSession({ seed: false });
+    const both = await startThread(session, "Přišla faktura od dodavatele");
+    await sendMessage(session, both, "Smlouva čeká na podpis");
+    const onlyOne = await startThread(session, "Přišla faktura");
+    await sendMessage(session, onlyOne, "Nic dalšího");
+    const apart = await startThread(session, "Smlouva čeká");
+
+    expect(await search(session, "faktura smlouva")).toEqual([both]);
+    expect(await search(session, "smlouva faktura")).toEqual([both]);
+    expect(await search(session, "faktura")).toEqual([onlyOne, both]);
+    expect(await search(session, "smlouva")).toEqual([apart, both]);
   });
 
   it("matches %, _ and a backslash in q only as themselves", async () => {
     const session = await tenantSession({ seed: false });
     const percent = await startThread(session, "Sleva 100% jen dnes");
-    await startThread(session, "Sleva 100 korun");
+    const percentDecoy = await startThread(session, "Sleva 100 korun");
     const underscore = await startThread(session, "Soubor snake_case.ts");
     await startThread(session, "Soubor snakeXcase.ts");
     const backslash = await startThread(session, "Cesta C:\\temp");
     await startThread(session, "Cesta C:/temp");
 
-    expect(await search(session, "100%")).toEqual([percent]);
+    // A q with no word has no word rule (issue #1783), so only the substring rule can match it.
     expect(await search(session, "%")).toEqual([percent]);
-    expect(await search(session, "snake_case")).toEqual([underscore]);
     expect(await search(session, "_")).toEqual([underscore]);
-    expect(await search(session, "C:\\temp")).toEqual([backslash]);
     expect(await search(session, "\\")).toEqual([backslash]);
+    // A q with words also finds the threads that hold them (issue #1783): "100" is a word of both
+    // Sleva threads. The text parser reads "C:/temp" as a path, so the word "temp" is not in the second
+    // Cesta thread. The pattern of the substring rule treats % and the backslash as themselves, which
+    // the symbol-only q above prove.
+    expect(await search(session, "100%")).toEqual([percentDecoy, percent]);
+    expect(await search(session, "snake_case")).toEqual([underscore]);
+    expect(await search(session, "C:\\temp")).toEqual([backslash]);
 
     // unaccent folds these fullwidth and small forms to %, _ and a backslash. The folded character is
     // matched as itself too, never as a wildcard or as an escape of the character after it.
-    for (const q of ["\uFF05", "\uFE6A", "100\uFF05"]) expect(await search(session, q), q).toEqual([percent]);
-    for (const q of ["\uFF3F", "snake\uFF3Fcase"]) expect(await search(session, q), q).toEqual([underscore]);
-    for (const q of ["\uFF3C", "\uFE68", "\u2216", "C:\uFF3Ctemp"]) {
-      expect(await search(session, q), q).toEqual([backslash]);
-    }
+    for (const q of ["\uFF05", "\uFE6A"]) expect(await search(session, q), q).toEqual([percent]);
+    expect(await search(session, "100\uFF05")).toEqual([percentDecoy, percent]);
+    expect(await search(session, "\uFF3F")).toEqual([underscore]);
+    expect(await search(session, "snake\uFF3Fcase")).toEqual([underscore]);
+    for (const q of ["\uFF3C", "\uFE68", "\u2216"]) expect(await search(session, q), q).toEqual([backslash]);
+    expect(await search(session, "C:\uFF3Ctemp")).toEqual([backslash]);
   });
 
   it("applies no filter for a q that is empty once its diacritics are removed", async () => {
@@ -962,7 +993,9 @@ describe("GET /api/semp/threads with q (issue #1737)", () => {
       key: "approval.outcome.rejected",
       params: { serverName: "Zebra mail", toolName: "send_email" },
     });
-    for (const q of ["uklid", "zebra", "rejected", "approval"]) expect(await search(session, q), q).toEqual([]);
+    for (const q of ["zebra", "rejected", "approval"]) expect(await search(session, q), q).toEqual([]);
+    // The user message before it is still searched, as a message and no longer as the preview.
+    expect(await search(session, "uklid")).toEqual([threadId]);
   });
 
   it("never matches a thread of another tenant", async () => {

@@ -35,6 +35,7 @@ const transcriptListBodySchema = z
         .object({
           id: z.uuid(),
           displayName: z.string().nullable(),
+          suggestedName: z.string().nullable(),
           date: z.string().nullable(),
           durationSeconds: z.number().nullable(),
           status: z.string().nullable(),

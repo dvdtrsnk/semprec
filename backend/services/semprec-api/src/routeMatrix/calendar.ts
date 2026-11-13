@@ -12,6 +12,14 @@ export const CALENDAR_ROUTES: RouteMatrixEntry[] = [
     tenancy: "tenant",
   },
   {
+    name: "calendar agenda",
+    method: "GET",
+    path: "/api/calendar/agenda?from=2026-10-16&direction=forward",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "calendar item duplicate",
     method: "POST",
     path: `/api/calendar/items/${EXAMPLE_ID}/duplicate`,

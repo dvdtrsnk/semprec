@@ -1,6 +1,10 @@
 import { getView } from "./viewsStore.js";
 import { expandItemRelations, expansionForReader, type RelationExpansionOptions } from "./relationExpansion.js";
-import { assertAgentDatabaseAccess, listUnreadableDatabaseIds } from "../agentGrants/agentDatabaseAccess.js";
+import {
+  assertReaderDatabaseAccess,
+  listUnreadableDatabaseIds,
+  type DatabaseReader,
+} from "../agentGrants/agentDatabaseAccess.js";
 import { projectItemsForRead } from "./itemReadProjection.js";
 // Owns the choke point's read-through-a-view operations: querying a stored view, and the raw
 // request-shaped queries against a database or a view. Nothing that writes state, and no view
@@ -33,21 +37,20 @@ export function createViewQueryOps(deps: Pick<ChokePointDeps, "pool">) {
 
     /**
      * `POST /api/databases/:id/query` (issue #157): raw, request-boundary-validated filter/sort/cursor/limit/inTrash.
-     * An agent (`agentProjectItemId`, issue #1810) needs `read` access to the database, checked in this transaction
-     * before the query, and sees the relation targets of databases it may not read as `{ id, hidden: true }`.
+     * An agent (a `reader` that is its project, issue #1810) or an external client (issue #1998) needs `read` access to
+     * the database, checked in this transaction before the query, and sees the relation targets of databases it may not
+     * read as `{ id, hidden: true }`.
      */
     async queryDatabaseItems(
       databaseId: string,
       input: viewQuery.DatabaseQueryInput,
       expansion?: RelationExpansionOptions,
-      agentProjectItemId?: string,
+      reader?: DatabaseReader,
     ): Promise<viewQuery.QueryViewResult> {
       return withTransaction(pool, async (client) => {
-        if (agentProjectItemId !== undefined) {
-          await assertAgentDatabaseAccess(client, { agentProjectItemId, databaseId, access: "read" });
-        }
+        if (reader !== undefined) await assertReaderDatabaseAccess(client, reader, databaseId, "read");
         const page = await stampFromInbox(client, await viewQuery.queryDatabaseItems(client, databaseId, input));
-        const readerExpansion = await expansionForReader(client, expansion, agentProjectItemId);
+        const readerExpansion = await expansionForReader(client, expansion, reader);
         return readerExpansion
           ? {
               ...page,
@@ -59,29 +62,29 @@ export function createViewQueryOps(deps: Pick<ChokePointDeps, "pool">) {
 
     /**
      * `POST /api/views/:id/query` (issue #157): same raw request shape as `queryDatabaseItems`, resolved against a stored view.
-     * An agent (`agentProjectItemId`, issue #1810) needs `read` access to the database of a filtered or linked view,
-     * checked in this transaction before the query. A curated view has no database: its page, cursor and `totalCount`
-     * leave out the items of the databases the agent may not read.
+     * An agent (a `reader` that is its project, issue #1810) or an external client (issue #1998) needs `read` access to
+     * the database of a filtered or linked view, checked in this transaction before the query. A curated view has no
+     * database: its page, cursor and `totalCount` leave out the items of the databases the reader may not read.
      */
     async queryViewItems(
       viewId: string,
       input: viewQuery.ViewQueryInput,
       expansion?: RelationExpansionOptions,
-      agentProjectItemId?: string,
+      reader?: DatabaseReader,
     ): Promise<viewQuery.QueryViewResult> {
       return withTransaction(pool, async (client) => {
-        const view = agentProjectItemId !== undefined || expansion ? await getView(client, viewId) : null;
-        if (agentProjectItemId !== undefined && view?.databaseId) {
-          await assertAgentDatabaseAccess(client, { agentProjectItemId, databaseId: view.databaseId, access: "read" });
+        const view = reader !== undefined || expansion ? await getView(client, viewId) : null;
+        if (reader !== undefined && view?.databaseId) {
+          await assertReaderDatabaseAccess(client, reader, view.databaseId, "read");
         }
         // The unreadable databases are excluded in the query itself, so the page, its cursor and its count cover
         // the readable members only and say nothing about how many members of a closed database the view holds.
         const unreadable =
-          agentProjectItemId !== undefined && view?.databaseId === null
-            ? await listUnreadableDatabaseIds(client, agentProjectItemId)
+          reader !== undefined && view?.databaseId === null
+            ? await listUnreadableDatabaseIds(client, reader)
             : undefined;
         const page = await stampFromInbox(client, await viewQuery.queryViewItems(client, viewId, input, unreadable));
-        const readerExpansion = await expansionForReader(client, expansion, agentProjectItemId);
+        const readerExpansion = await expansionForReader(client, expansion, reader);
         if (!readerExpansion) return page;
         return {
           ...page,

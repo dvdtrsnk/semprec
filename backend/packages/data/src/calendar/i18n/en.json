@@ -33,5 +33,9 @@
   "calendar.holiday.freedomAndDemocracy": "Struggle for Freedom and Democracy Day",
   "calendar.holiday.christmasEve": "Christmas Eve",
   "calendar.holiday.christmasDay": "Christmas Day",
-  "calendar.holiday.boxingDay": "Boxing Day"
+  "calendar.holiday.boxingDay": "Boxing Day",
+  "calendar.invitation.request.subject": "Invitation: {title}",
+  "calendar.invitation.request.text": "You are invited to \"{title}\". Open the attached calendar invitation to reply.",
+  "calendar.invitation.cancel.subject": "Cancelled: {title}",
+  "calendar.invitation.cancel.text": "\"{title}\" has been cancelled."
 }

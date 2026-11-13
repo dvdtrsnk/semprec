@@ -19,6 +19,8 @@ import * as viewsStore from "./viewsStore.js";
 import * as viewItemsStore from "./viewItemsStore.js";
 import type { ViewTypeRegistry } from "./viewTypeRegistry.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
+import { assertReaderDatabaseAccess, type DatabaseReader } from "../agentGrants/agentDatabaseAccess.js";
+import { assertReaderItemPathAccess, assertReaderViewAccess } from "./readerObjectAccess.js";
 import {
   assertAuthenticatedAgentIdentity,
   assertSystemKeyWritable,
@@ -80,14 +82,20 @@ export function createViewOps(deps: Pick<ChokePointDeps, "pool" | "viewTypeRegis
     /**
      * `actor` (default `{ type: 'user' }`) governs `createdBy`/`creatorProjectItemId` — a
      * caller never sets either directly. Creating as `type: 'ai_agent'` requires and stores
-     * `actor.agentProjectItemId` (issue #87); a 'user'/'system' actor stores no creator.
+     * `actor.agentProjectItemId` (issue #87); a 'user'/'system' actor stores no creator. An external client (a
+     * `reader`, issue #1998) needs `write` access to the database the view belongs to, checked first in this
+     * transaction; the views below that take a `reader` check the database of the view the same way.
      */
     async createView(
       input: Omit<viewsStore.CreateViewInput, "createdBy" | "creatorProjectItemId">,
       actor: Actor = { type: "user" },
       actingUserId?: string,
+      reader?: DatabaseReader,
     ): Promise<ViewRow> {
       return withTransaction(pool, async (client) => {
+        if (reader !== undefined && input.databaseId) {
+          await assertReaderDatabaseAccess(client, reader, input.databaseId, "write");
+        }
         await assertAuthenticatedAgentIdentity(client, actor);
         assertSystemKeyWritable(input.config, actor);
         const view = await viewsStore.createView(
@@ -109,8 +117,11 @@ export function createViewOps(deps: Pick<ChokePointDeps, "pool" | "viewTypeRegis
       });
     },
 
-    async getView(id: string): Promise<ViewRow | null> {
-      return withTransaction(pool, (client) => viewsStore.getView(client, id));
+    async getView(id: string, reader?: DatabaseReader): Promise<ViewRow | null> {
+      return withTransaction(pool, async (client) => {
+        if (reader !== undefined) await assertReaderViewAccess(client, reader, id, "read");
+        return viewsStore.getView(client, id);
+      });
     },
 
     async listViewsByDatabase(databaseId: string): Promise<ViewRow[]> {
@@ -129,8 +140,10 @@ export function createViewOps(deps: Pick<ChokePointDeps, "pool" | "viewTypeRegis
       config?: Record<string, unknown>;
       isDefault?: boolean;
       actingUserId?: string;
+      reader?: DatabaseReader;
     }): Promise<ViewRow> {
       return withTransaction(pool, async (client) => {
+        if (input.reader !== undefined) await assertReaderViewAccess(client, input.reader, input.id, "write");
         await assertAuthenticatedAgentIdentity(client, input.actor);
         const view = await viewsStore.getView(client, input.id);
         if (!view) throw new NotFoundError(`View ${input.id} not found`);
@@ -164,18 +177,31 @@ export function createViewOps(deps: Pick<ChokePointDeps, "pool" | "viewTypeRegis
      * landing between a pre-check and this call could otherwise make a REST response describe a
      * state the deleted row never actually had at the moment it was deleted.
      */
-    async deleteView(input: { id: string; actor: Actor; actingUserId?: string }): Promise<ViewRow> {
-      return withTransaction(pool, (client) => viewDeleteWithClient(client, input.id, input.actor, input.actingUserId));
+    async deleteView(input: {
+      id: string;
+      actor: Actor;
+      actingUserId?: string;
+      reader?: DatabaseReader;
+    }): Promise<ViewRow> {
+      return withTransaction(pool, async (client) => {
+        if (input.reader !== undefined) await assertReaderViewAccess(client, input.reader, input.id, "write");
+        return viewDeleteWithClient(client, input.id, input.actor, input.actingUserId);
+      });
     },
 
     // ---- view_items (curated view membership) ----
+    // A curated view has no database, so an external client (a `reader`, issue #1998) is checked against the database
+    // of the member item instead (and the databases above it): a sensitive record is neither added to, moved in nor
+    // removed from a view by it.
     async addViewItem(input: {
       viewId: string;
       itemId: string;
       position?: number;
       actor: Actor;
+      reader?: DatabaseReader;
     }): Promise<ViewItemRow> {
       return withTransaction(pool, async (client) => {
+        if (input.reader !== undefined) await assertReaderItemPathAccess(client, input.reader, input.itemId, "write");
         await assertAuthenticatedAgentIdentity(client, input.actor);
         const view = await viewsStore.getView(client, input.viewId);
         if (!view) throw new NotFoundError(`View ${input.viewId} not found`);
@@ -191,8 +217,14 @@ export function createViewOps(deps: Pick<ChokePointDeps, "pool" | "viewTypeRegis
       });
     },
 
-    async removeViewItem(input: { viewId: string; itemId: string; actor: Actor }): Promise<void> {
+    async removeViewItem(input: {
+      viewId: string;
+      itemId: string;
+      actor: Actor;
+      reader?: DatabaseReader;
+    }): Promise<void> {
       return withTransaction(pool, async (client) => {
+        if (input.reader !== undefined) await assertReaderItemPathAccess(client, input.reader, input.itemId, "write");
         await assertAuthenticatedAgentIdentity(client, input.actor);
         const view = await viewsStore.getView(client, input.viewId);
         if (!view) throw new NotFoundError(`View ${input.viewId} not found`);
@@ -213,8 +245,10 @@ export function createViewOps(deps: Pick<ChokePointDeps, "pool" | "viewTypeRegis
       itemId: string;
       position: number;
       actor: Actor;
+      reader?: DatabaseReader;
     }): Promise<ViewItemRow> {
       return withTransaction(pool, async (client) => {
+        if (input.reader !== undefined) await assertReaderItemPathAccess(client, input.reader, input.itemId, "write");
         await assertAuthenticatedAgentIdentity(client, input.actor);
         const view = await viewsStore.getView(client, input.viewId);
         if (!view) throw new NotFoundError(`View ${input.viewId} not found`);

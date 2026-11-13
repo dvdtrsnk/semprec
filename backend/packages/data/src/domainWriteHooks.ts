@@ -64,6 +64,7 @@ import {
 } from "./calendar/eventReminderValuesHook.js";
 import { eventParticipantEdgeWriteHook } from "./calendar/eventParticipantEdgeHook.js";
 import { defaultCalendarCreateHook } from "./calendar/defaultCalendarCreateHook.js";
+import { eventInvitationItemDeleteHook, eventInvitationItemUpdateHook } from "./calendar/eventInvitationHooks.js";
 import {
   calendarItemCreateHook,
   calendarItemUpdateHook,
@@ -331,3 +332,8 @@ registerItemRestoreHook(eventHostedTasksRestoreHook);
 // Issue gh-1812: the cover candidates of a permanently deleted item go with it, whatever its database (an item of
 // another database has none). gh-1812 declares only #1809 as a blocker, and that one for shared-file ordering.
 registerItemPurgeHook(libraryCoverCandidatesPurgeHook);
+
+// Issue #1774: a moved or relocated Event queues an updated invitation for the people it was sent to, and a trashed
+// Event queues a cancellation for the people it has an invitation for. No restore hook: a restore sends nothing.
+registerItemUpdateHook(eventInvitationItemUpdateHook);
+registerItemDeleteHook(eventInvitationItemDeleteHook);

@@ -392,6 +392,40 @@ export async function getApprovalRequest(
 }
 
 /**
+ * What a reader needs to say how far a request has come: its decision and the execution protocol's state
+ * and result. The payload (the call's arguments) is deliberately not part of it.
+ */
+export interface ApprovalRequestStateView {
+  id: string;
+  status: ApprovalRequestStatus;
+  executionStatus: ApprovalRequestExecutionStatus;
+  /** `execution_result_jsonb` as stored; a reader reads its discriminators only (`approvalConflictReason`). */
+  executionResult: unknown;
+}
+
+/**
+ * The state of every request in `ids` that the caller's tenant scope can read, in one query (issue #1862).
+ * An id that matches no visible row is absent from the result; `ids` must be uuids, which the caller checks.
+ */
+export async function listApprovalRequestStatesByIds(
+  client: Queryable,
+  ids: readonly string[],
+): Promise<ApprovalRequestStateView[]> {
+  if (ids.length === 0) return [];
+  const { rows } = await client.query<
+    Pick<ApprovalRequestRow, "id" | "status" | "execution_status" | "execution_result_jsonb">
+  >(`SELECT id, status, execution_status, execution_result_jsonb FROM approval_requests WHERE id = ANY($1::uuid[])`, [
+    ids,
+  ]);
+  return rows.map((row) => ({
+    id: row.id,
+    status: assertKnownValue(APPROVAL_REQUEST_STATUSES, row.status, "status"),
+    executionStatus: assertKnownValue(APPROVAL_REQUEST_EXECUTION_STATUSES, row.execution_status, "execution_status"),
+    executionResult: row.execution_result_jsonb,
+  }));
+}
+
+/**
  * The approval queue's source list for one owner (issue #132, owner-scoped by issue #1028): every
  * still-`pending` request whose run is owned by `ownerUserId`, oldest first — the same FIFO order a
  * human triage list expects. Decided requests never appear here; a caller that needs one anyway

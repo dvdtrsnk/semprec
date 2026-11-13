@@ -15,4 +15,10 @@ export interface AuthenticatedActor {
    * session. The MCP and AgentTool composition roots never set it, and no input schema accepts it.
    */
   restSession?: true;
+  /**
+   * Set only by the `/mcp` endpoint for a caller on the user's own bearer token or session, an external AI client
+   * (issue #1998): a sensitive database is refused to it. No run credential, the REST adapter and the AgentTool
+   * composition root set it, and no input schema accepts it.
+   */
+  externalClient?: true;
 }

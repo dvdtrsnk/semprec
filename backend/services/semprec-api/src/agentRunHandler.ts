@@ -14,6 +14,7 @@ import {
   isAgentRunStepReadSettled,
   listAgentRunEventsForStepPage,
   mintMcpRunCredential,
+  projectAgentRunStepPage,
   toManifestLocale,
 } from "@semprec/data";
 import type { Pool } from "pg";
@@ -95,7 +96,9 @@ function parseStepsQuery(url: URL): { after: string; limit: number } {
  * `GET /api/agent-runs/:id/steps?after=<eventId>&limit=<n>` (issue #1821) — the run's events grouped
  * into steps, one page at a time, with `nextCursor` to pass as the next `after` (`buildAgentRunStepPage`
  * holds the grouping and the cursor rule) and `truncatedHistory` when retention removed the run's
- * opening events. It answers 404 under the same rule as the run detail.
+ * opening events. Each step carries a title, summary, target name and change in the session user's
+ * locale, and an approval step the live state of its approval request (`projectAgentRunStepPage`, issues
+ * #1847 and #1862). It answers 404 under the same rule as the run detail.
  *
  * `POST /api/agent-runs/mcp-credentials` (issue #220, AC34/44/47) mints a restricted, single-run
  * `agent_run` plus an opaque credential for it (`mintMcpRunCredential`) — the piece that lets an
@@ -155,14 +158,18 @@ export function createAgentRunRequestListener(pool: Pool) {
             const run = await getAgentRun(client, stepsRunId);
             if (!run || run.actorUserId !== identity.user.id) return null;
             const { events, hasMore } = await listAgentRunEventsForStepPage(client, run.id, query.after, query.limit);
+            const stepPage = buildAgentRunStepPage({
+              events,
+              hasMore,
+              after: query.after,
+              limit: query.limit,
+              runSettled: isAgentRunStepReadSettled(run),
+            });
             return {
-              ...buildAgentRunStepPage({
-                events,
-                hasMore,
-                after: query.after,
-                limit: query.limit,
-                runSettled: isAgentRunStepReadSettled(run),
-              }),
+              ...(await projectAgentRunStepPage(client, stepPage, {
+                agentRunId: run.id,
+                locale: identity.user.locale,
+              })),
               truncatedHistory: await isAgentRunHistoryTruncated(client, run),
             };
           });

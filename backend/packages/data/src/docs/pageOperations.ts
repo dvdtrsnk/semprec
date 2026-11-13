@@ -28,6 +28,7 @@ import { loadDocWithClient, mutateDocWithClient } from "./docPersistence.js";
 import { getDocByItemId, getOrCreateDoc, readPageStatesForItems } from "./docsStore.js";
 import { lockLiveItem } from "./lockLiveItem.js";
 import { normalizePageTitle, PAGE_TITLE_MAX_LENGTH } from "./pageTitle.js";
+import type { DatabaseReader } from "../agentGrants/agentDatabaseAccess.js";
 import { assertAgentPageAccess, MAX_SUBPAGE_CHAIN, UUID_RE } from "./pageOwnerDatabase.js";
 import { ensurePagesDatabase, PAGES_MODULE_ID } from "./pagesDatabase.js";
 
@@ -171,17 +172,17 @@ async function convertBlocksToSubpages(
  * (including the creation of a Journal period entry), none of them. `origin` is the caller's, derived server-side.
  * With `fromBlockIds` it converts existing blocks instead of creating one (`convertBlocksToSubpages`).
  *
- * For an agent (`agentProjectItemId`) the parent page must be writable for its project: the check follows the parent's
+ * For an agent's project or an external client (`reader`) the parent page must be writable for it: the check follows the parent's
  * lock, because a Journal period is created by that step, and a refusal rolls the whole transaction back with it.
  */
 export async function createSubpageWithClient(
   client: PoolClient,
   input: PageCreateSubpageInput,
   origin: CreatedBy,
-  agentProjectItemId?: string,
+  reader?: DatabaseReader,
 ): Promise<PageCreateSubpageOutput> {
   const parent = await lockLiveParent(client, input.parent);
-  await assertAgentPageAccess(client, agentProjectItemId, parent.id, "write");
+  await assertAgentPageAccess(client, reader, parent.id, "write");
   const parentDoc = await getOrCreateDoc(client, parent.id, "page");
   const pagesDatabase = await ensurePagesDatabase(client);
   await assertParentChainIsAcyclic(client, pagesDatabase.id, parent);

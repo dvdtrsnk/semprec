@@ -27,6 +27,7 @@ const requestRow = z
   .object({
     event_item_id: z.uuid().nullable(),
     recorded_at: z.string().nullable(),
+    name: z.string().nullable(),
     language: z
       .string()
       .regex(/^[a-z]{2}$/)
@@ -39,7 +40,7 @@ const requestRow = z
 export async function readRecordingRequest(client: PoolClient, fileItemId: string) {
   const result = await client.query<Record<string, unknown>>(
     `SELECT event_item_id, to_char(recorded_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS recorded_at,
-            language, num_speakers_exact, num_speakers_min, project_item_id
+            name, language, num_speakers_exact, num_speakers_min, project_item_id
      FROM recording_requests WHERE tenant_id = app_tenant_default() AND file_item_id = $1`,
     [fileItemId],
   );
@@ -48,6 +49,7 @@ export async function readRecordingRequest(client: PoolClient, fileItemId: strin
   return {
     eventId: row.event_item_id,
     recordedAt: row.recorded_at,
+    name: row.name,
     language: row.language,
     numSpeakersExact: row.num_speakers_exact,
     numSpeakersMin: row.num_speakers_min,

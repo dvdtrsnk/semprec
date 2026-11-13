@@ -41,6 +41,12 @@ export {
 } from "../tasks/taskHostEventRouteHandlers.js";
 export { createEventTasksRouteHandler } from "../tasks/eventTasksRouteHandler.js";
 export {
+  createTranscriptGetTool,
+  createTranscriptSegmentGetTool,
+  transcriptGetArgsSchema,
+  transcriptSegmentGetArgsSchema,
+} from "../transcription/transcriptAgentTools.js";
+export {
   createProjectAgentGuidanceReadRouteHandler,
   createProjectAgentGuidanceSaveRouteHandler,
 } from "../projectAgentGuidance/projectAgentGuidanceRouteHandlers.js";
@@ -348,7 +354,24 @@ export const manifest: ModuleManifest = {
     },
   ],
   capabilities: [],
-  agentTools: [],
+  agentTools: [
+    {
+      name: "transcript.get",
+      handlerExport: "createTranscriptGetTool",
+      argumentSchemaExport: "transcriptGetArgsSchema",
+      capability: "core.item.read",
+      approval: "none",
+      riskClass: "read",
+    },
+    {
+      name: "transcript.segment.get",
+      handlerExport: "createTranscriptSegmentGetTool",
+      argumentSchemaExport: "transcriptSegmentGetArgsSchema",
+      capability: "core.item.read",
+      approval: "none",
+      riskClass: "read",
+    },
+  ],
   viewTypes: [TEMPORAL_SWITCHER_VIEW_TYPE],
   heartbeatActions: [
     FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,

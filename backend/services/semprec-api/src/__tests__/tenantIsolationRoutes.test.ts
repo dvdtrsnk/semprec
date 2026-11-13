@@ -3221,6 +3221,46 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       [own.approvalId, own.cardId].sort(),
     );
   },
+  // A gets three cards and one pending tick approval, B one card and one approval, on top of whatever the shared rows
+  // and earlier cases left; each count rises by its own tenant's rows only, so neither sees the other's.
+  "inbox cards count": async () => {
+    const request: Request = { method: "GET", path: "/api/inbox/cards/count" };
+    const totalOf = async (tenant: TenantFixture): Promise<number> =>
+      z.object({ total: z.number().int() }).parse(JSON.parse(await sendOk(tenant.member, request))).total;
+    const seed = (tenant: TenantFixture, cardCount: number) =>
+      runInTenant(tenant.tenantId, async () => {
+        await inTenantTransaction(tenant.tenantId, async (client) => {
+          const database = await getDatabaseByModuleId(client, "processingProposals");
+          if (!database) throw new Error(`no 'processingProposals' database in tenant ${tenant.tenantId}`);
+          for (let n = 0; n < cardCount; n += 1) {
+            await createItemWithClient(
+              client,
+              { databaseId: database.id, properties: { kind: "inbox", status: "proposed", proposal: null } },
+              { allowedSystemKeys: ["kind", "status", "proposal"] },
+            );
+          }
+        });
+        const run = await createAgentRun(pool, {
+          triggeredBy: "heartbeat",
+          task: "inbox cards count isolation",
+          userId: tenant.member.userId,
+        });
+        await createPendingApprovalRequest(pool, {
+          agentRunId: run.id,
+          toolName: "probe",
+          riskClass: "unclassified",
+          payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+          resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+        });
+      });
+    const [aBefore, bBefore] = [await totalOf(a), await totalOf(b)];
+
+    await seed(a, 3);
+    await seed(b, 1);
+
+    expect(await totalOf(a)).toBe(aBefore + 4);
+    expect(await totalOf(b)).toBe(bBefore + 2);
+  },
   // A and B each get an Event and a Task on the same day; each reads its own two and neither of the other's.
   "calendar timeline": async () => {
     const seedDay = (tenant: TenantFixture) =>
@@ -3251,6 +3291,47 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const invalid = await send(b.member, {
       method: "GET",
       path: "/api/calendar/timeline?from=2026-10-17&to=2026-10-16",
+    });
+    expect(invalid.status).toBe(400);
+    expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
+  },
+  // A and B each get an Event and a Task on one day; each reads its own two in both directions and neither of the other's.
+  "calendar agenda": async () => {
+    const day = "2026-10-21";
+    const seedDay = (tenant: TenantFixture) =>
+      inTenantTransaction(tenant.tenantId, async (client) => {
+        const ids: string[] = [];
+        for (const moduleId of ["events", "tasks"]) {
+          const database = await getDatabaseByModuleId(client, moduleId);
+          if (!database) throw new Error(`${moduleId} not seeded`);
+          const item = await createItemWithClient(client, {
+            databaseId: database.id,
+            properties: { name: "Agenda", date: day },
+          });
+          ids.push(item.id);
+        }
+        return ids;
+      });
+    const foreign = await seedDay(a);
+    const own = await seedDay(b);
+    for (const direction of ["forward", "backward"]) {
+      const path = `/api/calendar/agenda?from=${day}&direction=${direction}&limit=200`;
+      const answer = await expectExcludesA(b.member, { method: "GET", path }, own);
+      expectNoneOf(answer.text, foreign, `B's calendar agenda ${direction}`);
+      // A's rows are on that day for A, so their absence from B's answer is isolation and not an empty day.
+      const asA = await sendOk(a.member, { method: "GET", path });
+      expect(foreign.filter((id) => !asA.includes(id))).toEqual([]);
+      expectNoneOf(asA, own, `A's calendar agenda ${direction}`);
+    }
+    // A cursor that names A's Event on that day answers B like a cursor that names no item.
+    const continued = await expectForeignLikeRandom(b.member, foreign, ([eventId]) => ({
+      method: "GET",
+      path: `/api/calendar/agenda?from=${day}&direction=forward&cursor=${Buffer.from(`${day}|${eventId}`).toString("base64url")}`,
+    }));
+    expect(continued.status).toBe(200);
+    const invalid = await send(b.member, {
+      method: "GET",
+      path: `/api/calendar/agenda?from=${day}&direction=sideways`,
     });
     expect(invalid.status).toBe(400);
     expect(readString(invalid.text, "error", "code")).toBe("validation_failed");

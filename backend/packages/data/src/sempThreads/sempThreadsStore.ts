@@ -9,6 +9,7 @@ import { isOnItemEventRule, parseHeartbeatRule, type HeartbeatRuleKindRegistry }
 import { NotFoundError, ValidationError } from "../errors.js";
 import { guardInboxThreadSend } from "../inbox/inboxThreadSendGuard.js";
 import { resolveSempHistoryContexts } from "../semp/sempRefHistory.js";
+import { sempMessageSearchVectorSql } from "../semp/sempMessageSearch.js";
 
 interface ThreadRow {
   id: string;
@@ -146,7 +147,9 @@ export async function insertSempUserTurn(
   requireManagedTransaction(client);
   const userTimestamp = await allocateSempMessageTimestamp(client, threadId);
   const user = await client.query<{ id: string }>(
-    "INSERT INTO semp_messages (thread_id, role, text, context, created_at, source) VALUES ($1, 'user', $2, $3::jsonb, $4::timestamptz, $5) RETURNING id",
+    `INSERT INTO semp_messages (thread_id, role, text, search_vector, context, created_at, source)
+     VALUES ($1, 'user', $2::text, ${sempMessageSearchVectorSql("$2::text")}, $3::jsonb, $4::timestamptz, $5)
+     RETURNING id`,
     [threadId, text, JSON.stringify(context), userTimestamp, trusted?.source ?? null],
   );
   const messageId = requireSingleRow(user.rows, "inserting Semp user message").id;

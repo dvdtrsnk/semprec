@@ -8,6 +8,7 @@ import { ValidationError } from "../errors.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { assertDescriptionShape, type ApprovalDescription } from "../mcp/approvalRequestsStore.js";
 import { INBOX_MODULE_ID } from "../seed/inboxPipelineKeys.js";
+import { buildSempThreadMessageSearch } from "./sempMessageSearch.js";
 
 /** The stored values of `semp_threads.kind`. */
 export const SEMP_THREAD_KINDS = ["chat", "item", "tick"] as const;
@@ -24,6 +25,9 @@ const PREVIEW_CODE_POINTS = 140;
  * the preview shows, because Markdown syntax is removed before the cut.
  */
 const PREVIEW_SOURCE_CODE_POINTS = 1000;
+
+/** Position of the first bind parameter after the nine fixed ones of the list query. */
+const FIRST_SEARCH_PARAMETER = 10;
 
 /** What a title is resolved from: the stored kind and title plus the two values read live. */
 export interface SempThreadTitleParts {
@@ -163,8 +167,9 @@ export interface ListSempThreadsInput {
   /**
    * Only threads that contain this text, without regard to case or diacritics, in the value their
    * title is resolved from or in the first 140 code points of the stored text of the previewed
-   * message (see `listSempThreads`). Null is no filter, and so is a text of which removing the
-   * diacritics leaves nothing.
+   * message, or in which every word of it is found in the text of some non-system message (see
+   * `listSempThreads`). Null is no filter, and so is a text of which removing the diacritics leaves
+   * nothing.
    */
   search: string | null;
   cursor: SempThreadListCursor | null;
@@ -247,6 +252,13 @@ function heartbeatOf(row: ThreadListDbRow, projectNames: Map<string, string | nu
  * link targets inside the window can match, and a word the preview shows near its end can lie
  * beyond the window and then does not.
  *
+ * Issue #1783 adds a third rule, and a thread matches when any of the three does. Every word of the
+ * search text, as `buildItemSearchQuery` splits it, must be found, by its lemma or as a prefix and
+ * without regard to diacritics, in the stored search vector of some non-system message of the
+ * thread; the words may be in one message or in different ones. The vector covers the first
+ * `SEMP_MESSAGE_SEARCH_MAX_CODE_POINTS` code points of the message, not the window of the preview
+ * (`buildSempThreadMessageSearch`).
+ *
  * The search text is a bound parameter and the pattern is built from it in the query: the text is
  * folded with `unaccent` first, and a backslash, `%` and `_` in the folded text are escaped after
  * that, so each matches only itself. The order matters because folding itself produces these three
@@ -258,6 +270,9 @@ export async function listSempThreads(
   input: ListSempThreadsInput,
 ): Promise<{ rows: SempThreadListRow[]; nextCursor: string | null }> {
   const inbox = await getDatabaseByModuleId(client, INBOX_MODULE_ID);
+  // The message rule is fixed SQL with bind placeholders; the words of the search text are bound.
+  const messageSearch =
+    input.search === null ? null : buildSempThreadMessageSearch(input.search, FIRST_SEARCH_PARAMETER);
   const { rows } = await client.query<ThreadListDbRow>(
     `WITH pending AS (
        SELECT DISTINCT ON (r.thread_id) r.tenant_id, r.thread_id, a.id, a.description,
@@ -304,7 +319,8 @@ export async function listSempThreads(
         AND (needle.pattern IS NULL
              OR unaccent(CASE t.kind WHEN 'chat' THEN t.title WHEN 'tick' THEN h.name
                          ELSE ${SUBJECT_TEXT_SQL} END) ILIKE needle.pattern ESCAPE '\\'
-             OR unaccent(left(last_message.text, $9::int)) ILIKE needle.pattern ESCAPE '\\')
+             OR unaccent(left(last_message.text, $9::int)) ILIKE needle.pattern ESCAPE '\\'
+             ${messageSearch === null ? "" : `OR (t.tenant_id, t.id) IN (${messageSearch.sql})`})
       ORDER BY t.last_activity_at DESC, t.id DESC
       LIMIT $5`,
     [
@@ -317,6 +333,7 @@ export async function listSempThreads(
       PREVIEW_SOURCE_CODE_POINTS,
       input.search,
       PREVIEW_CODE_POINTS,
+      ...(messageSearch?.params ?? []),
     ],
   );
   const page = rows.slice(0, input.limit);

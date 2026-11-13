@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
+import { z } from "zod";
 import { runInTenant } from "@semprec/shared";
 import { createUser, updateUserLocale } from "../auth/usersStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
@@ -15,6 +16,7 @@ import { generateSchemaProjection } from "../manifest/schemaProjection.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { SLEEP_NIGHTS_MODULE_ID, SLEEP_PLANS_MODULE_ID, SLEEP_SETTINGS_MODULE_ID } from "../seed/sleepModuleKeys.js";
 import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import type { PropertyRow } from "../types.js";
 import { provisionTenant } from "../tenancy/provisionTenant.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
@@ -29,6 +31,13 @@ const USER = { writerKind: "user" } as const;
 let adminPool: Pool;
 let dataPool: Pool;
 
+/** A property's config as the test compares it: a relation's database and definition ids differ per tenant, so it keeps the target's module id. */
+async function comparableConfig(client: PoolClient, row: PropertyRow): Promise<Record<string, unknown>> {
+  if (row.type !== "relation") return row.config;
+  const { targetDatabaseId } = z.object({ targetDatabaseId: z.string() }).parse(row.config);
+  const target = await databasesStore.getDatabase(client, targetDatabaseId);
+  return { targetModuleId: target?.ownerModuleId ?? null };
+}
 function property(key: string, type: string, config: Record<string, unknown> = {}) {
   return { key, name: null, type, owner: "user", ownerProcess: null, locked: false, config };
 }
@@ -49,6 +58,7 @@ const EXPECTED_SHAPE = {
     property("alarmSound", "select", {
       options: [{ key: "morning" }, { key: "birds" }, { key: "piano" }, { key: "vibrateOnly" }],
     }),
+    property("area", "relation", { targetModuleId: "areas" }),
     property("enabled", "checkbox"),
     property("goalMinutes", "number"),
     property("muteSemp", "checkbox"),
@@ -165,15 +175,17 @@ async function sleepShape(tenantId: string) {
           ownerModuleId: found.ownerModuleId,
           archivedAt: found.archivedAt,
         },
-        properties: (await listPropertiesByDatabase(client, found.id)).map((row) => ({
-          key: row.key,
-          name: row.name,
-          type: row.type,
-          owner: row.owner,
-          ownerProcess: row.ownerProcess,
-          locked: row.locked,
-          config: row.config,
-        })),
+        properties: await Promise.all(
+          (await listPropertiesByDatabase(client, found.id)).map(async (row) => ({
+            key: row.key,
+            name: row.name,
+            type: row.type,
+            owner: row.owner,
+            ownerProcess: row.ownerProcess,
+            locked: row.locked,
+            config: await comparableConfig(client, row),
+          })),
+        ),
         views: (await listViewsByDatabase(client, found.id)).map((view) => ({
           type: view.type,
           name: view.name,

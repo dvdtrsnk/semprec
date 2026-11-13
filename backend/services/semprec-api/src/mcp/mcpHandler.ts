@@ -95,9 +95,10 @@ function readClientName(clientInfo: unknown): string | null {
  *     `POST /api/agent-runs/mcp-credentials`): resolves to `{ userId, runId, agentProjectItemId }`,
  *     so `gateway.invoke`'s approval gate actually applies, and the operations it can see are
  *     further restricted to the credential's own granted capability subset.
- *  2. `authenticateRequest`'s verified human session/Bearer identity (unmodified) — the original,
- *     unrestricted path: `{ userId }` alone, no `runId`, so the approval gate stays a no-op for it,
- *     same as REST.
+ *  2. `authenticateRequest`'s verified human session/Bearer identity: `{ userId, externalClient: true }`, no
+ *     `runId`, so the approval gate stays a no-op for it, same as REST. The marker is an external AI client
+ *     (issue #1998): the data layer refuses it every sensitive database, which a REST call of the same user
+ *     still reads.
  * Either way, an ungranted or unknown tool name resolve to the same JSON-RPC "method not found"
  * rather than a distinguishable error, per the issue's "never present-but-forbidden" requirement.
  *
@@ -125,7 +126,11 @@ export async function createMcpRequestListener(
     if (credentialCaller) return credentialCaller;
 
     const identity = await authenticateRequest(pool, req);
-    return { actor: { userId: identity.user.id }, capabilities: grantedCapabilities, tenantId: identity.tenantId };
+    return {
+      actor: { userId: identity.user.id, externalClient: true },
+      capabilities: grantedCapabilities,
+      tenantId: identity.tenantId,
+    };
   }
 
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {

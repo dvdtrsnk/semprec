@@ -7,9 +7,10 @@ let catalogsPromise: Promise<ModuleCatalogs> | undefined;
 
 /**
  * Lazily loaded once per process and reused: `agentRuns/i18n/{cs,en}.json` never changes at runtime.
- * A failed load is not kept, so the next call tries again.
+ * A failed load is not kept, so the next call tries again. The step catalog (`agentStepCatalog.ts`)
+ * reads the same files through it.
  */
-function getAgentRunErrorCatalogs(): Promise<ModuleCatalogs> {
+export function getAgentRunCatalogs(): Promise<ModuleCatalogs> {
   catalogsPromise ??= loadModuleCatalogs(import.meta.url).catch((err: unknown) => {
     catalogsPromise = undefined;
     throw err;
@@ -24,7 +25,7 @@ function getAgentRunErrorCatalogs(): Promise<ModuleCatalogs> {
  * nothing localized is ever stored, so a locale change applies to runs closed earlier too.
  */
 export async function agentRunErrorSummary(errorCode: AgentRunErrorCode, locale: string): Promise<string> {
-  const catalogs = await getAgentRunErrorCatalogs();
+  const catalogs = await getAgentRunCatalogs();
   return resolveCatalogLabel(
     null,
     catalogs[toManifestLocale(locale)],

@@ -11,7 +11,7 @@ import type { ItemRow, PropertyRow } from "../types.js";
 import { ValidationError } from "../errors.js";
 import { listPropertiesByDatabases } from "./propertiesStore.js";
 import { projectItemForRead } from "./hooks.js";
-import { listUnreadableDatabaseIds } from "../agentGrants/agentDatabaseAccess.js";
+import { listUnreadableDatabaseIds, type DatabaseReader } from "../agentGrants/agentDatabaseAccess.js";
 
 export interface RelationExpansionOptions {
   relations: Record<string, string[]> | true;
@@ -24,16 +24,16 @@ export interface RelationExpansionOptions {
   unreadableDatabaseIds?: ReadonlySet<string>;
 }
 /**
- * The expansion an agent's read runs under: the relation targets in the databases the agent's project may not
- * read are hidden (issue #1810). A reader that is not an agent gets `expansion` untouched.
+ * The expansion a restricted reader's read runs under: the relation targets in the databases an agent's project
+ * (issue #1810) or an external client (issue #1998) may not read are hidden. A person gets `expansion` untouched.
  */
 export async function expansionForReader(
   client: PoolClient,
   expansion: RelationExpansionOptions | undefined,
-  agentProjectItemId: string | undefined,
+  reader: DatabaseReader | undefined,
 ): Promise<RelationExpansionOptions | undefined> {
-  if (!expansion || agentProjectItemId === undefined) return expansion;
-  return { ...expansion, unreadableDatabaseIds: await listUnreadableDatabaseIds(client, agentProjectItemId) };
+  if (!expansion || reader === undefined) return expansion;
+  return { ...expansion, unreadableDatabaseIds: await listUnreadableDatabaseIds(client, reader) };
 }
 
 type ExpandedItem = ItemRow & { relations?: Record<string, ItemRelationTarget[]>; relationsTruncated?: string[] };

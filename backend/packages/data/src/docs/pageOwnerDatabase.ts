@@ -1,5 +1,9 @@
 import type { PoolClient } from "pg";
-import { assertAgentDatabaseAccess, type RequiredAgentDatabaseAccess } from "../agentGrants/agentDatabaseAccess.js";
+import {
+  assertReaderDatabaseAccess,
+  type DatabaseReader,
+  type RequiredAgentDatabaseAccess,
+} from "../agentGrants/agentDatabaseAccess.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import { getItemsByIdsIncludingDeleted } from "../chokePoint/itemsStore.js";
 import { NotFoundError, ValidationError } from "../errors.js";
@@ -57,18 +61,20 @@ export async function resolvePageOwnerDatabase(client: PoolClient, itemId: strin
 }
 
 /**
- * Refuses with a `ForbiddenError` (403 `forbidden`) when the agent's project lacks `access` to the database that owns
- * the page of `itemId` (`resolvePageOwnerDatabase`), in the transaction of the read or write it guards; it takes the
- * same share lock on the grant row as `assertAgentDatabaseAccess`. Without an `agentProjectItemId` (a person, the system,
- * an `/mcp` call on a human session) nothing is checked, as for every other path of the per-database grants.
+ * Refuses with a `ForbiddenError` (403 `forbidden`) when the reader lacks `access` to the database that owns the page
+ * of `itemId` (`resolvePageOwnerDatabase`), in the transaction of the read or write it guards. The reader is an agent's
+ * project (a string; it takes the same share lock on the grant row as `assertAgentDatabaseAccess`) or an external AI
+ * client on `/mcp` (issue #1998; it has no grant, a sensitive database is closed to it). It is the one page check of
+ * both: an external client does not walk the path of the item by another resolver. Without a reader (a person, the
+ * system) nothing is checked, as for every other path of the per-database grants.
  */
 export async function assertAgentPageAccess(
   client: PoolClient,
-  agentProjectItemId: string | undefined,
+  reader: DatabaseReader | undefined,
   itemId: string,
   access: RequiredAgentDatabaseAccess,
 ): Promise<void> {
-  if (agentProjectItemId === undefined) return;
+  if (reader === undefined) return;
   const databaseId = await resolvePageOwnerDatabase(client, itemId);
-  await assertAgentDatabaseAccess(client, { agentProjectItemId, databaseId, access });
+  await assertReaderDatabaseAccess(client, reader, databaseId, access);
 }

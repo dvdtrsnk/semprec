@@ -26,6 +26,12 @@ import { currentTenantScope } from "@semprec/shared";
 import { enqueueItemSearchBackfill } from "../search/itemSearchBackfill.js";
 import { EMAILS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import {
+  assertReaderDatabaseAccess,
+  type DatabaseReader,
+  type RequiredAgentDatabaseAccess,
+} from "../agentGrants/agentDatabaseAccess.js";
+import { assertReaderPropertyAccess } from "./readerObjectAccess.js";
+import {
   createCatalogResolver,
   resolveProperty,
   toManifestLocale,
@@ -231,14 +237,40 @@ async function updatePropertyWithClient(
   return { property, typeChanged };
 }
 
+/**
+ * An external client's check (issue #1998) for a property it reads or changes by id: the property's own database and,
+ * for a relation property, the database of its paired side, which a change or a delete of this side reaches as well.
+ */
+async function assertReaderPropertyPairAccess(
+  client: PoolClient,
+  reader: DatabaseReader,
+  propertyId: string,
+  access: RequiredAgentDatabaseAccess,
+): Promise<void> {
+  await assertReaderPropertyAccess(client, reader, propertyId, access);
+  const definition = await relationsStore.getRelationDefinitionByPropertyId(client, propertyId);
+  const pairedPropertyId = definition?.propertyIdA === propertyId ? definition.propertyIdB : definition?.propertyIdA;
+  if (pairedPropertyId) await assertReaderPropertyAccess(client, reader, pairedPropertyId, access);
+}
+
 export function createPropertyOps(deps: Pick<ChokePointDeps, "pool" | "computedKeyRegistry">) {
   const { pool, computedKeyRegistry } = deps;
   return {
-    async listProperties(databaseId: string): Promise<PropertyRow[]> {
-      return withTransaction(pool, (client) => propertiesStore.listPropertiesByDatabase(client, databaseId));
+    /**
+     * The reads and writes below that take a `reader` are an external client's (issue #1998): it needs `read` (reads)
+     * or `write` (writes) access to the property's database, checked first in the transaction of the operation.
+     */
+    async listProperties(databaseId: string, reader?: DatabaseReader): Promise<PropertyRow[]> {
+      return withTransaction(pool, async (client) => {
+        if (reader !== undefined) await assertReaderDatabaseAccess(client, reader, databaseId, "read");
+        return propertiesStore.listPropertiesByDatabase(client, databaseId);
+      });
     },
-    async getProperty(id: string): Promise<PropertyRow | null> {
-      return withTransaction(pool, (client) => propertiesStore.getProperty(client, id));
+    async getProperty(id: string, reader?: DatabaseReader): Promise<PropertyRow | null> {
+      return withTransaction(pool, async (client) => {
+        if (reader !== undefined) await assertReaderPropertyAccess(client, reader, id, "read");
+        return propertiesStore.getProperty(client, id);
+      });
     },
 
     /** Resolves a relation route's `:propertyKey` path segment (issue #157) — the choke-point's edge calls take a property id, never a key, so a REST caller must go through this first. */
@@ -247,14 +279,27 @@ export function createPropertyOps(deps: Pick<ChokePointDeps, "pool" | "computedK
     },
 
     /** Backs the `property.getByKey` generic operation (issue #432) — see `propertiesStore.findPropertiesByKey`. */
-    async findPropertiesByKey(databaseId: string, key: string, type?: PropertyType): Promise<PropertyRow[]> {
-      return withTransaction(pool, (client) => propertiesStore.findPropertiesByKey(client, databaseId, key, type));
+    async findPropertiesByKey(
+      databaseId: string,
+      key: string,
+      type?: PropertyType,
+      reader?: DatabaseReader,
+    ): Promise<PropertyRow[]> {
+      return withTransaction(pool, async (client) => {
+        if (reader !== undefined) await assertReaderDatabaseAccess(client, reader, databaseId, "read");
+        return propertiesStore.findPropertiesByKey(client, databaseId, key, type);
+      });
     },
 
-    async createProperty(input: propertiesStore.CreatePropertyInput, actingUserId?: string): Promise<PropertyRow> {
+    async createProperty(
+      input: propertiesStore.CreatePropertyInput,
+      actingUserId?: string,
+      reader?: DatabaseReader,
+    ): Promise<PropertyRow> {
       assertNoComputedKeyCollision(computedKeyRegistry, input.key);
       if (input.type === "rollup") {
         return withTransaction(pool, async (client) => {
+          if (reader !== undefined) await assertReaderDatabaseAccess(client, reader, input.databaseId, "write");
           const property = await propertiesStore.createProperty(client, input);
           await applyRollupConfig(client, property);
           await enqueueRollupBackfill(client, property.id);
@@ -271,6 +316,7 @@ export function createPropertyOps(deps: Pick<ChokePointDeps, "pool" | "computedK
         });
       }
       return withTransaction(pool, async (client) => {
+        if (reader !== undefined) await assertReaderDatabaseAccess(client, reader, input.databaseId, "write");
         const property = await propertiesStore.createProperty(client, input);
         await enqueuePropertySearchReindex(client, [property.databaseId]);
         runAfterCommit(client, () =>
@@ -328,8 +374,10 @@ export function createPropertyOps(deps: Pick<ChokePointDeps, "pool" | "computedK
       id: string,
       input: { name?: string; config?: Record<string, unknown>; type?: PropertyType },
       actingUserId?: string,
+      reader?: DatabaseReader,
     ): Promise<{ property: PropertyRow; typeChanged: boolean }> {
       return withTransaction(pool, async (client) => {
+        if (reader !== undefined) await assertReaderPropertyPairAccess(client, reader, id, "write");
         const result = await updatePropertyWithClient(client, id, input);
         await enqueuePropertySearchReindex(client, [result.property.databaseId]);
         runAfterCommit(client, () =>
@@ -412,8 +460,11 @@ export function createPropertyOps(deps: Pick<ChokePointDeps, "pool" | "computedK
      * landing between a pre-check and this call could otherwise make a REST response describe a
      * state the deleted row never actually had at the moment it was deleted.
      */
-    async deleteProperty(id: string, actingUserId?: string): Promise<PropertyRow> {
-      return withTransaction(pool, (client) => propertyDeleteWithClient(client, id, actingUserId));
+    async deleteProperty(id: string, actingUserId?: string, reader?: DatabaseReader): Promise<PropertyRow> {
+      return withTransaction(pool, async (client) => {
+        if (reader !== undefined) await assertReaderPropertyPairAccess(client, reader, id, "write");
+        return propertyDeleteWithClient(client, id, actingUserId);
+      });
     },
   };
 }

@@ -4,6 +4,7 @@ import { getTenantUserLocale } from "../auth/usersStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
+import { createRelationPropertyWithClient } from "../chokePoint/relationPropertyWrites.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import type { ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { requireAffectedRows } from "../db/pool.js";
@@ -11,6 +12,7 @@ import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { SLEEP_DATABASE_DESCRIPTORS } from "../sleep/sleepModuleManifest.js";
 import type { PropertyOwner, PropertyType } from "../types.js";
 import { SENSITIVE_DATABASE_KEYS } from "./sensitiveDatabaseKeys.js";
+import { SLEEP_SETTINGS_AREA_KEY } from "./sleepModuleKeys.js";
 
 interface PropSpec {
   key: string;
@@ -117,8 +119,10 @@ async function createSleepDatabase(
 /**
  * Seeds the sleep module (issue #1776) into the caller's open transaction: the system project item "Sleep" in
  * the Projects database; the system databases `sleepSettings`, `sleepPlans` and `sleepNights` it owns, each
- * with its properties and a default `table` view; the schema lock of the three; then one settings item and
- * the two default plans. No night item is seeded.
+ * with its properties and a default `table` view; the one-to-one `sleepSettings.area` relation to the Areas
+ * database `areasDatabaseId` (issue gh-1833; it has no inverse property and the seeded settings item has no
+ * edge); the schema lock of the three; then one settings item and the two default plans. No night item is
+ * seeded.
  *
  * The two plan names come from the sleep module catalog in the tenant user's language (`cs` while the tenant
  * has no user) and are stored as plain titles.
@@ -128,6 +132,7 @@ async function createSleepDatabase(
 export async function seedSleepModuleInTransaction(
   client: PoolClient,
   projectsDatabaseId: string,
+  areasDatabaseId: string,
   viewTypeRegistry: ViewTypeRegistry,
 ): Promise<void> {
   const locale = toManifestLocale((await getTenantUserLocale(client)) ?? "cs");
@@ -140,6 +145,16 @@ export async function seedSleepModuleInTransaction(
   const create = (descriptor: { key: string; name: string }, properties: readonly PropSpec[]) =>
     createSleepDatabase(client, descriptor, properties, project.id, viewTypeRegistry);
   const settingsId = await create(SLEEP_DATABASE_DESCRIPTORS.settings, SETTINGS_PROPERTIES);
+  // Created before the schema lock below, which `propertiesStore` honours; a tenant seeded earlier gets it from
+  // `sleep/sleepSettingsAreaCutoverMigration.ts`.
+  await createRelationPropertyWithClient(client, {
+    sourceDatabaseId: settingsId,
+    key: SLEEP_SETTINGS_AREA_KEY,
+    name: null,
+    targetDatabaseId: areasDatabaseId,
+    cardinality: "one_to_one",
+    owner: "user",
+  });
   const plansId = await create(SLEEP_DATABASE_DESCRIPTORS.plans, PLAN_PROPERTIES);
   const nightsId = await create(SLEEP_DATABASE_DESCRIPTORS.nights, NIGHT_PROPERTIES);
   for (const databaseId of [settingsId, plansId, nightsId]) {

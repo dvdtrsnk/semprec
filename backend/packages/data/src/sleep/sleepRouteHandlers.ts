@@ -4,7 +4,12 @@ import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { isCalendarDate } from "../calendar/eventValidationHook.js";
 import { withTransaction } from "../db/pool.js";
 import { NotFoundError, ValidationError } from "../errors.js";
-import { SLEEP_NIGHTS_MODULE_ID, SLEEP_PLANS_MODULE_ID, SLEEP_SETTINGS_MODULE_ID } from "../seed/sleepModuleKeys.js";
+import {
+  SLEEP_NIGHTS_MODULE_ID,
+  SLEEP_PLANS_MODULE_ID,
+  SLEEP_SETTINGS_AREA_KEY,
+  SLEEP_SETTINGS_MODULE_ID,
+} from "../seed/sleepModuleKeys.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import {
   resolveSleepNights,
@@ -29,6 +34,8 @@ export interface SleepNightsResponse {
   /** The number of non-deleted plans, whether or not any of them has a night in the range. */
   planCount: number;
   goalMinutes: number;
+  /** The id of the area the settings item's `area` edge points at, or null when it has none (issue gh-1833). */
+  areaId: string | null;
   nights: ResolvedSleepNight[];
 }
 
@@ -77,6 +84,28 @@ async function sleepDatabaseId(client: PoolClient, moduleId: string): Promise<st
   return database.id;
 }
 
+/**
+ * The id of the item the `area` edge of the settings item points at, or null when the item has no such edge.
+ * The relation has no inverse property, so the settings item is always side A of its edges, and its cardinality
+ * allows one. A target in the trash is still returned: trashing an item keeps its edges.
+ */
+async function settingsAreaId(
+  client: PoolClient,
+  settingsDatabaseId: string,
+  settingsItemId: string,
+): Promise<string | null> {
+  const { rows } = await client.query<{ area_id: string }>(
+    `SELECT edge.item_b AS area_id
+       FROM properties property
+       JOIN relation_definitions definition ON definition.property_id_a = property.id
+       JOIN item_relations edge ON edge.relation_definition_id = definition.id
+      WHERE property.database_id = $1 AND property.key = $2 AND edge.item_a = $3
+      LIMIT 1`,
+    [settingsDatabaseId, SLEEP_SETTINGS_AREA_KEY, settingsItemId],
+  );
+  return rows[0]?.area_id ?? null;
+}
+
 /** The non-deleted items of a database, ordered by id. With `range`, only those whose `night` is in it. */
 async function liveItems(
   client: PoolClient,
@@ -120,6 +149,9 @@ function assertNightsRange(from: string, to: string): void {
  * The sleep settings, the tenant's time zone and the planned nights of `from`..`to` (inclusive) for the tenant
  * of `client`, in the shape of `GET /api/sleep/nights` (issue gh-1809).
  *
+ * `areaId` is the target of the settings item's `area` edge (`settingsAreaId`), or null while a user has set none;
+ * a tenant whose `sleepSettings` has no `area` property yet also answers null.
+ *
  * The nights are those of `resolveSleepNights` from the non-deleted plans and the non-deleted night
  * exceptions in the range, and they are computed also when `enabled` is false. The reads share the
  * transaction of `client`, which must be REPEATABLE READ (as `sleepNightsGet` opens it) for the settings, the
@@ -138,7 +170,8 @@ export async function loadSleepNights(
   const { from, to } = range;
   assertNightsRange(from, to);
 
-  const settingsItems = await liveItems(client, await sleepDatabaseId(client, SLEEP_SETTINGS_MODULE_ID), null);
+  const settingsDatabaseId = await sleepDatabaseId(client, SLEEP_SETTINGS_MODULE_ID);
+  const settingsItems = await liveItems(client, settingsDatabaseId, null);
   const [settingsItem] = settingsItems;
   if (!settingsItem) throw new NotFoundError("The tenant has no sleep settings");
   if (settingsItems.length > 1) {
@@ -146,6 +179,7 @@ export async function loadSleepNights(
   }
   const { prepReminder, prepReminderMinutes, ...settings } = settingsProperties.parse(settingsItem.properties);
 
+  const areaId = await settingsAreaId(client, settingsDatabaseId, settingsItem.id);
   const timezone = await getSystemTimezone(client);
   const plans = (await liveItems(client, await sleepDatabaseId(client, SLEEP_PLANS_MODULE_ID), null)).map(toPlan);
   const exceptions = (await liveItems(client, await sleepDatabaseId(client, SLEEP_NIGHTS_MODULE_ID), range)).map(
@@ -159,7 +193,7 @@ export async function loadSleepNights(
     to,
     timezone,
   });
-  return { ...settings, timezone, planCount: plans.length, nights };
+  return { ...settings, timezone, planCount: plans.length, areaId, nights };
 }
 
 /** The request context of `GET /api/sleep/nights`: its query string is read from the request URL. */

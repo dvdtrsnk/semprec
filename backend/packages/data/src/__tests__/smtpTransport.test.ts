@@ -43,6 +43,7 @@ import {
   MailRecipientRejectedError,
   MailSendAuthFailedError,
   MailServerUnreachableError,
+  MailTransportUnavailableError,
 } from "../mail/providerTypes.js";
 import { allowLoopbackOutboundForTests } from "../net/outboundAddressPolicy.js";
 import {
@@ -901,9 +902,9 @@ describe("createMailTransportFactory (issue #1634)", () => {
     // Every SYNC_MODES value now has a transport, so this value is outside the union, the way a stored row that
     // the store's type does not describe would reach the factory.
     const unnamedMode = "unsupported_mode" as unknown as SyncMode;
-    await expect(createMailTransportFactory(pool).forMailbox(mailboxId, unnamedMode)).rejects.toThrow(
-      /No mail transport for sync mode unsupported_mode/,
-    );
+    const error = await rejectionOf(createMailTransportFactory(pool).forMailbox(mailboxId, unnamedMode));
+    expect(error).toBeInstanceOf(MailTransportUnavailableError);
+    expect(error).toMatchObject({ message: expect.stringMatching(/No mail transport for sync mode unsupported_mode/) });
   });
 
   it("refuses a mailbox with no server settings at all, with a ValidationError naming smtp", async () => {
@@ -932,9 +933,9 @@ describe("createMailTransportFactory (issue #1634)", () => {
   it("refuses a mailbox with SMTP settings but no stored credential", async () => {
     await upsertMailServerSettings(pool, mailboxId, { imap: null, smtp: smtpEndpoint, username });
 
-    await expect(createMailTransportFactory(pool).forMailbox(mailboxId, "imap")).rejects.toThrow(
-      /has no stored credential/,
-    );
+    const error = await rejectionOf(createMailTransportFactory(pool).forMailbox(mailboxId, "imap"));
+    expect(error).toBeInstanceOf(MailTransportUnavailableError);
+    expect(error).toMatchObject({ message: expect.stringMatching(/has no stored credential/) });
   });
 });
 

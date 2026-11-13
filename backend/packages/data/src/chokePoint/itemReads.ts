@@ -1,5 +1,5 @@
 import { expandItemRelations, expansionForReader, type RelationExpansionOptions } from "./relationExpansion.js";
-import { assertAgentDatabaseAccess } from "../agentGrants/agentDatabaseAccess.js";
+import { assertReaderDatabaseAccess, type DatabaseReader } from "../agentGrants/agentDatabaseAccess.js";
 import { projectItemsForRead } from "./itemReadProjection.js";
 // Owns the choke point's item reads: single-item lookups (`getItem`, `findItem`,
 // `findItemIncludingDeleted`), the breadcrumb walk `getItemPath`, filtered `listItems` /
@@ -62,8 +62,11 @@ export interface ListItemsInput extends itemsStore.ListItemsOptions {
   filter?: unknown;
   /** The clock `date_relative` conditions are evaluated at; defaults to the current time. */
   now?: Date;
-  /** The Projects item of the reading agent's run: the read needs `read` access to the database (issue #1810). */
-  agentProjectItemId?: string;
+  /**
+   * The reader the read needs `read` access to the database for: the Projects item of the reading agent's run
+   * (issue #1810) or an external AI client (issue #1998).
+   */
+  reader?: DatabaseReader;
 }
 
 export interface CountItemsInput extends Pick<itemsStore.ListItemsOptions, "includeDeleted" | "buildFilterSql"> {
@@ -186,21 +189,14 @@ async function resolveFilterSql(
 export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
   const { pool } = deps;
   return {
-    async getItem(
-      databaseId: string,
-      itemId: string,
-      expansion?: RelationExpansionOptions,
-      agentProjectItemId?: string,
-    ) {
+    async getItem(databaseId: string, itemId: string, expansion?: RelationExpansionOptions, reader?: DatabaseReader) {
       return withTransaction(pool, async (client) => {
-        if (agentProjectItemId !== undefined) {
-          await assertAgentDatabaseAccess(client, { agentProjectItemId, databaseId, access: "read" });
-        }
+        if (reader !== undefined) await assertReaderDatabaseAccess(client, reader, databaseId, "read");
         const item = await itemsStore.getItemById(client, databaseId, itemId);
         if (!item) return null;
         const [stamped] = await withFromInbox(client, [item]);
         const projected = await projectItemsForRead(client, [stamped ?? item]);
-        const readerExpansion = await expansionForReader(client, expansion, agentProjectItemId);
+        const readerExpansion = await expansionForReader(client, expansion, reader);
         return (readerExpansion ? await expandItemRelations(client, projected, readerExpansion) : projected)[0]!;
       });
     },
@@ -211,29 +207,26 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
      * `getItemsByIds` scan `assertItemExists` already uses for view membership — acceptable here
      * for the same reason: a single-row point lookup, not a scan over a large membership list.
      *
-     * An agent (`agentProjectItemId`) needs `read` access to the item's database, or, when it also passes its run
-     * (`agentRunId`), a per-turn read allowance for this very item (issue #1849).
+     * An agent (a `reader` that is its project) needs `read` access to the item's database, or, when it also passes
+     * its run (`agentRunId`), a per-turn read allowance for this very item (issue #1849). An external client
+     * (issue #1998) needs a database that is not sensitive, and no allowance applies to it.
      */
-    async findItem(
-      itemId: string,
-      expansion?: RelationExpansionOptions,
-      agentProjectItemId?: string,
-      agentRunId?: string,
-    ) {
+    async findItem(itemId: string, expansion?: RelationExpansionOptions, reader?: DatabaseReader, agentRunId?: string) {
       return withTransaction(pool, async (client) => {
         const [item] = await itemsStore.getItemsByIds(client, [itemId]);
         if (!item) return null;
-        if (agentProjectItemId !== undefined) {
-          await assertAgentDatabaseAccess(client, {
-            agentProjectItemId,
-            databaseId: item.databaseId,
-            access: "read",
-            ...(agentRunId !== undefined ? { readAllowance: { agentRunId, itemId: item.id } } : {}),
-          });
+        if (reader !== undefined) {
+          await assertReaderDatabaseAccess(
+            client,
+            reader,
+            item.databaseId,
+            "read",
+            agentRunId !== undefined ? { agentRunId, itemId: item.id } : undefined,
+          );
         }
         const [stamped] = await withFromInbox(client, [item]);
         const projected = await projectItemsForRead(client, [stamped ?? item]);
-        const readerExpansion = await expansionForReader(client, expansion, agentProjectItemId);
+        const readerExpansion = await expansionForReader(client, expansion, reader);
         return (readerExpansion ? await expandItemRelations(client, projected, readerExpansion) : projected)[0]!;
       });
     },
@@ -308,10 +301,8 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
     async listItems(databaseId: string, options?: ListItemsInput) {
       return withTransaction(pool, async (client) => {
         // `filter` is consumed by resolveFilterSql; `rest` is what the store itself takes.
-        const { filter, now, agentProjectItemId, ...rest } = options ?? {};
-        if (agentProjectItemId !== undefined) {
-          await assertAgentDatabaseAccess(client, { agentProjectItemId, databaseId, access: "read" });
-        }
+        const { filter, now, reader, ...rest } = options ?? {};
+        if (reader !== undefined) await assertReaderDatabaseAccess(client, reader, databaseId, "read");
         const buildFilterSql = await resolveFilterSql(client, databaseId, {
           filter,
           now,
@@ -339,12 +330,21 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
      * The counts of `entries` in input order, read in one transaction (issue #1709). The first entry
      * whose database the caller's tenant does not have fails the whole call with `NotFoundError`, and an
      * invalid `filter` or `groupBy` fails it with `ValidationError`; `itemsStore.countItemsGrouped`
-     * documents what is counted and how the groups are ordered.
+     * documents what is counted and how the groups are ordered. An external client (a `reader`, issue #1998) needs
+     * `read` access to the database of every entry, checked in this transaction before the entry is counted, so a
+     * sensitive database refuses the whole call and no group key or count of it is computed.
      */
-    async countItemsBatch(entries: ItemCountEntryInput[], options: CountItemsBatchOptions): Promise<ItemCountEntry[]> {
+    async countItemsBatch(
+      entries: ItemCountEntryInput[],
+      options: CountItemsBatchOptions,
+      reader?: DatabaseReader,
+    ): Promise<ItemCountEntry[]> {
       return withTransaction(pool, async (client) => {
         const counts: ItemCountEntry[] = [];
-        for (const entry of entries) counts.push(await countItemsEntry(client, entry, options));
+        for (const entry of entries) {
+          if (reader !== undefined) await assertReaderDatabaseAccess(client, reader, entry.databaseId, "read");
+          counts.push(await countItemsEntry(client, entry, options));
+        }
         return counts;
       });
     },
@@ -354,11 +354,17 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
      * `computeDatabaseFacets` documents what each facet lists and counts. The database is resolved first, under
      * the caller's tenant, so an unknown id and another tenant's id fail alike with the not-found a database
      * query gives. The manifest metadata is obtained before the transaction opens, so the transaction never
-     * waits for the module manifests to load.
+     * waits for the module manifests to load. An external client (a `reader`, issue #1998) needs `read` access to the
+     * database, checked in this transaction before any facet is computed.
      */
-    async getDatabaseFacets(input: DatabaseFacetsInput, options?: DatabaseFacetsOptions): Promise<DatabaseFacet[]> {
+    async getDatabaseFacets(
+      input: DatabaseFacetsInput,
+      options?: DatabaseFacetsOptions,
+      reader?: DatabaseReader,
+    ): Promise<DatabaseFacet[]> {
       const metadata = await loadFacetMetadata();
       return withTransaction(pool, async (client) => {
+        if (reader !== undefined) await assertReaderDatabaseAccess(client, reader, input.databaseId, "read");
         const database = await databasesStore.getDatabase(client, input.databaseId);
         if (!database) {
           throw new NotFoundError(`Database ${input.databaseId} not found`, {

@@ -4,13 +4,10 @@ import { getDatabase, getDatabaseByKey, getDatabaseByModuleId } from "../chokePo
 import { getItemsByIds, getItemsByIdsIncludingDeleted } from "../chokePoint/itemsStore.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import { getRelationDefinitionByPropertyId, listRelationsForItems, otherSide } from "../chokePoint/relationsStore.js";
+import { requireSingleRow } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { toManifestLocale, type ManifestLocale } from "../manifest/catalogResolution.js";
-import {
-  listApprovalRequestsPage,
-  parseApprovalRequestListCursor,
-  type ApprovalRequestSourceKind,
-} from "../mcp/approvalRequestsStore.js";
+import { countPendingApprovalRequests, type ApprovalRequestSourceKind } from "../mcp/approvalRequestsStore.js";
 import { listApprovalRequestsQueuePage } from "../mcp/approvalRequestsQueue.js";
 import { INBOX_MODULE_ID, PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { FILES_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
@@ -25,6 +22,7 @@ import {
   type ProposalStep,
   type UnknownKindProposalEnvelope,
 } from "./proposalEnvelope.js";
+import { describeUpdateSteps, type ProposalChange } from "./proposalChanges.js";
 import { selectActiveSteps } from "./proposalStepGraph.js";
 
 /** The most cards `GET /api/inbox/cards` returns; `total` still counts every open card. */
@@ -39,6 +37,9 @@ type OpenCardStatus = (typeof OPEN_CARD_STATUSES)[number];
 
 /** Cards in these states are listed but not counted in `total`: they have no proposal to decide yet. */
 const UNCOUNTED_STATUSES: readonly OpenCardStatus[] = ["computing", "computeFailed"];
+const COUNTED_STATUSES: readonly OpenCardStatus[] = OPEN_CARD_STATUSES.filter(
+  (status) => !UNCOUNTED_STATUSES.includes(status),
+);
 
 const CARD_KINDS = ["inbox", "transcript"] as const;
 
@@ -56,9 +57,6 @@ export const INBOX_CARD_TARGET_LABEL_KINDS: readonly InboxCardKind[] = [
   "file",
   "speaker",
 ];
-
-/** Where the approvals are counted past the first page: one page is this many requests. */
-const APPROVAL_COUNT_PAGE_SIZE = 500;
 
 export interface InboxCardType {
   id: string;
@@ -136,6 +134,11 @@ export interface InboxCard {
   envelope: ProposalEnvelope | UnknownKindProposalEnvelope | null;
   /** Present on a card whose status is `invalid` and absent on every other card. */
   invalidReason?: InboxCardInvalidReason;
+  /**
+   * What the active `update` steps of the envelope change, one entry per changed key, labelled in the caller's locale
+   * (issue #2028). Absent on a card that has no active `update` step. Resolved on read, never stored.
+   */
+  changes?: ProposalChange[];
 }
 
 export interface InboxCardList {
@@ -227,6 +230,19 @@ function toCandidate(row: CandidateRow): Candidate {
   };
 }
 
+/**
+ * The rows of the Processing proposals database that are open cards of the Inbox: not in the Trash, of a card kind
+ * the Inbox lists, in one of `statuses`. The list (`listCandidates`) and the count (`countOpenInboxCards`) both
+ * build their WHERE clause from this predicate, so the filter cannot drift between them; the count passes only the
+ * counted statuses. The arguments are the SQL placeholders of the proposals database id (a uuid), the kinds and
+ * the statuses (text arrays).
+ */
+function openProposalCardsPredicate(database: string, kinds: string, statuses: string): string {
+  return `p.database_id = ${database}::uuid AND p.deleted_at IS NULL
+        AND p.properties ->> 'kind' = ANY(${kinds}::text[])
+        AND p.properties ->> 'status' = ANY(${statuses}::text[])`;
+}
+
 /** The relation definition behind `propertyKey` of `databaseId`, or `null` when the property or its relation is missing. */
 async function relationDefinitionId(
   client: PoolClient,
@@ -277,9 +293,7 @@ async function listCandidates(
           WHERE r.relation_definition_id = $4::uuid AND (r.item_a = p.id OR r.item_b = p.id)
           ORDER BY o.id LIMIT 1
        ) transcript ON true
-      WHERE p.database_id = $1 AND p.deleted_at IS NULL
-        AND p.properties ->> 'kind' = ANY($6::text[])
-        AND p.properties ->> 'status' = ANY($7::text[])`,
+      WHERE ${openProposalCardsPredicate("$1", "$6", "$7")}`,
     [
       proposalsDatabaseId,
       sourceInboxDefinitionId,
@@ -481,6 +495,11 @@ async function buildProposalCards(
     const envelope = parseStoredProposalEnvelope(item.properties.proposal, item.id);
     envelopes.set(item.id, { envelope, steps: activeStepsOf(envelope) });
   }
+  const changesByCardId = await describeUpdateSteps(
+    client,
+    new Map([...envelopes].flatMap(([cardId, { steps }]) => (steps ? [[cardId, steps] as const] : []))),
+    locale,
+  );
   const targetItemIds = new Set([...envelopes.values()].flatMap((e) => targetItemIdsOf(e.envelope, e.steps)));
   const targetItems = new Map(
     (await getItemsByIds(client, [...targetItemIds])).map((item) => [item.id, item] as const),
@@ -523,6 +542,7 @@ async function buildProposalCards(
         completedAt: stringOrNull(transcript.properties.date),
       };
     }
+    const changes = changesByCardId.get(item.id);
     cards.push({
       cardId: item.id,
       source: "proposal",
@@ -534,6 +554,7 @@ async function buildProposalCards(
       context: item.properties.context ?? null,
       targets: await buildTargets(context, baseKind, envelope, steps),
       envelope,
+      ...(changes ? { changes } : {}),
       ...(candidate.status === "invalid"
         ? { invalidReason: await buildInvalidReason(item.properties.invalidReason, locale) }
         : {}),
@@ -542,18 +563,12 @@ async function buildProposalCards(
   return cards;
 }
 
-interface ApprovalCards {
-  cards: InboxCard[];
-  /** Every pending approval of a tick or MCP run, also the ones past the first page that are not returned. */
-  total: number;
-}
-
 /**
- * The pending approval requests whose source is a tick or MCP, oldest first, through the resolver of
- * `GET /api/approval-requests?status=pending&source=tick,mcp`, so both lists agree. A delegated run is
- * resolved to the source of its root run there. At most `limit` are returned; the rest are only counted.
+ * The first `INBOX_CARDS_LIMIT` pending approval requests whose source is a tick or MCP, oldest first, through
+ * the resolver of `GET /api/approval-requests?status=pending&source=tick,mcp`, so both lists agree. A delegated
+ * run is resolved to the source of its root run there.
  */
-async function listApprovalCards(client: PoolClient, input: ListInboxCardsInput): Promise<ApprovalCards> {
+async function listApprovalCards(client: PoolClient, input: ListInboxCardsInput): Promise<InboxCard[]> {
   const page = await listApprovalRequestsQueuePage(client, {
     ownerUserId: input.ownerUserId,
     status: "pending",
@@ -564,44 +579,56 @@ async function listApprovalCards(client: PoolClient, input: ListInboxCardsInput)
     limit: INBOX_CARDS_LIMIT,
     locale: input.locale,
   });
-  let total = page.rows.length;
-  for (let nextCursor = page.nextCursor; nextCursor !== null;) {
-    const rest = await listApprovalRequestsPage(client, {
-      ownerUserId: input.ownerUserId,
-      status: "pending",
-      sourceKinds: APPROVAL_CARD_SOURCE_KINDS,
-      search: null,
-      order: "asc",
-      cursor: parseApprovalRequestListCursor(nextCursor),
-      limit: APPROVAL_COUNT_PAGE_SIZE,
-    });
-    total += rest.requests.length;
-    nextCursor = rest.nextCursor;
-  }
   const { cardKind, baseKind } = deriveApprovalCardKind();
-  return {
-    cards: page.rows.map((row) => ({
-      cardId: row.id,
-      source: "approval",
-      cardKind,
-      baseKind,
-      status: "pending",
-      version: null,
-      resolvedSource: {
-        kind: "run",
-        sourceKind: row.source.kind,
-        threadId: row.source.threadId,
-        threadTitle: row.source.threadTitle,
-        heartbeatId: row.source.heartbeatId,
-        heartbeatName: row.source.heartbeatName,
-        mcpClientName: row.source.mcpClientName,
-      },
-      context: null,
-      targets: [],
-      envelope: null,
-    })),
-    total,
-  };
+  return page.rows.map((row) => ({
+    cardId: row.id,
+    source: "approval",
+    cardKind,
+    baseKind,
+    status: "pending",
+    version: null,
+    resolvedSource: {
+      kind: "run",
+      sourceKind: row.source.kind,
+      threadId: row.source.threadId,
+      threadTitle: row.source.threadTitle,
+      heartbeatId: row.source.heartbeatId,
+      heartbeatName: row.source.heartbeatName,
+      mcpClientName: row.source.mcpClientName,
+    },
+    context: null,
+    targets: [],
+    envelope: null,
+  }));
+}
+
+export interface CountOpenInboxCardsInput {
+  /** The user whose pending approvals are counted. */
+  ownerUserId: string;
+}
+
+/**
+ * The number of open Inbox items: the one definition of the word, used by `GET /api/inbox/cards` for its
+ * `total` and by `GET /api/inbox/cards/count`, so no other caller re-implements it. It is the pending approval
+ * requests of ticks and MCP clients that `ownerUserId` is the actor of, plus the open Processing proposals cards
+ * of kind `inbox` and `transcript` in any open status except `computing` and `computeFailed`, which are listed
+ * but not counted because they have no proposal to decide yet. A tenant without the Inbox or the Processing
+ * proposals database has no cards to count. The caller owns the tenant transaction.
+ */
+export async function countOpenInboxCards(client: PoolClient, input: CountOpenInboxCardsInput): Promise<number> {
+  const approvals = await countPendingApprovalRequests(client, {
+    ownerUserId: input.ownerUserId,
+    sourceKinds: APPROVAL_CARD_SOURCE_KINDS,
+  });
+  const proposalsDatabase = await getDatabaseByModuleId(client, PROCESSING_PROPOSALS_MODULE_ID);
+  const inboxDatabase = await getDatabaseByModuleId(client, INBOX_MODULE_ID);
+  if (!proposalsDatabase || !inboxDatabase) return approvals;
+
+  const { rows } = await client.query<{ count: number }>(
+    `SELECT count(*)::int AS count FROM items p WHERE ${openProposalCardsPredicate("$1", "$2", "$3")}`,
+    [proposalsDatabase.id, [...CARD_KINDS], [...COUNTED_STATUSES]],
+  );
+  return approvals + requireSingleRow(rows, "open Inbox proposal cards count").count;
 }
 
 /**
@@ -609,15 +636,16 @@ async function listApprovalCards(client: PoolClient, input: ListInboxCardsInput)
  * of kind `inbox` and `transcript`, in the order approval, proposed (`computing` and `computeFailed`
  * included), invalid, needsClarification, transcript. Inside a group the order is chronological by capture
  * time (an approval by `requested_at`, a transcript card by its transcript's date), then by id. At most
- * `INBOX_CARDS_LIMIT` cards are returned. `total` counts every open card of the set except those in
- * `computing` and `computeFailed`, which are listed but not counted. The caller owns the tenant
+ * `INBOX_CARDS_LIMIT` cards are returned. `total` is `countOpenInboxCards`: every open card of the set except
+ * those in `computing` and `computeFailed`, which are listed but not counted. The caller owns the tenant
  * transaction, and `ownerUserId` decides whose approvals are read.
  */
 export async function listInboxCards(client: PoolClient, input: ListInboxCardsInput): Promise<InboxCardList> {
-  const approvals = await listApprovalCards(client, input);
+  const approvalCards = await listApprovalCards(client, input);
   const proposalsDatabase = await getDatabaseByModuleId(client, PROCESSING_PROPOSALS_MODULE_ID);
   const inboxDatabase = await getDatabaseByModuleId(client, INBOX_MODULE_ID);
-  if (!proposalsDatabase || !inboxDatabase) return { cards: approvals.cards, total: approvals.total };
+  if (!proposalsDatabase || !inboxDatabase)
+    return { cards: approvalCards, total: await countOpenInboxCards(client, input) };
 
   const transcriptsDatabase = await getDatabaseByModuleId(client, TRANSCRIPTS_MODULE_ID);
   const candidates = await listCandidates(
@@ -626,8 +654,7 @@ export async function listInboxCards(client: PoolClient, input: ListInboxCardsIn
     inboxDatabase.id,
     transcriptsDatabase?.id ?? null,
   );
-  const counted = candidates.filter((candidate) => !UNCOUNTED_STATUSES.includes(candidate.status)).length;
-  const page = candidates.slice(0, INBOX_CARDS_LIMIT - approvals.cards.length);
+  const page = candidates.slice(0, INBOX_CARDS_LIMIT - approvalCards.length);
   const proposals = await buildProposalCards(client, page, inboxDatabase.id, input.locale);
-  return { cards: [...approvals.cards, ...proposals], total: approvals.total + counted };
+  return { cards: [...approvalCards, ...proposals], total: await countOpenInboxCards(client, input) };
 }

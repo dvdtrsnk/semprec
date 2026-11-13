@@ -8,7 +8,7 @@ import type { ItemRow } from "../types.js";
 import * as databasesStore from "./databasesStore.js";
 import * as itemsStore from "./itemsStore.js";
 import type { WriterIdentity } from "./writerKind.js";
-import { assertWriterDatabaseAccess } from "../agentGrants/agentDatabaseAccess.js";
+import { assertWriterDatabaseAccess, readerOfWriter } from "../agentGrants/agentDatabaseAccess.js";
 
 /**
  * Walks down from an already-fetched page item to every row nested underneath it — the inline
@@ -54,11 +54,12 @@ export async function collectItemSubtree(
 
 /**
  * A cascade trashes or restores the rows of the databases nested under the item as well, so an agent's project
- * needs `write` access to each of them besides the database of the root, which the caller has checked (issue #1810).
+ * (issue #1810) or an external client (issue #1998) needs `write` access to each of them besides the database of the
+ * root, which the caller has checked.
  */
 export async function assertWriterCascadeAccess(
   client: PoolClient,
-  writer: Pick<WriterIdentity, "agentProjectItemId"> | undefined,
+  writer: Pick<WriterIdentity, "agentProjectItemId" | "externalClient"> | undefined,
   rootDatabaseId: string,
   subtree: readonly ItemRow[],
 ): Promise<void> {
@@ -71,13 +72,14 @@ export async function assertWriterCascadeAccess(
  * The cascade check of `itemDeleteWithClient` for the approval projection of an `item.delete` (issue #1810), so a
  * delete whose cascade reaches a database the agent's project cannot write is refused when the request is made and
  * ends as a conflict when a grant is revoked before the approved request runs, like one whose own database is refused.
- * The root's database is checked by the caller. A writer without a project (a person, the system) is not checked.
+ * The root's database is checked by the caller. A writer without a project or an external-client marker (a person, the
+ * system) is not checked.
  */
 export async function assertWriterDeleteCascadeAccess(
   client: PoolClient,
-  writer: Pick<WriterIdentity, "agentProjectItemId"> | undefined,
+  writer: Pick<WriterIdentity, "agentProjectItemId" | "externalClient"> | undefined,
   root: ItemRow,
 ): Promise<void> {
-  if (writer?.agentProjectItemId === undefined) return;
+  if (readerOfWriter(writer) === undefined) return;
   await assertWriterCascadeAccess(client, writer, root.databaseId, await collectItemSubtree(client, root));
 }

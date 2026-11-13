@@ -2,5 +2,7 @@
   "transcript.speaker.unmappedLabel": "Mluvčí {ordinal}",
   "transcript.speaker.genericLabel": "Mluvčí",
   "transcript.speaker.noCandidatesReason": "Nejsou k dispozici žádné odpovídající osoby.",
-  "transcript.speaker.uncertainReason": "Mluvčího se nepodařilo spolehlivě určit."
+  "transcript.speaker.uncertainReason": "Mluvčího se nepodařilo spolehlivě určit.",
+  "transcript.newMeeting.name": "Schůzka {day}. {month}.",
+  "transcript.displayName.recorded": "Nahrávka {day}. {month}. {time}"
 }

@@ -8,7 +8,7 @@ import {
   type ConfirmProposalCredentialInput,
 } from "./proposalActions.js";
 import { listActiveInboxTypes, type InboxTypeSummary } from "./inboxTypesStore.js";
-import { listInboxCards } from "./inboxCardsStore.js";
+import { countOpenInboxCards, listInboxCards } from "./inboxCardsStore.js";
 import { resolveEditorSchema, type ResolvedEditorSchema } from "./editorSchema.js";
 import { INBOX_ITEM_TYPES_MODULE_ID, PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { CREDENTIAL_TYPES, type CredentialType } from "../credentials/externalCredentialsStore.js";
@@ -209,5 +209,24 @@ export function createInboxCardsRouteHandler(pool: Pool) {
     }
     const cards = list.cards.map((card) => ({ ...card, editorSchema: schemas.get(card.baseKind) ?? null }));
     return { status: 200, body: { cards, total: list.total } };
+  };
+}
+
+/** `GET /api/inbox/cards/count`'s request context: the adapter always supplies the caller, whose id scopes the approvals. */
+interface InboxCardsCountRouteRequestContext {
+  identity: { user: { id: string } };
+}
+
+/**
+ * `GET /api/inbox/cards/count` (issue #1823) — how many cards wait for a decision, `{ total }`, without
+ * reading the stack: the same number as the `total` of `GET /api/inbox/cards`, from `countOpenInboxCards`.
+ * Tenant and user come only from the session. The route takes no query parameters.
+ */
+export function createInboxCardsCountRouteHandler(pool: Pool) {
+  return async (ctx: InboxCardsCountRouteRequestContext): Promise<CustomRouteResult> => {
+    const total = await withTransaction(pool, (client) =>
+      countOpenInboxCards(client, { ownerUserId: ctx.identity.user.id }),
+    );
+    return { status: 200, body: { total } };
   };
 }

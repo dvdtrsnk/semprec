@@ -95,6 +95,22 @@ function assertCrossField(properties: Record<string, unknown>): void {
 }
 
 /**
+ * The Events create rules of issue #1663 on the properties an Event would be stored with: `date` is required,
+ * every present rule key passes its format rule, then the cross-field rules. A rejection is a `ValidationError`
+ * naming the field. Callers that check properties before the write (a proposal envelope, issue #1818) pass the
+ * result of the Events time transform (`deriveEventTimeProperties`), as the create hook sees it.
+ */
+export function assertEventCreateRules(properties: Record<string, unknown>): void {
+  if (!Object.hasOwn(properties, "date")) {
+    throw new ValidationError("Property 'date' is required", { field: "date" });
+  }
+  for (const key of RULE_KEYS) {
+    if (Object.hasOwn(properties, key)) assertFormat(key, properties[key]);
+  }
+  assertCrossField(properties);
+}
+
+/**
  * The Events create rules of issue #1663, registered by `../domainWriteHooks.ts`. It runs after the insert in
  * the write's transaction, on the stored properties after the Events time transform (#1598) and the defaults:
  * `date` is required, every present rule key passes its format rule, then the cross-field rules. A rejection is
@@ -103,13 +119,7 @@ function assertCrossField(properties: Record<string, unknown>): void {
  */
 export const eventValidationItemCreateHook: ItemCreateHook = async ({ database, properties }) => {
   if (!isEventsDatabase(database)) return;
-  if (!Object.hasOwn(properties, "date")) {
-    throw new ValidationError("Property 'date' is required", { field: "date" });
-  }
-  for (const key of RULE_KEYS) {
-    if (Object.hasOwn(properties, key)) assertFormat(key, properties[key]);
-  }
-  assertCrossField(properties);
+  assertEventCreateRules(properties);
 };
 
 /**

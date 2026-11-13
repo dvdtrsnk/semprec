@@ -34,6 +34,7 @@ import {
   type ReplacePageMarkdownInput,
 } from "./pageMarkdown.js";
 import { listPageChanges, type ListPageChangesOptions, type PageChange } from "./pageChanges.js";
+import type { DatabaseReader } from "../agentGrants/agentDatabaseAccess.js";
 import { assertAgentPageAccess } from "./pageOwnerDatabase.js";
 
 function assertKind(doc: DocRow, expected: DocKind): void {
@@ -100,29 +101,29 @@ export function createDocStore(pool: Pool) {
     },
 
     /**
-     * The summary of a page. For an agent (`agentProjectItemId`) its project needs read access to the database that
-     * owns the page, checked first in the read's own transaction (`assertAgentPageAccess`); the same holds for every
-     * method of this store that takes the parameter.
+     * The summary of a page. For an agent's project or an external client (`reader`, issue #1998) the reader needs read
+     * access to the database that owns the page, checked first in the read's own transaction (`assertAgentPageAccess`);
+     * the same holds for every method of this store that takes the parameter.
      */
-    async getPageSummary(itemId: string, locale: string, limit?: number, agentProjectItemId?: string) {
+    async getPageSummary(itemId: string, locale: string, limit?: number, reader?: DatabaseReader) {
       return withTransaction(pool, async (client) => {
-        await assertAgentPageAccess(client, agentProjectItemId, itemId, "read");
+        await assertAgentPageAccess(client, reader, itemId, "read");
         return readPageSummary(client, itemId, locale, limit);
       });
     },
 
     /** The page as canonical Markdown plus its version token (issue #1678); never creates a document. */
-    async readPageMarkdown(itemId: string, agentProjectItemId?: string) {
+    async readPageMarkdown(itemId: string, reader?: DatabaseReader) {
       return withTransaction(pool, async (client) => {
-        await assertAgentPageAccess(client, agentProjectItemId, itemId, "read");
+        await assertAgentPageAccess(client, reader, itemId, "read");
         return readPageMarkdown(client, itemId);
       });
     },
 
     /** Inserts Markdown into a page (issue #1679) in one transaction; the caller supplies the write's origin. */
-    async insertPageMarkdown(itemId: string, input: InsertPageMarkdownInput, agentProjectItemId?: string) {
+    async insertPageMarkdown(itemId: string, input: InsertPageMarkdownInput, reader?: DatabaseReader) {
       return withTransaction(pool, async (client) => {
-        await assertAgentPageAccess(client, agentProjectItemId, itemId, "write");
+        await assertAgentPageAccess(client, reader, itemId, "write");
         return insertPageMarkdown(client, itemId, input);
       });
     },
@@ -142,12 +143,12 @@ export function createDocStore(pool: Pool) {
     async listPageChanges(
       itemId: string,
       options: ListPageChangesOptions,
-      agentProjectItemId?: string,
+      reader?: DatabaseReader,
     ): Promise<PageChange[]> {
       const doc = await withTransaction(pool, async (client) => {
         const [item] = await getItemsByIds(client, [itemId]);
         if (!item) throw new NotFoundError("Item not found", { resource: "item", itemId });
-        await assertAgentPageAccess(client, agentProjectItemId, itemId, "read");
+        await assertAgentPageAccess(client, reader, itemId, "read");
         return docsStore.getDocByItemId(client, itemId);
       });
       if (!doc) {
@@ -159,11 +160,11 @@ export function createDocStore(pool: Pool) {
       return listPageChanges(pool, doc.id, options);
     },
 
-    async ensurePage(itemId: string, agentProjectItemId?: string): Promise<{ docId: string }> {
+    async ensurePage(itemId: string, reader?: DatabaseReader): Promise<{ docId: string }> {
       return withTransaction(pool, async (client) => {
         const [visible] = await getItemsByIds(client, [itemId]);
         if (!visible) throw new NotFoundError("Item not found", { resource: "item", itemId });
-        await assertAgentPageAccess(client, agentProjectItemId, itemId, "write");
+        await assertAgentPageAccess(client, reader, itemId, "write");
         const item = await lockItemById(client, visible.databaseId, itemId);
         if (!item || item.deletedAt) throw new NotFoundError("Item not found", { resource: "item", itemId });
         const doc = await docsStore.getOrCreateDoc(client, itemId, "page");
@@ -175,31 +176,27 @@ export function createDocStore(pool: Pool) {
     async createSubpage(
       input: PageCreateSubpageInput,
       origin: CreatedBy,
-      agentProjectItemId?: string,
+      reader?: DatabaseReader,
     ): Promise<PageCreateSubpageOutput> {
-      return withTransaction(pool, (client) => createSubpageWithClient(client, input, origin, agentProjectItemId));
+      return withTransaction(pool, (client) => createSubpageWithClient(client, input, origin, reader));
     },
 
     /** Copies a subpage with every page nested in it (issue #1722) in one transaction; see `duplicatePageWithClient`. */
     async duplicatePage(
       pageItemId: string,
       options: DuplicatePageOptions,
-      agentProjectItemId?: string,
+      reader?: DatabaseReader,
     ): Promise<PageDuplicateOutput> {
       return withTransaction(pool, async (client) => {
-        await assertAgentPageAccess(client, agentProjectItemId, pageItemId, "write");
+        await assertAgentPageAccess(client, reader, pageItemId, "write");
         return duplicatePageWithClient(client, pageItemId, options);
       });
     },
 
     /** Renames a subpage (issue #1725) in one transaction; `origin` is derived server-side from the caller. */
-    async renamePage(
-      input: PageRenameInput,
-      origin: CreatedBy,
-      agentProjectItemId?: string,
-    ): Promise<PageRenameOutput> {
+    async renamePage(input: PageRenameInput, origin: CreatedBy, reader?: DatabaseReader): Promise<PageRenameOutput> {
       return withTransaction(pool, async (client) => {
-        await assertAgentPageAccess(client, agentProjectItemId, input.pageItemId, "write");
+        await assertAgentPageAccess(client, reader, input.pageItemId, "write");
         return renamePageWithClient(client, input, origin);
       });
     },
@@ -272,8 +269,11 @@ export function createDocStore(pool: Pool) {
     },
 
     /** Restores the page of `itemId` to `at` as one `user` update (issue #1617); see `docPageRestore.ts`. */
-    async restoreVersion(itemId: string, at: Date): Promise<PageRestoreOutput> {
-      return withTransaction(pool, (client) => restorePageVersionWithClient(client, itemId, at));
+    async restoreVersion(itemId: string, at: Date, reader?: DatabaseReader): Promise<PageRestoreOutput> {
+      return withTransaction(pool, async (client) => {
+        await assertAgentPageAccess(client, reader, itemId, "write");
+        return restorePageVersionWithClient(client, itemId, at);
+      });
     },
   };
 }

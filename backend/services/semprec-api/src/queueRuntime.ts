@@ -6,13 +6,15 @@ import {
   createLibraryMetadataFetcher,
   assertTaskListMatchesAffinity,
   createApiCoreTaskList,
+  createMailTransportFactory,
   mergeModuleTaskListForAffinity,
   resolveTaskAffinitySets,
   runHeartbeatFireQueueSplitMigration,
+  setEventInvitationDelivery,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { createApiActionRegistry } from "./actionRegistryComposition.js";
-import { createMailSyncAdapters } from "./mailSyncAdapters.js";
+import { createMailSyncAdapters, readOAuthClient } from "./mailSyncAdapters.js";
 import { createAiGatewayClientForApi } from "./projectAgentGuidanceComposition.js";
 
 export interface ApiQueueRuntimeOptions {
@@ -42,7 +44,10 @@ export interface ApiQueueRuntime {
  * accounts sync through the transports `createMailSyncAdapters` builds (#1505, #1508, #1510).
  * The remaining adapters (mail blob storage, a legacy raw-MIME fetcher, push senders) stay on
  * `createApiCoreTaskList`'s own defaults here — wiring one in is each adapter's own composition-root
- * concern once it exists.
+ * concern once it exists. The calendar's `calendarSendEventInvitation` module task sends through the mail
+ * transports `createMailTransportFactory` builds from the same Gmail and Microsoft OAuth client keys; this root
+ * binds them with `setEventInvitationDelivery` before the runner starts and unbinds them in `stop()`
+ * (docs/adr/2026-11-12-module-queue-tasks-read-their-composition-root-dependencies-from-a-binding.md).
  */
 export async function createApiQueueRuntime(
   pool: Pool,
@@ -78,17 +83,32 @@ export async function createApiQueueRuntime(
   const affinitySets = await resolveTaskAffinitySets(moduleRegistry);
   assertTaskListMatchesAffinity(taskList, affinitySets.api, "api");
 
-  const runner = await runWorker({
-    pgPool: pool,
-    taskList,
-    crontab: options.crontab ?? CORE_CRONTAB,
-    noHandleSignals: true,
+  const gmail = readOAuthClient(process.env, "GMAIL_OAUTH_CLIENT_ID", "GMAIL_OAUTH_CLIENT_SECRET");
+  const graph = readOAuthClient(process.env, "MS_GRAPH_OAUTH_CLIENT_ID", "MS_GRAPH_OAUTH_CLIENT_SECRET");
+  setEventInvitationDelivery({
+    pool,
+    transports: createMailTransportFactory(pool, {
+      ...("clientId" in gmail ? { gmailOAuthClient: gmail } : {}),
+      ...("clientId" in graph ? { graphOAuthClient: graph } : {}),
+    }),
   });
+  let runner: Awaited<ReturnType<typeof runWorker>>;
+  try {
+    runner = await runWorker({
+      pgPool: pool,
+      taskList,
+      crontab: options.crontab ?? CORE_CRONTAB,
+      noHandleSignals: true,
+    });
+  } catch (error) {
+    setEventInvitationDelivery(null);
+    throw error;
+  }
 
   let stopped: Promise<void> | null = null;
   return {
     stop(): Promise<void> {
-      stopped ??= runner.stop();
+      stopped ??= runner.stop().finally(() => setEventInvitationDelivery(null));
       return stopped;
     },
   };

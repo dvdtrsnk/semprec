@@ -5,6 +5,7 @@ import { allocateSempMessageTimestamp } from "./sempMessageOrder.js";
 import { currentTenantScope } from "@semprec/shared";
 import { publishSempThreadInvalidation } from "../realtimeHook.js";
 import { enqueueSempMessage } from "./sempMessageQueue.js";
+import { sempMessageSearchVectorSql } from "./sempMessageSearch.js";
 
 // A fixed SQL fragment; no caller input is interpolated.
 const MESSAGE_TOKEN = `jsonb_build_object('id', id, 'role', role, 'text', text, 'status', status,
@@ -86,7 +87,9 @@ export async function finishSempMessageTurn(
 ): Promise<boolean> {
   requireManagedTransaction(client);
   const result = await client.query(
-    "UPDATE semp_messages SET status = $2, text = $3, event_to_id = $4::bigint, error_code = $5, updated_at = now() WHERE id = $1 AND status = 'running'",
+    `UPDATE semp_messages SET status = $2, text = $3::text, search_vector = ${sempMessageSearchVectorSql("$3::text")},
+       event_to_id = $4::bigint, error_code = $5, updated_at = now()
+     WHERE id = $1 AND status = 'running'`,
     [
       messageId,
       outcome.status,

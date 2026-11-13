@@ -130,6 +130,22 @@ export class MailRecipientRejectedError extends Error {
 }
 
 /**
+ * Thrown by the mail transport factory (`createMailTransportFactory`) when it has no usable transport for a mailbox
+ * and no retry can change that: a Gmail or Microsoft Graph mailbox in a composition root with no OAuth client, a sync
+ * mode it has no transport for, or an IMAP mailbox with no stored SMTP credential. A failure to read the settings or
+ * the credential (a database error) is not this error; it propagates as it is. Callers that run unattended, such as the
+ * event invitation job, end on it with a reason code instead of retrying. The message names no secret.
+ */
+export class MailTransportUnavailableError extends Error {
+  readonly code = "mail_transport_unavailable";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "MailTransportUnavailableError";
+  }
+}
+
+/**
  * Shared upper bound on a single attachment part's *decoded* size, enforced identically by
  * all three adapters (issue #26's provider limits table tops out at iCloud's 20MB baseline /
  * Gmail's 25MB) — generous enough to never bind on a real attachment, but a hard backstop

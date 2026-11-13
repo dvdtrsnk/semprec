@@ -371,8 +371,9 @@ export async function seedSystem(
     await seedRecipesModuleInTransaction(client, projectsDb.id, viewTypeRegistry);
 
     // Sleep (issue #1776): three system databases, one settings item and two default plans. Depends only on the
-    // Projects database above. A tenant seeded before it gets the module from runSleepModuleCutoverMigration instead.
-    await seedSleepModuleInTransaction(client, projectsDb.id, viewTypeRegistry);
+    // Projects database above and, for the `sleepSettings.area` relation (issue gh-1833), the Areas database of the
+    // ten databases. A tenant seeded before it gets the module from runSleepModuleCutoverMigration instead.
+    await seedSleepModuleInTransaction(client, projectsDb.id, tenDatabases.areas.id, viewTypeRegistry);
     return "created";
   });
 

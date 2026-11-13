@@ -2,5 +2,7 @@
   "transcript.speaker.unmappedLabel": "Speaker {ordinal}",
   "transcript.speaker.genericLabel": "Speaker",
   "transcript.speaker.noCandidatesReason": "No matching people are available.",
-  "transcript.speaker.uncertainReason": "The speaker could not be identified confidently."
+  "transcript.speaker.uncertainReason": "The speaker could not be identified confidently.",
+  "transcript.newMeeting.name": "Meeting {day}/{month}",
+  "transcript.displayName.recorded": "Recording {day}. {month}. {time}"
 }

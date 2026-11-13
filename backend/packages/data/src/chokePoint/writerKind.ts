@@ -10,6 +10,11 @@ export interface WriterIdentity {
   agentRunId?: string;
   /** The agent's Projects item; set only for an `agent` written under a run credential. */
   agentProjectItemId?: string;
+  /**
+   * Set only for an `agent` writer that is an external AI client on `/mcp` with a human token (issue #1998): a
+   * sensitive database is refused to it for reads and writes. Never set together with `agentProjectItemId`.
+   */
+  externalClient?: true;
   /** The user whose session or run made the write; set on every `agent` value. */
   onBehalfOfUserId?: string;
   /** Set by the approved executor only for its revalidated mutation. */

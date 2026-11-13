@@ -241,7 +241,7 @@ describe("transcription step 0", () => {
     await rm(tmpBlobDir, { recursive: true, force: true });
   });
 
-  it("creates one pending transcript with the source values and skips its checkpoint on replay", async () => {
+  it("creates one pending transcript without a name and skips its checkpoint on replay", async () => {
     const files = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "files"));
     if (!files) throw new Error("Files database was not seeded");
     const storageKey = `source/${randomUUID()}.m4a`;
@@ -282,10 +282,11 @@ describe("transcription step 0", () => {
     const rows = z.array(z.object({ id: z.uuid(), properties: z.record(z.string(), z.unknown()) })).parse(raw.rows);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.properties).toMatchObject({
-      name: "recording.mp3",
       status: "processing",
       link: `semprec://items/${file.id}`,
     });
+    // Issue #1830: the filename is not the transcript's name.
+    expect(rows[0]?.properties).not.toHaveProperty("name");
     const source = await withTransaction(pool, (client) => getItemById(client, files.id, file.id));
     expect(source?.computed.create).toBe(rows[0]?.id);
     const { rows: automationRows } = await pool.query<{ status: string }>(
@@ -446,8 +447,53 @@ describe("transcription step 0", () => {
     );
     expect(rows).toHaveLength(1);
     expect(source?.computed.create).toBe(rows[0]?.id);
-    expect(rows[0]?.properties).toMatchObject({ name: "Fast recording", status: "processing" });
+    expect(rows[0]?.properties).toMatchObject({ status: "processing" });
+    expect(rows[0]?.properties).not.toHaveProperty("name");
+    // The filename stays on the Files item.
+    expect(source?.properties.name).toBe("Fast recording");
   });
+
+  /** A Files item `Fast recording` whose upload left a `recording_requests` row, named `requestName` when given. */
+  async function fastCreateWithRequestName(requestName: string | null): Promise<Record<string, unknown> | undefined> {
+    const files = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "files"));
+    const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
+    if (!files || !transcripts) throw new Error("Transcription databases were not seeded");
+    const file = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: files.id, properties: { name: "Fast recording" } }),
+    );
+    await inTenantZero(() =>
+      withTransaction(pool, (client) =>
+        recordRecordingIntake(client, { fileItemId: file.id, eventId: null, recordedAt: null }),
+      ),
+    );
+    if (requestName !== null) {
+      const updated = await pool.query(
+        "UPDATE recording_requests SET name = $2 WHERE tenant_id = app_tenant_default() AND file_item_id = $1",
+        [file.id, requestName],
+      );
+      expect(updated.rowCount).toBe(1);
+    }
+    await inTenantZero(() => createTranscriptionCreateTask(pool)({ fileItemId: file.id }));
+    const source = await withTransaction(pool, (client) => getItemById(client, files.id, file.id));
+    const id = z.uuid().parse(source?.computed.create);
+    const transcript = await withTransaction(pool, (client) => getItemById(client, transcripts.id, id));
+    expect(source?.properties.name).toBe("Fast recording");
+    return transcript?.properties;
+  }
+
+  it("gives the transcript the name the upload set in recording_requests, and leaves the Files name alone (issue #1830)", async () => {
+    expect(await fastCreateWithRequestName("Pricing call")).toMatchObject({ name: "Pricing call" });
+  });
+
+  it.each([
+    ["no name", null],
+    ["an empty name", ""],
+  ])(
+    "gives the transcript no name when the upload set %s in recording_requests (issue #1830)",
+    async (_label, name) => {
+      expect(await fastCreateWithRequestName(name)).not.toHaveProperty("name");
+    },
+  );
 
   it("rejects writing the transcripts 'status'/'link' system properties under the wrong systemOwnerProcess", async () => {
     const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
