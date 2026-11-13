@@ -104,6 +104,14 @@ export const ITEMS_ROUTES: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
+  {
+    name: "list related collections",
+    method: "GET",
+    path: `/api/items/${EXAMPLE_ID}/related`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
   // prettier-ignore
   { name: "ensure page", method: "PUT", path: `/api/items/${EXAMPLE_ID}/page`, surface: "api", public: false, tenancy: "tenant" },
   // prettier-ignore

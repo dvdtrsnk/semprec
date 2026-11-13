@@ -315,6 +315,17 @@ export function createItemRoutes(
       },
     },
     {
+      method: "GET",
+      path: "/api/items/:id/related",
+      handler: async (ctx) => {
+        const id = requireUuidParam(ctx.params, "id");
+        const related = await dispatchGenericOperation(service, "relation.related", restActor(ctx.identity.user.id), {
+          itemId: id,
+        });
+        return { status: 200, body: related };
+      },
+    },
+    {
       method: "PUT",
       path: "/api/items/:id/relations/:propertyKey",
       handler: async (ctx) => {

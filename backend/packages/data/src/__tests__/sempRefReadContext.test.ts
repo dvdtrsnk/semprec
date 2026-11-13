@@ -723,17 +723,25 @@ describe("Semp reference turn reads", () => {
       withTransaction(runtime, (client) => readSempRefContext(client, ref)),
     );
     expect(resolved).toMatchObject({
-      label: "Recording",
+      label: "Recording 0:04-0:05",
       state: "active",
       details: {
-        segments: segments.slice(1, 8),
-        speakers: [{ speaker: "SPEAKER_00", person: { id: person.id, name: "Speaker" } }],
+        from: 4,
+        to: 4,
+        segments: segments.slice(1, 8).map((segment, offset) => ({
+          ...segment,
+          index: offset + 1,
+          label: "Speaker",
+          isContext: offset !== 3,
+        })),
+        speakers: [{ speaker: "SPEAKER_00", label: "Speaker" }],
       },
     });
+    // A range past the end of the recording is clamped (issue #1834): the turn gets the ref with no segment.
     await expect(
       runInTenant(tenant, () =>
         withTransaction(runtime, (client) => readSempRefContext(client, { ...ref, startsAt: 40, endsAt: 41 })),
       ),
-    ).resolves.toBeNull();
+    ).resolves.toMatchObject({ details: { from: null, to: null, segments: [] } });
   });
 });

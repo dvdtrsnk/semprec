@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import { createCollectionMetadataResolver } from "../manifest/collectionMetadata.js";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 import { handleSleepResync, sleepResyncPayloadSchema } from "../sleep/sleepResync.js";
+import {
+  createSleepNightSetTool,
+  createSleepNightsGetTool,
+  sleepNightSetArgsSchema,
+  sleepNightsGetArgsSchema,
+} from "../sleep/sleepAgentTools.js";
 import { sleepNightPut, sleepNightsGet } from "../sleep/sleepRouteHandlers.js";
 
 const SLEEP_DATABASE_KEYS = ["sleepSettings", "sleepPlans", "sleepNights"];
@@ -19,7 +26,45 @@ describe("sleep module manifest (issue #1776)", () => {
       { moduleId: "sleep", key: "sleepPlans", name: "Sleep plans" },
       { moduleId: "sleep", key: "sleepNights", name: "Sleep nights" },
     ]);
-    expect((await registry.getAgentTools(new Set())).filter((tool) => tool.moduleId === "sleep")).toEqual([]);
+  });
+
+  it("declares the capabilities sleep.read and sleep.write and offers a tool only to a context that holds its capability (issue gh-1840)", async () => {
+    const registry = await loadFullModuleRegistry();
+    const sleepTools = async (granted: string[]) =>
+      (await registry.getAgentTools(new Set(granted)))
+        .filter((tool) => tool.moduleId === "sleep")
+        .map((tool) => [tool.name, tool.handlerExport]);
+
+    expect((await registry.getModuleCapabilityDeclarations()).find((entry) => entry.moduleId === "sleep")).toEqual({
+      moduleId: "sleep",
+      capabilities: ["sleep.read", "sleep.write"],
+      databaseKeys: SLEEP_DATABASE_KEYS,
+    });
+    expect(await sleepTools([])).toEqual([]);
+    expect(await sleepTools(["sleep.read"])).toEqual([["sleepNightsGet", "createSleepNightsGetTool"]]);
+    expect(await sleepTools(["sleep.write"])).toEqual([["sleepNightSet", "createSleepNightSetTool"]]);
+    expect(await sleepTools(["sleep.read", "sleep.write"])).toEqual([
+      ["sleepNightsGet", "createSleepNightsGetTool"],
+      ["sleepNightSet", "createSleepNightSetTool"],
+    ]);
+  });
+
+  it("resolves the two sleep tools to their exported handler factories and strict schemas, classified without approval (issue gh-1840)", async () => {
+    const registry = await loadFullModuleRegistry();
+
+    const definitions = (await registry.getAgentToolDefinitions(new Set(["sleep.read", "sleep.write"]))).filter(
+      (tool) => tool.moduleId === "sleep",
+    );
+
+    expect(definitions.map((tool) => [tool.name, tool.handler, tool.riskClass, tool.requiresApproval])).toEqual([
+      ["sleepNightsGet", createSleepNightsGetTool, "read", undefined],
+      ["sleepNightSet", createSleepNightSetTool, "write", undefined],
+    ]);
+    expect(definitions.map((tool) => tool.argumentSchema)).toEqual([
+      z.toJSONSchema(sleepNightsGetArgsSchema),
+      z.toJSONSchema(sleepNightSetArgsSchema),
+    ]);
+    expect(definitions.every((tool) => tool.argumentSchema.additionalProperties === false)).toBe(true);
   });
 
   it("resolves each sleep database to clientVisible false with no overview and no switcher position", async () => {

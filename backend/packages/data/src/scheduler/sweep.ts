@@ -1,4 +1,4 @@
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { AGENT_TASK_NAMES, type Task, type TaskAffinity } from "@semprec/queue";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { withTransaction } from "../db/pool.js";
@@ -6,7 +6,7 @@ import { ValidationError } from "../errors.js";
 import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
 import { getTenantUserId } from "../auth/usersStore.js";
 import { writeNotification } from "../notifications/notify.js";
-import { raiseAgentHeartbeatProblem } from "../semp/agentProblems.js";
+import { raiseAgentHeartbeatProblem, resolveAgentHeartbeatProblem } from "../semp/agentProblems.js";
 import {
   failHeartbeatOccurrence,
   getHeartbeat,
@@ -19,7 +19,12 @@ import {
   type HeartbeatRow,
 } from "./schedulerStore.js";
 import type { HeartbeatRuleKindRegistry } from "./rule.js";
-import { resolveHeartbeatFireTaskName, type ActionHandler, type ActionRegistry } from "./actions.js";
+import {
+  CORE_AGENT_RUN_ACTION_ID,
+  resolveHeartbeatFireTaskName,
+  type ActionHandler,
+  type ActionRegistry,
+} from "./actions.js";
 import { logger } from "./logger.js";
 
 /**
@@ -50,6 +55,21 @@ async function notifyHeartbeatError(
     transitionInstance: jobId,
   });
   await raiseAgentHeartbeatProblem(client, { userId, heartbeatId: heartbeat.id, occurrenceKey: jobId });
+}
+
+/**
+ * Records that a heartbeat's handler returned and, for a heartbeat that is not a `core.agentRun`, resolves its
+ * `agents` problem in the same transaction (issue #1915): a deterministic action (library processing, drift check
+ * and the other core actions) starts no agent run, so the handler returning is the only recovery signal it has.
+ * A `core.agentRun` heartbeat is left to the tick that closes its run, because the handler returning only means
+ * the run was started or continued, not that the tick recovered.
+ */
+async function recordHeartbeatHandlerSuccess(
+  client: PoolClient,
+  heartbeat: { id: string; actionId: string },
+): Promise<void> {
+  await recordHeartbeatSuccess(client, heartbeat.id);
+  if (heartbeat.actionId !== CORE_AGENT_RUN_ACTION_ID) await resolveAgentHeartbeatProblem(client, heartbeat.id);
 }
 
 /**
@@ -231,7 +251,7 @@ function createHeartbeatFireTaskForAffinity(
         triggeredByUserId: payload.triggeredByUserId,
         isFinalAttempt,
       });
-      await recordHeartbeatSuccess(pool, heartbeat.id);
+      await withTransaction(pool, (client) => recordHeartbeatHandlerSuccess(client, heartbeat));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (isFinalAttempt) {
@@ -336,7 +356,7 @@ async function runScheduledOccurrenceFire(
       attempt: helpers.job.attempts,
     });
     await withTransaction(pool, async (client) => {
-      await recordHeartbeatSuccess(client, heartbeat.id);
+      await recordHeartbeatHandlerSuccess(client, heartbeat);
       await succeedHeartbeatOccurrence(client, occurrenceId);
     });
   } catch (err) {

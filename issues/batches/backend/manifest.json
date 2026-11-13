@@ -3,7 +3,7 @@
   "baseline": "9b4929ba4e672a8f2b0c83a955bdf0679757fcc3",
   "programIssue": "sp-62331d42-78af-4b93-ae97-d5ccbe3324df",
   "scope": "backend-only",
-  "sourceCount": 673,
+  "sourceCount": 675,
   "activeBatchCount": 74,
   "heldBatchCount": 2,
   "externalPrerequisites": [
@@ -4056,6 +4056,15 @@
             "gh-1697"
           ],
           "approval": "approved"
+        },
+        {
+          "id": "sp-9cf1be65-df00-452a-86fc-8013619024fb",
+          "specSha256": "1984f78ec92f6ad072b37433b9de2d778a32e35290811f30d99e507babb68449",
+          "parent": "sp-62331d42-78af-4b93-ae97-d5ccbe3324df",
+          "dependencies": [
+            "gh-1692"
+          ],
+          "approval": "approved"
         }
       ]
     },
@@ -5839,6 +5848,16 @@
           "dependencies": [
             "gh-1639",
             "gh-1842"
+          ],
+          "approval": "approved"
+        },
+        {
+          "id": "sp-c30c3251-d5c3-4012-92a1-078257f3f83c",
+          "specSha256": "6ee7255dbbe75d31edea30bfa3c8e6874a6236f40dd0b78ab404f8ae04865be4",
+          "parent": "sp-62331d42-78af-4b93-ae97-d5ccbe3324df",
+          "dependencies": [
+            "gh-1842",
+            "gh-1854"
           ],
           "approval": "approved"
         }

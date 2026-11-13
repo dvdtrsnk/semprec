@@ -39,6 +39,7 @@ import {
   PropertyPatchInputSchema,
   RelationDeleteInputSchema,
   RelationListInputSchema,
+  RelationRelatedInputSchema,
   RelationPutInputSchema,
   RelationSetInputSchema,
   SearchInputSchema,
@@ -67,7 +68,7 @@ export interface OperationBinding<I, O> {
   invoke(service: GenericApplicationPort, actor: AuthenticatedActor, input: I): Promise<O>;
 }
 
-/** Exhaustive over the 49 literal operation names — see the direct-literal-assignment note on `GENERIC_OPERATION_BINDINGS` below. */
+/** Exhaustive over the 50 literal operation names — see the direct-literal-assignment note on `GENERIC_OPERATION_BINDINGS` below. */
 export type GenericOperationBindings = {
   [K in GenericOperationName]: OperationBinding<InputByOperation[K], OutputByOperation[K]>;
 };
@@ -240,6 +241,10 @@ export const GENERIC_OPERATION_BINDINGS: GenericOperationBindings = {
   "relation.list": {
     input: RelationListInputSchema,
     invoke: (service, actor, input) => service.listRelations(actor, input),
+  },
+  "relation.related": {
+    input: RelationRelatedInputSchema,
+    invoke: (service, actor, input) => service.listRelatedCollections(actor, input),
   },
   "page.restoreVersion": {
     input: PageRestoreVersionInputSchema,

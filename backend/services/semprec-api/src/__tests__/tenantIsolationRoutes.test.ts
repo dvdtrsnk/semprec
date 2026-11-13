@@ -496,6 +496,23 @@ async function linkOwnPerson(tenant: TenantFixture): Promise<void> {
   await sendOk(tenant.member, { method: "PUT", path: "/api/auth/self-person", body: { personId } });
 }
 
+/**
+ * An open Processing proposals card of `tenant`, created through the choke point. It is a row of the one case that
+ * asks for it: a case that rejects a card changes none of the rows A and B share with the other cases.
+ */
+async function seedProposalCard(tenant: TenantFixture): Promise<string> {
+  return inTenantTransaction(tenant.tenantId, async (client) => {
+    const database = await getDatabaseByModuleId(client, "processingProposals");
+    if (!database) throw new Error(`no 'processingProposals' database in tenant ${tenant.tenantId}`);
+    const card = await createItemWithClient(
+      client,
+      { databaseId: database.id, properties: { kind: "inbox", status: "proposed", proposal: null } },
+      { allowedSystemKeys: ["kind", "status", "proposal"] },
+    );
+    return card.id;
+  });
+}
+
 interface SeededSubpage {
   hostItemId: string;
   pageItemId: string;
@@ -2456,6 +2473,25 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         body: {},
       }));
     }),
+  // A gets an open card of its own in this case. B's reject of it answers like a random id and leaves the card
+  // as it was; A's own reject then closes it, so the refusal above is real and not an unreachable route.
+  "reject proposal": async () => {
+    const card = await seedProposalCard(a);
+    const cardOf = () => sendOk(a.member, { method: "GET", path: `/api/items/${card}` });
+    const before = await cardOf();
+    await leavesAUnchanged(async () => {
+      const answer = await expectForeignLikeRandom(b.member, [card], ([id]) => ({
+        method: "POST",
+        path: `/api/proposals/${id}/reject`,
+        body: { message: "Not mine" },
+      }));
+      expect(answer.status).toBe(404);
+    });
+    expect(await cardOf()).toBe(before);
+    const own = await send(a.member, { method: "POST", path: `/api/proposals/${card}/reject`, body: {} });
+    expect(own.status).toBe(200);
+    expect(readString(own.text, "properties", "status")).toBe("rejected");
+  },
   "task recurrence set": async () => {
     const [own, foreign] = [await datedTask(b), await datedTask(a)];
     const request = (id: string) => ({
@@ -3791,6 +3827,69 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
   },
 
+  // Each tenant gets a weekday Event series, seeded here and used by no other case (issue gh-1843). A has already
+  // materialized the 14 October occurrence of its series, so B's request for that very date meets a stored occurrence
+  // item of A and must still answer like a random id. A foreign series creates nothing in either tenant.
+  "event occurrence materialize": async () => {
+    const seed = async (tenant: TenantFixture): Promise<{ seriesId: string; eventsDatabaseId: string }> => {
+      const eventsDatabaseId = await databaseIdFor(tenant.tenantId, "events");
+      const seriesId = readString(
+        await sendOk(tenant.member, {
+          method: "POST",
+          path: `/api/databases/${eventsDatabaseId}/items`,
+          body: {
+            properties: {
+              name: "Occurrence probe",
+              date: "2026-10-12",
+              timeFrom: "09:00",
+              timeTo: "09:30",
+              recurrence: { kind: "weekdays", days: ["mon", "tue", "wed", "thu", "fri"] },
+            },
+          },
+        }),
+        "id",
+      );
+      return { seriesId, eventsDatabaseId };
+    };
+    const [own, foreign] = [await seed(b), await seed(a)];
+    const materializeOf = (seriesId: string | undefined, date = "2026-10-14"): Request => ({
+      method: "POST",
+      path: `/api/events/series/${seriesId}/occurrences/${date}`,
+    });
+    const eventsOf = (caller: Caller, databaseId: string): Promise<string> =>
+      sendOk(caller, { method: "POST", path: `/api/databases/${databaseId}/query`, body: {} });
+
+    // A materializes its own occurrence, so the 404 B gets for the series below is a refusal and not a missing route.
+    const foreignCreated = await send(a.member, materializeOf(foreign.seriesId));
+    expect(foreignCreated.status, foreignCreated.text).toBe(201);
+    const foreignOccurrenceId = readString(foreignCreated.text, "id");
+    const [eventsOfA, eventsOfB] = [
+      await eventsOf(a.member, foreign.eventsDatabaseId),
+      await eventsOf(b.member, own.eventsDatabaseId),
+    ];
+
+    for (const date of ["2026-10-14", "2026-10-15"]) {
+      const answer = await expectForeignLikeRandom(b.member, [foreign.seriesId], ([id]) => materializeOf(id, date));
+      expect(answer.status, date).toBe(404);
+      expectNoneOf(answer.text, [foreign.seriesId, foreignOccurrenceId], "B's refusal");
+    }
+    expect(await eventsOf(a.member, foreign.eventsDatabaseId)).toBe(eventsOfA);
+    expect(await eventsOf(b.member, own.eventsDatabaseId)).toBe(eventsOfB);
+
+    // B's own series answers 201, then 200 with the same item, and 400 for a date it does not give: the three answers a
+    // foreign series must not get.
+    const created = await send(b.member, materializeOf(own.seriesId));
+    expect(created.status, created.text).toBe(201);
+    expect(readString(created.text, "properties", "seriesId")).toBe(own.seriesId);
+    expect(readString(created.text, "properties", "occurrenceDate")).toBe("2026-10-14");
+    expectNoneOf(created.text, [foreign.seriesId, foreignOccurrenceId], "B's occurrence");
+    const again = await send(b.member, materializeOf(own.seriesId));
+    expect(again.status).toBe(200);
+    expect(readString(again.text, "id")).toBe(readString(created.text, "id"));
+    expect((await send(b.member, materializeOf(own.seriesId, "2026-10-17"))).status).toBe(400);
+    expectNoneOf(await eventsOf(b.member, own.eventsDatabaseId), [foreign.seriesId, foreignOccurrenceId], "B's Events");
+  },
+
   // --- tenant: approvals, agent runs, MCP ----------------------------------------------------
   "approval queue": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/approval-requests" }, [b.approvalRequestId]);
@@ -4516,6 +4615,16 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       path: `/api/items/${id}/relations?propertyKey=${a.relationPropertyKey}`,
     }));
   },
+  "list related collections": async () => {
+    // A foreign item answers exactly as a random one does, and B's own related collections name nothing of A's.
+    for (const foreignId of [a.itemId, a.targetItemId]) {
+      await expectForeignLikeRandom(b.member, [foreignId], ([id]) => ({
+        method: "GET",
+        path: `/api/items/${id}/related`,
+      }));
+    }
+    await expectExcludesA(b.member, { method: "GET", path: `/api/items/${b.targetItemId}/related` }, [b.databaseId]);
+  },
   "count items": async () => {
     // A foreign database answers exactly as a random one does: alone, grouped, with the collection filter, and
     // behind an entry of B's own, where one unresolvable entry fails the whole batch.
@@ -5049,6 +5158,13 @@ function ownerProbes(): OwnerProbe[] {
       contains: [a.targetItemId],
     },
     {
+      label: "list related collections",
+      ids: [a.targetItemId],
+      build: get(([id]) => `/api/items/${id}/related`),
+      status: 200,
+      contains: [a.databaseId],
+    },
+    {
       label: "count items",
       ids: [a.databaseId],
       build: ([databaseId]) => ({
@@ -5465,6 +5581,12 @@ const MCP_CASES = {
   },
   "relation.list": async (p) => {
     await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId }));
+  },
+  "relation.related": async (p) => {
+    // `a.targetItemId` has a collection of its own (the database holding the edge to it), which must not be seen.
+    await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId }));
+    await p.foreignLikeRandom([a.targetItemId], ([itemId]) => ({ itemId }));
+    await p.excludesA({ itemId: b.targetItemId }, [b.databaseId]);
   },
   "item.count": async (p) => {
     await p.foreignLikeRandom([a.databaseId], ([databaseId]) => ({ items: [{ databaseId }] }));
@@ -5945,6 +6067,65 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     const replayBody: unknown = JSON.parse(replay.text);
     expect(replayBody).toEqual(firstBody);
   });
+
+  it.each(["confirm", "reject"] as const)(
+    "answers a stale ifVersion on %s with 409 and the current card, and keeps the replay of a decided card at 200",
+    async (action) => {
+      const cardId = await runInTenant(a.tenantId, () =>
+        withTransaction(pool, async (client) => {
+          const proposals = await getDatabaseByModuleId(client, "processingProposals");
+          const tasks = await getDatabaseByModuleId(client, "tasks");
+          if (!proposals || !tasks) throw new Error("Missing proposal or task database");
+          const item = await createItemWithClient(
+            client,
+            {
+              databaseId: proposals.id,
+              properties: {
+                status: "proposed",
+                kind: "inbox",
+                proposal: { entityKind: "database", target: tasks.id, properties: { name: "Versioned task" } },
+              },
+            },
+            { allowedSystemKeys: ["status", "kind", "proposal"] },
+          );
+          return item.id;
+        }),
+      );
+      const path = `/api/proposals/${cardId}/${action}`;
+      const decided = action === "confirm" ? "confirmed" : "rejected";
+      const stale = "2000-01-01T00:00:00.000Z";
+      const current = readString(await sendOk(a.member, { method: "GET", path: `/api/items/${cardId}` }), "updatedAt");
+
+      const conflict = await send(a.member, { method: "POST", path, body: { ifVersion: stale } });
+      expect(conflict.status).toBe(409);
+      expect(JSON.parse(conflict.text)).toMatchObject({
+        error: {
+          code: "version_conflict",
+          details: { currentItem: { id: cardId, updatedAt: current, properties: { status: "proposed" } } },
+        },
+      });
+      expect(await sendOk(a.member, { method: "GET", path: `/api/items/${cardId}` })).toContain('"status":"proposed"');
+
+      const first = await send(a.member, { method: "POST", path, body: { ifVersion: current } });
+      expect(first.status).toBe(200);
+      expect(JSON.parse(first.text)).toMatchObject({ id: cardId, properties: { status: decided } });
+      const replay = await send(a.member, { method: "POST", path, body: { ifVersion: stale } });
+      expect(replay.status).toBe(200);
+      expect(JSON.parse(replay.text)).toEqual(JSON.parse(first.text));
+
+      // The other decision is incompatible with the stored status, whatever ifVersion says.
+      const other = action === "confirm" ? "reject" : "confirm";
+      const refused = await send(a.member, {
+        method: "POST",
+        path: `/api/proposals/${cardId}/${other}`,
+        body: { ifVersion: stale },
+      });
+      expect(refused.status).toBe(400);
+      expect(JSON.parse(refused.text)).toMatchObject({
+        error: { code: "validation_failed", details: { field: "status", currentStatus: decided } },
+      });
+    },
+  );
 
   it("lists A's own approval request and unread notification for A", async () => {
     expect(readIdArray(await sendOk(a.member, { method: "GET", path: "/api/approval-requests" }), "rows")).toEqual([

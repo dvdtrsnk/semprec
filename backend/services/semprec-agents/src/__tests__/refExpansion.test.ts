@@ -253,7 +253,7 @@ describe("tenant-scoped reference blob expansion", () => {
         "Page sentinel",
         "Project relation sentinel",
         "Saved block",
-        "Transcript sentinel",
+        "Transcript sentinel 0:04-0:05",
         "Transcript sentinel",
         "Run sentinel",
         "approval.itemDelete",

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { isCalendarDate } from "../calendar/eventValidationHook.js";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
+import type { WriterIdentity } from "../chokePoint/writerKind.js";
 import { withTransaction } from "../db/pool.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import {
@@ -238,7 +239,7 @@ interface SleepNightPutRequestContext {
 }
 
 /** The fields of a night exception that a request may set, each as a value or null; a key the request omits is absent. */
-interface SleepNightFields {
+export interface SleepNightFields {
   bedTime?: string | null;
   wakeTime?: string | null;
   alarm?: boolean | null;
@@ -264,7 +265,7 @@ function refusedBodyField(issue: z.core.$ZodIssue | undefined): string {
  * and `alarm`; a time is `HH:MM` (`6:45` is read as `06:45`) or null, and `alarm` is a boolean or null. Anything
  * else, an empty string and `24:00` included, is a 400 `validation_failed` naming the key.
  */
-function parseNightPutBody(body: unknown): SleepNightFields {
+export function parseNightPutBody(body: unknown): SleepNightFields {
   const parsed = nightPutBody.safeParse(body);
   if (!parsed.success) {
     const field = refusedBodyField(parsed.error.issues[0]);
@@ -298,30 +299,81 @@ async function lockNightException(client: PoolClient, databaseId: string, night:
   return rows[0] ?? null;
 }
 
+/** Who makes a night write: the writer of the choke point and the users the write is attributed to (issue gh-1840). */
+export interface SleepNightWriteOptions {
+  writer: WriterIdentity;
+  actingUserId: string;
+  /** Set only for a human writer; the hooks that confine a write to humans read it. */
+  humanWriterUserId?: string;
+}
+
+/**
+ * Sets, changes or resets the exception of `night` and returns the resolved night (issue gh-1840; the body of the
+ * transaction of `sleepNightPut`). `night` must be a calendar date and `fields` the output of `parseNightPutBody`;
+ * `client` must be inside the caller's open transaction, which this function neither opens nor commits, at READ
+ * COMMITTED (see below).
+ *
+ * It takes the per-night advisory lock (`lockSleepNight`, which the write hooks of the night exceptions take too),
+ * then locks the non-deleted exception of the night `FOR UPDATE`. A generic update that names `night` takes the same
+ * lock before it locks the row (`sleepNightUpdatePreLockHook`), so the two never wait for each other in opposite
+ * orders.
+ * - No exception and a non-null field: one is created with `night` and the fields.
+ * - No exception and no non-null field (all null, or no field): nothing is written.
+ * - An exception and a field that differs from the stored one (an absent stored field counts as null): the
+ *   differing fields are patched without `ifVersion`. When none differs, nothing is written.
+ * A field that is omitted is left as it is, and a field set to null follows the plan again: the exception stays with
+ * that field null and is never deleted. Both writes go through the choke point with `writeOptions`, so its hooks,
+ * validation and invalidation apply, and so does the per-database access of an agent writer
+ * (`writeOptions.writer.agentProjectItemId`), which the choke point checks before it writes. That check does not
+ * happen when nothing is written; a caller that must refuse an unauthorized agent also then checks the access itself.
+ *
+ * The answer is `{ night }`: the entry of `resolveSleepNights` for that date as `GET /api/sleep/nights` returns it, or
+ * null when neither a plan nor an exception applies. It is read in the same transaction, which must run at READ
+ * COMMITTED (a snapshot taken before the lock could not see an exception another writer committed meanwhile), so a
+ * plan that another transaction commits during the response read is seen by the later reads only. Whatever
+ * `loadSleepNights` throws for the read (a 404 for a tenant without a settings item, a `ZodError` for stored data
+ * of the wrong type) is thrown after the writes and rolls them back with the caller's transaction.
+ */
+export async function upsertSleepNight(
+  client: PoolClient,
+  input: { night: string; fields: SleepNightFields },
+  writeOptions: SleepNightWriteOptions,
+): Promise<{ night: ResolvedSleepNight | null }> {
+  const { night, fields } = input;
+  const databaseId = await sleepDatabaseId(client, SLEEP_NIGHTS_MODULE_ID);
+  await lockSleepNight(client, night);
+  const existing = await lockNightException(client, databaseId, night);
+  const provided = FIELD_KEYS.flatMap((key) => (fields[key] === undefined ? [] : [[key, fields[key]] as const]));
+  if (!existing) {
+    if (provided.some(([, value]) => value !== null)) {
+      await createItemWithClient(
+        client,
+        { databaseId, properties: { night, ...Object.fromEntries(provided) } },
+        writeOptions,
+      );
+    }
+  } else {
+    const differing = provided.filter(([key, value]) => (existing.properties[key] ?? null) !== value);
+    if (differing.length > 0) {
+      await updateItemWithClient(
+        client,
+        { databaseId, itemId: existing.id, propertiesPatch: Object.fromEntries(differing) },
+        writeOptions,
+      );
+    }
+  }
+  const { nights } = await loadSleepNights(client, { from: night, to: night });
+  return { night: nights[0] ?? null };
+}
+
 /**
  * `PUT /api/sleep/nights/:night` (issue gh-1835): sets, changes or resets the exception of one night and answers
  * the resolved night. `:night` must be a calendar date `YYYY-MM-DD` and the body is `{ bedTime?, wakeTime?, alarm? }`
  * (see `parseNightPutBody`), otherwise the answer is a 400 `validation_failed` naming `night` or the key of the
  * body; both are judged before anything is read. A tenant without the sleep module gets a 404.
  *
- * In one transaction the handler takes the per-night advisory lock (`lockSleepNight`, which the write hooks of
- * the night exceptions take too), then locks the non-deleted exception of the night `FOR UPDATE`. A generic
- * update that names `night` takes the same lock before it locks the row (`sleepNightUpdatePreLockHook`), so the
- * two never wait for each other in opposite orders.
- * - No exception and a non-null field in the body: one is created with `night` and the fields of the body.
- * - No exception and no non-null field (all null, or an empty body): nothing is written.
- * - An exception and a field of the body that differs from the stored one (an absent stored field counts as
- *   null): the differing fields are patched without `ifVersion`. When none differs, nothing is written.
- * A field the body omits is left as it is, and a field set to null follows the plan again: the exception stays
- * with that field null and is never deleted. Both writes go through the choke point as the signed-in user, so
- * its hooks, validation and invalidation apply.
- *
- * The answer is `{ night }`: the entry of `resolveSleepNights` for that date as `GET /api/sleep/nights` returns
- * it, or null when neither a plan nor an exception applies. It is read in the write's transaction, which runs at
- * READ COMMITTED (a snapshot taken before the lock could not see an exception another PUT committed meanwhile),
- * so a plan that another transaction commits during the response reads is seen by the later reads only.
- * Whatever `loadSleepNights` throws for the read (a 404 for a tenant without a settings item, a `ZodError` for
- * stored data of the wrong type) is thrown after the writes and rolls them back with the transaction.
+ * In one transaction the handler calls `upsertSleepNight` as the signed-in user: it finds or creates the night's
+ * exception, patches it and reads the resolved night, as that function documents. The answer is `{ night }`.
  * The export is the factory that `customRouteMount.ts` calls once with the pool.
  */
 export function sleepNightPut(pool: Pool) {
@@ -337,32 +389,7 @@ export function sleepNightPut(pool: Pool) {
       actingUserId: userId,
       humanWriterUserId: userId,
     } as const;
-    const body = await withTransaction(pool, async (client) => {
-      const databaseId = await sleepDatabaseId(client, SLEEP_NIGHTS_MODULE_ID);
-      await lockSleepNight(client, night);
-      const existing = await lockNightException(client, databaseId, night);
-      const provided = FIELD_KEYS.flatMap((key) => (fields[key] === undefined ? [] : [[key, fields[key]] as const]));
-      if (!existing) {
-        if (provided.some(([, value]) => value !== null)) {
-          await createItemWithClient(
-            client,
-            { databaseId, properties: { night, ...Object.fromEntries(provided) } },
-            writeOptions,
-          );
-        }
-      } else {
-        const differing = provided.filter(([key, value]) => (existing.properties[key] ?? null) !== value);
-        if (differing.length > 0) {
-          await updateItemWithClient(
-            client,
-            { databaseId, itemId: existing.id, propertiesPatch: Object.fromEntries(differing) },
-            writeOptions,
-          );
-        }
-      }
-      const { nights } = await loadSleepNights(client, { from: night, to: night });
-      return { night: nights[0] ?? null };
-    });
+    const body = await withTransaction(pool, (client) => upsertSleepNight(client, { night, fields }, writeOptions));
     return { status: 200, body };
   };
 }

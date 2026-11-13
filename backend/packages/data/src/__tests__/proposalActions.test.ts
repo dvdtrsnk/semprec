@@ -1762,7 +1762,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     expect(rejected.properties.status).toBe("rejected");
     expect(rejected.properties.resultItemId).toBeUndefined();
     const history = rejected.properties.history as Array<Record<string, unknown>>;
-    expect(history[1]).toMatchObject({ author: "user", message: "Not needed" });
+    expect(history[1]).toMatchObject({ author: "user", message: "Not needed", kind: "rejected" });
 
     const { rows } = await pool.query("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [tasksId]);
     expect(rows[0].n).toBe(0);

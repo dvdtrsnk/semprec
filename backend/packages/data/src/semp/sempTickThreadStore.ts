@@ -1,12 +1,16 @@
 import type { PoolClient } from "pg";
 import type { AgentRunErrorCode } from "../agentRuns/agentRunErrorCodes.js";
-import { finishAgentRun, finishAgentRunWithErrorNotification } from "../agentRuns/agentRunsStore.js";
+import {
+  finishAgentRun,
+  finishAgentRunWithErrorNotification,
+  getRetryChainFirstRunId,
+} from "../agentRuns/agentRunsStore.js";
 import { listSempTurnEvents } from "../agentRuns/agentRunEventsStore.js";
 import { deriveReplyOutcome } from "../agentRuns/replyOutcome.js";
 import { getTenantUserId } from "../auth/usersStore.js";
 import { publishSempThreadInvalidation } from "../realtimeHook.js";
 import { requireSingleRow } from "../db/pool.js";
-import { raiseAgentHeartbeatProblem } from "./agentProblems.js";
+import { raiseAgentHeartbeatProblem, resolveAgentHeartbeatProblem, resolveAgentRunProblem } from "./agentProblems.js";
 import { allocateSempMessageTimestamp } from "./sempMessageOrder.js";
 import { sempMessageSearchVectorSql } from "./sempMessageSearch.js";
 import { projectSempReplySteps } from "./sempReplySteps.js";
@@ -78,7 +82,9 @@ async function replyLeftFailedToolCall(
  * (issue #1911) stay with the close. A `done` outcome whose reply left a failed tool call raises the same
  * heartbeat problem with the message write, because no `agent_run_error` appears for a run that ended `done`
  * (the tenant's user is who it is shown to; a tenant with none raises nothing, as for the notification).
- * When the run was already closed by another writer nothing is written and `false` is returned.
+ * Any other `done` outcome is a recovery (issue #1915) and resolves, with the same message write, the heartbeat's
+ * problem and the problem of the run's retry chain; a rolled-back close leaves both active. When the run was
+ * already closed by another writer nothing is written and `false` is returned.
  * The message carries no error code yet; the reply error codes arrive with #1907.
  */
 export async function finishTickRunWithMessage(
@@ -101,8 +107,12 @@ export async function finishTickRunWithMessage(
     [thread.id, outcome.status === "done" ? outcome.result : null, agentRunId, outcome.status, createdAt],
   );
   const written = requireSingleRow(rows, "semp_messages row");
-  if (outcome.status === "done" && written.event_from_id !== null && written.event_to_id !== null) {
-    if (await replyLeftFailedToolCall(client, agentRunId, written.event_from_id, written.event_to_id)) {
+  if (outcome.status === "done") {
+    const leftFailedToolCall =
+      written.event_from_id !== null &&
+      written.event_to_id !== null &&
+      (await replyLeftFailedToolCall(client, agentRunId, written.event_from_id, written.event_to_id));
+    if (leftFailedToolCall) {
       const userId = await getTenantUserId(client);
       if (userId) {
         await raiseAgentHeartbeatProblem(client, {
@@ -111,6 +121,9 @@ export async function finishTickRunWithMessage(
           occurrenceKey: agentRunId,
         });
       }
+    } else {
+      await resolveAgentHeartbeatProblem(client, thread.heartbeatId);
+      await resolveAgentRunProblem(client, await getRetryChainFirstRunId(client, agentRunId));
     }
   }
   await client.query(`UPDATE semp_threads SET last_activity_at = now() WHERE id = $1`, [thread.id]);

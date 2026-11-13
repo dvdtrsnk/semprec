@@ -1,6 +1,15 @@
 import type { ZodType } from "zod";
 import { galleryViewConfigSchema } from "../views/galleryViewConfig.js";
 
+// The related-row contributor registry of `relation.related` (issue #1839) is re-exported here: the package barrel
+// re-exports this module whole and is at its line cap, so the registry's public API reaches it through this module.
+export {
+  registerRelatedRowContributor,
+  type RelatedCollectionRow,
+  type RelatedContributorContext,
+  type RelatedRowContributor,
+} from "./relatedContributors.js";
+
 /**
  * A temporary stand-in for the full module registry (issue #29), same pattern as
  * ComputedKeyRegistry/ActionRegistry: a plain map from a custom view type's key to its

@@ -15,6 +15,7 @@ const { createInFlightAgentRuns } = await import("../../inFlightAgentRuns.js");
 const { createGatewayModel } = await import("../../modelComposition.js");
 const { createAgentsQueueRuntime } = await import("../../queueRuntime.js");
 const { createSempMessageTask } = await import("../../sempMessageTask.js");
+const { startSempTurnCancelWiring } = await import("../../sempTurnCancelListener.js");
 const databaseUrl = process.env.BATCH32_GATEWAY_DATABASE_URL;
 const gatewayPort = process.env.BATCH32_GATEWAY_PORT;
 const files = process.env.FILES_STORAGE_DIR;
@@ -166,6 +167,8 @@ const runtime = await createAgentsQueueRuntime(pool, registry, {
     mailAttachments: new LocalFsBlobStorageWriter(mail),
   }),
 });
+// The same wiring serve.ts composes: a voice stop command reaches this process as a notification.
+const cancelListener = await startSempTurnCancelWiring(pool, inFlight);
 process.send?.({ type: "ready" });
 let stopping = false;
 const deadline = setTimeout(() => {
@@ -179,6 +182,11 @@ function shutdown(): void {
   void (async () => {
     const failures: unknown[] = [];
     const observer = inFlight.observeSempSettlement();
+    try {
+      await cancelListener.close();
+    } catch (error) {
+      failures.push(error);
+    }
     try {
       await runtime.stop();
     } catch (error) {

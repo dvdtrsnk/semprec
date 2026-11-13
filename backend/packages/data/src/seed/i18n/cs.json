@@ -152,6 +152,8 @@
   "property.events.icalUid.name": "UID iCalendar",
   "property.events.icalSequence.name": "Pořadí revize iCalendar",
   "property.events.recurrence.name": "Opakování",
+  "property.events.seriesId.name": "ID série",
+  "property.events.occurrenceDate.name": "Datum výskytu",
   "property.events.project.name": "Projekt",
   "property.events.people.name": "Lidé",
   "property.events.transcript.name": "Přepis",

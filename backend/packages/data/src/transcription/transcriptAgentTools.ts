@@ -29,7 +29,7 @@ export const transcriptGetArgsSchema = z.object({ transcriptId: z.uuid() }).stri
 
 /**
  * A range is either `fromIndex` and `toIndex` (segment indexes, both inclusive) or `startsAt` and `endsAt`
- * (seconds of the recording); `readRange` refuses a call that names neither pair complete, or both.
+ * (seconds of the recording); `readTranscriptSegmentRange` refuses a call that names neither pair complete, or both.
  */
 export const transcriptSegmentGetArgsSchema = z
   .object({
@@ -215,9 +215,15 @@ export function createTranscriptGetTool(pool: Pool): TranscriptAgentTool {
 }
 
 /** The indexes `[from, to]` (inclusive) of the segments a call asks for, or why it cannot be answered. */
-type RangeRead = { from: number; to: number } | { empty: true } | TranscriptAgentToolResult;
+export type TranscriptSegmentRangeRead = { from: number; to: number } | { empty: true } | TranscriptAgentToolResult;
 
-function isFailure(value: RangeRead): value is TranscriptAgentToolResult {
+/** The part of a `transcript.segment.get` call that names the range. */
+export type TranscriptSegmentRangeArgs = Pick<
+  TranscriptSegmentGetArgs,
+  "fromIndex" | "toIndex" | "startsAt" | "endsAt"
+>;
+
+export function isTranscriptSegmentRangeFailure(value: TranscriptSegmentRangeRead): value is TranscriptAgentToolResult {
   return "error" in value;
 }
 
@@ -229,8 +235,12 @@ function isFailure(value: RangeRead): value is TranscriptAgentToolResult {
  * seconds: for an index range the requested count and the time from the first to the last existing segment of
  * it, for a time range the requested length and the segments that overlap it. A time range selects the
  * segments that start before its end and end after its start. A range that selects no segment is `{ empty }`.
+ * Shared by `transcript.segment.get` and the `transcriptSegment` message ref (issue #1834).
  */
-function readRange(args: TranscriptSegmentGetArgs, segments: Array<{ startsAt: number; endsAt: number }>): RangeRead {
+export function readTranscriptSegmentRange(
+  args: TranscriptSegmentRangeArgs,
+  segments: Array<{ startsAt: number; endsAt: number }>,
+): TranscriptSegmentRangeRead {
   const { fromIndex, toIndex, startsAt, endsAt } = args;
   const byIndex = fromIndex !== undefined || toIndex !== undefined;
   const byTime = startsAt !== undefined || endsAt !== undefined;
@@ -268,13 +278,52 @@ function readRange(args: TranscriptSegmentGetArgs, segments: Array<{ startsAt: n
   return matching.length > TRANSCRIPT_SEGMENT_RANGE_MAX_SEGMENTS ? tooLarge : { from, to };
 }
 
+/** A segment of a transcript as the detail composition renders it: `label` is the speaker's name. */
+export interface TranscriptRenderedSegment {
+  index: number;
+  speaker: string;
+  label: string;
+  text: string;
+  startsAt: number;
+  endsAt: number;
+}
+
+/**
+ * The segments of a resolved range with `context` more on each side, ordered by index, the added ones flagged
+ * `isContext`. `from` and `to` are the first and last index of the range itself, `null` when it selects no segment.
+ */
+export function windowTranscriptSegments(
+  segments: readonly TranscriptRenderedSegment[],
+  range: { from: number; to: number } | { empty: true },
+  context: number,
+): { from: number | null; to: number | null; segments: Array<TranscriptRenderedSegment & { isContext: boolean }> } {
+  if ("empty" in range) return { from: null, to: null, segments: [] };
+  const { from, to } = range;
+  return {
+    from,
+    to,
+    segments: segments
+      .filter((segment) => segment.index >= from - context && segment.index <= to + context)
+      .map(({ index, speaker, label, text, startsAt, endsAt }) => ({
+        index,
+        speaker,
+        label,
+        text,
+        startsAt,
+        endsAt,
+        isContext: index < from || index > to,
+      })),
+  };
+}
+
 /**
  * `transcript.segment.get { transcriptId, fromIndex | startsAt, toIndex | endsAt, context? }` (issue #1832):
  * the segments of one stretch of a recording, with the speaker's name as `label`, and `context` (default 3,
  * at most 3) more segments on each side with `isContext` true, ordered by index. `from` and `to` are the
  * first and last index of the stretch itself, without the context, and `null` when it holds no segment (a
- * transcript without segments, a range past the end, or a time range in a silence). See `readRange` for the
- * two ways to name a range and the size limit. Reads only the tenant of the calling run and writes nothing.
+ * transcript without segments, a range past the end, or a time range in a silence). See
+ * `readTranscriptSegmentRange` for the two ways to name a range and the size limit. Reads only the tenant of the
+ * calling run and writes nothing.
  */
 export function createTranscriptSegmentGetTool(pool: Pool): TranscriptAgentTool {
   return async function transcriptSegmentGet(currentRunId, rawArgs) {
@@ -291,24 +340,13 @@ export function createTranscriptSegmentGetTool(pool: Pool): TranscriptAgentTool 
     if (read === "notFound") return TRANSCRIPT_NOT_FOUND;
     if (read === "forbidden") return TRANSCRIPT_FORBIDDEN;
     const { detail } = read;
-    const range = readRange(args.data, detail.segments);
-    if (isFailure(range)) return range;
-    const context = args.data.context ?? TRANSCRIPT_SEGMENT_CONTEXT_DEFAULT;
-    const [from, to] = "empty" in range ? [null, null] : [range.from, range.to];
-    const segments =
-      from === null || to === null
-        ? []
-        : detail.segments
-            .filter((segment) => segment.index >= from - context && segment.index <= to + context)
-            .map(({ index, speaker, label, text, startsAt, endsAt }) => ({
-              index,
-              speaker,
-              label,
-              text,
-              startsAt,
-              endsAt,
-              isContext: index < from || index > to,
-            }));
+    const range = readTranscriptSegmentRange(args.data, detail.segments);
+    if (isTranscriptSegmentRangeFailure(range)) return range;
+    const { from, to, segments } = windowTranscriptSegments(
+      detail.segments,
+      range,
+      args.data.context ?? TRANSCRIPT_SEGMENT_CONTEXT_DEFAULT,
+    );
     return {
       error: false,
       ...(read.sensitive ? { sensitive: true as const } : {}),

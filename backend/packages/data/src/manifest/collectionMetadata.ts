@@ -1,4 +1,4 @@
-import type { ModuleRegistry } from "@semprec/module-registry";
+import type { AreaFilterTemplate, ModuleRegistry } from "@semprec/module-registry";
 import type { DatabaseRow } from "../types.js";
 
 /** Client-facing presentation metadata of one database (issue #1407). */
@@ -31,6 +31,19 @@ export interface CollectionMetadataResolver {
    * it (issue #1647). `undefined` for a user-created database and for a system database without one.
    */
   collectionFilter(database: Pick<DatabaseRow, "key" | "system">): Record<string, unknown> | undefined;
+  /**
+   * The order in which the related collections of a record of the database are listed, and the collections left out
+   * of the list, as its module manifest declares them (issue #1517), keeping only keys of active databases.
+   * `undefined` for a user-created database and for a system database that declares none. A resolver without this
+   * method declares none for every database.
+   */
+  relatedOrder?(database: Pick<DatabaseRow, "key" | "system">): { order: string[]; omit: string[] } | undefined;
+  /**
+   * The template of the filter that selects the records of the database that belong to one area, as its module
+   * manifest declares it (issue #1597). `undefined` for a user-created database and for a system database that
+   * declares none. A resolver without this method declares none for every database.
+   */
+  areaFilter?(database: Pick<DatabaseRow, "key" | "system">): AreaFilterTemplate | undefined;
 }
 
 const NO_METADATA: Omit<CollectionMetadata, "overviewHidden"> = {
@@ -83,6 +96,18 @@ export async function createCollectionMetadataResolver(
     collectionFilter(database) {
       if (!database.system || database.key === null) return undefined;
       const declared = descriptors.get(database.key)?.collectionFilter;
+      return declared === undefined ? undefined : structuredClone(declared);
+    },
+    relatedOrder(database) {
+      if (!database.system || database.key === null) return undefined;
+      const declared = descriptors.get(database.key)?.relatedOrder;
+      if (declared === undefined) return undefined;
+      const isActive = (key: string) => descriptors.has(key);
+      return { order: declared.order.filter(isActive), omit: (declared.omit ?? []).filter(isActive) };
+    },
+    areaFilter(database) {
+      if (!database.system || database.key === null) return undefined;
+      const declared = descriptors.get(database.key)?.areaFilter;
       return declared === undefined ? undefined : structuredClone(declared);
     },
   };

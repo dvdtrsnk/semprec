@@ -136,7 +136,7 @@ describe.each(["database.query", "view.query"] as const)("%s generated relation-
 // REST-only `property.option.add` and `property.option.update` (#1699), whose schemas no MCP listing advertises.
 // `database.patch` was re-recorded when issue #2002 added the optional boolean `overviewHidden` to its patch (an
 // additive change). `database.facets` (#1759) was recorded when it joined the catalog; its one schema shares local
-// definitions under `properties.filter`. `page.ensureJournalPeriod` (#1861) and `page.mergeJournalDuplicates` (#2017) were recorded when they joined the catalog, and `search` (#1842) was recorded when it joined it.
+// definitions under `properties.filter`. `page.ensureJournalPeriod` (#1861) and `page.mergeJournalDuplicates` (#2017) were recorded when they joined the catalog, and so were `search` (#1842) and `relation.related` (#1839).
 const defaultHashes: Record<string, string> = {
   "database.list": "630c495e682d0545e7a780bc9b220ca45b18532d028f75c6c53b2e466c900c17",
   "database.get": "a396e67551c443d8954162aff82b55ec5ca6ade7c921a12925cb8a13f6ecbf78",
@@ -187,6 +187,7 @@ const defaultHashes: Record<string, string> = {
   "page.ensureJournalPeriod": "832c35c2d97c0677e49f6587e557825083481936b880a30f73d84b81ab40d3a9",
   "page.mergeJournalDuplicates": "a34df63d5931b36d578a6e20e17f36818f9853db2266f9e253b0dc73932ae387",
   search: "9b2840da72eb61fc284c5065a1575b9bbdc64dca4d0df006f2ca317d6009b2b8",
+  "relation.related": "d6c9e966fecd84b2add61a085f59ddf1d655d12d61ad36eff683abb96accb1fb",
 };
 
 it("preserves every default operation schema byte for MCP callers", () => {

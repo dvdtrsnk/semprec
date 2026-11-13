@@ -490,6 +490,20 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     const body = (await res.json()) as { relations: { targetItemId: string }[] };
     expect(body.relations.map((relation) => relation.targetItemId)).toEqual([fx.targetItem.id]);
   },
+  "relation.related": async (fx, headers, baseUrl) => {
+    // `itemA` is linked to the target item, and the target database holds the inverse property of that relation.
+    const res = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/related`, { headers });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([
+      {
+        databaseKey: null,
+        databaseId: fx.targetDatabase.id,
+        count: 1,
+        via: "direct",
+        filter: { type: "relation_contains", property: "assignedFrom", value: fx.itemA.id },
+      },
+    ]);
+  },
   "link.unlink": async (fx, headers, baseUrl) => {
     await withTransaction(pool, (client) =>
       insertValueLink(client, {

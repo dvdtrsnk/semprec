@@ -66,7 +66,7 @@ describe("Semp reference observation", () => {
         expect(queries).toHaveLength(8);
         for (const fragment of [
           "JOIN items i ON i.id = r.item_id AND i.database_id",
-          "d.owner_module_id = 'transcripts'",
+          "i.computed -> 'segments' AS segments",
           "SELECT d.id, d.item_id FROM docs d",
           "JOIN mail_attachments t",
           "JOIN agent_runs t",

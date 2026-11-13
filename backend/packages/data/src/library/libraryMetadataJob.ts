@@ -19,6 +19,7 @@ import { notifyInvalidation } from "../realtimeHook.js";
 import { getTenantUserId } from "../auth/usersStore.js";
 import { writeNotification } from "../notifications/notify.js";
 import {
+  databaseHasItemAutomationError,
   ensureItemAutomation,
   getItemAutomation,
   lockItemAutomation,
@@ -29,7 +30,7 @@ import {
   type LibraryAutomationSource,
 } from "./itemAutomationStore.js";
 import { replaceCoverCandidates, type CoverCandidateInput } from "./coverCandidatesStore.js";
-import { raiseProblem } from "../semp/sempProblemsStore.js";
+import { lockProblemKey, raiseProblem, resolveProblem } from "../semp/sempProblemsStore.js";
 import { automationProblemKey } from "../semp/sourceProblemKeys.js";
 import type { ItemRow } from "../types.js";
 
@@ -104,6 +105,19 @@ function toCoverCandidates(
           },
         ],
   );
+}
+
+/**
+ * Resolves the database's automation problem once a job completed an item and, afterwards, no item of the
+ * database has an automation error left (issue #1915), in the caller's open transaction. The problem key's
+ * lock is taken before the check, so a failing job of another item of the database either committed its
+ * error first and keeps the problem active, or raises after this transaction and starts a new problem.
+ */
+async function resolveAutomationProblemWhenClear(client: PoolClient, databaseId: string): Promise<void> {
+  const dedupeKey = automationProblemKey(databaseId);
+  await lockProblemKey(client, dedupeKey);
+  if (await databaseHasItemAutomationError(client, databaseId)) return;
+  await resolveProblem(client, { dedupeKey, resolutionKind: "recovered" });
 }
 
 export function libraryMetadataJobKey(itemId: string): string {
@@ -251,6 +265,7 @@ export async function handleProcessLibraryMetadataTask(
       );
       if (result.status === "notFound") {
         await markItemAutomationNotFound(client, payload.itemId, result.source ?? null);
+        await resolveAutomationProblemWhenClear(client, stored.databaseId);
         runAfterCommit(client, () =>
           notifyInvalidation({
             scope: "item",
@@ -325,6 +340,7 @@ export async function handleProcessLibraryMetadataTask(
         updatedAt = updated.updatedAt;
       }
       await markItemAutomationDone(client, payload.itemId, result.source ?? null);
+      await resolveAutomationProblemWhenClear(client, stored.databaseId);
       runAfterCommit(client, () =>
         notifyInvalidation({
           scope: "item",

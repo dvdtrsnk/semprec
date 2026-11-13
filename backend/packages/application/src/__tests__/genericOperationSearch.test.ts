@@ -10,6 +10,7 @@ import {
 import {
   createAgentRun,
   createChokePoint,
+  createSempChatThread,
   createViewTypeRegistry,
   getDatabaseByModuleId,
   seedSystem,
@@ -130,6 +131,25 @@ describe("the search operation through the generic operation gateway (issue #184
         ),
       );
       expect(await found(agent)).toEqual([file.id]);
+    });
+  });
+
+  it("gives the chat group of Semp threads to a person and to neither an MCP human session nor an agent run (issue #1854)", async () => {
+    await runInTenant(tenant, async () => {
+      const threadId = await withTransaction(pool, (client) => createSempChatThread(client));
+      // Raw SQL: only the title job writes a chat title, and it makes a model call.
+      await admin.query("UPDATE semp_threads SET title = 'Plánování dovolené' WHERE id = $1", [threadId]);
+      const agent = await newAgent();
+      const chatOf = async (actor: AuthenticatedActor) =>
+        SearchOutputSchema.parse(
+          await gateway().invoke("search", actor, ALL_CAPABILITIES, { q: "plánování", scope: ["chat"] }),
+        ).groups;
+
+      expect(await chatOf(human())).toMatchObject([
+        { type: "chat", total: 1, items: [{ threadId, title: "Plánování dovolené", snippet: null }] },
+      ]);
+      expect(await chatOf(mcpHumanSession())).toEqual([]);
+      expect(await chatOf(agent)).toEqual([]);
     });
   });
 

@@ -127,3 +127,79 @@ describe("createInFlightAgentRuns", () => {
     expect(() => unregister()).not.toThrow();
   });
 });
+
+describe("per-turn registration", () => {
+  const MESSAGE_1 = "11111111-1111-4111-8111-111111111111";
+  const MESSAGE_2 = "22222222-2222-4222-8222-222222222222";
+
+  it("aborts the controller of that turn alone and reports that it did", () => {
+    const runs = createInFlightAgentRuns();
+    const target = new AbortController();
+    const otherMessage = new AbortController();
+    const otherTenant = new AbortController();
+    runs.registerTurn(TENANT_A, MESSAGE_1, target);
+    runs.registerTurn(TENANT_A, MESSAGE_2, otherMessage);
+    runs.registerTurn(TENANT_B, MESSAGE_1, otherTenant);
+
+    expect(runs.abortTurn(TENANT_A, MESSAGE_1)).toBe(true);
+
+    expect(target.signal.aborted).toBe(true);
+    expect(target.signal.reason).not.toBe("shutdown");
+    expect(otherMessage.signal.aborted).toBe(false);
+    expect(otherTenant.signal.aborted).toBe(false);
+  });
+
+  it("aborts nothing for a message id that only another tenant runs", () => {
+    const runs = createInFlightAgentRuns();
+    const controller = new AbortController();
+    runs.registerTurn(TENANT_B, MESSAGE_1, controller);
+
+    expect(runs.abortTurn(TENANT_A, MESSAGE_1)).toBe(false);
+
+    expect(controller.signal.aborted).toBe(false);
+  });
+
+  it("returns false for a turn this process does not run", () => {
+    expect(createInFlightAgentRuns().abortTurn(TENANT_A, MESSAGE_1)).toBe(false);
+  });
+
+  it("stops tracking a turn once it unregisters, and tolerates a second call of the unregister function", () => {
+    const runs = createInFlightAgentRuns();
+    const controller = new AbortController();
+    const unregister = runs.registerTurn(TENANT_A, MESSAGE_1, controller);
+
+    unregister();
+
+    expect(runs.abortTurn(TENANT_A, MESSAGE_1)).toBe(false);
+    expect(controller.signal.aborted).toBe(false);
+    expect(() => unregister()).not.toThrow();
+  });
+
+  it("keeps the other controller of a turn when one unregisters, and aborts both when none did", () => {
+    const runs = createInFlightAgentRuns();
+    const first = new AbortController();
+    const second = new AbortController();
+    const unregisterFirst = runs.registerTurn(TENANT_A, MESSAGE_1, first);
+    runs.registerTurn(TENANT_A, MESSAGE_1, second);
+
+    unregisterFirst();
+    expect(runs.abortTurn(TENANT_A, MESSAGE_1)).toBe(true);
+
+    expect(first.signal.aborted).toBe(false);
+    expect(second.signal.aborted).toBe(true);
+  });
+
+  it("is independent of the per-tenant registration", () => {
+    const runs = createInFlightAgentRuns();
+    const tenantWide = new AbortController();
+    const turn = new AbortController();
+    runs.register(TENANT_A, tenantWide);
+    runs.registerTurn(TENANT_A, MESSAGE_1, turn);
+
+    expect(runs.abortTurn(TENANT_A, MESSAGE_1)).toBe(true);
+    expect(tenantWide.signal.aborted).toBe(false);
+
+    expect(runs.abortTenant(TENANT_A)).toBe(1);
+    expect(tenantWide.signal.aborted).toBe(true);
+  });
+});

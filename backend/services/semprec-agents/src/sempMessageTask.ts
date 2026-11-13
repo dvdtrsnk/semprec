@@ -312,6 +312,7 @@ export function createSempMessageTask(
           }
         },
         true,
+        parsePayload(payload).assistantMessageId,
       ),
     );
 }

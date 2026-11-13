@@ -32,6 +32,8 @@ import { SENSITIVE_DATABASE_KEYS } from "./sensitiveDatabaseKeys.js";
 import { PROJECTS_OWNER_PROCESS } from "../projects/projectWriteTransform.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
 import { createTasksTodayView } from "../tasks/todayView.js";
+import { CALENDAR_MODULE_ID } from "../calendar/calendarModuleId.js";
+import { EVENT_OCCURRENCE_DATE_PROPERTY_KEY, EVENT_SERIES_ID_PROPERTY_KEY } from "../calendar/eventOccurrenceId.js";
 
 export type TenDatabases = Record<TenDatabaseModuleId, DatabaseRow>;
 
@@ -303,6 +305,23 @@ export async function seedTenDatabasesInTransaction(
     // The fixed recurrence rule of an Event (issue gh-1817), judged by `calendar/eventRecurrenceHook.ts`; a populated
     // tenant gets the same definition from `calendar/eventsRecurrenceCutoverMigration.ts`.
     { key: "recurrence", name: "Recurrence", type: "json", owner: "user" },
+    // The identity of a materialized occurrence of a recurring Event (issue gh-1843), written only by
+    // `calendar/materializeEventOccurrence.ts`; a populated tenant gets the same two definitions from
+    // `calendar/eventsOccurrenceCutoverMigration.ts`.
+    {
+      key: EVENT_SERIES_ID_PROPERTY_KEY,
+      name: "Series ID",
+      type: "text",
+      owner: "system",
+      ownerProcess: CALENDAR_MODULE_ID,
+    },
+    {
+      key: EVENT_OCCURRENCE_DATE_PROPERTY_KEY,
+      name: "Occurrence date",
+      type: "date",
+      owner: "system",
+      ownerProcess: CALENDAR_MODULE_ID,
+    },
   ]);
 
   const healthRecords = await createDb(client, HEALTH_RECORDS_MODULE_ID);

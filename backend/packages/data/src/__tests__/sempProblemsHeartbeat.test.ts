@@ -296,6 +296,140 @@ describe("agents problems of heartbeat ticks and runs (issue #1911)", () => {
     });
   });
 
+  describe("the sweep reports a heartbeat recovery (issue #1915)", () => {
+    /** Fires a deterministic heartbeat once as the queue does for an item-event fire, with the given outcome. */
+    async function fireNoop(
+      heartbeatId: string,
+      jobId: string,
+      outcome: "fail" | "succeed",
+      attempts = 1,
+      maxAttempts = 1,
+    ) {
+      const registry = createActionRegistry();
+      registry.set("noop", async () => {
+        if (outcome === "fail") throw new Error("handler failure");
+      });
+      const task = createHeartbeatFireCoreTask(runtime, registry);
+      const fired = inA(async () => {
+        await task({ heartbeatId, itemId: projectItemId }, jobHelpers(jobId, attempts, maxAttempts));
+      });
+      if (outcome === "fail") await expect(fired).rejects.toThrow("handler failure");
+      else await fired;
+    }
+
+    async function lastError(heartbeatId: string): Promise<string | null> {
+      const { rows } = await admin.query<{ last_error: string | null }>(
+        "SELECT last_error FROM project_heartbeats WHERE id = $1",
+        [heartbeatId],
+      );
+      return rows[0]?.last_error ?? null;
+    }
+
+    it("resolves the problem of a deterministic heartbeat when its next fire succeeds", async () => {
+      const heartbeatId = await makeHeartbeat("noop");
+      await fireNoop(heartbeatId, "job-core-fail", "fail");
+      expect((await problemsOf(tenantA)).map((problem) => problem.resolved_at)).toEqual([null]);
+      expect(await lastError(heartbeatId)).toBe("handler failure");
+
+      await fireNoop(heartbeatId, "job-core-ok", "succeed");
+
+      const problems = await problemsOf(tenantA);
+      expect(problems).toHaveLength(1);
+      expect(problems[0]).toMatchObject({ dedupe_key: `agents:heartbeat:${heartbeatId}` });
+      expect(problems[0]?.resolved_at).toBeInstanceOf(Date);
+      const { rows } = await admin.query<{ resolution_kind: string | null }>(
+        "SELECT resolution_kind FROM semp_problems WHERE tenant_id = $1",
+        [tenantA],
+      );
+      expect(rows).toEqual([{ resolution_kind: "recovered" }]);
+      expect(await lastError(heartbeatId)).toBeNull();
+    });
+
+    it("resolves it when the scheduled occurrence of the heartbeat succeeds", async () => {
+      const heartbeatId = await makeHeartbeat("noop");
+      await fireNoop(heartbeatId, "job-core-fail", "fail");
+      await admin.query("UPDATE project_heartbeats SET next_fire_at = now() - interval '1 minute' WHERE id = $1", [
+        heartbeatId,
+      ]);
+      const sweep = await inA(() => withTransaction(runtime, (client) => sweepDueHeartbeats(client)));
+      expect(sweep.fired).toHaveLength(1);
+      const { rows: occurrences } = await admin.query<{ id: string }>(
+        "SELECT id FROM heartbeat_occurrences WHERE heartbeat_id = $1",
+        [heartbeatId],
+      );
+      const occurrenceId = occurrences[0]?.id;
+      if (!occurrenceId) throw new Error("Missing scheduled occurrence");
+      const registry = createActionRegistry();
+      registry.set("noop", async () => undefined);
+      const task = createHeartbeatFireCoreTask(runtime, registry);
+
+      await inA(async () => {
+        await task({ heartbeatId, occurrenceId, generation: 1 }, jobHelpers("job-occurrence-ok", 1, 1));
+      });
+
+      const problems = await problemsOf(tenantA);
+      expect(problems).toHaveLength(1);
+      expect(problems[0]?.resolved_at).toBeInstanceOf(Date);
+      expect(await lastError(heartbeatId)).toBeNull();
+    });
+
+    it("leaves the problem of another heartbeat active", async () => {
+      const failing = await makeHeartbeat("noop");
+      const healthy = await makeHeartbeat("noop");
+      await fireNoop(failing, "job-core-fail", "fail");
+
+      await fireNoop(healthy, "job-core-ok", "succeed");
+
+      const problems = await problemsOf(tenantA);
+      expect(problems.map((problem) => [problem.dedupe_key, problem.resolved_at])).toEqual([
+        [`agents:heartbeat:${failing}`, null],
+      ]);
+    });
+
+    it("leaves the problem of an agent heartbeat active when its handler returns without a recovered tick", async () => {
+      const heartbeatId = await makeHeartbeat(CORE_AGENT_RUN_ACTION_ID);
+      await failAgentFire(heartbeatId, "job-tick-fail", 1, 1);
+      const registry = createActionRegistry();
+      // Returning only means the run was started or continued; the tick that closes the run decides recovery.
+      registry.set(CORE_AGENT_RUN_ACTION_ID, async () => undefined);
+      const task = createHeartbeatFireAgentTask(runtime, registry);
+
+      await inA(async () => {
+        await task({ heartbeatId, itemId: projectItemId }, jobHelpers("job-tick-started", 1, 1));
+      });
+
+      const problems = await problemsOf(tenantA);
+      expect(problems.map((problem) => problem.resolved_at)).toEqual([null]);
+    });
+
+    it("leaves the problem active, and the failure on the heartbeat, when the recovery transaction rolls back", async () => {
+      const heartbeatId = await makeHeartbeat("noop");
+      await fireNoop(heartbeatId, "job-core-fail", "fail");
+      await admin.query(
+        `CREATE FUNCTION p1915_reject_resolve() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected resolve failure'; END $$`,
+      );
+      await admin.query(
+        "CREATE TRIGGER p1915_reject_resolve BEFORE UPDATE ON semp_problems FOR EACH ROW EXECUTE FUNCTION p1915_reject_resolve()",
+      );
+      try {
+        const registry = createActionRegistry();
+        registry.set("noop", async () => undefined);
+        const task = createHeartbeatFireCoreTask(runtime, registry);
+        await expect(
+          inA(async () => {
+            await task({ heartbeatId, itemId: projectItemId }, jobHelpers("job-core-ok", 1, 3));
+          }),
+        ).rejects.toThrow("injected resolve failure");
+      } finally {
+        await admin.query("DROP TRIGGER p1915_reject_resolve ON semp_problems");
+        await admin.query("DROP FUNCTION p1915_reject_resolve()");
+      }
+
+      expect((await problemsOf(tenantA)).map((problem) => problem.resolved_at)).toEqual([null]);
+      expect(await lastError(heartbeatId)).toBe("handler failure");
+    });
+  });
+
   describe("a failed heartbeat tick", () => {
     it("gives exactly one active problem with the heartbeat key for heartbeat_error plus agent_run_error", async () => {
       const heartbeatId = await makeHeartbeat(CORE_AGENT_RUN_ACTION_ID);

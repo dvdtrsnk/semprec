@@ -49,6 +49,7 @@
   "agentStep.title.operation.relation.set": "Nastavení propojení",
   "agentStep.title.operation.relation.delete": "Odebrání propojení",
   "agentStep.title.operation.relation.list": "Výpis propojení",
+  "agentStep.title.operation.relation.related": "Výpis souvisejících kolekcí",
   "agentStep.title.operation.page.restoreVersion": "Obnovení verze stránky",
   "agentStep.title.operation.link.unlink": "Ukončení propojení",
   "agentStep.title.operation.link.relink": "Obnovení propojení",

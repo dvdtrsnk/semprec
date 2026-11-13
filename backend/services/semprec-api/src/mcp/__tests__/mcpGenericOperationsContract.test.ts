@@ -418,6 +418,7 @@ const CASES: Record<GenericOperationName, Case> = {
     }),
   },
   "relation.list": { tool: (fx) => ({ name: "semprec.relation.list", arguments: { itemId: fx.itemA.id } }) },
+  "relation.related": { tool: (fx) => ({ name: "semprec.relation.related", arguments: { itemId: fx.itemA.id } }) },
   "link.unlink": {
     tool: (fx) => ({ name: "semprec.link.unlink", arguments: { itemId: fx.itemA.id, propertyKey: "title" } }),
     prepare: async (fx) => {
@@ -1562,15 +1563,15 @@ describe("generic operation MCP contract (issue #220)", () => {
     expect((await chokePoint.listDatabases()).some((database) => database.name === "MCP bare")).toBe(true);
   });
 
-  it.each(["relation.list", "page.restoreVersion"] as const)(
+  it.each(["relation.list", "relation.related", "page.restoreVersion"] as const)(
     "rejects malformed %s item IDs at the MCP boundary",
     async (operation) => {
       const { server, baseUrl } = await startServer();
       servers.push(server);
       const args =
-        operation === "relation.list"
-          ? { itemId: "not-a-uuid" }
-          : { itemId: "not-a-uuid", at: new Date().toISOString() };
+        operation === "page.restoreVersion"
+          ? { itemId: "not-a-uuid", at: new Date().toISOString() }
+          : { itemId: "not-a-uuid" };
       const response = await rpc(baseUrl, await authHeader(), `semprec.${operation}`, args);
       expect(response.error?.code).toBe(-32602);
       expect(response.error?.data).toMatchObject({ field: "itemId" });
@@ -1612,6 +1613,25 @@ describe("generic operation MCP contract (issue #220)", () => {
     });
     expect(ungroupable.error?.code).toBe(-32602);
     expect(ungroupable.error?.data).toMatchObject({ field: "groupBy" });
+  });
+
+  it("lists the collections related to an item through MCP relation.related (issue #1839)", async () => {
+    const { server, baseUrl } = await startServer();
+    servers.push(server);
+    const fx = await buildFixtures();
+
+    const related = await rpc(baseUrl, await authHeader(), "semprec.relation.related", { itemId: fx.itemA.id });
+    expect(related.error).toBeUndefined();
+    // `itemA` is linked to the target item; the target database holds the inverse property.
+    expect(JSON.parse(z.string().parse(related.result?.content[0]?.text))).toEqual([
+      {
+        databaseKey: null,
+        databaseId: fx.targetDatabase.id,
+        count: 1,
+        via: "direct",
+        filter: { type: "relation_contains", property: "assignedFrom", value: fx.itemA.id },
+      },
+    ]);
   });
 
   it("reads the facets of a database through MCP database.facets and refuses an oversized list, an own-property condition under or and a key that is no facet", async () => {

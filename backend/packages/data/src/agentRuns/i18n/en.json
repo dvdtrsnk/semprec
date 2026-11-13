@@ -49,6 +49,7 @@
   "agentStep.title.operation.relation.set": "Setting links",
   "agentStep.title.operation.relation.delete": "Removing a link",
   "agentStep.title.operation.relation.list": "Listing links",
+  "agentStep.title.operation.relation.related": "Listing related collections",
   "agentStep.title.operation.page.restoreVersion": "Restoring a page version",
   "agentStep.title.operation.link.unlink": "Ending a link",
   "agentStep.title.operation.link.relink": "Restoring a link",

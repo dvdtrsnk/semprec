@@ -778,6 +778,66 @@ describe("durable Semp thread history", () => {
     }
   });
 
+  it("validates a transcript segment ref's range, owner and trash state through the real message route", async () => {
+    const [tenant, foreignTenant] = [await createTestTenant(admin), await createTestTenant(admin)];
+    const email = `${randomUUID()}@example.test`;
+    await createUser(admin, { tenantId: tenant, email, passwordHash: await hashPassword("thread-test-password") });
+    const session = await login(admin, { email, password: "thread-test-password", platform: "ios", ip: "127.0.0.1" });
+    const createTranscript = (tenantId: string) =>
+      runInTenant(tenantId, async () => {
+        await seedSystem(pool);
+        const cp = createChokePoint(pool);
+        const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
+        if (!transcripts) throw new Error("Missing transcripts database");
+        const item = await cp.createItem({ databaseId: transcripts.id, properties: { name: "Recording" } });
+        return { databaseId: transcripts.id, itemId: item.id };
+      });
+    const own = await createTranscript(tenant);
+    const foreignTranscript = await createTranscript(foreignTenant);
+    const threadId = await runInTenant(tenant, () => withTransaction(pool, (client) => createSempChatThread(client)));
+    const post = (...refs: unknown[]) =>
+      fetch(`${baseUrl}/api/semp/threads/${threadId}/messages`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${session.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ text: "question", context: refs }),
+      });
+    const segment = (itemId: string, startsAt: number, endsAt: number) => ({
+      kind: "transcriptSegment",
+      itemId,
+      startsAt,
+      endsAt,
+    });
+    const messageCount = () =>
+      runInTenant(tenant, async () =>
+        (
+          await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM semp_messages WHERE thread_id = $1", [
+            threadId,
+          ])
+        ).rows.map((row) => row.count),
+      );
+
+    expect((await post(segment(own.itemId, 0, 900))).status).toBe(202);
+    // A transcript in the Trash is still a valid target; the history shows it as recoverable.
+    await runInTenant(tenant, () => createChokePoint(pool).softDeleteItem(own.databaseId, own.itemId));
+    expect((await post(segment(own.itemId, 10, 20))).status).toBe(202);
+    await runInTenant(tenant, () => createChokePoint(pool).restoreItem(own.databaseId, own.itemId));
+
+    const before = await messageCount();
+    for (const bad of [
+      segment(foreignTranscript.itemId, 0, 10),
+      segment(own.itemId, 0, 901),
+      segment(own.itemId, 30, 20),
+      segment(own.itemId, 20, 20),
+    ]) {
+      const response = await post(segment(own.itemId, 0, 10), bad);
+      expect(response.status, JSON.stringify(bad)).toBe(400);
+      expect(await response.json()).toMatchObject({
+        error: { code: "validation_failed", details: { field: "context[1]" } },
+      });
+      expect(await messageCount()).toEqual(before);
+    }
+  });
+
   it("accepts an ingested mail attachment and refuses an unknown attachment without effects", async () => {
     const directory = await mkdtemp(join(tmpdir(), "semprec-ref-mail-"));
     let failure: unknown;

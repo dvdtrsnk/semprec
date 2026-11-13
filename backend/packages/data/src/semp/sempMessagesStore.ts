@@ -8,7 +8,7 @@ import { enqueueSempMessage } from "./sempMessageQueue.js";
 import { sempMessageSearchVectorSql } from "./sempMessageSearch.js";
 import type { SempReplySummary } from "./sempReplySummary.js";
 import type { AgentRunErrorCode } from "../agentRuns/agentRunErrorCodes.js";
-import type { SempReplyErrorParams } from "./sempReplyErrors.js";
+import { parseSempReplyErrorCode, type SempReplyErrorParams } from "./sempReplyErrors.js";
 
 // A fixed SQL fragment; no caller input is interpolated.
 const MESSAGE_TOKEN = `jsonb_build_object('id', id, 'role', role, 'text', text, 'status', status,
@@ -16,25 +16,28 @@ const MESSAGE_TOKEN = `jsonb_build_object('id', id, 'role', role, 'text', text, 
   'replyTo', reply_to_message_id, 'run', agent_run_id, 'from', event_from_id, 'to', event_to_id,
   'errorCode', error_code, 'createdAt', created_at, 'updatedAt', updated_at)::text`;
 
-/** Reads the queued assistant for one thread turn under the current tenant. */
+/** Reads the queued assistant for one thread turn under the current tenant; `errorCode` is set for an `error` reply only. */
 export async function getSempVoiceDelivery(client: Pool | PoolClient, threadId: string, assistantMessageId: string) {
   const { rows } = await client.query<{
     status: string;
     agent_run_id: string | null;
     event_from_id: string | null;
     event_to_id: string | null;
+    error_code: string | null;
   }>(
-    `SELECT status, agent_run_id, event_from_id, event_to_id FROM semp_messages
+    `SELECT status, agent_run_id, event_from_id, event_to_id, error_code FROM semp_messages
      WHERE thread_id = $1 AND id = $2 AND role = 'assistant'`,
     [threadId, assistantMessageId],
   );
   const row = rows[0];
   if (!row) return null;
+  const status = assertKnownValue(["queued", "running", "done", "error"] as const, row.status, "message status");
   return {
-    status: assertKnownValue(["queued", "running", "done", "error"] as const, row.status, "message status"),
+    status,
     runId: row.agent_run_id,
     firstEventId: row.event_from_id,
     lastEventId: row.event_to_id,
+    errorCode: status === "error" ? parseSempReplyErrorCode(row.error_code) : null,
   };
 }
 

@@ -2,8 +2,8 @@ import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import {
   SEARCH_ITEM_GROUP_TYPES,
+  type SearchGroup,
   type SearchGroupType,
-  type SearchItemGroup,
   type SearchItemGroupType,
   type SearchItemResult,
   type SearchOutput,
@@ -22,16 +22,20 @@ import {
   PROJECTS_MODULE_ID,
   TASKS_MODULE_ID,
 } from "../seed/tenDatabaseKeys.js";
+import { parseSempThreadListCursor } from "../semp/sempThreadsListStore.js";
 import { logger } from "./logger.js";
 import { buildItemSearchQuery } from "./itemSearchQuery.js";
+import { searchSempThreads } from "./sempThreadSearch.js";
+import { buildSearchSnippetSql } from "./searchSnippet.js";
 import { buildSubtitleParts } from "./searchSubtitleParts.js";
 
 // Global search over `item_search_index` (issue #1842). A group is an allow-list of databases by owner module, so a
 // database that is not listed here (the inbox pipeline, mailboxes, folders, MCP servers, settings, proposals, the
 // Inbox, subpage storage, Health records, Library, Recordings and every user-created collection) is never searched.
-// An Inbox entry is found through the text its Journal day holds.
+// An Inbox entry is found through the text its Journal day holds. The `chat` group is thread-backed, not item-backed:
+// `sempThreadSearch.ts` fills it for a person (issue #1854).
 
-/** The owner modules whose databases each item group searches. The `mail` and `chat` groups are filled by later issues and have no entry yet. */
+/** The owner modules whose databases each item group searches. The `mail` group is filled by a later issue and `chat` by `sempThreadSearch.ts`, so neither has an entry. */
 const GROUP_MODULES: Readonly<Record<SearchItemGroupType, readonly string[]>> = {
   task: [TASKS_MODULE_ID],
   event: [EVENTS_MODULE_ID],
@@ -54,6 +58,11 @@ export interface SearchItemGroupsInput {
   cursor?: string;
   /** The Projects item of an agent's run: databases it has no read grant for are not searched. Absent for a person. */
   agentProjectItemId?: string;
+  /**
+   * True when a person asks. Only a person is given the `chat` group: Semp conversations belong to the user and are
+   * part of no database an agent or an MCP client is granted. Absent means not a person.
+   */
+  humanActor?: boolean;
 }
 
 /** The position of the last result of a page in the order rank, then `updated_at`, then item id. */
@@ -111,6 +120,11 @@ interface SearchPageDbRow {
   properties: unknown;
   rank: number;
   updated_micros: string;
+}
+
+interface SnippetDbRow {
+  id: string;
+  snippet: string | null;
 }
 
 const propertiesSchema = z.record(z.string(), z.unknown());
@@ -197,6 +211,27 @@ async function readPage(
 }
 
 /**
+ * The excerpts of the listed items, by item id: read for the page that is returned and no other match, once the
+ * per-group limit and the cursor have been applied. An item whose `body` does not match the query has a null excerpt.
+ */
+async function readSnippets(
+  client: PoolClient,
+  databaseIds: readonly string[],
+  itemIds: readonly string[],
+  buildQuery: (firstParameter: number) => { sql: string; params: string[] },
+): Promise<Map<string, string | null>> {
+  if (itemIds.length === 0) return new Map();
+  const tsquery = buildQuery(3);
+  const { rows } = await client.query<SnippetDbRow>(
+    `SELECT item_id AS id, ${buildSearchSnippetSql(tsquery, 3)} AS snippet
+     FROM item_search_index
+     WHERE database_id = ANY($1::uuid[]) AND item_id = ANY($2::uuid[])`,
+    [databaseIds, itemIds, ...tsquery.params],
+  );
+  return new Map(rows.map((row) => [row.id, row.snippet]));
+}
+
+/**
  * Searches the caller tenant's tasks, events, projects, areas, contacts, journal days and files for `input.q`, one
  * group per type of `input.scope`, in the fixed order of `SEARCH_GROUP_TYPES`; a group without a match is omitted.
  * The tenant is the ambient one (`runInTenant`), as for every data function. The whole answer is read in one
@@ -206,25 +241,40 @@ async function readPage(
  * `ts_rank_cd` (best first), then `updated_at` (newest first), then item id, and `nextCursor` is the opaque token of
  * the last listed match, or `null` when nothing follows. Items in the trash, projects with `systemActive`, items of
  * an archived database and, for an agent (`agentProjectItemId`), items of a database it has no read grant for are
- * never found. A query with no searchable word, and the `mail` and `chat` groups (which later issues fill), match
- * nothing. `q` is bound as a parameter and is never logged; only its length and the counts of the answer are.
+ * never found. A query with no searchable word, and the `mail` group (which a later issue fills), match nothing.
+ * `q` is bound as a parameter and is never logged; only its length and the counts of the answer are.
  *
- * Throws a `ValidationError` for a `cursor` that is not in the shape this function issues, and for a `cursor` with a
- * scope of more or fewer than one group.
+ * An item-backed result carries a `snippet` (issue #1996): an excerpt of at most 160 characters of its page text (for a
+ * Journal day, of its Inbox entries and page text) when that text itself matches `q`, and `null` when the item was found
+ * only through its title or other properties. The excerpt is read for the returned rows only.
+ *
+ * The `chat` group lists the user's Semp threads that match by title or preview, last activity first
+ * (`searchSempThreads`); it is given only when `humanActor` is true and `chat` is in `scope`. Its `nextCursor` is a
+ * thread-list cursor.
+ *
+ * Throws a `ValidationError` for a `cursor` that is not in the shape this function issues (for the `chat` scope, in
+ * the shape of a thread-list cursor), and for a `cursor` with a scope of more or fewer than one group. The cursor is
+ * checked before anything is searched, so it is refused for every actor and for a query with no searchable word too.
  */
 export async function searchItemGroups(pool: Pool, input: SearchItemGroupsInput): Promise<SearchOutput> {
-  const cursor = input.cursor === undefined ? undefined : decodeCursor(input.cursor);
-  if (cursor !== undefined && input.scope.length !== 1) {
+  // A cursor of the `chat` scope is a thread-list cursor and every other cursor is ours; both are checked here, before
+  // anything else, so a token of the wrong shape is refused whoever asks and whatever the query says.
+  const chatCursor = input.scope.length === 1 && input.scope[0] === "chat";
+  const cursor = input.cursor === undefined || chatCursor ? undefined : decodeCursor(input.cursor);
+  const threadCursor = input.cursor !== undefined && chatCursor ? parseSempThreadListCursor(input.cursor) : undefined;
+  if (input.cursor !== undefined && input.scope.length !== 1) {
     throw new ValidationError("cursor requires a scope of exactly one type", { field: "cursor" });
   }
   const groups = SEARCH_ITEM_GROUP_TYPES.filter((type) => input.scope.includes(type));
+  const includeChat = input.humanActor === true && input.scope.includes("chat");
   const buildQuery = (firstParameter: number) => buildItemSearchQuery(input.q, firstParameter);
-  const result: SearchItemGroup[] =
-    buildQuery(1).params.length === 0 || groups.length === 0
+  const result: SearchGroup[] =
+    buildQuery(1).params.length === 0 || (groups.length === 0 && !includeChat)
       ? []
       : await withTransaction(
           pool,
           async (client) => {
+            const found: SearchGroup[] = [];
             const unreadable =
               input.agentProjectItemId === undefined
                 ? new Set<string>()
@@ -235,7 +285,6 @@ export async function searchItemGroups(pool: Pool, input: SearchItemGroupsInput)
               unreadable,
             );
             const tenantDatabaseIds = await visibleDatabaseIds(client);
-            const found: SearchItemGroup[] = [];
             for (const group of groups) {
               const databases = searchable.filter((database) =>
                 GROUP_MODULES[group].includes(database.owner_module_id),
@@ -250,6 +299,12 @@ export async function searchItemGroups(pool: Pool, input: SearchItemGroupsInput)
               if (total === 0) continue;
               const rows = await readPage(client, databases, group, input.perGroupLimit, cursor, buildQuery);
               const page = rows.slice(0, input.perGroupLimit);
+              const snippets = await readSnippets(
+                client,
+                databases.map((database) => database.id),
+                page.map((row) => row.id),
+                buildQuery,
+              );
               const subtitles = await buildSubtitleParts(
                 client,
                 page.map((row) => ({
@@ -269,7 +324,7 @@ export async function searchItemGroups(pool: Pool, input: SearchItemGroupsInput)
                 databaseKey: row.database_key,
                 title: row.title ?? "",
                 subtitleParts: subtitles.get(row.id) ?? [],
-                snippet: null,
+                snippet: snippets.get(row.id) ?? null,
               }));
               found.push({
                 type: group,
@@ -280,6 +335,16 @@ export async function searchItemGroups(pool: Pool, input: SearchItemGroupsInput)
                     ? null
                     : encodeCursor({ r: lastListed.rank, u: lastListed.updated_micros, i: lastListed.id }),
               });
+            }
+            if (includeChat) {
+              const chat = await searchSempThreads(client, {
+                buildQuery,
+                limit: input.perGroupLimit,
+                cursor: threadCursor,
+              });
+              if (chat.total > 0) {
+                found.push({ type: "chat", total: chat.total, items: chat.items, nextCursor: chat.nextCursor });
+              }
             }
             return found;
           },

@@ -93,7 +93,10 @@ import { createSyncUpgradeHandler } from "../syncHandler.js";
  * Absence is proven without sleeping: after the event under test reached the socket that should
  * receive it, a sentinel event is published in the checked socket's own tenant. NOTIFYs are
  * delivered over the server's single LISTEN connection in commit order, so everything a NOTIFY
- * made the checked socket receive arrives before the sentinel.
+ * made the checked socket receive arrives before the sentinel. The one frame that is not made by a
+ * NOTIFY of its own is the doc invalidation, which the server sends after it read the doc again, up
+ * to a second after the write; `TestSocket.drainUntil` sets aside such a frame of the socket's own
+ * tenant and returns one of any other tenant.
  *
  * Frames a socket sends are not ordered against that connection. For those, the foreign frame is
  * sent before a request of B1's own whose reply is awaited, and the handlers do the same work in
@@ -172,6 +175,8 @@ class TestSocket {
   };
   closeCode: number | undefined;
   readonly closed: Promise<number>;
+  /** The tenant this socket is authenticated in, when the test knows it; `drainUntil` reads it. */
+  ownTenantId: string | undefined;
 
   private constructor(private readonly ws: WebSocket) {
     ws.on("error", this.onError);
@@ -298,12 +303,29 @@ class TestSocket {
     }
   }
 
-  /** Consumes frames up to and including the first match; returns the frames that arrived before it. */
+  /**
+   * Consumes frames up to and including the first match; returns the frames that arrived before it.
+   *
+   * A socket that knows its tenant (`ownTenantId`) can still receive the doc invalidation of an earlier write of that
+   * tenant, and nothing orders that frame against a sentinel: the writer announces a doc update after its commit,
+   * through a pooled connection of its own and without being awaited, and the server then reads the doc before it
+   * sends the frame, which it does again a second later when the doc was written twice within that second. That
+   * frame is the echo of an earlier case, not of the event this drain checks, so it is not returned. It is dropped
+   * only after the admin pool confirmed that the item it names belongs to the socket's tenant: a doc invalidation of
+   * any other tenant is returned like every other frame and fails the drain's empty list.
+   */
   async drainUntil(predicate: (frame: Frame) => boolean): Promise<Frame[]> {
     const before: Frame[] = [];
     for (;;) {
       const frame = await this.next();
       if (predicate(frame)) return before;
+      if (
+        this.ownTenantId !== undefined &&
+        isDocInvalidation(frame) &&
+        (await isItemOfTenant(frame, this.ownTenantId))
+      ) {
+        continue;
+      }
       before.push(frame);
     }
   }
@@ -323,6 +345,19 @@ function isSentinel(databaseId: string): (frame: Frame) => boolean {
 
 function isDocFrame(docId: string): (frame: Frame) => boolean {
   return (frame) => frame.kind === "binary" && frame.docId === docId;
+}
+
+/** The doc invalidation (`scope: "doc"`) the server sends to every socket of the tenant that wrote a doc. */
+function isDocInvalidation(frame: Frame): boolean {
+  return frame.kind === "text" && frame.type === "invalidate" && frame.body.scope === "doc";
+}
+
+/** Whether the item `frame` names belongs to `tenantId`, read by the admin pool, which no tenant scope narrows. */
+async function isItemOfTenant(frame: Frame, tenantId: string): Promise<boolean> {
+  const itemId = frame.kind === "text" ? frame.body.itemId : undefined;
+  if (typeof itemId !== "string") return false;
+  const { rows } = await adminPool.query<{ tenant_id: string }>("SELECT tenant_id FROM items WHERE id = $1", [itemId]);
+  return rows[0]?.tenant_id === tenantId;
 }
 
 function isAgentEvent(runId: string): (frame: Frame) => boolean {
@@ -561,6 +596,9 @@ async function reconnectAll(): Promise<void> {
   a2SessionId = sessionA2.sessionId;
   const attempts = [connect(sessionA1.cookie), connect(sessionA2.cookie), connect(sessionB1.cookie)] as const;
   [a1, a2, b1] = await joinSocketAttempts(attempts, ownedSockets);
+  a1.ownTenantId = tenantA.tenantId;
+  a2.ownTenantId = tenantA.tenantId;
+  b1.ownTenantId = tenantB.tenantId;
 }
 
 async function joinSocketAttempts<T extends readonly Promise<TestSocket>[]>(

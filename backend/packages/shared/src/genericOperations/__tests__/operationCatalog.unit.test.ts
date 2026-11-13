@@ -50,6 +50,7 @@ const EXPECTED_ROWS: Record<
   "relation.set": { schema: schemas.RelationSetInputSchema, method: "setRelation" },
   "relation.delete": { schema: schemas.RelationDeleteInputSchema, method: "deleteRelation" },
   "relation.list": { schema: schemas.RelationListInputSchema, method: "listRelations" },
+  "relation.related": { schema: schemas.RelationRelatedInputSchema, method: "listRelatedCollections" },
   "page.ensure": { schema: schemas.PageEnsureInputSchema, method: "ensurePage" },
   "page.ensureJournalPeriod": { schema: schemas.PageEnsureJournalPeriodInputSchema, method: "ensureJournalPeriod" },
   "page.mergeJournalDuplicates": {
@@ -253,6 +254,12 @@ const EXPECTED_METADATA: Record<
     riskClass: "read",
     reversible: true,
   },
+  "relation.related": {
+    requiresCapability: "core.item.read",
+    requiresApproval: false,
+    riskClass: "read",
+    reversible: true,
+  },
   "link.unlink": {
     requiresCapability: "core.item.write",
     requiresApproval: false,
@@ -337,9 +344,9 @@ const EXPECTED_METADATA: Record<
 };
 
 describe("GENERIC_OPERATION_NAMES", () => {
-  it("has exactly 49 entries with no duplicates", () => {
-    expect(GENERIC_OPERATION_NAMES).toHaveLength(49);
-    expect(new Set(GENERIC_OPERATION_NAMES).size).toBe(49);
+  it("has exactly 50 entries with no duplicates", () => {
+    expect(GENERIC_OPERATION_NAMES).toHaveLength(50);
+    expect(new Set(GENERIC_OPERATION_NAMES).size).toBe(50);
   });
 });
 
@@ -458,6 +465,23 @@ describe("page.ensureJournalPeriod input (issue #1861)", () => {
   });
 });
 
+describe("relation.related input (issue #1839)", () => {
+  const schema = schemas.RelationRelatedInputSchema;
+  const itemId = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+
+  it("accepts an item id", () => {
+    expect(schema.safeParse({ itemId }).success).toBe(true);
+  });
+
+  it.each([
+    ["no item id", {}],
+    ["an item id that is not a uuid", { itemId: "not-a-uuid" }],
+    ["an unknown key", { itemId, databaseId: itemId }],
+  ])("rejects %s", (_name, input) => {
+    expect(schema.safeParse(input).success).toBe(false);
+  });
+});
+
 describe("page.mergeJournalDuplicates input (issue #2017)", () => {
   const schema = schemas.PageMergeJournalDuplicatesInputSchema;
 
@@ -482,7 +506,7 @@ describe("page.mergeJournalDuplicates input (issue #2017)", () => {
 });
 
 describe("GENERIC_OPERATION_BINDINGS", () => {
-  it("has exactly the 49 catalog rows and no others", () => {
+  it("has exactly the 50 catalog rows and no others", () => {
     expect(Object.keys(GENERIC_OPERATION_BINDINGS).sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
   });
 

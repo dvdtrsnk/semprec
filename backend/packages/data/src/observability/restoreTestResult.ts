@@ -2,7 +2,7 @@ import type { Pool } from "pg";
 import { withTransaction } from "../db/pool.js";
 import { transitionObservabilityCheck } from "./observabilityChecksStore.js";
 import { BACKUP_RESTORE_PROBLEM_KEY } from "../semp/sourceProblemKeys.js";
-import { writeOperatorAlert } from "./operatorAlerts.js";
+import { resolveOperatorAlertProblems, writeOperatorAlert } from "./operatorAlerts.js";
 import type { RestoreTestResult } from "./restoreTestResultArgs.js";
 
 export const RESTORE_TEST_CHECK_KEY = "backup:restoreTest";
@@ -60,7 +60,8 @@ export interface RecordRestoreTestResultOutcome {
  * Records one monthly restore-test run (issue #178) as the `backup:restoreTest`
  * `observability_checks` row, so a failed restore stays visible in the system health report until
  * a later run passes, and on failure writes one content-free `backup_restore_failed` to every admin
- * through `writeOperatorAlert`. Must run in a system scope.
+ * through `writeOperatorAlert`, which also raises each admin's `backup:restoreTest` problem. A passed run
+ * resolves those problems as recovered (`resolveOperatorAlertProblems`). Must run in a system scope.
  *
  * Unlike `observabilityCheckSystem.ts`'s every-minute checks, a failed run notifies even when the
  * row was already `alerting`: runs are a month apart, so each failure is news rather than a
@@ -79,7 +80,11 @@ export async function recordRestoreTestResult(
         ? { status: "ok", detail: { runId: result.runId, ranAt } }
         : { status: "alerting", detail: { runId: result.runId, ranAt, failedCheck: result.failedCheck } },
     );
-    if (result.status === "passed") return { notificationIds: [] };
+    if (result.status === "passed") {
+      // A passed run closes the failure's problem of every admin (issue #1915); an admin without one changes nothing.
+      await resolveOperatorAlertProblems(pool, client, BACKUP_RESTORE_PROBLEM_KEY);
+      return { notificationIds: [] };
+    }
 
     const notificationIds = await writeOperatorAlert(pool, client, {
       kind: "backup_restore_failed",

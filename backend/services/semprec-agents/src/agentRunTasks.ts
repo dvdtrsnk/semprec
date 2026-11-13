@@ -35,17 +35,25 @@ function requireString(payload: unknown, field: string): string {
  * every path. The registration spans the whole job, so a deactivation during session composition
  * is seen as an already-aborted signal when the turn starts. Throws, before `fn`, outside a tenant scope: that is a wiring bug, since every
  * queued job runs inside its tenant.
+ *
+ * With `assistantMessageId`, the same controller is also registered as the turn that answers that Semp message
+ * (`InFlightAgentRuns.registerTurn`), so `abortTurn` can end this job alone.
  */
 export async function withInFlightRegistration<T>(
   pool: Pool,
   inFlight: InFlightAgentRuns,
   fn: (signal: AbortSignal) => Promise<T>,
   semp = false,
+  assistantMessageId?: string,
 ): Promise<T> {
   const scope = currentTenantScope();
   if (scope?.kind !== "tenant") throw new Error("An agent run must execute inside a tenant scope");
   const controller = new AbortController();
-  const unregister = inFlight.register(scope.tenantId, controller, semp);
+  const unregisterRun = inFlight.register(scope.tenantId, controller, semp);
+  const unregisterTurn =
+    assistantMessageId === undefined
+      ? undefined
+      : inFlight.registerTurn(scope.tenantId, assistantMessageId, controller);
   try {
     // Registration precedes the read: an earlier deactivation is visible here, and a later
     // notification reaches this controller. The registry keeps no deactivation tombstones.
@@ -56,7 +64,8 @@ export async function withInFlightRegistration<T>(
     if (rows[0]?.active !== true) controller.abort();
     return await fn(controller.signal);
   } finally {
-    unregister();
+    unregisterTurn?.();
+    unregisterRun();
   }
 }
 

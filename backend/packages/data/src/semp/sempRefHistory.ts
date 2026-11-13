@@ -6,6 +6,7 @@ import {
   type SempRefResolution,
 } from "@semprec/shared";
 import { assertDescriptionShape } from "../mcp/approvalRequestsStore.js";
+import { labelTranscriptSegmentRefs, type TranscriptSegmentRef } from "../transcription/transcriptSegmentRef.js";
 
 type StoredRef = SempMessageRef | ReturnType<typeof labeledSempMessageRefSchema.parse>;
 type Entry = { page: number; index: number; ref: StoredRef };
@@ -90,6 +91,24 @@ export async function resolveSempHistoryContexts(client: PoolClient, contexts: r
           databaseId: ref.kind === "item" || ref.kind === "taskTrace" ? ref.databaseId : null,
         })),
       );
+      if (kind === "transcriptSegment") {
+        // State and database key are the generic ones above; the label is the transcript's current display name
+        // with the stretch (issue #1834), so a rename shows, read for the whole page at once. An item that is no
+        // transcript keeps the generic label.
+        const named = entries.flatMap(({ ref }, position) => {
+          const value = values[position];
+          return ref.kind === "transcriptSegment" && value && value.state !== "purged" ? [{ ref, position }] : [];
+        });
+        const labels = await labelTranscriptSegmentRefs(
+          client,
+          named.map(({ ref }): TranscriptSegmentRef => ref),
+        );
+        for (const [index, { position }] of named.entries()) {
+          const value = values[position];
+          const label = labels[index];
+          if (value && label !== null && label !== undefined) values[position] = { ...value, label };
+        }
+      }
     } else if (kind === "taskOccurrence") {
       // `series_id` is a uuid column; a stored id of any other shape names no series and resolves as purged.
       const ids = entries.map(({ ref }) => {

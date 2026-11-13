@@ -502,6 +502,15 @@ describe("item search create/update hooks", () => {
             owner_process: "tasks",
           });
         }
+        if (descriptor.key === "events") {
+          // The identity of a materialized occurrence (issue gh-1843): written only by the calendar module.
+          expect(props.rows.find((property) => property.key === "seriesId")).toEqual({
+            key: "seriesId",
+            type: "text",
+            owner: "system",
+            owner_process: "calendar",
+          });
+        }
         for (const property of props.rows) {
           // An event's place is an address or a call link; it is deliberately not searched (asserted below).
           if (descriptor.key === "events" && property.key === "place") continue;
@@ -510,6 +519,9 @@ describe("item search create/update hooks", () => {
           if (descriptor.key === "tasks" && property.key === "seriesId") {
             continue;
           }
+          // An event's seriesId is the system-owned identity of a materialized occurrence (issue gh-1843), not searchable
+          // text (asserted below); its occurrenceDate is a date property and is not selected here.
+          if (descriptor.key === "events" && property.key === "seriesId") continue;
           // An event's iCalendar UID is a system identifier (issue #1599), not searchable text (asserted below).
           if (descriptor.key === "events" && property.key === "icalUid") continue;
           expect(descriptor.searchFields).toContain(property.key);
@@ -519,6 +531,8 @@ describe("item search create/update hooks", () => {
       expect(manifest.databases.find((d) => d.key === "areas")?.searchFields).not.toContain("icon");
       expect(manifest.databases.find((d) => d.key === "tasks")?.searchFields).not.toContain("seriesId");
       expect(manifest.databases.find((d) => d.key === "events")?.searchFields).not.toContain("icalUid");
+      expect(manifest.databases.find((d) => d.key === "events")?.searchFields).not.toContain("seriesId");
+      expect(manifest.databases.find((d) => d.key === "events")?.searchFields).not.toContain("occurrenceDate");
       expect(manifest.databases.find((d) => d.key === "people")?.searchFields).toContain("emails");
       expect(manifest.databases.find((d) => d.key === "people")?.searchFields).toContain("phones");
       for (const [key, fields] of Object.entries({

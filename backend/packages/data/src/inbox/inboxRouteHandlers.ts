@@ -1,9 +1,11 @@
 import type { Pool, PoolClient } from "pg";
+import { z } from "zod";
 import { withTransaction } from "../db/pool.js";
 import { getDatabaseByKey, getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import {
   confirmProposalWithClient,
   readConfirmationResults,
+  rejectProposalWithClient,
   type ConfirmationResult,
   type ConfirmProposalCredentialInput,
 } from "./proposalActions.js";
@@ -54,13 +56,31 @@ async function resolveDatabaseIdByModuleId(client: PoolClient, moduleId: string)
   return database.id;
 }
 
-/** `undefined` when the body carries no `credential` at all — not every proposal confirm needs one (issue #123). */
-function parseConfirmCredential(body: unknown): ConfirmProposalCredentialInput | undefined {
-  if (body === null) return undefined;
+/** The request body as an object; a `null` body (the JSON `null`) is an empty one. Any other shape is a `ValidationError`. */
+function bodyObject(body: unknown): Record<string, unknown> {
+  if (body === null) return {};
   if (typeof body !== "object" || Array.isArray(body)) {
     throw new ValidationError("Request body must be a JSON object");
   }
-  const credential = (body as Record<string, unknown>).credential;
+  return body as Record<string, unknown>;
+}
+
+/** The optional `ifVersion` of a confirm or reject body (issue #1852): the card's `updatedAt`, which is an ISO 8601 UTC timestamp. */
+const ifVersionSchema = z.iso.datetime();
+
+/** `undefined` when the body carries no `ifVersion`; otherwise the timestamp string, or a `ValidationError` naming the field. */
+function parseIfVersion(body: Record<string, unknown>): string | undefined {
+  if (body.ifVersion === undefined) return undefined;
+  const parsed = ifVersionSchema.safeParse(body.ifVersion);
+  if (!parsed.success) {
+    throw new ValidationError("'ifVersion' must be an ISO 8601 UTC timestamp string", { field: "ifVersion" });
+  }
+  return parsed.data;
+}
+
+/** `undefined` when the body carries no `credential` at all — not every proposal confirm needs one (issue #123). */
+function parseConfirmCredential(body: Record<string, unknown>): ConfirmProposalCredentialInput | undefined {
+  const credential = body.credential;
   if (credential === undefined) return undefined;
   if (typeof credential !== "object" || credential === null || Array.isArray(credential)) {
     throw new ValidationError("'credential' must be a JSON object", { field: "credential" });
@@ -87,13 +107,65 @@ function parseConfirmCredential(body: unknown): ConfirmProposalCredentialInput |
 export function createConfirmProposalRouteHandler(pool: Pool) {
   return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
     const proposalId = requireParam(ctx.params, "id");
-    const credential = parseConfirmCredential(ctx.body);
+    const body = bodyObject(ctx.body);
+    const credential = parseConfirmCredential(body);
+    const ifVersion = parseIfVersion(body);
     const actingUserId = ctx.identity?.user.id;
     const item = await withTransaction(pool, async (client) => {
       const processingProposalsDatabaseId = await resolveDatabaseIdByModuleId(client, PROCESSING_PROPOSALS_MODULE_ID);
-      return confirmProposalWithClient(client, { processingProposalsDatabaseId }, proposalId, credential, actingUserId);
+      return confirmProposalWithClient(
+        client,
+        { processingProposalsDatabaseId },
+        proposalId,
+        credential,
+        actingUserId,
+        ifVersion,
+      );
     });
     return { status: 200, item, results: readConfirmationResults(item.properties) };
+  };
+}
+
+/** The longest `message` a reject may carry; it becomes the text of one history entry. */
+const REJECT_MESSAGE_MAX_LENGTH = 1000;
+
+/**
+ * The optional `message` of a reject body: `undefined` when the body carries none, else a string that is
+ * not blank and at most `REJECT_MESSAGE_MAX_LENGTH` characters.
+ */
+function parseRejectMessage(body: Record<string, unknown>): string | undefined {
+  const message = body.message;
+  if (message === undefined) return undefined;
+  if (typeof message !== "string" || message.trim().length === 0) {
+    throw new ValidationError("'message' must be a non-empty string", { field: "message" });
+  }
+  if (message.length > REJECT_MESSAGE_MAX_LENGTH) {
+    throw new ValidationError(`'message' must be at most ${REJECT_MESSAGE_MAX_LENGTH} characters`, {
+      field: "message",
+    });
+  }
+  return message;
+}
+
+/**
+ * `POST /api/proposals/:id/reject` (issue #1845) — discards a card without writing a destination, as one
+ * transaction of `rejectProposalWithClient` (the status transition, its history entry and the Journal
+ * recompute). A custom route because the generic item update cannot set the system-owned `status`.
+ * Thin mapping only: idempotency (an already `rejected` card is returned unchanged) and the refusal of a
+ * `confirmed` card live in the action. The answer is the card item; unlike the confirm answer it has no
+ * `results`, because a rejected card never holds any.
+ */
+export function createRejectProposalRouteHandler(pool: Pool) {
+  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+    const proposalId = requireParam(ctx.params, "id");
+    const body = bodyObject(ctx.body);
+    const message = parseRejectMessage(body);
+    const ifVersion = parseIfVersion(body);
+    const item = await withTransaction(pool, async (client) => {
+      const processingProposalsDatabaseId = await resolveDatabaseIdByModuleId(client, PROCESSING_PROPOSALS_MODULE_ID);
+      return rejectProposalWithClient(client, { processingProposalsDatabaseId }, proposalId, message, ifVersion);
+    });
+    return { status: 200, item };
   };
 }
 

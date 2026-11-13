@@ -150,9 +150,16 @@ export interface RaiseGuidanceDriftProblemInput {
   occurrenceKey: string;
 }
 
-/** Transaction-scoped adapter that raises the Semp status problem of a drift finding (issue #1465). */
+export interface ResolveGuidanceDriftProblemInput {
+  projectItemId: string;
+  fingerprint: string;
+}
+
+/** Transaction-scoped adapter over the Semp status problem of a drift finding (issues #1465 and #1915). */
 export interface GuidanceProblemWriter<Tx> {
   raise(tx: Tx, input: RaiseGuidanceDriftProblemInput): Promise<void>;
+  /** Closes the problem of a finding that resolved, as recovered; a finding with no active problem changes nothing. */
+  resolve(tx: Tx, input: ResolveGuidanceDriftProblemInput): Promise<void>;
 }
 
 /**

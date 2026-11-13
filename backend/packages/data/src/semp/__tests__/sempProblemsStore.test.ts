@@ -343,6 +343,19 @@ describe("semp problems store", () => {
     expect((await rowsFor(tenantZero, "mail:sync:account-1"))[0]?.occurrence_count).toBe(2);
   });
 
+  it("stores sourceDeleted as the resolution kind of a problem whose source was deleted", async () => {
+    await inZero((client) => raiseProblem(client, input()));
+
+    const changed = await inZero((client) =>
+      resolveProblem(client, { dedupeKey: "mail:sync:account-1", resolutionKind: "sourceDeleted" }),
+    );
+
+    expect(changed).toBe(true);
+    expect(await rowsFor(tenantZero, "mail:sync:account-1")).toMatchObject([
+      { resolved_at: expect.any(Date), resolution_kind: "sourceDeleted" },
+    ]);
+  });
+
   it("counts the same occurrence key again in a new problem episode", async () => {
     const first = await inZero((client) => raiseProblem(client, input({ occurrenceKey: "job-a" })));
     await inZero((client) => resolveProblem(client, { dedupeKey: "mail:sync:account-1", resolutionKind: "recovered" }));

@@ -3,7 +3,7 @@ import { runInTenant } from "@semprec/shared";
 import { listAdminRecipients } from "../auth/usersStore.js";
 import { withTransaction } from "../db/pool.js";
 import { writeNotification } from "../notifications/notify.js";
-import { raiseProblem } from "../semp/sempProblemsStore.js";
+import { raiseProblem, resolveProblem } from "../semp/sempProblemsStore.js";
 import { logger } from "./logger.js";
 
 export interface OperatorAlertInput {
@@ -93,4 +93,36 @@ export async function writeOperatorAlert(pool: Pool, client: PoolClient, input: 
     throw new AggregateError(errors, `writeOperatorAlert: ${errors.length} of ${admins.length} admins failed`);
   }
   return ids;
+}
+
+/**
+ * Resolves, as recovered, the Semp status problem `dedupeKey` of every admin of an active tenant (issue
+ * #1915), the counterpart of the `problem` that `writeOperatorAlert` raised for each of them. `client` is
+ * the caller's open system-scope transaction and only reads the recipients; each admin's problem is
+ * resolved in its own transaction opened inside that admin's tenant, which commits before the caller's.
+ * An admin with no active problem under the key changes nothing.
+ *
+ * Like `writeOperatorAlert`, one admin's failure does not skip the others: it is logged and, after the
+ * loop, rethrown as an `AggregateError`, which rolls back the caller's transition back to `ok` so the next
+ * attempt resolves again (resolving is idempotent).
+ */
+export async function resolveOperatorAlertProblems(pool: Pool, client: PoolClient, dedupeKey: string): Promise<void> {
+  const admins = await listAdminRecipients(client);
+  const errors: unknown[] = [];
+  for (const admin of admins) {
+    try {
+      await runInTenant(admin.tenantId, () =>
+        withTransaction(pool, (c) => resolveProblem(c, { dedupeKey, resolutionKind: "recovered" })),
+      );
+    } catch (err) {
+      logger.error({ err, tenantId: admin.tenantId }, "Operator alert problem resolution failed for one admin");
+      errors.push(err);
+    }
+  }
+  if (errors.length > 0) {
+    throw new AggregateError(
+      errors,
+      `resolveOperatorAlertProblems: ${errors.length} of ${admins.length} admins failed`,
+    );
+  }
 }

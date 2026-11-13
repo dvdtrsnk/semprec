@@ -16,6 +16,7 @@ import { createGatewayModel } from "./modelComposition.js";
 import { createAgentsQueueRuntime } from "./queueRuntime.js";
 import { createGracefulShutdown, registerShutdownSignals } from "./shutdown.js";
 import { createSempMessageTask } from "./sempMessageTask.js";
+import { startSempTurnCancelWiring } from "./sempTurnCancelListener.js";
 import { logger } from "./logger.js";
 
 // Installed before anything else runs: an uncaught exception or unhandled rejection during
@@ -81,9 +82,18 @@ const tenantDeactivationListener = await startTenantDeactivationListener(pool, a
   if (aborted > 0) logger.info({ tenantId, aborted }, "Aborted in-flight agent runs of a deactivated tenant");
 });
 
+// A voice stop command cancels one running turn: the request arrives as a notification (`requestSempTurnCancel`), and
+// `abortTurn` ignores one for a turn this process does not run.
+const sempTurnCancelListener = await startSempTurnCancelWiring(pool, inFlightAgentRuns);
+
 const shutdown = createGracefulShutdown({
   queueRuntime,
-  tenantDeactivationListener,
+  // Both listeners close inside the one bounded close of the shutdown sequence.
+  tenantDeactivationListener: {
+    close: async () => {
+      await Promise.all([sempTurnCancelListener.close(), tenantDeactivationListener.close()]);
+    },
+  },
   pool,
   logger,
   closeIdleThreadSessions,

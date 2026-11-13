@@ -4,7 +4,7 @@ import { filterNodeSchema, sortSpecSchema } from "./filterSort.js";
 import type { GenericOperationName } from "./operationNames.js";
 
 /**
- * Strict Zod input schemas for the 49-operation catalog (issues #252, #1404, #1676, #1679, #1709, #1722, #1725, #1699, #1759, #1765, #1861, #2017, #1842), extracted from #37's
+ * Strict Zod input schemas for the 50-operation catalog (issues #252, #1404, #1676, #1679, #1709, #1722, #1725, #1699, #1759, #1765, #1861, #2017, #1842, #1839), extracted from #37's
  * domain-command validators into transport-independent shape. Every schema below is a strict
  * object: an unrecognized key — including a spoofed `actor`/`userId`/`agentProjectItemId` or a
  * server-derived/protected field like `system`, `schemaLocked`, `ownerProjectItemId`,
@@ -410,7 +410,8 @@ export type DatabaseFacetsInput = z.infer<typeof DatabaseFacetsInputSchema>;
 
 /**
  * The groups of `search` results in their fixed order (issue #1842). `contact` holds People and Companies together;
- * `mail` and `chat` are accepted scope values whose groups later issues fill, so they are always empty for now.
+ * `mail` is an accepted scope value whose group a later issue fills, so it is always empty for now. `chat` holds the
+ * Semp threads of a person (issue #1854); an agent actor is never given it.
  */
 export const SEARCH_GROUP_TYPES = [
   "task",
@@ -496,7 +497,11 @@ export type SearchSubtitlePart = z.infer<typeof SearchSubtitlePartSchema>;
 const searchResultFields = {
   title: z.string(),
   subtitleParts: z.array(SearchSubtitlePartSchema),
-  /** An excerpt of the stored text; always `null` until a later issue builds it. */
+  /**
+   * An excerpt of at most 160 characters of plain text from the stored text of the item that matched the query (its
+   * page and, for a Journal day, its Inbox entries). It is `null` for a result found through anything else, and for the
+   * thread-backed groups, whose excerpts later issues build.
+   */
   snippet: z.string().nullable(),
 };
 
@@ -630,6 +635,10 @@ export const RelationListInputSchema = z
   })
   .strict();
 export type RelationListInput = z.infer<typeof RelationListInputSchema>;
+
+/** The collections related to one record, with their counts (issue #1839). */
+export const RelationRelatedInputSchema = z.object({ itemId: canonicalUuid }).strict();
+export type RelationRelatedInput = z.infer<typeof RelationRelatedInputSchema>;
 
 export const PageEnsureInputSchema = z.object({ itemId: canonicalUuid }).strict();
 export type PageEnsureInput = z.infer<typeof PageEnsureInputSchema>;
@@ -790,7 +799,7 @@ export const PageRestoreVersionInputSchema = z
   .strict();
 export type PageRestoreVersionInput = z.infer<typeof PageRestoreVersionInputSchema>;
 
-/** Exhaustive mapped type over the 49 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 50 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
 export interface InputByOperation {
   "database.list": DatabaseListInput;
   "database.get": DatabaseGetInput;
@@ -825,6 +834,7 @@ export interface InputByOperation {
   "relation.set": RelationSetInput;
   "relation.delete": RelationDeleteInput;
   "relation.list": RelationListInput;
+  "relation.related": RelationRelatedInput;
   "page.restoreVersion": PageRestoreVersionInput;
   "link.unlink": ValueLinkInput;
   "link.relink": ValueLinkInput;

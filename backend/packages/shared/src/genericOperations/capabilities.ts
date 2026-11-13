@@ -60,7 +60,7 @@ const destructive = (requiresCapability: CapabilityId, reversible: boolean): Ope
 });
 
 /**
- * Exhaustive over the 49 literal operation names, capability and approval/risk metadata checked
+ * Exhaustive over the 50 literal operation names, capability and approval/risk metadata checked
  * together in one object literal per operation: assigning this object literal to a type with
  * exactly these keys is what makes an operation missing (or an extra, misspelled one) a compile
  * error rather than a runtime gap.
@@ -105,6 +105,7 @@ export const OPERATION_METADATA: { [K in GenericOperationName]: OperationMetadat
   "relation.set": nonDestructive("core.item.write", "write"),
   "relation.delete": destructive("core.item.write", false),
   "relation.list": nonDestructive("core.item.read", "read"),
+  "relation.related": nonDestructive("core.item.read", "read"),
   "link.unlink": nonDestructive("core.item.write", "write"),
   "link.relink": nonDestructive("core.item.write", "write"),
   // The page operations hold the item capabilities: whether an agent may read or write a page is decided by its

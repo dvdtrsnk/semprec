@@ -526,7 +526,8 @@ export function createGenericApplicationService(
 
     /**
      * Global search (issue #1842): the data function runs in the caller's tenant, and an agent actor's project limits it
-     * to the databases the project may read.
+     * to the databases the project may read. Only a person (a REST session that is not acting for an agent) is given
+     * the `chat` group of Semp threads (issue #1854); an agent run and an MCP client are not.
      */
     async searchItems(actor, input) {
       return searchItemGroups(pool, {
@@ -535,6 +536,7 @@ export function createGenericApplicationService(
         perGroupLimit: input.perGroupLimit,
         cursor: input.cursor,
         agentProjectItemId: writerIdentityOf(actor).agentProjectItemId,
+        humanActor: humanWriterUserIdOf(actor) !== undefined,
       });
     },
 
@@ -583,6 +585,14 @@ export function createGenericApplicationService(
       if (!relations)
         throw new NotFoundError(`Item ${input.itemId} not found`, { resource: "item", itemId: input.itemId });
       return relations;
+    },
+
+    /** The choke point answers `null` for an unknown, trashed or foreign item, the same not-found as `listRelations`. */
+    async listRelatedCollections(actor, input) {
+      const related = await chokePoint.listRelatedCollections(input.itemId, resolver, readerOf(actor));
+      if (!related)
+        throw new NotFoundError(`Item ${input.itemId} not found`, { resource: "item", itemId: input.itemId });
+      return related;
     },
 
     async unlinkValue(actor, input) {

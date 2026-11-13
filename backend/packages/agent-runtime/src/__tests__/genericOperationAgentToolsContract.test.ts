@@ -263,6 +263,7 @@ const CASES: Record<GenericOperationName, Case> = {
     }),
   },
   "relation.list": { args: (fx) => ({ itemId: fx.itemA.id }) },
+  "relation.related": { args: (fx) => ({ itemId: fx.itemA.id }) },
   "link.unlink": {
     args: (fx) => ({ itemId: fx.itemA.id, propertyKey: "title" }),
     prepare: async (fx) => {

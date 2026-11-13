@@ -3,6 +3,12 @@ import { SLEEP_NIGHTS_MODULE_ID, SLEEP_PLANS_MODULE_ID, SLEEP_SETTINGS_MODULE_ID
 import { SLEEP_RESYNC_TASK_NAME } from "./sleepResync.js";
 
 export { handleSleepResync, sleepResyncPayloadSchema } from "./sleepResync.js";
+export {
+  createSleepNightSetTool,
+  createSleepNightsGetTool,
+  sleepNightSetArgsSchema,
+  sleepNightsGetArgsSchema,
+} from "./sleepAgentTools.js";
 export { sleepNightPut, sleepNightsGet } from "./sleepRouteHandlers.js";
 
 /**
@@ -22,7 +28,10 @@ export const SLEEP_DATABASE_DESCRIPTORS = {
  * owned by one system project. The labels of the databases, of their properties and options, and the names
  * of the two seeded plans are in `i18n/` beside this file. Its custom routes are `GET /api/sleep/nights`
  * (issue gh-1809) and `PUT /api/sleep/nights/:night` (issue gh-1835), both in `sleepRouteHandlers.ts`. Its one task is `sleep.resync`
- * (issue gh-1838), `sleepResync.ts`, which the hooks of `sleepWriteHooks.ts` enqueue.
+ * (issue gh-1838), `sleepResync.ts`, which the hooks of `sleepWriteHooks.ts` enqueue. Its two agent tools, `sleepNightsGet` and
+ * `sleepNightSet` (issue gh-1840, `sleepAgentTools.ts`), need the capabilities `sleep.read` and `sleep.write`; the project's
+ * database grants (issue gh-1810) decide whether a call may read or write sleep data. `sleepNightSet` declares no approval:
+ * it only creates or updates items of the sleep nights database.
  */
 export const manifest: ModuleManifest = {
   id: "sleep",
@@ -31,8 +40,25 @@ export const manifest: ModuleManifest = {
   removable: false,
   systemProject: true,
   databases: [SLEEP_DATABASE_DESCRIPTORS.settings, SLEEP_DATABASE_DESCRIPTORS.plans, SLEEP_DATABASE_DESCRIPTORS.nights],
-  capabilities: [],
-  agentTools: [],
+  capabilities: ["sleep.read", "sleep.write"],
+  agentTools: [
+    {
+      name: "sleepNightsGet",
+      handlerExport: "createSleepNightsGetTool",
+      argumentSchemaExport: "sleepNightsGetArgsSchema",
+      capability: "sleep.read",
+      approval: "none",
+      riskClass: "read",
+    },
+    {
+      name: "sleepNightSet",
+      handlerExport: "createSleepNightSetTool",
+      argumentSchemaExport: "sleepNightSetArgsSchema",
+      capability: "sleep.write",
+      approval: "none",
+      riskClass: "write",
+    },
+  ],
   taskNames: [
     {
       name: SLEEP_RESYNC_TASK_NAME,

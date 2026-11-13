@@ -152,6 +152,8 @@
   "property.events.icalUid.name": "iCalendar UID",
   "property.events.icalSequence.name": "iCalendar sequence",
   "property.events.recurrence.name": "Recurrence",
+  "property.events.seriesId.name": "Series ID",
+  "property.events.occurrenceDate.name": "Occurrence date",
   "property.events.project.name": "Project",
   "property.events.people.name": "People",
   "property.events.transcript.name": "Transcript",

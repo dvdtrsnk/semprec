@@ -12,12 +12,13 @@ import type {
   PageRestoreOutput,
   Property,
   RelationEdge,
+  RelatedCollection,
   RelationListEntry,
   View,
   ViewItem,
 } from "./rows.js";
 
-/** Exhaustive mapped type over the 49 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 50 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
 export interface OutputByOperation {
   "database.list": Page<Database>;
   "database.get": Database;
@@ -57,6 +58,7 @@ export interface OutputByOperation {
   "relation.set": RelationEdge | null;
   "relation.delete": RelationEdge;
   "relation.list": RelationListEntry[];
+  "relation.related": RelatedCollection[];
   "page.restoreVersion": PageRestoreOutput;
   "link.unlink": { itemId: string; propertyKey: string } & ItemLink;
   "link.relink": { itemId: string; propertyKey: string } & ItemLink;
@@ -320,6 +322,10 @@ export interface GenericApplicationPort {
     actor: AuthenticatedActor,
     input: InputByOperation["relation.list"],
   ): Promise<OutputByOperation["relation.list"]>;
+  listRelatedCollections(
+    actor: AuthenticatedActor,
+    input: InputByOperation["relation.related"],
+  ): Promise<OutputByOperation["relation.related"]>;
   unlinkValue(
     actor: AuthenticatedActor,
     input: InputByOperation["link.unlink"],

@@ -1,7 +1,7 @@
 import type { PoolClient } from "pg";
 import { ValidationError } from "../errors.js";
 import { agentHeartbeatProblemKey, agentRunProblemKey } from "./agentProblemKeys.js";
-import { raiseProblem, type RaiseProblemResult } from "./sempProblemsStore.js";
+import { raiseProblem, resolveProblem, type RaiseProblemResult } from "./sempProblemsStore.js";
 
 /**
  * Raises the `agents` problem of a heartbeat whose tick failed (issue #1911), in the caller's open
@@ -67,4 +67,21 @@ function isRejectedProjectReference(error: unknown): boolean {
   if (!(error instanceof ValidationError)) return false;
   const details: unknown = error.details;
   return typeof details === "object" && details !== null && "field" in details && details.field === "projectItemId";
+}
+
+/**
+ * Resolves the `agents` problem of a heartbeat whose tick recovered (issue #1915), in the caller's open
+ * transaction. The caller decides that the tick recovered: its run ended `done` and the reply left no failed
+ * tool call. Returns whether a problem was active.
+ */
+export function resolveAgentHeartbeatProblem(client: PoolClient, heartbeatId: string): Promise<boolean> {
+  return resolveProblem(client, { dedupeKey: agentHeartbeatProblemKey(heartbeatId), resolutionKind: "recovered" });
+}
+
+/**
+ * Resolves the `agents` problem of the retry chain that starts at `firstRunId` (issue #1915), in the caller's
+ * open transaction, once a run of the chain succeeded. Returns whether a problem was active.
+ */
+export function resolveAgentRunProblem(client: PoolClient, firstRunId: string): Promise<boolean> {
+  return resolveProblem(client, { dedupeKey: agentRunProblemKey(firstRunId), resolutionKind: "recovered" });
 }
