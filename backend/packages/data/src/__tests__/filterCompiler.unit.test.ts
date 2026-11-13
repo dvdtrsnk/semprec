@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { compileFilterNode, type FilterProperties, type FilterProperty } from "../views/filterCompiler.js";
 import { filterNodeSchema as sharedSchema, FILTER_CONDITION_TYPES as sharedTypes } from "@semprec/shared";
 import { filterNodeSchema as dataSchema, FILTER_CONDITION_TYPES, parseFilterNode } from "../views/filterTree.js";
-import { ValidationError } from "../errors.js";
+import { ForbiddenError, ValidationError } from "../errors.js";
 
 function properties(entries: Array<[string, FilterProperty]>): FilterProperties {
   return new Map(entries);
@@ -399,5 +399,100 @@ describe("relation emptiness conditions", () => {
       false,
       false,
     ]);
+  });
+});
+
+describe("a closed sensitive database (issue #2000)", () => {
+  const CLOSED = "33333333-3333-4333-8333-333333333333";
+  const OPEN = "44444444-4444-4444-8444-444444444444";
+  const value = "11111111-1111-4111-8111-111111111111";
+  const FORBIDDEN = { status: 403, code: "forbidden" };
+  const closed = new Set([CLOSED]);
+  const relation = (targetDatabaseId: string | undefined): FilterProperty => ({
+    type: "relation",
+    relationDefinitionId: "definition-id",
+    relationSide: "a",
+    targetDatabaseId,
+  });
+  const rollup = (sourceDatabaseId: string | undefined): FilterProperty => ({
+    type: "rollup",
+    numericRollup: true,
+    sourceDatabaseId,
+  });
+  const compile = (raw: unknown, props: FilterProperties, closedDatabaseIds?: ReadonlySet<string>) =>
+    compileFilterNode(parseFilterNode(raw), props, [], undefined, closedDatabaseIds);
+
+  it.each([
+    { type: "relation_contains", property: "link", value },
+    { type: "relation_not_contains", property: "link", value },
+    { type: "relation_is_empty", property: "link" },
+    { type: "relation_is_not_empty", property: "link" },
+  ])("refuses $type on a relation into a closed database and compiles it into an open one", (condition) => {
+    expect(() => compile(condition, properties([["link", relation(CLOSED)]]), closed)).toThrow(
+      expect.objectContaining(FORBIDDEN),
+    );
+    expect(() => compile(condition, properties([["link", relation(OPEN)]]), closed)).not.toThrow();
+  });
+
+  it("compiles a relation into the database as before when no database is closed, and when the target is unresolved", () => {
+    const condition = { type: "relation_contains", property: "link", value };
+    const expected = compile(condition, properties([["link", relation(CLOSED)]]));
+    expect(compile(condition, properties([["link", relation(CLOSED)]]), new Set())).toBe(expected);
+    expect(() => compile(condition, properties([["link", relation(undefined)]]), closed)).not.toThrow();
+  });
+
+  it.each([
+    { type: "equals", property: "total", value: 2 },
+    { type: "gt", property: "total", value: 1 },
+    { type: "is_empty", property: "total" },
+  ])("refuses $type on a rollup that aggregates a closed database and compiles it over an open one", (condition) => {
+    expect(() => compile(condition, properties([["total", rollup(CLOSED)]]), closed)).toThrow(
+      expect.objectContaining(FORBIDDEN),
+    );
+    expect(() => compile(condition, properties([["total", rollup(OPEN)]]), closed)).not.toThrow();
+    expect(() => compile(condition, properties([["total", rollup(CLOSED)]]))).not.toThrow();
+    expect(() => compile(condition, properties([["total", rollup(undefined)]]), closed)).not.toThrow();
+  });
+
+  it("refuses a closed condition nested in and, or and not, naming the property and the database but no value", () => {
+    const refused = { type: "relation_contains", property: "link", value };
+    const props = properties([
+      ["link", relation(CLOSED)],
+      ["title", { type: "text" }],
+    ]);
+    for (const nested of [
+      { type: "and", nodes: [{ type: "equals", property: "title", value: "x" }, refused] },
+      { type: "or", nodes: [refused] },
+      { type: "not", node: refused },
+    ]) {
+      expect(() => compile(nested, props, closed)).toThrow(expect.objectContaining(FORBIDDEN));
+    }
+    let thrown: unknown;
+    try {
+      compile(refused, props, closed);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(ForbiddenError);
+    expect(thrown).toMatchObject({ message: expect.stringContaining(`'link'`) as unknown });
+    expect(JSON.stringify(thrown, Object.getOwnPropertyNames(thrown))).not.toContain(value);
+  });
+
+  it("refuses a path whose first hop or second hop reaches a closed database, and compiles one over open databases", () => {
+    const path = { type: "relation_path_contains", path: ["project", "area"], value };
+    const pathProperties = (firstTarget: string, secondTarget: string) =>
+      properties([
+        [
+          "project",
+          {
+            ...relation(firstTarget),
+            targetRelationProperties: properties([["area", relation(secondTarget)]]),
+          },
+        ],
+      ]);
+    expect(() => compile(path, pathProperties(CLOSED, OPEN), closed)).toThrow(expect.objectContaining(FORBIDDEN));
+    expect(() => compile(path, pathProperties(OPEN, CLOSED), closed)).toThrow(expect.objectContaining(FORBIDDEN));
+    expect(() => compile(path, pathProperties(OPEN, OPEN), closed)).not.toThrow();
+    expect(() => compile(path, pathProperties(CLOSED, CLOSED))).not.toThrow();
   });
 });

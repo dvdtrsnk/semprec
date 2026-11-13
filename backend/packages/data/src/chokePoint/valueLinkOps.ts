@@ -122,7 +122,7 @@ export async function changeValueLinkWithClient(
   if (!visible) throw new NotFoundError("Item not found", { resource: "item", itemId: input.itemId });
   const item = await itemsStore.lockItemById(client, visible.databaseId, input.itemId);
   if (!item || item.deletedAt) throw new NotFoundError("Item not found", { resource: "item", itemId: input.itemId });
-  await assertWriterDatabaseAccess(client, identity, item.databaseId, "write");
+  await assertWriterDatabaseAccess(client, identity, item.databaseId, "write", item.id);
   const link = await valueLinksStore.lockValueLink(client, item.id, input.propertyKey);
   if (!link) conflict();
   let changed: boolean;

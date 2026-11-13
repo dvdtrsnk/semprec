@@ -1,5 +1,11 @@
 import { expandItemRelations, expansionForReader, type RelationExpansionOptions } from "./relationExpansion.js";
-import { assertReaderDatabaseAccess, type DatabaseReader } from "../agentGrants/agentDatabaseAccess.js";
+import {
+  assertReaderDatabaseAccess,
+  excludeInheritedSensitiveItems,
+  listClosedSensitiveDatabaseIds,
+  type DatabaseReader,
+} from "../agentGrants/agentDatabaseAccess.js";
+import { closedSensitiveDatabasesOf, hideClosedRollupValues } from "../agentGrants/closedSensitiveAggregationAccess.js";
 import { projectItemsForRead } from "./itemReadProjection.js";
 // Owns the choke point's item reads: single-item lookups (`getItem`, `findItem`,
 // `findItemIncludingDeleted`), the breadcrumb walk `getItemPath`, filtered `listItems` /
@@ -31,6 +37,7 @@ import {
 import { compileFilterNode, resolveFilterCompileContext, type FilterProperties } from "../views/filterCompiler.js";
 import { buildFilterProperties } from "../views/filterProperties.js";
 import { parseFilterNode, type FilterNode } from "../views/filterTree.js";
+import { closedDatabaseRefusal } from "../views/closedDatabaseRefusal.js";
 import { selectOptionKeys } from "../views/sortCompiler.js";
 
 /**
@@ -44,12 +51,13 @@ async function buildFilterSqlForDatabase(
   databaseId: string,
   filter: unknown,
   now: Date | undefined,
+  closedDatabaseIds: ReadonlySet<string> | undefined,
 ): Promise<(params: unknown[]) => string> {
   const properties = await propertiesStore.listPropertiesByDatabase(client, databaseId);
   const filterProperties = await buildFilterProperties(client, properties);
   const node = parseFilterNode(filter);
   const context = await resolveFilterCompileContext(client, node, now);
-  return (params) => compileFilterNode(node, filterProperties, params, context);
+  return (params) => compileFilterNode(node, filterProperties, params, context, closedDatabaseIds);
 }
 
 /** The longest breadcrumb chain `getItemPath` returns; a longer one is cut at its root end. */
@@ -64,7 +72,10 @@ export interface ListItemsInput extends itemsStore.ListItemsOptions {
   now?: Date;
   /**
    * The reader the read needs `read` access to the database for: the Projects item of the reading agent's run
-   * (issue #1810) or an external AI client (issue #1998).
+   * (issue #1810) or an external AI client (issue #1998). For an agent's project the list also leaves out the items of
+   * a database that inherits sensitivity (Files, Transcripts, Inbox) which are linked to a sensitive record it may not
+   * read (issue #1999), refuses a `filter` on a relation property into a sensitive database it may not read or on a
+   * rollup that aggregates one, and reads such a rollup of the listed items as `{ value: null, hidden: true }` (issue #2000).
    */
   reader?: DatabaseReader;
 }
@@ -89,6 +100,14 @@ export interface CountItemsBatchOptions {
   resolver: Pick<CollectionMetadataResolver, "collectionFilter">;
   /** The clock `date_relative` conditions are evaluated at; defaults to the current time. */
   now?: Date;
+  /**
+   * The Projects item of an agent's run (issue #2000): a filter of an entry that reaches a sensitive database this
+   * project may not read, through a relation property or a rollup, and a `groupBy` by a relation property into one,
+   * is refused with a `ForbiddenError`. Set by the
+   * application layer from the run credential, never read from a request. This does not decide the access to the
+   * counted database itself.
+   */
+  agentProjectItemId?: string;
 }
 
 /** The answer to one `ItemCountEntryInput`; `databaseId` repeats the entry's own value. */
@@ -136,6 +155,7 @@ async function countItemsEntry(
   client: PoolClient,
   entry: ItemCountEntryInput,
   options: CountItemsBatchOptions,
+  closedDatabaseIds: ReadonlySet<string> | undefined,
 ): Promise<ItemCountEntry> {
   const database = await databasesStore.getDatabase(client, entry.databaseId);
   if (!database) {
@@ -158,9 +178,17 @@ async function countItemsEntry(
   const filterProperties = await buildFilterProperties(client, properties);
   const grouping =
     entry.groupBy === undefined ? undefined : resolveItemCountGrouping(properties, filterProperties, entry.groupBy);
+  // A grouping by a relation into a closed database would list that database's record ids with a count each (issue #2000).
+  if (
+    entry.groupBy !== undefined &&
+    grouping?.kind === "relation" &&
+    closedDatabaseIds?.has(grouping.targetDatabaseId)
+  ) {
+    throw closedDatabaseRefusal(entry.groupBy, grouping.targetDatabaseId);
+  }
   const context = filterNode ? await resolveFilterCompileContext(client, filterNode, options.now) : undefined;
   const buildFilterSql = filterNode
-    ? (params: unknown[]) => compileFilterNode(filterNode, filterProperties, params, context)
+    ? (params: unknown[]) => compileFilterNode(filterNode, filterProperties, params, context, closedDatabaseIds)
     : undefined;
   return {
     databaseId: entry.databaseId,
@@ -177,25 +205,37 @@ async function countItemsEntry(
 async function resolveFilterSql(
   client: PoolClient,
   databaseId: string,
-  options: { filter?: unknown; now?: Date; buildFilterSql?: (params: unknown[]) => string | undefined },
+  options: {
+    filter?: unknown;
+    now?: Date;
+    buildFilterSql?: (params: unknown[]) => string | undefined;
+    closedDatabaseIds?: ReadonlySet<string>;
+  },
 ): Promise<((params: unknown[]) => string | undefined) | undefined> {
   if (options.filter === undefined) return options.buildFilterSql;
   if (options.buildFilterSql) {
     throw new ValidationError("Pass either 'filter' or 'buildFilterSql', not both", { field: "filter" });
   }
-  return buildFilterSqlForDatabase(client, databaseId, options.filter, options.now);
+  return buildFilterSqlForDatabase(client, databaseId, options.filter, options.now, options.closedDatabaseIds);
 }
 
 export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
   const { pool } = deps;
   return {
+    /** An agent reads a rollup that aggregates a sensitive database its project may not read as `{ value: null, hidden: true }` (issue #2000). */
     async getItem(databaseId: string, itemId: string, expansion?: RelationExpansionOptions, reader?: DatabaseReader) {
       return withTransaction(pool, async (client) => {
-        if (reader !== undefined) await assertReaderDatabaseAccess(client, reader, databaseId, "read");
+        if (reader !== undefined) {
+          await assertReaderDatabaseAccess(client, reader, databaseId, "read", undefined, itemId);
+        }
         const item = await itemsStore.getItemById(client, databaseId, itemId);
         if (!item) return null;
         const [stamped] = await withFromInbox(client, [item]);
-        const projected = await projectItemsForRead(client, [stamped ?? item]);
+        const projected = await hideClosedRollupValues(
+          client,
+          await projectItemsForRead(client, [stamped ?? item]),
+          await closedSensitiveDatabasesOf(client, reader),
+        );
         const readerExpansion = await expansionForReader(client, expansion, reader);
         return (readerExpansion ? await expandItemRelations(client, projected, readerExpansion) : projected)[0]!;
       });
@@ -209,7 +249,9 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
      *
      * An agent (a `reader` that is its project) needs `read` access to the item's database, or, when it also passes
      * its run (`agentRunId`), a per-turn read allowance for this very item (issue #1849). An external client
-     * (issue #1998) needs a database that is not sensitive, and no allowance applies to it.
+     * (issue #1998) needs a database that is not sensitive, and no allowance applies to it. For an agent a rollup of the
+     * item that aggregates a sensitive database its project may not read is read as `{ value: null, hidden: true }`
+     * (issue #2000).
      */
     async findItem(itemId: string, expansion?: RelationExpansionOptions, reader?: DatabaseReader, agentRunId?: string) {
       return withTransaction(pool, async (client) => {
@@ -222,10 +264,15 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
             item.databaseId,
             "read",
             agentRunId !== undefined ? { agentRunId, itemId: item.id } : undefined,
+            item.id,
           );
         }
         const [stamped] = await withFromInbox(client, [item]);
-        const projected = await projectItemsForRead(client, [stamped ?? item]);
+        const projected = await hideClosedRollupValues(
+          client,
+          await projectItemsForRead(client, [stamped ?? item]),
+          await closedSensitiveDatabasesOf(client, reader),
+        );
         const readerExpansion = await expansionForReader(client, expansion, reader);
         return (readerExpansion ? await expandItemRelations(client, projected, readerExpansion) : projected)[0]!;
       });
@@ -303,13 +350,19 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
         // `filter` is consumed by resolveFilterSql; `rest` is what the store itself takes.
         const { filter, now, reader, ...rest } = options ?? {};
         if (reader !== undefined) await assertReaderDatabaseAccess(client, reader, databaseId, "read");
-        const buildFilterSql = await resolveFilterSql(client, databaseId, {
+        const closed = await closedSensitiveDatabasesOf(client, reader);
+        const requestedFilterSql = await resolveFilterSql(client, databaseId, {
           filter,
           now,
           buildFilterSql: rest.buildFilterSql,
+          closedDatabaseIds: closed,
         });
+        // An agent's list leaves out the items it may not read because of a sensitive record they are linked to (issue #1999).
+        const buildFilterSql =
+          typeof reader === "string" ? excludeInheritedSensitiveItems(requestedFilterSql, reader) : requestedFilterSql;
         const page = await itemsStore.listItems(client, databaseId, { ...rest, buildFilterSql });
-        return { ...page, items: await projectItemsForRead(client, await withFromInbox(client, page.items)) };
+        const items = await projectItemsForRead(client, await withFromInbox(client, page.items));
+        return { ...page, items: await hideClosedRollupValues(client, items, closed) };
       });
     },
 
@@ -332,7 +385,9 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
      * invalid `filter` or `groupBy` fails it with `ValidationError`; `itemsStore.countItemsGrouped`
      * documents what is counted and how the groups are ordered. An external client (a `reader`, issue #1998) needs
      * `read` access to the database of every entry, checked in this transaction before the entry is counted, so a
-     * sensitive database refuses the whole call and no group key or count of it is computed.
+     * sensitive database refuses the whole call and no group key or count of it is computed. With
+     * `options.agentProjectItemId` an entry whose filter reaches a sensitive database that project may not read, or
+     * whose `groupBy` is a relation into one, is refused with a `ForbiddenError` (issue #2000).
      */
     async countItemsBatch(
       entries: ItemCountEntryInput[],
@@ -340,10 +395,14 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
       reader?: DatabaseReader,
     ): Promise<ItemCountEntry[]> {
       return withTransaction(pool, async (client) => {
+        const closed =
+          options.agentProjectItemId !== undefined
+            ? await listClosedSensitiveDatabaseIds(client, options.agentProjectItemId)
+            : undefined;
         const counts: ItemCountEntry[] = [];
         for (const entry of entries) {
           if (reader !== undefined) await assertReaderDatabaseAccess(client, reader, entry.databaseId, "read");
-          counts.push(await countItemsEntry(client, entry, options));
+          counts.push(await countItemsEntry(client, entry, options, closed));
         }
         return counts;
       });
@@ -355,7 +414,9 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
      * the caller's tenant, so an unknown id and another tenant's id fail alike with the not-found a database
      * query gives. The manifest metadata is obtained before the transaction opens, so the transaction never
      * waits for the module manifests to load. An external client (a `reader`, issue #1998) needs `read` access to the
-     * database, checked in this transaction before any facet is computed.
+     * database, checked in this transaction before any facet is computed. With `options.agentProjectItemId` a filter,
+     * a facet or a path that reaches a sensitive database that project may not read is refused with a `ForbiddenError`
+     * (issue #2000).
      */
     async getDatabaseFacets(
       input: DatabaseFacetsInput,
@@ -372,7 +433,11 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
             databaseId: input.databaseId,
           });
         }
-        return computeDatabaseFacets(client, database, input, metadata, options);
+        const closed =
+          options?.agentProjectItemId !== undefined
+            ? await listClosedSensitiveDatabaseIds(client, options.agentProjectItemId)
+            : undefined;
+        return computeDatabaseFacets(client, database, input, metadata, options, closed);
       });
     },
   };

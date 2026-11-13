@@ -217,6 +217,16 @@ export async function findPropertiesByKey(
   return rows.map(mapPropertyRow);
 }
 
+/** The batch form of `getProperty`: the properties among `propertyIds` that the caller's tenant scope can read. */
+export async function listPropertiesByIds(client: PoolClient, propertyIds: readonly string[]): Promise<PropertyRow[]> {
+  if (propertyIds.length === 0) return [];
+  const { rows } = await client.query<PropertyDbRow>(
+    `SELECT ${PROPERTY_COLUMNS} FROM properties WHERE id = ANY($1::uuid[]) ORDER BY id`,
+    [propertyIds],
+  );
+  return rows.map(mapPropertyRow);
+}
+
 export async function listPropertiesByDatabase(client: PoolClient, databaseId: string): Promise<PropertyRow[]> {
   const { rows } = await client.query<PropertyDbRow>(
     `SELECT ${PROPERTY_COLUMNS} FROM properties WHERE database_id = $1 ORDER BY initial_position ASC NULLS LAST, key`,

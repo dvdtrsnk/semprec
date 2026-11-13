@@ -12,6 +12,7 @@ import { ValidationError } from "../errors.js";
 import { listPropertiesByDatabases } from "./propertiesStore.js";
 import { projectItemForRead } from "./hooks.js";
 import { listUnreadableDatabaseIds, type DatabaseReader } from "../agentGrants/agentDatabaseAccess.js";
+import { itemIdsLinkedToDatabases } from "../agentGrants/inheritedSensitivity.js";
 
 export interface RelationExpansionOptions {
   relations: Record<string, string[]> | true;
@@ -22,10 +23,16 @@ export interface RelationExpansionOptions {
    * returned as `{ id, hidden: true }` only, at the top level and inside a projected relation property.
    */
   unreadableDatabaseIds?: ReadonlySet<string>;
+  /**
+   * Also hides a target of a database that inherits sensitivity (Files, Transcripts, Inbox) that is linked to a
+   * database in `unreadableDatabaseIds` (issue #1999). Set for an agent's project only.
+   */
+  hideInheritedSensitiveTargets?: boolean;
 }
 /**
  * The expansion a restricted reader's read runs under: the relation targets in the databases an agent's project
- * (issue #1810) or an external client (issue #1998) may not read are hidden. A person gets `expansion` untouched.
+ * (issue #1810) or an external client (issue #1998) may not read are hidden, and for an agent's project the targets
+ * that inherit sensitivity from such a database (issue #1999). A person gets `expansion` untouched.
  */
 export async function expansionForReader(
   client: PoolClient,
@@ -33,7 +40,21 @@ export async function expansionForReader(
   reader: DatabaseReader | undefined,
 ): Promise<RelationExpansionOptions | undefined> {
   if (!expansion || reader === undefined) return expansion;
-  return { ...expansion, unreadableDatabaseIds: await listUnreadableDatabaseIds(client, reader) };
+  return {
+    ...expansion,
+    unreadableDatabaseIds: await listUnreadableDatabaseIds(client, reader),
+    ...(typeof reader === "string" ? { hideInheritedSensitiveTargets: true } : {}),
+  };
+}
+
+/** The ids among `itemIds` that `options` hides because they inherit sensitivity (issue #1999), in one query. */
+async function hiddenInheritedTargetIds(
+  client: PoolClient,
+  itemIds: readonly string[],
+  options: RelationExpansionOptions,
+): Promise<Set<string>> {
+  if (!options.hideInheritedSensitiveTargets || options.unreadableDatabaseIds === undefined) return new Set();
+  return itemIdsLinkedToDatabases(client, itemIds, options.unreadableDatabaseIds);
 }
 
 type ExpandedItem = ItemRow & { relations?: Record<string, ItemRelationTarget[]>; relationsTruncated?: string[] };
@@ -151,8 +172,13 @@ export async function expandItemRelations(
   );
   const byId = new Map(targets.map((item) => [item.id, item]));
   const unreadable = options.unreadableDatabaseIds ?? new Set<string>();
+  const hiddenInherited = await hiddenInheritedTargetIds(
+    client,
+    targets.map((item) => item.id),
+    options,
+  );
   // A hidden target is neither projected nor looked at again: the reader gets its id and nothing else.
-  const readableTargets = targets.filter((item) => !unreadable.has(item.databaseId));
+  const readableTargets = targets.filter((item) => !unreadable.has(item.databaseId) && !hiddenInherited.has(item.id));
   const nestedProperties = selections.flatMap(({ property, projection }) =>
     (schemas.get(targetDatabase(property)) ?? []).filter((p) => p.type === "relation" && projection.includes(p.key)),
   );
@@ -190,10 +216,15 @@ export async function expandItemRelations(
       ) SELECT * FROM ranked WHERE target_rank <= 50 ORDER BY target_rank`,
       [nestedProperties.map((p) => p.id), readableTargets.map((item) => item.id)],
     );
+    const nestedHiddenInherited = await hiddenInheritedTargetIds(
+      client,
+      result.rows.map((row) => row.id),
+      options,
+    );
     for (const row of result.rows) {
       const key = `${row.source_id}:${row.property_id}`;
       const values = nested.get(key) ?? [];
-      if (unreadable.has(row.database_id)) {
+      if (unreadable.has(row.database_id) || nestedHiddenInherited.has(row.id)) {
         if (values.length < 50) values.push({ id: row.id, hidden: true });
         nested.set(key, values);
         continue;
@@ -272,7 +303,7 @@ export async function expandItemRelations(
       if (visible.length > 50) relationsTruncated.push(property.key);
       relations[property.key] = visible.slice(0, 50).map((edge): ItemRelationTarget => {
         const target = byId.get(edge.target_id)!;
-        if (unreadable.has(target.databaseId)) return { id: target.id, hidden: true };
+        if (unreadable.has(target.databaseId) || hiddenInherited.has(target.id)) return { id: target.id, hidden: true };
         const db = dbs.get(target.databaseId)!;
         const schema = schemas.get(target.databaseId) ?? [];
         const titleKey = schema.find((p) => p.type === "title")?.key ?? "name";

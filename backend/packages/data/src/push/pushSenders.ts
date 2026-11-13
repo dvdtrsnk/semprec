@@ -28,6 +28,12 @@ export interface NotificationPushPayload {
   kind: NotificationKind;
   /** Set by the fanout job for an approval notification only (issue #1831). */
   apns?: NotificationApnsFields;
+  /**
+   * What the app icon shows once this push arrives (issue #1891): the sum of the counts the user switched on,
+   * computed by the fanout job once per job. APNs sends it as `aps.badge`, where `0` clears the badge; Web
+   * Push ignores it.
+   */
+  badge?: number;
 }
 
 export interface WebPushTarget {
@@ -76,4 +82,13 @@ export interface PushSenders {
 export interface PushDismissSenders {
   sendWebPushDismiss: (target: WebPushTarget, notificationIds: readonly string[]) => Promise<PushSendResult>;
   sendApnsDismiss: (target: ApnsTarget, notificationIds: readonly string[]) => Promise<PushSendResult>;
+}
+
+/**
+ * The seam between the `pushBadgeRefresh` job and the network (issue #1891), shaped like `PushDismissSenders`.
+ * Only APNs has an app icon badge, so there is no Web Push counterpart. A result means what it means for
+ * `PushSenders`.
+ */
+export interface PushBadgeSenders {
+  sendApnsBadgeUpdate: (target: ApnsTarget, badge: number) => Promise<PushSendResult>;
 }

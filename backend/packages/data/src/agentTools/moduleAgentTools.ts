@@ -30,7 +30,11 @@ export interface ResolvedModuleAgentTool {
    * the tool does not accept, and whatever the snapshot export throws.
    */
   snapshotOf: (args: unknown) => Promise<string | null>;
-  invoke: (args: unknown) => Promise<{ result: string; error: boolean }>;
+  /**
+   * `sensitive` is true when the handler marked its answer as content of a sensitive record (issue #1999); the caller
+   * that stores the tool result keeps it redacted, as for a generic-operation answer (issue #1827).
+   */
+  invoke: (args: unknown) => Promise<{ result: string; error: boolean; sensitive?: true }>;
 }
 
 /**
@@ -86,13 +90,17 @@ export async function resolveModuleAgentToolsForRun(
           .update(canonicalizeJson(await snapshot(runId, parsed.data)), "utf8")
           .digest("hex");
       },
-      async invoke(args: unknown): Promise<{ result: string; error: boolean }> {
+      async invoke(args: unknown): Promise<{ result: string; error: boolean; sensitive?: true }> {
         const parsed = definition.parseArguments(args);
         if (!parsed.success) throw new ValidationError("Invalid tool arguments.");
         const result: unknown = await handler(runId, parsed.data);
         if (!isRecord(result) || typeof result.result !== "string" || typeof result.error !== "boolean")
           throw new Error("Invalid module tool result");
-        return { result: result.result, error: result.error };
+        return {
+          result: result.result,
+          error: result.error,
+          ...(result.sensitive === true ? { sensitive: true } : {}),
+        };
       },
     };
   });

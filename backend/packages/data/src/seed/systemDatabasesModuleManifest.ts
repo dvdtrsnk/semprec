@@ -70,7 +70,11 @@ export {
   createTranscriptListRouteHandler,
   createTranscriptSummariesRouteHandler,
 } from "../transcription/transcriptionRouteHandlers.js";
-export { createListEventPeopleRouteHandler } from "../calendar/eventParticipantsRouteHandlers.js";
+export {
+  createInviteEventPersonRouteHandler,
+  createListEventPeopleRouteHandler,
+  createReplaceEventPeopleRouteHandler,
+} from "../calendar/eventParticipantsRouteHandlers.js";
 export { createDuplicateCalendarItemRouteHandler } from "../calendar/duplicateCalendarItemRouteHandler.js";
 export { createAreaOverviewRouteHandler } from "../areas/areaOverviewRouteHandler.js";
 
@@ -650,6 +654,24 @@ export const manifest: ModuleManifest = {
       // `people` edges and their metadata with each person's name, relationship and addresses, which no
       // generic item read returns together.
       justification: "single-consumer-read",
+    },
+    {
+      name: "replaceEventPeople",
+      method: "PUT",
+      path: "/api/events/:id/people",
+      handlerExport: "createReplaceEventPeopleRouteHandler",
+      // The diff of the participant edges and the invitation jobs it queues commit together under the Event's
+      // row lock, and the invitations are written with the system writer kind (issue #1790).
+      justification: "transactional-semantics",
+    },
+    {
+      name: "inviteEventPerson",
+      method: "POST",
+      path: "/api/events/:id/people/:personId/invite",
+      handlerExport: "createInviteEventPersonRouteHandler",
+      // The pending invitation on the person's edge, the organizer edge when it is missing and the `REQUEST`
+      // job commit together under the Event's row lock (issue #1790).
+      justification: "transactional-semantics",
     },
     {
       name: "listEventTasks",

@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
+import { enqueueBadgeRefresh } from "../push/badgeRefreshEnqueue.js";
 import {
   NOTIFICATION_PROBLEMS_LEVELS,
   getNotificationPreferences,
@@ -83,17 +84,27 @@ export function createGetNotificationPreferencesRouteHandler(pool: Pool) {
   };
 }
 
+/** Whether a PATCH sets a badge switch (issue #1891): the fields whose change changes the number on the app icon. */
+function patchesBadgeSwitch(patch: NotificationPreferencesPatch): boolean {
+  return patch.badgeApprovals !== undefined || patch.badgeInvites !== undefined || patch.badgeInbox !== undefined;
+}
+
 /**
  * `PATCH /api/notification-preferences` (issue #1441) — sets the fields the body names on the
  * caller's own row, creating it on the first change. The insert and the update commit together, so
  * the "transactional-semantics" justification applies. Validation runs before the transaction opens.
+ * A PATCH that names a badge switch (`badgeApprovals`, `badgeInvites`, `badgeInbox`) also enqueues the
+ * badge refresh of the caller in that transaction (issue #1891), whether or not the value differs from
+ * the stored one; a PATCH of other fields enqueues none.
  */
 export function createPatchNotificationPreferencesRouteHandler(pool: Pool) {
   return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
     const patch = parseNotificationPreferencesPatch(ctx.body);
-    const preferences = await withTransaction(pool, (client) =>
-      patchNotificationPreferences(client, ctx.identity.user.id, patch),
-    );
+    const preferences = await withTransaction(pool, async (client) => {
+      const patched = await patchNotificationPreferences(client, ctx.identity.user.id, patch);
+      if (patchesBadgeSwitch(patch)) await enqueueBadgeRefresh(client, ctx.identity.user.id);
+      return patched;
+    });
     return { status: 200, body: preferences };
   };
 }

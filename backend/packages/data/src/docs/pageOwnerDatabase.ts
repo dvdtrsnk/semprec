@@ -26,23 +26,37 @@ async function requireItemIncludingDeleted(client: PoolClient, itemId: string): 
   return item;
 }
 
+/** The item that hosts a page and the database that owns it. */
+export interface PageOwner {
+  /** The database whose grant decides who may read or write the page. */
+  databaseId: string;
+  /** The item the page belongs to: `itemId` itself, or for a subpage the first ancestor that is not a Pages item. */
+  hostItemId: string;
+}
+
 /**
- * The database whose grant decides who may read or write the page of `itemId`:
+ * The owner of the page of `itemId`:
  * - an item of the hidden Pages database (a subpage) belongs to its root host, so the walk follows `parentItemId`
- *   through Pages items, trashed ones included, and answers the database of the first item that is not a Pages item;
- * - every other item, a Journal day among them, belongs to its own database.
+ *   through Pages items, trashed ones included, and answers the first item that is not a Pages item and its database;
+ * - every other item, a Journal day among them, belongs to itself and its own database.
+ *
+ * The host item is what an agent's check names (docs/adr/2026-11-13-items-linked-to-a-sensitive-record-inherit-its-sensitivity.md):
+ * a file linked to a sensitive record keeps its page closed to a project without the matching access, and so do the
+ * subpages under it.
  *
  * It only reads. An item or an ancestor that does not exist (a host that was purged) is a `NotFoundError`, so a page
  * without a reachable host is closed to an agent; a stored cycle or a chain longer than `MAX_SUBPAGE_CHAIN` is a
  * `ValidationError` on `itemId`.
  */
-export async function resolvePageOwnerDatabase(client: PoolClient, itemId: string): Promise<string> {
+export async function resolvePageOwner(client: PoolClient, itemId: string): Promise<PageOwner> {
   const visited = new Set<string>();
   let current = await requireItemIncludingDeleted(client, itemId);
   for (;;) {
     const database = await databasesStore.getDatabase(client, current.databaseId);
     if (!database) throw new NotFoundError("Item not found", { resource: "item", itemId });
-    if (!database.system || database.ownerModuleId !== PAGES_MODULE_ID) return database.id;
+    if (!database.system || database.ownerModuleId !== PAGES_MODULE_ID) {
+      return { databaseId: database.id, hostItemId: current.id };
+    }
     if (visited.has(current.id)) {
       throw new ValidationError("The parent chain of this page forms a cycle", { field: "itemId" });
     }
@@ -60,12 +74,20 @@ export async function resolvePageOwnerDatabase(client: PoolClient, itemId: strin
   }
 }
 
+/** The database whose grant decides who may read or write the page of `itemId` (`resolvePageOwner`). */
+export async function resolvePageOwnerDatabase(client: PoolClient, itemId: string): Promise<string> {
+  return (await resolvePageOwner(client, itemId)).databaseId;
+}
+
 /**
  * Refuses with a `ForbiddenError` (403 `forbidden`) when the reader lacks `access` to the database that owns the page
- * of `itemId` (`resolvePageOwnerDatabase`), in the transaction of the read or write it guards. The reader is an agent's
+ * of `itemId` (`resolvePageOwner`), in the transaction of the read or write it guards. The reader is an agent's
  * project (a string; it takes the same share lock on the grant row as `assertAgentDatabaseAccess`) or an external AI
  * client on `/mcp` (issue #1998; it has no grant, a sensitive database is closed to it). It is the one page check of
- * both: an external client does not walk the path of the item by another resolver. Without a reader (a person, the
+ * both: an external client does not walk the path of the item by another resolver. An agent's project also needs
+ * `access` on every sensitive database the host item of the page is linked to when the host belongs to a
+ * sensitivity-inheriting database (Files, Transcripts, Inbox; issue #1999), so the page of a linked file is as closed as
+ * the file; an external client is decided by the database alone. Without a reader (a person, the
  * system) nothing is checked, as for every other path of the per-database grants.
  */
 export async function assertAgentPageAccess(
@@ -75,6 +97,6 @@ export async function assertAgentPageAccess(
   access: RequiredAgentDatabaseAccess,
 ): Promise<void> {
   if (reader === undefined) return;
-  const databaseId = await resolvePageOwnerDatabase(client, itemId);
-  await assertReaderDatabaseAccess(client, reader, databaseId, access);
+  const { databaseId, hostItemId } = await resolvePageOwner(client, itemId);
+  await assertReaderDatabaseAccess(client, reader, databaseId, access, undefined, hostItemId);
 }

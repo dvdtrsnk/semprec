@@ -8,7 +8,7 @@ import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Pool } from "pg";
+import { Client, type Pool } from "pg";
 import sharp from "sharp";
 import {
   closeIdleThreadSessions,
@@ -1653,6 +1653,239 @@ describe("queued Semp messages", () => {
       )({ agentRunId: standalone.id }, { job: { id: "standalone" } }),
     );
     expect(headers[2]).toEqual({ messageId: undefined, runId: standalone.id });
+  });
+
+  it("stores the typed step summary with a done reply and with a reply that ends in an error (issue #1860)", async () => {
+    await runtime?.stop();
+    runtime = undefined;
+    const faux = fauxProvider();
+    const missingItemId = randomUUID();
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("database_list", {}, { id: "summary-ok" })], { stopReason: "toolUse" }),
+      fauxAssistantMessage("Listed."),
+      fauxAssistantMessage([fauxToolCall("item_get", { itemId: missingItemId }, { id: "summary-fail" })], {
+        stopReason: "toolUse",
+      }),
+      fauxAssistantMessage("", { stopReason: "error", errorMessage: "provider refused" }),
+    ]);
+    const gateway: GatewayModel = {
+      model: faux.getModel(),
+      streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+      isBudgetRefusal: () => false,
+    };
+    runtime = await createAgentsQueueRuntime(pool, registry, {
+      sempMessageTask: createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns()),
+    });
+    const send = (threadId?: string) =>
+      runInTenant(tenant, () =>
+        withTransaction(pool, (client) =>
+          sendSempMessage(client, { ...(threadId ? { threadId } : {}), text: "list", context: [], hasContext: false }),
+        ),
+      );
+    const read = (id: string) =>
+      runInTenant(tenant, async () => {
+        const { rows } = await pool.query<{
+          status: string;
+          steps: unknown;
+          duration_ms: number | null;
+          tokens: unknown;
+          event_to_id: string | null;
+        }>("SELECT status, steps, duration_ms, tokens, event_to_id FROM semp_messages WHERE id = $1", [id]);
+        return rows[0];
+      });
+    const awaitFinal = async (id: string) => {
+      const deadline = Date.now() + 15_000;
+      let row = await read(id);
+      while ((row?.status === "queued" || row?.status === "running") && Date.now() < deadline) {
+        await sleep(50);
+        row = await read(id);
+      }
+      return row;
+    };
+
+    const first = await send();
+    const done = await awaitFinal(first.assistantMessageId);
+    const second = await send(first.threadId);
+    const failed = await awaitFinal(second.assistantMessageId);
+
+    expect(done?.status).toBe("done");
+    expect(done?.steps).toEqual([
+      expect.objectContaining({
+        kind: "tool",
+        toolCallId: "summary-ok",
+        operation: "database.list",
+        status: "ok",
+        label: { key: "agentStep.title.operation.database.list", params: {} },
+      }),
+    ]);
+    expect(done?.duration_ms).toEqual(expect.any(Number));
+    expect(done?.tokens).toEqual({ input: 0, output: 0 });
+    expect(failed?.status).toBe("error");
+    expect(failed?.event_to_id).toBeNull();
+    expect(failed?.steps).toEqual([
+      expect.objectContaining({
+        kind: "tool",
+        toolCallId: "summary-fail",
+        operation: "item.get",
+        status: "error",
+        errorCode: "not_found",
+        detail: { key: "agentStep.summary.failed", params: {} },
+      }),
+    ]);
+    expect(failed?.duration_ms).toEqual(expect.any(Number));
+    expect(JSON.stringify(failed?.steps)).not.toContain(missingItemId);
+  });
+
+  it("stores the error state of a failed reply even when its step summary cannot be read, and logs the failed read (issue #1860)", async () => {
+    await runtime?.stop();
+    runtime = undefined;
+    const faux = fauxProvider();
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("database_list", {}, { id: "unread-1" })], { stopReason: "toolUse" }),
+      fauxAssistantMessage("", { stopReason: "error", errorMessage: "provider refused" }),
+    ]);
+    const gateway: GatewayModel = {
+      model: faux.getModel(),
+      streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+      isBudgetRefusal: () => false,
+    };
+    runtime = await createAgentsQueueRuntime(pool, registry, {
+      sempMessageTask: createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns()),
+    });
+    // Only the read of the events of a turn that stored no last event (a failed turn) fails.
+    const queryTarget = Client.prototype as unknown as { query: (...args: unknown[]) => unknown };
+    const realQuery = queryTarget.query;
+    let failedReads = 0;
+    const querySpy = vi.spyOn(queryTarget, "query").mockImplementation(function (this: unknown, ...args: unknown[]) {
+      const [sql, values] = args;
+      if (
+        typeof sql === "string" &&
+        sql.includes("kind = ANY($4::text[])") &&
+        Array.isArray(values) &&
+        values[2] === null
+      ) {
+        failedReads++;
+        return Promise.reject(new Error("events cannot be read"));
+      }
+      return Reflect.apply(realQuery, this, args);
+    });
+    const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => undefined);
+    try {
+      const sent = await runInTenant(tenant, () =>
+        withTransaction(pool, (client) => sendSempMessage(client, { text: "list", context: [], hasContext: false })),
+      );
+      const read = () =>
+        runInTenant(tenant, async () => {
+          const { rows } = await pool.query<{
+            status: string;
+            steps: unknown;
+            duration_ms: number | null;
+            tokens: unknown;
+            changes: unknown;
+          }>("SELECT status, steps, duration_ms, tokens, changes FROM semp_messages WHERE id = $1", [
+            sent.assistantMessageId,
+          ]);
+          return rows[0];
+        });
+      const deadline = Date.now() + 15_000;
+      let row = await read();
+      while ((row?.status === "queued" || row?.status === "running") && Date.now() < deadline) {
+        await sleep(50);
+        row = await read();
+      }
+
+      expect(failedReads).toBeGreaterThan(0);
+      expect(row).toEqual({ status: "error", steps: null, duration_ms: null, tokens: null, changes: null });
+      expect(errorSpy).toHaveBeenCalledWith(
+        { threadId: sent.threadId, assistantMessageId: sent.assistantMessageId, errorName: "Error" },
+        "Semp reply summary could not be built for a failed turn",
+      );
+    } finally {
+      querySpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("stores the items a reply changed with the previous value, and an empty list for a reply that changed nothing (issue #1885)", async () => {
+    await runtime?.stop();
+    runtime = undefined;
+    const task = await runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => {
+        const tasks = await getDatabaseByModuleId(client, "tasks");
+        if (!tasks) throw new Error("Missing Tasks database");
+        const created = await createItemWithClient(
+          client,
+          { databaseId: tasks.id, properties: { name: "Move me", date: "2026-11-02" } },
+          { writer: { writerKind: "system" } },
+        );
+        return { id: created.id, databaseId: tasks.id, version: created.updatedAt };
+      }),
+    );
+    const faux = fauxProvider();
+    faux.setResponses([
+      fauxAssistantMessage(
+        [
+          fauxToolCall(
+            "item_patch",
+            { itemId: task.id, properties: { date: "2026-11-03" }, ifVersion: task.version },
+            { id: "change-patch" },
+          ),
+        ],
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage("Moved."),
+      fauxAssistantMessage("Nothing to change."),
+    ]);
+    const gateway: GatewayModel = {
+      model: faux.getModel(),
+      streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+      isBudgetRefusal: () => false,
+    };
+    runtime = await createAgentsQueueRuntime(pool, registry, {
+      sempMessageTask: createSempMessageTask(pool, registry, gateway, createInFlightAgentRuns()),
+    });
+    const send = (threadId?: string) =>
+      runInTenant(tenant, () =>
+        withTransaction(pool, (client) =>
+          sendSempMessage(client, { ...(threadId ? { threadId } : {}), text: "move", context: [], hasContext: false }),
+        ),
+      );
+    const read = (id: string) =>
+      runInTenant(tenant, async () => {
+        const { rows } = await pool.query<{ status: string; changes: unknown }>(
+          "SELECT status, changes FROM semp_messages WHERE id = $1",
+          [id],
+        );
+        return rows[0];
+      });
+    const awaitFinal = async (id: string) => {
+      const deadline = Date.now() + 15_000;
+      let row = await read(id);
+      while ((row?.status === "queued" || row?.status === "running") && Date.now() < deadline) {
+        await sleep(50);
+        row = await read(id);
+      }
+      return row;
+    };
+
+    const moved = await send();
+    const movedRow = await awaitFinal(moved.assistantMessageId);
+    const idle = await send(moved.threadId);
+    const idleRow = await awaitFinal(idle.assistantMessageId);
+
+    expect(movedRow).toEqual({
+      status: "done",
+      changes: [
+        {
+          itemId: task.id,
+          databaseId: task.databaseId,
+          change: "updated",
+          changedKeys: ["date"],
+          before: { date: "2026-11-02" },
+        },
+      ],
+    });
+    expect(idleRow).toEqual({ status: "done", changes: [] });
   });
 
   it("runs turns for different tenants concurrently on the dedicated runner", async () => {

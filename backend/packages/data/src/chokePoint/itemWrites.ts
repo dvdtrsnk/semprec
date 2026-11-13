@@ -55,6 +55,7 @@ import {
 } from "./hooks.js";
 import { SYSTEM_WRITER, type WriterIdentity } from "./writerKind.js";
 import { assertWriterDatabaseAccess } from "../agentGrants/agentDatabaseAccess.js";
+import { hideClosedRollupValuesForWriter } from "../agentGrants/closedSensitiveAggregationAccess.js";
 import { requireApprovalForChangedItemLinks } from "./valueLinkApproval.js";
 import { assertValueLinkHandoff, breakValueLinks, VALUE_LINKS_OWNER_PROCESS } from "./valueLinkWrites.js";
 import { isDeepStrictEqual } from "node:util";
@@ -587,7 +588,7 @@ export async function updateItemWithClient(
   input: UpdateItemInput,
   options: UpdateItemWithClientOptions = {},
 ): Promise<itemsStore.UpdateItemResult> {
-  await assertWriterDatabaseAccess(client, options.writer, input.databaseId, "write");
+  await assertWriterDatabaseAccess(client, options.writer, input.databaseId, "write", input.itemId);
   await assertDatabaseNotArchived(client, input.databaseId);
   const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
   const patchKeys = Object.keys(input.propertiesPatch);
@@ -832,7 +833,7 @@ export function createItemWriteOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
           humanWriterUserId,
           writer,
         });
-        return (await projectItemsForRead(client, [item]))[0]!;
+        return (await hideClosedRollupValuesForWriter(client, writer, await projectItemsForRead(client, [item])))[0]!;
       });
     },
 
@@ -850,7 +851,7 @@ export function createItemWriteOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
             humanWriterUserId,
             writer,
           });
-          return (await projectItemsForRead(client, [item]))[0]!;
+          return (await hideClosedRollupValuesForWriter(client, writer, await projectItemsForRead(client, [item])))[0]!;
         } catch (error) {
           if (!(error instanceof ConflictError)) throw error;
           const details = z
@@ -870,7 +871,13 @@ export function createItemWriteOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
             .passthrough()
             .safeParse(error.details);
           if (!details.success) throw error;
-          const current = (await projectItemsForRead(client, [details.data.current]))[0]!;
+          const current = (
+            await hideClosedRollupValuesForWriter(
+              client,
+              writer,
+              await projectItemsForRead(client, [details.data.current]),
+            )
+          )[0]!;
           throw new ConflictError(error.message, { ...details.data, current });
         }
       });

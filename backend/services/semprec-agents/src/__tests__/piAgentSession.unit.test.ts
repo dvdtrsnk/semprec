@@ -708,6 +708,41 @@ describe("tool event metadata", () => {
     }
   });
 
+  it("names the calling item of a relation operation as its target, so the reply summaries find it (issue #1885)", async () => {
+    const { faux, model, streamFn } = fauxModel();
+    faux.setResponses([
+      fauxAssistantMessage(
+        [
+          fauxToolCall("echo", { callerItemId: "caller-1", relationPropertyId: "property-1" }, { id: "one" }),
+          fauxToolCall("echo", { itemId: "item-2", callerItemId: "caller-2" }, { id: "two" }),
+          fauxToolCall("echo", { callerItemId: 42 }, { id: "three" }),
+        ],
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage("done"),
+    ]);
+    const tool: AgentTool = { ...echoTool([]), parameters: Type.Object({}, { additionalProperties: true }) };
+    const messages = await collect(
+      createPiAgentSessionFactory({
+        model,
+        streamFn,
+        tools: [tool],
+        toolEventMetadata: new Map([["echo", { operation: "relation.put" }]]),
+        systemPrompt: "base",
+      })({ task: "run" }).messages(),
+    );
+    for (const kind of ["tool_use", "tool_result"]) {
+      const targets = messages
+        .filter((message) => message.kind === kind)
+        .map(({ toolCallId, targetItemId }) => ({ toolCallId, targetItemId }));
+      expect(targets).toEqual([
+        { toolCallId: "one", targetItemId: "caller-1" },
+        { toolCallId: "two", targetItemId: "item-2" },
+        { toolCallId: "three", targetItemId: undefined },
+      ]);
+    }
+  });
+
   it("keeps the exact legacy shape for a tool missing from the metadata map", async () => {
     const { faux, model, streamFn } = fauxModel();
     faux.setResponses([

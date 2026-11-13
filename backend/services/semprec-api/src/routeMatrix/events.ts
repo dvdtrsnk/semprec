@@ -12,6 +12,22 @@ export const EVENTS_ROUTES: RouteMatrixEntry[] = [
     tenancy: "tenant",
   },
   {
+    name: "event people replace",
+    method: "PUT",
+    path: `/api/events/${EXAMPLE_ID}/people`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "event person invite",
+    method: "POST",
+    path: `/api/events/${EXAMPLE_ID}/people/${EXAMPLE_ID}/invite`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "event transcript action items",
     method: "GET",
     path: `/api/events/${EXAMPLE_ID}/transcript-action-items`,

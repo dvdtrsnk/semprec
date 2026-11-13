@@ -193,11 +193,12 @@ export async function listAllDatabases(client: PoolClient): Promise<DatabaseRow[
   return rows.map(mapDatabaseRow);
 }
 
-/** What a reader needs to label an item of a database: its module id and the key of its `title` property. */
+/** What a reader needs to label an item of a database: its module id, the key of its `title` property and whether it is marked sensitive. */
 export interface DatabaseLabelRow {
   id: string;
   ownerModuleId: string | null;
   titlePropertyKey: string | null;
+  sensitive: boolean;
 }
 
 /**
@@ -211,8 +212,9 @@ export async function listDatabaseLabelsByIds(client: PoolClient, ids: string[])
     id: string;
     owner_module_id: string | null;
     title_property_key: string | null;
+    sensitive: boolean;
   }>(
-    `SELECT DISTINCT ON (d.id) d.id, d.owner_module_id, p.key AS title_property_key
+    `SELECT DISTINCT ON (d.id) d.id, d.owner_module_id, d.sensitive, p.key AS title_property_key
      FROM databases d
      LEFT JOIN properties p ON p.database_id = d.id AND p.type = 'title'
      WHERE d.id = ANY($1::uuid[])
@@ -223,6 +225,7 @@ export async function listDatabaseLabelsByIds(client: PoolClient, ids: string[])
     id: row.id,
     ownerModuleId: row.owner_module_id,
     titlePropertyKey: row.title_property_key,
+    sensitive: row.sensitive,
   }));
 }
 

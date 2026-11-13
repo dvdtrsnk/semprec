@@ -7,6 +7,7 @@ import {
   generatePermissionManifest,
   getAgentRun,
   readItemPatchChangeMetadata,
+  sensitiveSourceDatabaseIdsByItem,
   withTransaction,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
@@ -27,8 +28,12 @@ export interface GenericOperationAgentToolResult {
   result: string;
   /** The approval request this call created, when it was deferred to a human. */
   approvalRequestId?: string;
+  /** The `ChokePointError.code` of a call that failed with a choke point error; absent for every other outcome. */
+  errorCode?: string;
   /** Per-property changes of a successful `item.patch`. */
   changes?: ToolResultChange[];
+  /** The id of the item a successful `item.create` created; the run history keeps it when it redacts the result text of a sensitive database. */
+  createdItemId?: string;
   /**
    * Set (issue #1827) when a content-bearing operation answered with content of a sensitive database: the
    * run history stores such a result redacted (`sensitiveToolResult.ts`). The result itself is unchanged.
@@ -48,6 +53,13 @@ function boundValue(value: unknown): unknown {
     return json.length > TOOL_CHANGE_VALUE_MAX_LENGTH ? json.slice(0, TOOL_CHANGE_VALUE_MAX_LENGTH) : value;
   }
   return value;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Whether `value` can be the id of an item: an answer id that is no uuid names no stored item, so it cannot be linked to one. */
+function isItemId(value: unknown): value is string {
+  return typeof value === "string" && UUID_RE.test(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -77,6 +89,11 @@ function buildPatchChanges(output: unknown, args: unknown): ToolResultChange[] |
   });
 }
 
+/** The id of the item an operation answered with, when its answer is an item. */
+function answeredItemId(output: unknown): string | undefined {
+  return isRecord(output) && typeof output.id === "string" ? output.id : undefined;
+}
+
 /** The operations whose answer carries item content (issue #1827); every other operation answers with structure or ids. */
 const CONTENT_BEARING_OPERATIONS: ReadonlySet<GenericOperationName> = new Set<GenericOperationName>([
   "item.get",
@@ -88,9 +105,13 @@ const CONTENT_BEARING_OPERATIONS: ReadonlySet<GenericOperationName> = new Set<Ge
   "view.query",
 ]);
 
-/** The databases whose content an answer carries; `unresolved` when some content cannot be tied to a database. */
+/**
+ * The databases whose content an answer carries, and the ids of the items whose content it carries (an item the
+ * answer returned and every relation target it expanded); `unresolved` when some content cannot be tied to a database.
+ */
 interface AnswerDatabases {
   ids: Set<string>;
+  itemIds: Set<string>;
   unresolved: boolean;
 }
 
@@ -113,16 +134,17 @@ async function relationTargetDatabases(
  * (the item itself, or every item of a page), the database of each relation target expanded inside such an
  * item (`include.relations`; a target the agent may not read is only `{ id, hidden: true }` and carries no
  * content), and the target database of each relation property projected on such a target, whose targets come
- * as reduced entries without a database id. Content that names no database, or a projected relation property
+ * as reduced entries without a database id (their ids are collected as item ids). Content that names no database, or a projected relation property
  * of no known target database, is `unresolved`.
  */
 async function answerDatabases(chokePoint: ChokePoint, output: unknown): Promise<AnswerDatabases> {
-  const answer: AnswerDatabases = { ids: new Set(), unresolved: false };
+  const answer: AnswerDatabases = { ids: new Set(), itemIds: new Set(), unresolved: false };
   if (!isRecord(output)) return answer;
   const items: unknown[] = Array.isArray(output.items) ? output.items : [output];
   for (const item of items) {
     if (!isRecord(item)) continue;
     if (typeof item.databaseId === "string") answer.ids.add(item.databaseId);
+    if (isItemId(item.id)) answer.itemIds.add(item.id);
     if (item.relations === undefined) continue;
     if (!isRecord(item.relations)) {
       answer.unresolved = true;
@@ -142,6 +164,7 @@ async function answerDatabases(chokePoint: ChokePoint, output: unknown): Promise
           answer.unresolved = true;
         } else {
           answer.ids.add(target.databaseId);
+          if (isItemId(target.id)) answer.itemIds.add(target.id);
           await addProjectedRelationDatabases(chokePoint, target.databaseId, target.properties, answer);
         }
       }
@@ -150,7 +173,10 @@ async function answerDatabases(chokePoint: ChokePoint, output: unknown): Promise
   return answer;
 }
 
-/** Adds the target database of every relation property of `databaseId` that `properties` carries an entry with content for. */
+/**
+ * Adds the target database of every relation property of `databaseId` that `properties` carries an entry with content
+ * for, and the id of each such entry.
+ */
 async function addProjectedRelationDatabases(
   chokePoint: ChokePoint,
   databaseId: string,
@@ -163,11 +189,16 @@ async function addProjectedRelationDatabases(
   );
   if (withContent.length === 0) return;
   const relationTargets = await relationTargetDatabases(chokePoint, databaseId);
-  for (const [key] of withContent) {
+  for (const [key, entries] of withContent) {
     if (!relationTargets.has(key)) continue;
     const targetDatabaseId = relationTargets.get(key);
     if (targetDatabaseId === undefined) answer.unresolved = true;
     else answer.ids.add(targetDatabaseId);
+    // The reduced entries carry the title of an item that may inherit sensitivity (issue #1999), so their ids are
+    // looked up as the ids of an expanded target are; a hidden entry carries no content.
+    for (const entry of Array.isArray(entries) ? entries : []) {
+      if (isRecord(entry) && entry.hidden !== true && isItemId(entry.id)) answer.itemIds.add(entry.id);
+    }
   }
 }
 
@@ -188,13 +219,16 @@ async function queriedDatabaseId(
 /**
  * Whether the answer of a successful call is content of a sensitive database (issue #1827): the
  * operation is content-bearing and a database it answered with, queried or expanded through
- * `include.relations` (`answerDatabases`) has `sensitive = true`.
+ * `include.relations` (`answerDatabases`) has `sensitive = true`. It is also sensitive when an item it carries
+ * inherits sensitivity (issue #1999): an item of the Files, Transcripts or Inbox database that is linked to a
+ * sensitive database, as `sensitiveSourceDatabaseIdsByItem` reads it, whatever access the project holds there.
  * The flag is read through the choke point when the call has answered, in the caller's tenant scope. A
  * database id that resolves to no database, or content that names no database, counts as sensitive, so
  * the answer is never stored in full on a doubt.
  */
 async function isSensitiveAnswer(
   chokePoint: ChokePoint,
+  pool: Pool,
   operation: GenericOperationName,
   args: unknown,
   output: unknown,
@@ -208,7 +242,9 @@ async function isSensitiveAnswer(
     const database = await chokePoint.getDatabase(databaseId);
     if (database === null || database.sensitive) return true;
   }
-  return false;
+  if (answer.itemIds.size === 0) return false;
+  const linked = await withTransaction(pool, (client) => sensitiveSourceDatabaseIdsByItem(client, [...answer.itemIds]));
+  return linked.size > 0;
 }
 
 /**
@@ -218,13 +254,14 @@ async function isSensitiveAnswer(
  */
 async function markSensitiveAnswer(
   chokePoint: ChokePoint,
+  pool: Pool,
   operation: GenericOperationName,
   args: unknown,
   output: unknown,
   currentRunId: string,
 ): Promise<boolean> {
   try {
-    return await isSensitiveAnswer(chokePoint, operation, args, output);
+    return await isSensitiveAnswer(chokePoint, pool, operation, args, output);
   } catch (err) {
     logger.error(
       { operation, agentRunId: currentRunId, errorName: err instanceof Error ? err.name : typeof err },
@@ -292,7 +329,8 @@ function pendingApprovalResult(
 
 function toolResultFromError(err: unknown, operation: GenericOperationName): GenericOperationAgentToolResult {
   if (err instanceof ApprovalRequiredError) return pendingApprovalResult(err, operation);
-  if (err instanceof ChokePointError) return { error: true, result: `${err.code}: ${err.message}` };
+  if (err instanceof ChokePointError)
+    return { error: true, result: `${err.code}: ${err.message}`, errorCode: err.code };
   return { error: true, result: err instanceof Error ? err.message : String(err) };
 }
 
@@ -311,11 +349,13 @@ function createTool(
       }
       const output = await gateway.invoke(operation, context.actor, context.grantedCapabilities, args ?? {}, options);
       const changes = operation === "item.patch" ? buildPatchChanges(output, args) : undefined;
-      const sensitive = await markSensitiveAnswer(chokePoint, operation, args, output, currentRunId);
+      const createdItemId = operation === "item.create" ? answeredItemId(output) : undefined;
+      const sensitive = await markSensitiveAnswer(chokePoint, pool, operation, args, output, currentRunId);
       return {
         error: false,
         result: JSON.stringify(output),
         ...(changes ? { changes } : {}),
+        ...(createdItemId ? { createdItemId } : {}),
         ...(sensitive ? { sensitive: true as const } : {}),
       };
     } catch (err) {

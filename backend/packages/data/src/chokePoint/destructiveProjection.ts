@@ -358,7 +358,7 @@ export async function computeDestructiveResourceProjection(
       // resource that is already gone.
       const [item] = await itemsStore.getItemsByIdsIncludingDeleted(client, [check.input.itemId]);
       if (!item || item.deletedAt) throw new NotFoundError(`Item ${check.input.itemId} not found`);
-      await assertWriterDatabaseAccess(client, check, item.databaseId, "write");
+      await assertWriterDatabaseAccess(client, check, item.databaseId, "write", item.id);
       await assertWriterDeleteCascadeAccess(client, check, item);
       const database = await databasesStore.getDatabase(client, item.databaseId);
       if (!database) throw new NotFoundError(`Database ${item.databaseId} not found`);
@@ -436,7 +436,7 @@ export async function computeDestructiveResourceProjection(
     }
     case "link.unlink": {
       const item = await reserveItemForApproval(client, check.input.itemId, "Item");
-      await assertWriterDatabaseAccess(client, check, item.databaseId, "write");
+      await assertWriterDatabaseAccess(client, check, item.databaseId, "write", item.id);
       const valueLinks = await reserveBreakingLinks(client, [
         { itemId: item.id, propertyKey: check.input.propertyKey },
       ]);

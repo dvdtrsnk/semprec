@@ -171,6 +171,32 @@ export async function listAgentRunEventsAfter(
 }
 
 /**
+ * The events of one Semp turn that its reply summary is made of (issues #1860 and #1885): the turn's own
+ * `turn_start`, `turn_end`, `message`, `tool_use` and `tool_result` events of the run, from the message's
+ * `event_from_id` through its `event_to_id`, in id order. A turn that ended in an error stored no
+ * `event_to_id`; `throughEventId: null` then reads to the end of the run. That is this turn's last event: the
+ * message is still `running` until its error is stored, and its conversation takes the next message only after
+ * that. The other kinds are left out in SQL: a user message carries the
+ * user's text and references, and a compaction checkpoint is the largest payload a run stores.
+ */
+export async function listSempTurnEvents(
+  client: Pool | PoolClient,
+  agentRunId: string,
+  fromEventId: string,
+  throughEventId: string | null,
+): Promise<AgentRunEventRow[]> {
+  const { rows } = await client.query<AgentRunEventDbRow>(
+    `SELECT id, agent_run_id, kind, payload, at
+     FROM agent_run_events
+     WHERE agent_run_id = $1 AND id >= $2::bigint AND ($3::bigint IS NULL OR id <= $3::bigint)
+       AND kind = ANY($4::text[])
+     ORDER BY id ASC`,
+    [agentRunId, fromEventId, throughEventId, ["turn_start", "turn_end", "message", "tool_use", "tool_result"]],
+  );
+  return rows.map(mapRow);
+}
+
+/**
  * The read behind one page of `GET /api/agent-runs/:id/steps` (issue #1821): the events after
  * `afterEventId` that can produce a step (`AGENT_RUN_STEP_EVENT_KINDS`), in id order, at most
  * `agentRunStepPageRowLimit(stepLimit)` of them. A page of `stepLimit` steps needs at most two events

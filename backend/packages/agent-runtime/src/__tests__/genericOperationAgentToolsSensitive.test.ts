@@ -282,6 +282,8 @@ describe("marking the answers of sensitive databases in the generic operation Ag
         expect(created.error).toBe(false);
         expect(created.sensitive).toBe(true);
         const createdItem = JSON.parse(created.result) as { id: string; updatedAt: string };
+        // The id of the new item is kept for the run history, which stores the result text redacted (issue #1885).
+        expect(created.createdItemId).toBe(createdItem.id);
 
         const patched = await tools()["item.patch"](agent.runId, {
           itemId: createdItem.id,
@@ -312,6 +314,7 @@ describe("marking the answers of sensitive databases in the generic operation Ag
         expect(created.error).toBe(false);
         expect(created).not.toHaveProperty("sensitive");
         const createdItem = JSON.parse(created.result) as { id: string; updatedAt: string };
+        expect(created.createdItemId).toBe(createdItem.id);
         const patched = await tools()["item.patch"](agent.runId, {
           itemId: createdItem.id,
           properties: { name: "Renamed note" },
@@ -319,6 +322,7 @@ describe("marking the answers of sensitive databases in the generic operation Ag
         });
         expect(patched.error).toBe(false);
         expect(patched).not.toHaveProperty("sensitive");
+        expect(patched).not.toHaveProperty("createdItemId");
       });
     });
 

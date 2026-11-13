@@ -70,6 +70,7 @@ import {
   setInvalidationHook,
   startSempMessageTurn,
   SYSTEM_WRITER,
+  upsertApnsSubscription,
   upsertWebPushSubscription,
   withTransaction,
   writeNotification,
@@ -189,6 +190,7 @@ let docStore: DocStore;
 let blobRoot: string;
 const previousEnv = new Map<string, string | undefined>();
 const VAPID_ENV = ["VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT"] as const;
+const APNS_ENV = ["APNS_TEAM_ID", "APNS_KEY_ID", "APNS_PRIVATE_KEY_PATH", "APNS_TOPIC"] as const;
 let tenantA: Tenant;
 let tenantB: Tenant;
 let tenantZero: Tenant;
@@ -434,6 +436,19 @@ function useVapidConfiguration(): void {
   process.env.VAPID_PUBLIC_KEY = keys.getPublicKey().toString("base64url");
   process.env.VAPID_PRIVATE_KEY = keys.getPrivateKey().toString("base64url");
   process.env.VAPID_SUBJECT = "mailto:ops@example.test";
+}
+
+/** Unsets the APNs configuration, so the default APNs sender answers `not-configured` without a network request; `restoreApnsConfiguration` puts the previous one back. */
+function useUnconfiguredApns(): void {
+  for (const name of APNS_ENV) delete process.env[name];
+}
+
+function restoreApnsConfiguration(): void {
+  for (const name of APNS_ENV) {
+    const value = previousEnv.get(name);
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
 }
 
 function restoreVapidConfiguration(): void {
@@ -1384,6 +1399,38 @@ const cases: Record<string, TaskCase> = {
       expect(await pushRegistrationRevoked(tenant)).toBe(true);
     },
   },
+  [CORE_TASK_NAMES.PUSH_BADGE_REFRESH]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      // The default sender is the real APNs adapter. With no APNs configuration it answers `not-configured`
+      // without a network request, which the job accepts, so the run neither fails nor revokes. What the job
+      // sends, and that it sends nothing for another tenant's user, is proven with a fake sender in
+      // `pushBadgeRefresh.test.ts`; this case proves the job runs for its own tenant and leaves the others alone.
+      useUnconfiguredApns();
+      return inTenant(tenant, async () => {
+        // The registrations other cases left for this user are not this job's business.
+        await revokeAllPushSubscriptionsForUser(pool, tenant.userId);
+        await upsertApnsSubscription(pool, {
+          userId: tenant.userId,
+          sessionId: null,
+          platform: "ios",
+          deviceToken: randomUUID(),
+          apnsEnvironment: "sandbox",
+        });
+        return { userId: tenant.userId };
+      });
+    },
+    async expectDone(tenant) {
+      // `not-configured` does not revoke: the registration the seed created is still active.
+      expect(
+        await rows(
+          tenant,
+          "SELECT count(*)::int AS active FROM push_subscriptions WHERE user_id = $1 AND channel = 'apns' AND revoked_at IS NULL",
+          [tenant.userId],
+        ),
+      ).toEqual([{ active: 1 }]);
+    },
+  },
   [CORE_TASK_NAMES.TENANT_EXPORT]: {
     tenancy: "tenant",
     async seed(tenant) {
@@ -1693,6 +1740,17 @@ const cases: Record<string, TaskCase> = {
       expect(await hiddenUntilOf(tenant, requirePayloadString(payload, "taskId"))).toBeNull();
     },
   },
+  [CORE_TASK_NAMES.AI_BUDGET_RESET]: {
+    tenancy: "tenant",
+    async seed() {
+      // The job takes nothing from its payload. Recording starts after the fixture, so only the job is recorded.
+      recordInvalidations();
+      return {};
+    },
+    async expectDone(tenant) {
+      expect(stopRecordingInvalidations()).toEqual([{ tenantId: tenant.tenantId, event: { scope: "sempStatus" } }]);
+    },
+  },
   [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP]: {
     tenancy: "system",
     touchesTenantTables: true,
@@ -1946,7 +2004,13 @@ function casesWhere<T extends TaskCase>(guard: (c: TaskCase) => c is T): Array<[
   return Object.entries(cases).flatMap(([name, c]): Array<[string, T]> => (guard(c) ? [[name, c]] : []));
 }
 
-const ENV_OVERRIDES = ["AI_GATEWAY_INTERNAL_TOKEN", "FILES_STORAGE_DIR", "MAIL_ATTACHMENTS_DIR", ...VAPID_ENV] as const;
+const ENV_OVERRIDES = [
+  "AI_GATEWAY_INTERNAL_TOKEN",
+  "FILES_STORAGE_DIR",
+  "MAIL_ATTACHMENTS_DIR",
+  ...VAPID_ENV,
+  ...APNS_ENV,
+] as const;
 
 describe("background task isolation across two tenants: api runtime (issue #1056)", () => {
   beforeAll(async () => {
@@ -2014,7 +2078,10 @@ describe("background task isolation across two tenants: api runtime (issue #1056
     tenantB = await buildTenant(await createTestTenant(adminPool));
   });
 
-  afterEach(restoreVapidConfiguration);
+  afterEach(() => {
+    restoreVapidConfiguration();
+    restoreApnsConfiguration();
+  });
 
   afterAll(async () => {
     setEventInvitationDelivery(null);
@@ -2235,6 +2302,11 @@ describe("background task isolation across two tenants: api runtime (issue #1056
             outcome: { attempts: null, lastError: null },
             effects: { rowCountDeltas: {}, changedTables: [], notificationKinds: [], queuedJobs: [] },
           });
+        }
+        if (name === CORE_TASK_NAMES.AI_BUDGET_RESET) {
+          // The job announces for the tenant it runs in, whatever its payload names: both runs in B announced for B.
+          const bStatus = { tenantId: tenantB.tenantId, event: { scope: "sempStatus" } };
+          expect(stopRecordingInvalidations()).toEqual([bStatus, bStatus]);
         }
         expect(await fingerprint(tenantA)).toEqual(beforeA);
       },

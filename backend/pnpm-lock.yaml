@@ -469,6 +469,9 @@ importers:
       '@semprec/data':
         specifier: workspace:*
         version: link:../../packages/data
+      '@semprec/realtime':
+        specifier: workspace:*
+        version: link:../../packages/realtime
       '@semprec/shared':
         specifier: workspace:*
         version: link:../../packages/shared

@@ -101,6 +101,9 @@ export const CORE_TASK_NAMES = {
   // Issue #1826: tells the devices of one user to remove notifications that were resolved, with a silent push per
   // registration. Best effort: it keeps no delivery record.
   PUSH_DISMISS: "pushDismiss",
+  // Issue #1891: sends the user's current app icon badge to their iOS devices in a badge-only push. Enqueued
+  // debounced per user when a count or a badge switch changes; it keeps no delivery record.
+  PUSH_BADGE_REFRESH: "pushBadgeRefresh",
   // Issue #156: permanently deletes trashed items (and their cascade subtree) whose
   // `deleted_at` is older than the 30-day retention window.
   ITEM_TRASH_PURGE_SWEEP: "itemTrashPurgeSweep",
@@ -146,6 +149,9 @@ export const CORE_TASK_NAMES = {
   // Issue #1782: recomputes the host state of one task when the last Event it sits in ends, which writes the task
   // and so announces that it is visible again.
   TASK_HOST_EVENT_ENDED: "taskHostEventEnded",
+  // Issue gh-2024: announces a changed Semp status at the instant a tenant's exhausted AI budget window resets, enqueued by
+  // the AI gateway with the first tenant-cap refusal of that window under the job key `aiBudgetReset:<tenantId>:<resetsAt>`.
+  AI_BUDGET_RESET: "aiBudgetReset",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 
@@ -186,6 +192,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: "api",
   [CORE_TASK_NAMES.NOTIFICATION_FANOUT]: "api",
   [CORE_TASK_NAMES.PUSH_DISMISS]: "api",
+  [CORE_TASK_NAMES.PUSH_BADGE_REFRESH]: "api",
   [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP]: "api",
   [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: "api",
   [CORE_TASK_NAMES.TRASH_PURGE]: "api",
@@ -207,6 +214,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.DERIVED_VALUES_INVALIDATE]: "api",
   [CORE_TASK_NAMES.PAGE_ORPHAN_SWEEP]: "api",
   [CORE_TASK_NAMES.TASK_HOST_EVENT_ENDED]: "api",
+  [CORE_TASK_NAMES.AI_BUDGET_RESET]: "api",
 };
 
 /**
@@ -259,6 +267,7 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: "tenant",
   [CORE_TASK_NAMES.NOTIFICATION_FANOUT]: "tenant",
   [CORE_TASK_NAMES.PUSH_DISMISS]: "tenant",
+  [CORE_TASK_NAMES.PUSH_BADGE_REFRESH]: "tenant",
   [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP]: "system",
   [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: "system",
   [CORE_TASK_NAMES.TRASH_PURGE]: "system",
@@ -280,6 +289,7 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.DERIVED_VALUES_INVALIDATE]: "tenant",
   [CORE_TASK_NAMES.PAGE_ORPHAN_SWEEP]: "system",
   [CORE_TASK_NAMES.TASK_HOST_EVENT_ENDED]: "tenant",
+  [CORE_TASK_NAMES.AI_BUDGET_RESET]: "tenant",
   [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: "tenant",
   [AGENT_TASK_NAMES.AGENT_RUN]: "tenant",
   [AGENT_TASK_NAMES.DELEGATED_AGENT_RUN]: "tenant",

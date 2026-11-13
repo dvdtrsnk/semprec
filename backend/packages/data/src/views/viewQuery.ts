@@ -23,6 +23,8 @@ import {
 import { parseFilterNode, type FilterNode } from "./filterTree.js";
 import { parseSortConfig, sortConfigSchema, type SortSpec } from "./sortSpec.js";
 import { parseViewConfig, projectProperties, type ViewConfig } from "./viewConfig.js";
+import { excludeInheritedSensitiveItems } from "../agentGrants/agentDatabaseAccess.js";
+import { assertNoSortOverClosedRollup } from "../agentGrants/closedSensitiveAggregationAccess.js";
 
 /**
  * The `users.locale` of a user, or `undefined` when the user row is not visible to the caller. It lives
@@ -55,6 +57,19 @@ export interface QueryViewOptions {
    * not read (issue #1810). Set by the choke point, never read from a request. A filtered view is guarded by its database.
    */
   excludeDatabaseIds?: ReadonlySet<string>;
+  /**
+   * The Projects item of an agent's run (issue #1999): the items of a database that inherits sensitivity which are
+   * linked to a sensitive database the project may not read are left out of the page, its cursor and `totalCount`.
+   * Set by the choke point, never read from a request.
+   */
+  excludeInheritedSensitiveFor?: string;
+  /**
+   * The sensitive databases an agent's project may not read (issue #2000): a filter condition on a relation property
+   * into one of them or on a rollup that aggregates one, and a sort by such a rollup, is refused with a
+   * `ForbiddenError`, in a stored view's own filter and sort as in a request's. Set by the choke point, never read
+   * from a request; absent for a person.
+   */
+  closedDatabaseIds?: ReadonlySet<string>;
 }
 
 export interface QueryViewResult {
@@ -206,6 +221,7 @@ async function queryItemsCore(
   const sortProperties: SortProperties = new Map(properties.map((p) => [p.key, p]));
   const filterProperties = filterNode ? await buildFilterProperties(client, properties) : undefined;
   const collation = collationForLocale(options.locale);
+  await assertNoSortOverClosedRollup(client, databaseId, options.sortSpecs ?? [], options.closedDatabaseIds);
   const sortSpecs = withTitleTieBreak(options.sortSpecs ?? [], properties);
   const sorted = sortSpecs.length > 0;
   const groupDirection = options.groupDirection ?? "asc";
@@ -215,9 +231,14 @@ async function queryItemsCore(
       : undefined;
 
   const filterContext = filterNode ? await resolveFilterCompileContext(client, filterNode, options.now) : undefined;
-  const buildFilterSql = filterNode
-    ? (params: unknown[]) => compileFilterNode(filterNode, filterProperties!, params, filterContext)
+  const compiledFilterSql = filterNode
+    ? (params: unknown[]) =>
+        compileFilterNode(filterNode, filterProperties!, params, filterContext, options.closedDatabaseIds)
     : undefined;
+  const buildFilterSql =
+    options.excludeInheritedSensitiveFor !== undefined
+      ? excludeInheritedSensitiveItems(compiledFilterSql, options.excludeInheritedSensitiveFor)
+      : compiledFilterSql;
 
   const page = await listItems(client, databaseId, {
     limit: options.limit,
@@ -277,10 +298,14 @@ async function queryCuratedView(
     }
   }
 
+  const readableMembers = {
+    excludeDatabaseIds: options.excludeDatabaseIds,
+    excludeInheritedSensitiveFor: options.excludeInheritedSensitiveFor,
+  };
   let page: ViewItemRow[];
   let hasMore: boolean;
   if (options.includeDeleted) {
-    const all = await viewItemsStore.listViewItems(client, view.id, { excludeDatabaseIds: options.excludeDatabaseIds });
+    const all = await viewItemsStore.listViewItems(client, view.id, readableMembers);
     const afterCursor = cursorPosition !== undefined ? all.filter((m) => m.position > cursorPosition) : all;
     hasMore = afterCursor.length > limit;
     page = afterCursor.slice(0, limit);
@@ -288,7 +313,7 @@ async function queryCuratedView(
     const afterCursor = await viewItemsStore.listLiveViewItemsAfter(client, view.id, {
       afterPosition: cursorPosition ?? null,
       limit: limit + 1,
-      excludeDatabaseIds: options.excludeDatabaseIds,
+      ...readableMembers,
     });
     hasMore = afterCursor.length > limit;
     page = afterCursor.slice(0, limit);
@@ -311,8 +336,8 @@ async function queryCuratedView(
   };
   if (options.includeCount) {
     result.totalCount = options.includeDeleted
-      ? (await viewItemsStore.listViewItems(client, view.id, { excludeDatabaseIds: options.excludeDatabaseIds })).length
-      : await viewItemsStore.countLiveViewItems(client, view.id, { excludeDatabaseIds: options.excludeDatabaseIds });
+      ? (await viewItemsStore.listViewItems(client, view.id, readableMembers)).length
+      : await viewItemsStore.countLiveViewItems(client, view.id, readableMembers);
   }
   return result;
 }
@@ -398,6 +423,10 @@ export async function queryDatabaseItems(
   client: PoolClient,
   databaseId: string,
   input: DatabaseQueryInput,
+  /** See `QueryViewOptions.excludeInheritedSensitiveFor`. */
+  excludeInheritedSensitiveFor?: string,
+  /** See `QueryViewOptions.closedDatabaseIds`. */
+  closedDatabaseIds?: ReadonlySet<string>,
 ): Promise<QueryViewResult> {
   const filterNode = input.filter !== undefined ? parseFilterNode(input.filter) : undefined;
   const sortSpecs = input.sort !== undefined ? parseSortConfigInput(input.sort) : [];
@@ -414,6 +443,8 @@ export async function queryDatabaseItems(
     includeDeleted,
     includeCount,
     locale: input.locale,
+    excludeInheritedSensitiveFor,
+    closedDatabaseIds,
   });
 }
 
@@ -444,6 +475,10 @@ export async function queryViewItems(
   input: ViewQueryInput,
   /** See `QueryViewOptions.excludeDatabaseIds`; only a curated view reads it. */
   excludeDatabaseIds?: ReadonlySet<string>,
+  /** See `QueryViewOptions.excludeInheritedSensitiveFor`. */
+  excludeInheritedSensitiveFor?: string,
+  /** See `QueryViewOptions.closedDatabaseIds`; a curated view has no filter or sort to refuse. */
+  closedDatabaseIds?: ReadonlySet<string>,
 ): Promise<QueryViewResult> {
   const view = await viewsStore.getView(client, viewId);
   if (!view) throw new NotFoundError(`View ${viewId} not found`);
@@ -459,7 +494,14 @@ export async function queryViewItems(
       });
     }
     const cursor = parseCursorInput(input.cursor, false);
-    return queryCuratedView(client, view, { limit, cursor, includeDeleted, includeCount, excludeDatabaseIds });
+    return queryCuratedView(client, view, {
+      limit,
+      cursor,
+      includeDeleted,
+      includeCount,
+      excludeDatabaseIds,
+      excludeInheritedSensitiveFor,
+    });
   }
 
   const config = parseViewConfig(view.config);
@@ -477,6 +519,8 @@ export async function queryViewItems(
     includeDeleted,
     includeCount,
     locale: input.locale,
+    excludeInheritedSensitiveFor,
+    closedDatabaseIds,
   });
   return { ...rest, items: items.map((item) => ({ ...item, properties: projectProperties(item.properties, config) })) };
 }

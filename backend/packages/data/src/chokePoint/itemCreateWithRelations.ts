@@ -10,6 +10,7 @@ import { assertRelationPropertyWritable } from "./relationEdgeContext.js";
 import * as propertiesStore from "./propertiesStore.js";
 import * as relationsStore from "./relationsStore.js";
 import type { WriterIdentity } from "./writerKind.js";
+import { hideClosedRollupValuesForWriter } from "../agentGrants/closedSensitiveAggregationAccess.js";
 
 export type InitialItemRelation =
   { kind: "resolved"; relationPropertyId: string; targetItemIds: string[] } | { kind: "unresolved" };
@@ -78,7 +79,7 @@ export function createItemWithRelationsOps(deps: Pick<ChokePointDeps, "pool" | "
           humanWriterUserId,
           writer,
         });
-        return (await projectItemsForRead(client, [item]))[0]!;
+        return (await hideClosedRollupValuesForWriter(client, writer, await projectItemsForRead(client, [item])))[0]!;
       });
     },
   };

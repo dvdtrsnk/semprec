@@ -491,20 +491,33 @@ export function createGenericApplicationService(
 
     /**
      * The choke point resolves every entry's database in the caller's tenant, and applies the declared collection filter through `resolver`.
-     * An external client (issue #1998) is refused the whole call when an entry names a sensitive database.
+     * An external client (issue #1998) is refused the whole call when an entry names a sensitive database. An agent's
+     * run (issue #2000) is refused an entry whose filter reaches a sensitive database its project may not read; the
+     * access to the counted database itself is not decided here for an agent.
      */
     async countItems(actor, input) {
-      return chokePoint.countItemsBatch(input.items, { resolver }, externalClientReaderOf(actor));
+      const reader = readerOf(actor);
+      return chokePoint.countItemsBatch(
+        input.items,
+        { resolver, ...(typeof reader === "string" ? { agentProjectItemId: reader } : {}) },
+        externalClientReaderOf(actor),
+      );
     },
 
     /**
      * The choke point resolves the database in the caller's tenant; labels that are not stored follow the locale of the user the actor is or acts for.
-     * An external client (issue #1998) is refused a sensitive database.
+     * An external client (issue #1998) is refused a sensitive database. An agent's run (issue #2000) is refused a filter
+     * or a facet that reaches a sensitive database its project may not read; the access to the faceted database itself
+     * is not decided here for an agent.
      */
     async getDatabaseFacets(actor, input) {
+      const reader = readerOf(actor);
       return chokePoint.getDatabaseFacets(
         input,
-        { locale: await chokePoint.findUserLocale(actor.userId) },
+        {
+          locale: await chokePoint.findUserLocale(actor.userId),
+          ...(typeof reader === "string" ? { agentProjectItemId: reader } : {}),
+        },
         externalClientReaderOf(actor),
       );
     },
@@ -571,8 +584,9 @@ export function createGenericApplicationService(
 
     // ---- pages ----
     // The page operations of an agent run are held to its project's grant on the database that owns the page
-    // (`resolvePageOwnerDatabase`), and those of an external client on `/mcp` (issue #1998) to the same owner database
-    // being not sensitive: one resolver, one check, for both readers (`assertAgentPageAccess`). Each method below that
+    // (`resolvePageOwner`), and, when the host item of the page is a file, transcript or Inbox entry linked to a
+    // sensitive record, to the grant on that record's database (issue #1999), and those of an external client on `/mcp`
+    // (issue #1998) to the same owner database being not sensitive: one resolver, one check, for both readers (`assertAgentPageAccess`). Each method below that
     // reads or writes a page hands the actor's reader (`readerOf`) to the document store, which checks it in the
     // transaction of the operation; `replacePage` hands it over in its writer, and for `restorePageVersion` an agent is
     // checked by its approval projection, because an agent's call is held for approval first, so only an external
