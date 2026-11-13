@@ -221,6 +221,7 @@ export function createAgentGuidanceDriftAction<Tx>(
             transitionInstance: `${active.fingerprint}:${seenAt.toISOString()}`,
             payload: { projectItemId, fingerprint: active.fingerprint },
           });
+          await problems.resolve(tx, { projectItemId, fingerprint: active.fingerprint });
         }
       }
     });
@@ -459,7 +460,7 @@ async function runBehaviorPass<Tx>(deps: AgentGuidanceDriftActionDeps<Tx>, proje
     for (const active of await deps.findings.listActive(tx, projectItemId)) {
       if (active.payload.kind !== "behavior" || reported.has(active.fingerprint)) continue;
       const { finding, transitionedToResolved } = await deps.findings.resolve(tx, active.id, now);
-      if (transitionedToResolved)
+      if (transitionedToResolved) {
         await deps.notifications.create(tx, {
           userId: current.ownerUserId,
           kind: "agent_guidance_drift_resolved",
@@ -469,6 +470,8 @@ async function runBehaviorPass<Tx>(deps: AgentGuidanceDriftActionDeps<Tx>, proje
           transitionInstance: `${active.fingerprint}:${now.toISOString()}`,
           payload: { projectItemId, fingerprint: active.fingerprint, kind: "behavior" },
         });
+        await deps.problems.resolve(tx, { projectItemId, fingerprint: active.fingerprint });
+      }
     }
   });
 }

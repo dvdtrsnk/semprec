@@ -33,6 +33,9 @@
   "approval.journalMerge.year": "Merge the duplicate Journal entries for the year {period}: \"{mergedName}\" into \"{survivorName}\".",
   "approval.mcpInvoke": "Call \"{toolName}\" on MCP server \"{serverName}\".",
   "approval.moduleTool": "Run the module tool \"{toolName}\".",
+  "approval.heartbeatCreate": "Create the automation \"{heartbeatName}\" in \"{projectName}\" with the schedule {rule}. Task: {task}",
+  "approval.heartbeatUpdate": "Change the automation \"{heartbeatName}\" in \"{projectName}\" ({changes}).",
+  "approval.heartbeatSetEnabled": "Turn the automation \"{heartbeatName}\" in \"{projectName}\" {state}.",
   "notification.body.canUndo": "This can be undone later.",
   "notification.body.cannotUndo": "Semp cannot undo this action."
 }

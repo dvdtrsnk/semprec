@@ -11,6 +11,7 @@ import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from ".
 import { guidanceReferenceStore, projectAgentGuidanceStore } from "../projectAgentGuidanceStore.js";
 import { guidanceDriftHeartbeatStore } from "../guidanceDrift/guidanceDriftHeartbeatStore.js";
 import { agentGuidanceDriftFindingsStore } from "../guidanceDrift/agentGuidanceDriftFindingsStore.js";
+import { resolveGuidanceDriftProblem } from "../semp/guidanceProblemWriter.js";
 
 const empty = (): ProjectAgentGuidanceSections => ({
   purpose: "",
@@ -81,7 +82,12 @@ export async function saveGuidanceSections(
     await projectAgentGuidanceStore.delete(tx, input.projectItemId);
     await guidanceDriftHeartbeatStore.disableDriftHeartbeat(tx, input.projectItemId);
     const findings = await agentGuidanceDriftFindingsStore.listActive(tx, input.projectItemId);
-    for (const finding of findings) await agentGuidanceDriftFindingsStore.resolve(tx, finding.id, new Date());
+    for (const finding of findings) {
+      const { transitionedToResolved } = await agentGuidanceDriftFindingsStore.resolve(tx, finding.id, new Date());
+      // The drift heartbeat is disabled above, so no later drift run exists to close the finding's problem (issue #1915).
+      if (transitionedToResolved)
+        await resolveGuidanceDriftProblem(tx, { projectItemId: input.projectItemId, fingerprint: finding.fingerprint });
+    }
     return { sections: empty(), updatedAt: null };
   }
   const saved = await projectAgentGuidanceStore.upsert(tx, {

@@ -125,6 +125,22 @@ async function waitForAdvisoryLockWaiter(): Promise<void> {
   throw new Error("No transaction waited for an advisory lock");
 }
 
+/**
+ * Waits until a backend waits for a lock and returns the statements of all backends that wait. `pg_stat_activity`
+ * is the server's own view of that wait, so no timing guess stands in for it.
+ */
+async function waitingStatements(): Promise<string[]> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const { rows } = await adminPool.query<{ query: string }>(
+      "SELECT query FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'",
+    );
+    if (rows.length > 0) return rows.map((row) => row.query);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("No backend waited for a lock");
+}
+
 async function refusal(write: Promise<unknown>): Promise<unknown> {
   return write.then(
     () => undefined,
@@ -672,15 +688,26 @@ describe("one exception per night (issue gh-1784)", () => {
 
   it("does not hold a creator of a different night behind the open transaction", async () => {
     const { created, release, first } = holdCreateOpen(tenant, tenant.nightsId, { night: "2026-10-16" });
+    let second: Promise<{ id: string }> | undefined;
     try {
       await created;
 
-      const second = await chokePoint(tenant).create(tenant.nightsId, { night: "2026-10-17" });
-
-      expect((await liveItems(tenant, tenant.nightsId)).map((item) => item.id)).toEqual([second.id]);
-    } finally {
+      // The night lock of another night is not in its way. The one lock it waits for is the tenant's single
+      // `sleep.resync` job (issue gh-1838), which the open transaction enqueued.
+      second = chokePoint(tenant).create(tenant.nightsId, { night: "2026-10-17" });
+      expect(await waitingStatements()).toEqual([expect.stringContaining("graphile_worker.add_job")]);
       release();
       await first;
+
+      await second;
+      expect((await liveItems(tenant, tenant.nightsId)).map((item) => item.properties.night).sort()).toEqual([
+        "2026-10-16",
+        "2026-10-17",
+      ]);
+    } finally {
+      release();
+      await first.catch(() => undefined);
+      await second?.catch(() => undefined);
     }
   });
 

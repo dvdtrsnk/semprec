@@ -50,6 +50,14 @@ export interface SempReplyStep {
   approvalRequestId?: string;
   /** The `ChokePointError.code` of a failed generic operation, or the `failureKind` of a failed MCP tool call. */
   errorCode?: string;
+  /** The registration of the MCP tool a tool step called (issue #1890): what a later successful call of the same tool is matched on. */
+  mcpToolRegistrationId?: string;
+  /** The id of the MCP server of a failed MCP tool step (issue #1890). */
+  mcpServerItemId?: string;
+  /** The name of the MCP server of a failed MCP tool step (issue #1890), as the grant named it. */
+  connectorName?: string;
+  /** The timeout in milliseconds of an MCP tool step that failed with `errorCode` `timeout` (issue #1890). */
+  timeoutMs?: number;
   /** Only for a model step whose message event carries token usage. */
   tokens?: { input: number; output: number };
 }
@@ -223,6 +231,10 @@ function toolStep(call: SempToolCall, targets: SempReplyTargets, turnEndAt: stri
   }
 
   const code = call.result?.details?.errorCode ?? call.result?.details?.failureKind;
+  const failedCode = status === "error" && code !== undefined && ERROR_CODE.test(code) ? code : undefined;
+  const registrationId = sempUuid(call.mcp?.toolRegistrationId);
+  const serverItemId = sempUuid(call.mcp?.serverItemId);
+  const timeoutMs = call.result?.details?.timeoutMs;
   return {
     kind: "tool",
     toolCallId: call.toolCallId,
@@ -234,7 +246,18 @@ function toolStep(call: SempToolCall, targets: SempReplyTargets, turnEndAt: stri
     startedAt: call.startedAt,
     durationMs: elapsedMs(call.startedAt, call.resultAt ?? turnEndAt),
     ...(status === "wait" && approvalRequestId !== undefined ? { approvalRequestId } : {}),
-    ...(status === "error" && code !== undefined && ERROR_CODE.test(code) ? { errorCode: code } : {}),
+    ...(failedCode !== undefined ? { errorCode: failedCode } : {}),
+    ...(registrationId !== null ? { mcpToolRegistrationId: registrationId } : {}),
+    // The identity of the server the failed call went to: ids and a name the grant gave, never a call's text.
+    ...(status === "error" && call.mcp !== undefined
+      ? {
+          ...(serverItemId !== null ? { mcpServerItemId: serverItemId } : {}),
+          connectorName: boundName(call.mcp.serverName),
+          ...(failedCode === "timeout" && timeoutMs !== undefined && Number.isSafeInteger(timeoutMs)
+            ? { timeoutMs }
+            : {}),
+        }
+      : {}),
   };
 }
 

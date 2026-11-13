@@ -496,6 +496,23 @@ async function linkOwnPerson(tenant: TenantFixture): Promise<void> {
   await sendOk(tenant.member, { method: "PUT", path: "/api/auth/self-person", body: { personId } });
 }
 
+/**
+ * An open Processing proposals card of `tenant`, created through the choke point. It is a row of the one case that
+ * asks for it: a case that rejects a card changes none of the rows A and B share with the other cases.
+ */
+async function seedProposalCard(tenant: TenantFixture): Promise<string> {
+  return inTenantTransaction(tenant.tenantId, async (client) => {
+    const database = await getDatabaseByModuleId(client, "processingProposals");
+    if (!database) throw new Error(`no 'processingProposals' database in tenant ${tenant.tenantId}`);
+    const card = await createItemWithClient(
+      client,
+      { databaseId: database.id, properties: { kind: "inbox", status: "proposed", proposal: null } },
+      { allowedSystemKeys: ["kind", "status", "proposal"] },
+    );
+    return card.id;
+  });
+}
+
 interface SeededSubpage {
   hostItemId: string;
   pageItemId: string;
@@ -585,6 +602,23 @@ async function databaseIdFor(tenantId: string, moduleId: string): Promise<string
     if (!database) throw new Error(`no '${moduleId}' database in tenant ${tenantId}`);
     return database.id;
   });
+}
+
+/** A Task titled `title` in `tenant`, created through the REST write route; returns its id. */
+async function seedSearchTask(tenant: TenantFixture, title: string): Promise<string> {
+  return readString(
+    await sendOk(tenant.member, {
+      method: "POST",
+      path: `/api/databases/${await databaseIdFor(tenant.tenantId, "tasks")}/items`,
+      body: { properties: { name: title } },
+    }),
+    "id",
+  );
+}
+
+/** A word no other row holds, so a search for it finds only what the case seeded. */
+function freshSearchWord(): string {
+  return `isolationsearch${randomUUID().replaceAll("-", "").slice(0, 12)}`;
 }
 
 /** One row of every kind a route addresses, created in `tenantId` through production writes. */
@@ -2439,6 +2473,25 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         body: {},
       }));
     }),
+  // A gets an open card of its own in this case. B's reject of it answers like a random id and leaves the card
+  // as it was; A's own reject then closes it, so the refusal above is real and not an unreachable route.
+  "reject proposal": async () => {
+    const card = await seedProposalCard(a);
+    const cardOf = () => sendOk(a.member, { method: "GET", path: `/api/items/${card}` });
+    const before = await cardOf();
+    await leavesAUnchanged(async () => {
+      const answer = await expectForeignLikeRandom(b.member, [card], ([id]) => ({
+        method: "POST",
+        path: `/api/proposals/${id}/reject`,
+        body: { message: "Not mine" },
+      }));
+      expect(answer.status).toBe(404);
+    });
+    expect(await cardOf()).toBe(before);
+    const own = await send(a.member, { method: "POST", path: `/api/proposals/${card}/reject`, body: {} });
+    expect(own.status).toBe(200);
+    expect(readString(own.text, "properties", "status")).toBe("rejected");
+  },
   "task recurrence set": async () => {
     const [own, foreign] = [await datedTask(b), await datedTask(a)];
     const request = (id: string) => ({
@@ -3549,6 +3602,78 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(invalid.status).toBe(400);
     expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
   },
+  // A and B each get an area with one active project and, in turn, a Journal entry for today, seeded here and used by
+  // no other case (issue gh-1837). B reads no area, no day entry and no database of A, first while only A has rows and
+  // then with rows of its own; A reads its own rows, so B's answers are isolation and not an empty fixture.
+  "overview summary": async () => {
+    const overviewBody = z.object({
+      areas: z.array(z.object({ id: z.string(), activeProjectCount: z.number() })),
+      collections: z.array(z.object({ databaseId: z.string() })),
+      journalTodayItemId: z.string().nullable(),
+    });
+    const request: Request = { method: "GET", path: "/api/overview" };
+    const seed = async (tenant: TenantFixture): Promise<{ areaId: string; projectId: string; dayItemId: string }> => {
+      const create = async (moduleId: string, properties: Record<string, unknown>): Promise<string> =>
+        readString(
+          await sendOk(tenant.member, {
+            method: "POST",
+            path: `/api/databases/${await databaseIdFor(tenant.tenantId, moduleId)}/items`,
+            body: { properties },
+          }),
+          "id",
+        );
+      const areaId = await create("areas", { name: "Overview probe" });
+      const projectId = await create("projects", { name: "Overview probe project", status: "inProgress" });
+      await sendOk(tenant.member, {
+        method: "PUT",
+        path: `/api/items/${projectId}/relations/area/${areaId}`,
+        body: {},
+      });
+      const day = await inTenantTransaction(tenant.tenantId, async (client) => {
+        const journal = await getDatabaseByModuleId(client, "journal");
+        if (!journal) throw new Error("Journal not seeded");
+        // The seeded time zone of a tenant; the route reads the same setting.
+        return getOrCreateJournalItem(client, journal.id, "day", new Date(), "Europe/Prague");
+      });
+      return { areaId, projectId, dayItemId: day.id };
+    };
+    const foreign = await seed(a);
+    const tasksOfB = await databaseIdFor(b.tenantId, "tasks");
+    const beforeOwn = await expectExcludesA(b.member, request, [tasksOfB]);
+    expectNoneOf(beforeOwn.text, Object.values(foreign), "B's overview before B has rows of its own");
+    expect(overviewBody.parse(JSON.parse(beforeOwn.text)).journalTodayItemId).toBeNull();
+
+    const own = await seed(b);
+    const afterOwn = await expectExcludesA(b.member, request, [tasksOfB, own.areaId, own.dayItemId]);
+    expectNoneOf(afterOwn.text, Object.values(foreign), "B's overview");
+    const bodyOfB = overviewBody.parse(JSON.parse(afterOwn.text));
+    expect(bodyOfB.journalTodayItemId).toBe(own.dayItemId);
+    expect(bodyOfB.areas).toContainEqual({ id: own.areaId, activeProjectCount: 1 });
+
+    const asA = await sendOk(a.member, request);
+    expect(
+      [foreign.areaId, foreign.dayItemId, await databaseIdFor(a.tenantId, "tasks")].filter((id) => !asA.includes(id)),
+    ).toEqual([]);
+    expectNoneOf(asA, Object.values(own), "A's overview");
+  },
+  // A and B each get a Task whose title holds the same fresh word, seeded here and used by no other case (issue
+  // gh-1842). B finds its own Task and never A's; A finds its own and never B's, so an empty answer cannot pass for
+  // isolation. A refused input answers 400 without repeating the query.
+  "global search": async () => {
+    const word = freshSearchWord();
+    const foreignTaskId = await seedSearchTask(a, `${word} of A`);
+    const ownTaskId = await seedSearchTask(b, `${word} of B`);
+    const request: Request = { method: "GET", path: `/api/search?q=${word}&scope=task` };
+    const asB = await expectExcludesA(b.member, request, [ownTaskId]);
+    expectNoneOf(asB.text, [foreignTaskId], "B's search");
+    const asA = await sendOk(a.member, request);
+    expect(asA).toContain(foreignTaskId);
+    expect(asA).not.toContain(ownTaskId);
+    const invalid = await send(b.member, { method: "GET", path: `/api/search?q=${word}&scope=task,event&cursor=x` });
+    expect(invalid.status).toBe(400);
+    expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
+    expect(invalid.text).not.toContain(word);
+  },
   // Each tenant gets an Event with one participant, seeded here and used by no other case (issue gh-1796). B names
   // A's Event: the copy answers like a random id and creates nothing in either tenant. An Idempotency-Key is a
   // reservation of one tenant, so the key B used does not find A's copy.
@@ -3678,6 +3803,91 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const invalid = await send(b.member, impactOf("not-a-uuid"));
     expect(invalid.status).toBe(400);
     expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
+  },
+
+  // A and B each put an exception for the night of 2026-10-23 with a bedtime of its own, through the real route
+  // (issue gh-1835). B's put answers B's bedtime and none of A's, and A keeps its exception untouched.
+  "sleep night put": async () => {
+    const path = "/api/sleep/nights/2026-10-23";
+    const foreignBedTime = "20:41";
+    const ownBedTime = "20:43";
+    const foreignAnswer = await sendOk(a.member, { method: "PUT", path, body: { bedTime: foreignBedTime } });
+    const foreignPlanId = readString(foreignAnswer, "night", "planId");
+    const asB = await send(b.member, { method: "PUT", path, body: { bedTime: ownBedTime } });
+    expect(asB.status, asB.text).toBe(200);
+    expectNoneOf(asB.text, [...a.ids, foreignPlanId], "B's sleep night put");
+    expect(asB.text).toContain(`"bedTime":"${ownBedTime}"`);
+    expect(asB.text).not.toContain(foreignBedTime);
+    // A's exception is still A's own, so B's put wrote B's tenant and not A's.
+    const asA = await sendOk(a.member, { method: "GET", path: "/api/sleep/nights?from=2026-10-23&to=2026-10-23" });
+    expect(asA).toContain(`"bedTime":"${foreignBedTime}"`);
+    expect(asA).not.toContain(ownBedTime);
+    const invalid = await send(b.member, { method: "PUT", path: "/api/sleep/nights/2026-13-01", body: {} });
+    expect(invalid.status).toBe(400);
+    expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
+  },
+
+  // Each tenant gets a weekday Event series, seeded here and used by no other case (issue gh-1843). A has already
+  // materialized the 14 October occurrence of its series, so B's request for that very date meets a stored occurrence
+  // item of A and must still answer like a random id. A foreign series creates nothing in either tenant.
+  "event occurrence materialize": async () => {
+    const seed = async (tenant: TenantFixture): Promise<{ seriesId: string; eventsDatabaseId: string }> => {
+      const eventsDatabaseId = await databaseIdFor(tenant.tenantId, "events");
+      const seriesId = readString(
+        await sendOk(tenant.member, {
+          method: "POST",
+          path: `/api/databases/${eventsDatabaseId}/items`,
+          body: {
+            properties: {
+              name: "Occurrence probe",
+              date: "2026-10-12",
+              timeFrom: "09:00",
+              timeTo: "09:30",
+              recurrence: { kind: "weekdays", days: ["mon", "tue", "wed", "thu", "fri"] },
+            },
+          },
+        }),
+        "id",
+      );
+      return { seriesId, eventsDatabaseId };
+    };
+    const [own, foreign] = [await seed(b), await seed(a)];
+    const materializeOf = (seriesId: string | undefined, date = "2026-10-14"): Request => ({
+      method: "POST",
+      path: `/api/events/series/${seriesId}/occurrences/${date}`,
+    });
+    const eventsOf = (caller: Caller, databaseId: string): Promise<string> =>
+      sendOk(caller, { method: "POST", path: `/api/databases/${databaseId}/query`, body: {} });
+
+    // A materializes its own occurrence, so the 404 B gets for the series below is a refusal and not a missing route.
+    const foreignCreated = await send(a.member, materializeOf(foreign.seriesId));
+    expect(foreignCreated.status, foreignCreated.text).toBe(201);
+    const foreignOccurrenceId = readString(foreignCreated.text, "id");
+    const [eventsOfA, eventsOfB] = [
+      await eventsOf(a.member, foreign.eventsDatabaseId),
+      await eventsOf(b.member, own.eventsDatabaseId),
+    ];
+
+    for (const date of ["2026-10-14", "2026-10-15"]) {
+      const answer = await expectForeignLikeRandom(b.member, [foreign.seriesId], ([id]) => materializeOf(id, date));
+      expect(answer.status, date).toBe(404);
+      expectNoneOf(answer.text, [foreign.seriesId, foreignOccurrenceId], "B's refusal");
+    }
+    expect(await eventsOf(a.member, foreign.eventsDatabaseId)).toBe(eventsOfA);
+    expect(await eventsOf(b.member, own.eventsDatabaseId)).toBe(eventsOfB);
+
+    // B's own series answers 201, then 200 with the same item, and 400 for a date it does not give: the three answers a
+    // foreign series must not get.
+    const created = await send(b.member, materializeOf(own.seriesId));
+    expect(created.status, created.text).toBe(201);
+    expect(readString(created.text, "properties", "seriesId")).toBe(own.seriesId);
+    expect(readString(created.text, "properties", "occurrenceDate")).toBe("2026-10-14");
+    expectNoneOf(created.text, [foreign.seriesId, foreignOccurrenceId], "B's occurrence");
+    const again = await send(b.member, materializeOf(own.seriesId));
+    expect(again.status).toBe(200);
+    expect(readString(again.text, "id")).toBe(readString(created.text, "id"));
+    expect((await send(b.member, materializeOf(own.seriesId, "2026-10-17"))).status).toBe(400);
+    expectNoneOf(await eventsOf(b.member, own.eventsDatabaseId), [foreign.seriesId, foreignOccurrenceId], "B's Events");
   },
 
   // --- tenant: approvals, agent runs, MCP ----------------------------------------------------
@@ -4003,6 +4213,48 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       expect(withoutTimestamps(await send(b.member, grant(a.projectItemId)), a.projectItemId)).toEqual(
         withoutTimestamps(await send(b.member, grant(randomProject)), randomProject),
       );
+    }),
+  "project database grants": async () => {
+    const own = await sendOk(b.member, { method: "GET", path: `/api/projects/${b.projectItemId}/database-grants` });
+    expect(own).toContain(b.databaseId);
+    const answer = await expectForeignLikeRandom(b.member, [a.projectItemId], ([id]) => ({
+      method: "GET",
+      path: `/api/projects/${id}/database-grants`,
+    }));
+    expect(answer.status).toBe(404);
+    expectNoneOf(answer.text, a.ids, "project database grants");
+    // B's own project lists B's databases only: none of A's user-created or system databases.
+    await expectExcludesA(b.member, { method: "GET", path: `/api/projects/${b.projectItemId}/database-grants` }, [
+      b.databaseId,
+    ]);
+  },
+  "project database grant set": () =>
+    leavesAUnchanged(async () => {
+      const storedGrants = async (): Promise<string[]> => {
+        const { rows } = await adminPool.query<{ project_item_id: string; database_id: string; access: string }>(
+          "SELECT project_item_id, database_id, access FROM agent_database_grants WHERE project_item_id = ANY($1) ORDER BY project_item_id, database_id",
+          [[a.projectItemId, b.projectItemId]],
+        );
+        return rows.map((row) => `${row.project_item_id} ${row.database_id} ${row.access}`);
+      };
+      const before = await storedGrants();
+      // A's project, with B's own database and with A's.
+      for (const databaseId of [b.databaseId, a.databaseId]) {
+        const project = await expectForeignLikeRandom(b.member, [a.projectItemId], ([id]) => ({
+          method: "PATCH",
+          path: `/api/projects/${id}/database-grants`,
+          body: { databaseId, access: "none" },
+        }));
+        expect(project.status).toBe(404);
+      }
+      // B's own project, with A's database.
+      const database = await expectForeignLikeRandom(b.member, [a.databaseId], ([id]) => ({
+        method: "PATCH",
+        path: `/api/projects/${b.projectItemId}/database-grants`,
+        body: { databaseId: id, access: "none" },
+      }));
+      expect(database.status).toBe(404);
+      expect(await storedGrants()).toEqual(before);
     }),
   "mcp tool registration reclassify": () =>
     leavesAUnchanged(async () => {
@@ -4362,6 +4614,16 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       method: "GET",
       path: `/api/items/${id}/relations?propertyKey=${a.relationPropertyKey}`,
     }));
+  },
+  "list related collections": async () => {
+    // A foreign item answers exactly as a random one does, and B's own related collections name nothing of A's.
+    for (const foreignId of [a.itemId, a.targetItemId]) {
+      await expectForeignLikeRandom(b.member, [foreignId], ([id]) => ({
+        method: "GET",
+        path: `/api/items/${id}/related`,
+      }));
+    }
+    await expectExcludesA(b.member, { method: "GET", path: `/api/items/${b.targetItemId}/related` }, [b.databaseId]);
   },
   "count items": async () => {
     // A foreign database answers exactly as a random one does: alone, grouped, with the collection filter, and
@@ -4896,6 +5158,13 @@ function ownerProbes(): OwnerProbe[] {
       contains: [a.targetItemId],
     },
     {
+      label: "list related collections",
+      ids: [a.targetItemId],
+      build: get(([id]) => `/api/items/${id}/related`),
+      status: 200,
+      contains: [a.databaseId],
+    },
+    {
       label: "count items",
       ids: [a.databaseId],
       build: ([databaseId]) => ({
@@ -4978,6 +5247,24 @@ function ownerProbes(): OwnerProbe[] {
       build: get(([id]) => `/api/projects/${id}/mcp-grants`),
       status: 200,
       contains: [a.mcpToolRegistrationId, '"granted":true'],
+    },
+    {
+      label: "project database grants",
+      ids: [a.projectItemId],
+      build: get(([id]) => `/api/projects/${id}/database-grants`),
+      status: 200,
+      contains: [a.databaseId],
+    },
+    {
+      label: "project database grant set",
+      ids: [a.projectItemId, a.databaseId],
+      // The database's default access, so A's own request stores nothing and needs no undo.
+      build: ([project, databaseId]) => ({
+        method: "PATCH",
+        path: `/api/projects/${project}/database-grants`,
+        body: { databaseId, access: "write" },
+      }),
+      status: 200,
     },
     {
       label: "transcript detail",
@@ -5295,6 +5582,12 @@ const MCP_CASES = {
   "relation.list": async (p) => {
     await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId }));
   },
+  "relation.related": async (p) => {
+    // `a.targetItemId` has a collection of its own (the database holding the edge to it), which must not be seen.
+    await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId }));
+    await p.foreignLikeRandom([a.targetItemId], ([itemId]) => ({ itemId }));
+    await p.excludesA({ itemId: b.targetItemId }, [b.databaseId]);
+  },
   "item.count": async (p) => {
     await p.foreignLikeRandom([a.databaseId], ([databaseId]) => ({ items: [{ databaseId }] }));
     await p.foreignLikeRandom([a.databaseId], ([databaseId]) => ({
@@ -5312,6 +5605,12 @@ const MCP_CASES = {
       facets: [a.relationPropertyKey, { path: [a.relationPropertyKey, a.propertyKey] }],
     }));
     await p.excludesA({ databaseId: b.databaseId, facets: [b.relationPropertyKey] }, [b.targetItemId]);
+  },
+  search: async (p) => {
+    const word = freshSearchWord();
+    const foreignTaskId = await seedSearchTask(a, `${word} of A`);
+    const ownTaskId = await seedSearchTask(b, `${word} of B`);
+    await p.excludesA({ q: word, scope: ["task"] }, [ownTaskId], [foreignTaskId]);
   },
   "link.unlink": (p) => p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, propertyKey: a.propertyKey })),
   "link.relink": (p) => p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, propertyKey: a.propertyKey })),
@@ -5768,6 +6067,65 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     const replayBody: unknown = JSON.parse(replay.text);
     expect(replayBody).toEqual(firstBody);
   });
+
+  it.each(["confirm", "reject"] as const)(
+    "answers a stale ifVersion on %s with 409 and the current card, and keeps the replay of a decided card at 200",
+    async (action) => {
+      const cardId = await runInTenant(a.tenantId, () =>
+        withTransaction(pool, async (client) => {
+          const proposals = await getDatabaseByModuleId(client, "processingProposals");
+          const tasks = await getDatabaseByModuleId(client, "tasks");
+          if (!proposals || !tasks) throw new Error("Missing proposal or task database");
+          const item = await createItemWithClient(
+            client,
+            {
+              databaseId: proposals.id,
+              properties: {
+                status: "proposed",
+                kind: "inbox",
+                proposal: { entityKind: "database", target: tasks.id, properties: { name: "Versioned task" } },
+              },
+            },
+            { allowedSystemKeys: ["status", "kind", "proposal"] },
+          );
+          return item.id;
+        }),
+      );
+      const path = `/api/proposals/${cardId}/${action}`;
+      const decided = action === "confirm" ? "confirmed" : "rejected";
+      const stale = "2000-01-01T00:00:00.000Z";
+      const current = readString(await sendOk(a.member, { method: "GET", path: `/api/items/${cardId}` }), "updatedAt");
+
+      const conflict = await send(a.member, { method: "POST", path, body: { ifVersion: stale } });
+      expect(conflict.status).toBe(409);
+      expect(JSON.parse(conflict.text)).toMatchObject({
+        error: {
+          code: "version_conflict",
+          details: { currentItem: { id: cardId, updatedAt: current, properties: { status: "proposed" } } },
+        },
+      });
+      expect(await sendOk(a.member, { method: "GET", path: `/api/items/${cardId}` })).toContain('"status":"proposed"');
+
+      const first = await send(a.member, { method: "POST", path, body: { ifVersion: current } });
+      expect(first.status).toBe(200);
+      expect(JSON.parse(first.text)).toMatchObject({ id: cardId, properties: { status: decided } });
+      const replay = await send(a.member, { method: "POST", path, body: { ifVersion: stale } });
+      expect(replay.status).toBe(200);
+      expect(JSON.parse(replay.text)).toEqual(JSON.parse(first.text));
+
+      // The other decision is incompatible with the stored status, whatever ifVersion says.
+      const other = action === "confirm" ? "reject" : "confirm";
+      const refused = await send(a.member, {
+        method: "POST",
+        path: `/api/proposals/${cardId}/${other}`,
+        body: { ifVersion: stale },
+      });
+      expect(refused.status).toBe(400);
+      expect(JSON.parse(refused.text)).toMatchObject({
+        error: { code: "validation_failed", details: { field: "status", currentStatus: decided } },
+      });
+    },
+  );
 
   it("lists A's own approval request and unread notification for A", async () => {
     expect(readIdArray(await sendOk(a.member, { method: "GET", path: "/api/approval-requests" }), "rows")).toEqual([
@@ -6494,6 +6852,67 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
     } finally {
       await sendOk(a.member, { method: "PATCH", path, body: { approvals: before.approvals } });
     }
+  });
+
+  it("serves the project database grants to a user session only and applies a patch to the project's agent", async () => {
+    const path = `/api/projects/${b.projectItemId}/database-grants`;
+    const healthId = await databaseIdFor(b.tenantId, "healthRecords");
+    const tasksId = await databaseIdFor(b.tenantId, "tasks");
+    const grants = async (): Promise<string[]> => {
+      const { rows } = await adminPool.query<{ database_id: string; access: string }>(
+        "SELECT database_id, access FROM agent_database_grants WHERE project_item_id = $1 ORDER BY database_id",
+        [b.projectItemId],
+      );
+      return rows.map((row) => `${row.database_id} ${row.access}`);
+    };
+    const accessIn = (text: string, databaseId: string): unknown => {
+      const rows: unknown = JSON.parse(text);
+      const parsed = z.object({ rows: z.array(z.object({ databaseId: z.string(), access: z.string() })) }).parse(rows);
+      return parsed.rows.find((row) => row.databaseId === databaseId)?.access;
+    };
+    const patch = (caller: Caller | null, body: unknown) => send(caller, { method: "PATCH", path, body });
+
+    // Neither route answers without a session, nor to the run credential of the project's own agent.
+    for (const caller of [null, mcpRunCredential]) {
+      const attempts = [
+        await send(caller, { method: "GET", path }),
+        await patch(caller, { databaseId: healthId, access: "write" }),
+      ];
+      expect(attempts.map((attempt) => attempt.status)).toEqual([401, 401]);
+    }
+    expect(await grants()).toEqual([]);
+
+    // A session sees the sensitive database closed, opens it, and the agent of the project is let in.
+    expect(accessIn(await sendOk(b.member, { method: "GET", path }), healthId)).toBe("none");
+    const opened = await patch(b.member, { databaseId: healthId, access: "write" });
+    expect(opened.status, opened.text).toBe(200);
+    expect(JSON.parse(opened.text)).toMatchObject({ databaseId: healthId, key: "healthRecords", access: "write" });
+    expect(await grants()).toEqual([`${healthId} write`]);
+    expect(accessIn(await sendOk(b.member, { method: "GET", path }), healthId)).toBe("write");
+    const record = readString(
+      await sendOk(b.member, {
+        method: "POST",
+        path: `/api/databases/${healthId}/items`,
+        body: { properties: { name: "Grants probe" } },
+      }),
+      "id",
+    );
+    const agentRead = () => send(mcpRunCredential, mcpCall("item.get", { itemId: record }));
+    const allowed = await agentRead();
+    expect(allowed.status, allowed.text).toBe(200);
+    expect(allowed.text).toContain(record);
+
+    // Closing it again removes the row and the same agent call is refused.
+    expect((await patch(b.member, { databaseId: healthId, access: "none" })).status).toBe(200);
+    expect(await grants()).toEqual([]);
+    const refused = await agentRead();
+    expect(refused.text).toContain('"code":"forbidden"');
+    expect(refused.text).not.toContain("Grants probe");
+
+    // An open system database and a malformed body are 400 and store nothing.
+    expect((await patch(b.member, { databaseId: tasksId, access: "none" })).status).toBe(400);
+    expect((await patch(b.member, { databaseId: healthId, access: "admin" })).status).toBe(400);
+    expect(await grants()).toEqual([]);
   });
 
   it("omits a historical foreign blob from an authenticated item envelope", async () => {

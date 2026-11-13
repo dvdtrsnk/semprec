@@ -79,6 +79,8 @@ async function newUserDatabase(name: string): Promise<DatabaseRow> {
 const human = (): AuthenticatedActor => ({ userId, restSession: true });
 /** An actor with no run credential and no external-client marker (the `/mcp` human token carries it, issue #1998): no project. */
 const unmarkedActor = (): AuthenticatedActor => ({ userId });
+/** The `/mcp` human token (issue #1998): an external AI client, which is refused every sensitive database. */
+const externalClient = (): AuthenticatedActor => ({ userId, externalClient: true });
 
 describe("agent access to databases through the generic operation gateway (issue #1810)", () => {
   beforeAll(async () => {
@@ -114,6 +116,8 @@ describe("agent access to databases through the generic operation gateway (issue
           gateway().invoke("view.query", actor, ALL_CAPABILITIES, { viewId: view.id }),
         "relation.list": (actor: AuthenticatedActor) =>
           gateway().invoke("relation.list", actor, ALL_CAPABILITIES, { itemId: record.id }),
+        "relation.related": (actor: AuthenticatedActor) =>
+          gateway().invoke("relation.related", actor, ALL_CAPABILITIES, { itemId: record.id }),
       };
 
       for (const [operation, read] of Object.entries(reads)) {
@@ -126,6 +130,44 @@ describe("agent access to databases through the generic operation gateway (issue
       expect((await reads["database.query"](agent)).items.map((entry) => entry.id)).toContain(record.id);
       expect((await reads["view.query"](agent)).items.map((entry) => entry.id)).toContain(record.id);
       expect(await reads["relation.list"](agent)).toEqual([]);
+      expect(await reads["relation.related"](agent)).toEqual([]);
+    });
+  });
+
+  it("answers 403 forbidden to relation.related of a health record without a grant, leaves the health records row out for a project that has a related health record, and lists it once a read grant is set, while a human actor sees it either way and an external client never does", async () => {
+    await inTenantZero(async () => {
+      const record = await newRecord();
+      const project = await chokePoint.createItem({ databaseId: projectsDatabase.id, properties: {} });
+      const property = (await chokePoint.listProperties(health.id)).find((candidate) => candidate.key === "projects");
+      if (!property) throw new Error("Missing the relation property 'projects' of the health records database");
+      await chokePoint.createRelation({
+        relationPropertyId: property.id,
+        callerItemId: record.id,
+        targetItemId: project.id,
+      });
+      const agent = await newAgent();
+      const related = (actor: AuthenticatedActor, itemId: string) =>
+        gateway().invoke("relation.related", actor, ALL_CAPABILITIES, { itemId });
+      const healthRow = (rows: Awaited<ReturnType<typeof related>>) =>
+        rows.find((row) => row.databaseKey === "healthRecords");
+
+      await expect(related(agent, record.id)).rejects.toMatchObject(FORBIDDEN);
+      expect(healthRow(await related(agent, project.id))).toBeUndefined();
+      for (const actor of [human(), unmarkedActor()]) {
+        expect(healthRow(await related(actor, project.id))).toMatchObject({ databaseId: health.id, count: 1 });
+        await expect(related(actor, record.id)).resolves.toBeDefined();
+      }
+      // An external client has no project and no grant to set: it is refused the sensitive database and its row.
+      await expect(related(externalClient(), record.id)).rejects.toMatchObject(FORBIDDEN);
+      expect(healthRow(await related(externalClient(), project.id))).toBeUndefined();
+
+      await setGrant(agent, health, "read");
+      expect(healthRow(await related(agent, project.id))).toMatchObject({ databaseId: health.id, count: 1 });
+      await expect(related(agent, record.id)).resolves.toBeDefined();
+
+      await setGrant(agent, health, "none");
+      await expect(related(agent, record.id)).rejects.toMatchObject(FORBIDDEN);
+      expect(healthRow(await related(agent, project.id))).toBeUndefined();
     });
   });
 

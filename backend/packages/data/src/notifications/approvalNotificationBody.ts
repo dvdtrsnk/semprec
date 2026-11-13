@@ -25,6 +25,9 @@ const BODY_KEY_BY_DESCRIPTION_KEY = new Map<string, string>([
   ["approval.pageReplace", "approval.pageReplace"],
   ["approval.mcpInvoke", "approval.mcpInvoke"],
   ["approval.moduleTool", "approval.moduleTool"],
+  ["approval.heartbeatCreate", "approval.heartbeatCreate"],
+  ["approval.heartbeatUpdate", "approval.heartbeatUpdate"],
+  ["approval.heartbeatSetEnabled", "approval.heartbeatSetEnabled"],
 ]);
 
 /**

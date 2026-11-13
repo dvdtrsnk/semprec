@@ -6,19 +6,22 @@ import { getItemsByIds } from "../chokePoint/itemsStore.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { CALENDARS_MODULE_ID } from "../seed/calendarsKeys.js";
 import { EVENTS_MODULE_ID, TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { EVENT_SERIES_ID_PROPERTY_KEY } from "./eventOccurrenceId.js";
+import { readEventSeries } from "./eventSeries.js";
 import { readTime } from "./eventTime.js";
 import { isCalendarDate } from "./eventValidationHook.js";
 import { logger } from "./logger.js";
 import {
   CALENDAR_TIMELINE_SOURCES,
   type CalendarDerivedTimelineItem,
+  type CalendarEventOccurrence,
   type CalendarTimelineContext,
   type CalendarTimelineEntry,
   type CalendarTimelineItem,
 } from "./timelineSources.js";
 
 /** The `items` columns a core source reads. */
-interface StoredRow {
+export interface StoredRow {
   id: string;
   properties: Record<string, unknown>;
   updated_at: Date;
@@ -59,7 +62,7 @@ const TASK_CANDIDATES_SQL = `
      AND i.properties->>'status' IS DISTINCT FROM $5
      AND (days.day !~ $4 OR days.day COLLATE "C" BETWEEN $2 AND $3)`;
 
-interface Schedule {
+export interface Schedule {
   date: string;
   endDate: string | null;
   timeFrom: string | null;
@@ -100,7 +103,7 @@ function readSchedule(
  * (`taskEffectiveEnd`). Only a timed Event without a `timeTo` has no stored value that decides, so its end is
  * the time of `eventEnd`, the last minute of its last day.
  */
-function effectiveTo(kind: CalendarTimelineItem["kind"], schedule: Schedule, zone: string): string | null {
+export function effectiveTo(kind: CalendarTimelineItem["kind"], schedule: Schedule, zone: string): string | null {
   const { date, endDate, timeFrom, timeTo } = schedule;
   if (timeFrom === null) return null;
   if (timeTo !== null) return timeTo;
@@ -188,7 +191,7 @@ const EVENT_TRANSCRIPTS_SQL = `
  * The transcript of every Event of `eventIds` that has a live one (issue #1721), read with one statement
  * whatever the number of Events. An Event without a live transcript has no entry.
  */
-async function readEventTranscripts(
+export async function readEventTranscripts(
   client: PoolClient,
   eventsDatabaseId: string,
   eventIds: string[],
@@ -208,14 +211,14 @@ const TASK_RELATION_KEYS = ["project", "people"] as const;
  * number of rows: one reads the rows' edges, `getItemsByIds` reads the linked projects and people (live items
  * only) and `readCalendarIds` the calendars. A candidate whose stored date or times are not valid is left out,
  * with one log line that carries its id. Every item is returned with `transcript: null`; the Events source
- * fills it.
+ * and the Event occurrence source (`readEventTranscripts`) fill it.
  */
-async function toTimelineItems(
+export async function toTimelineItems(
   client: PoolClient,
   kind: CalendarTimelineItem["kind"],
   databaseId: string,
   rows: StoredRow[],
-  context: CalendarTimelineContext,
+  context: Pick<CalendarTimelineContext, "timezone">,
 ): Promise<CalendarTimelineItem[]> {
   const scheduled: { row: StoredRow; schedule: Schedule }[] = [];
   for (const row of rows) {
@@ -289,8 +292,10 @@ async function toTimelineItems(
 
 /**
  * The core Events source: every live Event whose `date` is on or before `context.to` and whose last day
- * (`endDate`, else `date`) is on or after `context.from`, once, with its range and its transcript. A tenant
- * without an Events database has none.
+ * (`endDate`, else `date`) is on or after `context.from`, once, with its range and its transcript. An Event that
+ * is a recurring series (`readEventSeries`) and an occurrence item (it has a `seriesId`) are left out: they come
+ * only from the Event occurrence source (issue gh-1877), so neither is shown twice. A tenant without an Events
+ * database has none.
  */
 export async function readEventTimelineItems(
   client: PoolClient,
@@ -304,7 +309,10 @@ export async function readEventTimelineItems(
     context.to,
     DAY_PATTERN,
   ]);
-  const items = await toTimelineItems(client, "event", events.id, rows, context);
+  const stored = rows.filter(
+    (row) => row.properties[EVENT_SERIES_ID_PROPERTY_KEY] == null && readEventSeries(row.properties) === null,
+  );
+  const items = await toTimelineItems(client, "event", events.id, stored, context);
   const transcripts = await readEventTranscripts(
     client,
     events.id,
@@ -364,7 +372,10 @@ function compareText(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-/** The fields of the `compact` shape, which the month view reads. */
+/**
+ * The fields of the `compact` shape, which the month view reads. An occurrence of a recurring Event also carries
+ * `seriesId` and `occurrenceDate` (issue gh-1877), so a month can tell the occurrences that were changed apart.
+ */
 export type CalendarTimelineCompactItem = Pick<
   CalendarTimelineItem,
   | "id"
@@ -378,7 +389,8 @@ export type CalendarTimelineCompactItem = Pick<
   | "status"
   | "updatedAt"
   | "readOnly"
->;
+> &
+  Partial<Pick<CalendarEventOccurrence, "seriesId" | "occurrenceDate">>;
 
 /**
  * The compact shape of an entry. A derived entry has none of the stored-only fields the projection drops, so
@@ -387,7 +399,8 @@ export type CalendarTimelineCompactItem = Pick<
 function toCompactItem(entry: CalendarTimelineEntry): CalendarTimelineCompactItem | CalendarDerivedTimelineItem {
   if (entry.kind !== "event" && entry.kind !== "task") return entry;
   const { id, kind, title, calendarId, allDay, date, endDate, timeFrom, status, updatedAt, readOnly } = entry;
-  return { id, kind, title, calendarId, allDay, date, endDate, timeFrom, status, updatedAt, readOnly };
+  const compact = { id, kind, title, calendarId, allDay, date, endDate, timeFrom, status, updatedAt, readOnly };
+  return "seriesId" in entry ? { ...compact, seriesId: entry.seriesId, occurrenceDate: entry.occurrenceDate } : compact;
 }
 
 export interface CalendarTimeline {

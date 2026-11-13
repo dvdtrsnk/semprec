@@ -1,7 +1,15 @@
 import type { ModuleDatabaseDescriptor, ModuleManifest } from "@semprec/module-registry";
 import { SLEEP_NIGHTS_MODULE_ID, SLEEP_PLANS_MODULE_ID, SLEEP_SETTINGS_MODULE_ID } from "../seed/sleepModuleKeys.js";
+import { SLEEP_RESYNC_TASK_NAME } from "./sleepResync.js";
 
-export { sleepNightsGet } from "./sleepRouteHandlers.js";
+export { handleSleepResync, sleepResyncPayloadSchema } from "./sleepResync.js";
+export {
+  createSleepNightSetTool,
+  createSleepNightsGetTool,
+  sleepNightSetArgsSchema,
+  sleepNightsGetArgsSchema,
+} from "./sleepAgentTools.js";
+export { sleepNightPut, sleepNightsGet } from "./sleepRouteHandlers.js";
 
 /**
  * The descriptors of the three sleep databases (issue #1776). None declares an overview or a switcher
@@ -18,8 +26,12 @@ export const SLEEP_DATABASE_DESCRIPTORS = {
 /**
  * Manifest of the sleep module (issue #1776): three system databases seeded by `seed/seedSleepModule.ts` and
  * owned by one system project. The labels of the databases, of their properties and options, and the names
- * of the two seeded plans are in `i18n/` beside this file. Its one custom route is `GET /api/sleep/nights`
- * (issue gh-1809), `sleepRouteHandlers.ts`.
+ * of the two seeded plans are in `i18n/` beside this file. Its custom routes are `GET /api/sleep/nights`
+ * (issue gh-1809) and `PUT /api/sleep/nights/:night` (issue gh-1835), both in `sleepRouteHandlers.ts`. Its one task is `sleep.resync`
+ * (issue gh-1838), `sleepResync.ts`, which the hooks of `sleepWriteHooks.ts` enqueue. Its two agent tools, `sleepNightsGet` and
+ * `sleepNightSet` (issue gh-1840, `sleepAgentTools.ts`), need the capabilities `sleep.read` and `sleep.write`; the project's
+ * database grants (issue gh-1810) decide whether a call may read or write sleep data. `sleepNightSet` declares no approval:
+ * it only creates or updates items of the sleep nights database.
  */
 export const manifest: ModuleManifest = {
   id: "sleep",
@@ -28,8 +40,33 @@ export const manifest: ModuleManifest = {
   removable: false,
   systemProject: true,
   databases: [SLEEP_DATABASE_DESCRIPTORS.settings, SLEEP_DATABASE_DESCRIPTORS.plans, SLEEP_DATABASE_DESCRIPTORS.nights],
-  capabilities: [],
-  agentTools: [],
+  capabilities: ["sleep.read", "sleep.write"],
+  agentTools: [
+    {
+      name: "sleepNightsGet",
+      handlerExport: "createSleepNightsGetTool",
+      argumentSchemaExport: "sleepNightsGetArgsSchema",
+      capability: "sleep.read",
+      approval: "none",
+      riskClass: "read",
+    },
+    {
+      name: "sleepNightSet",
+      handlerExport: "createSleepNightSetTool",
+      argumentSchemaExport: "sleepNightSetArgsSchema",
+      capability: "sleep.write",
+      approval: "none",
+      riskClass: "write",
+    },
+  ],
+  taskNames: [
+    {
+      name: SLEEP_RESYNC_TASK_NAME,
+      payloadSchemaExport: "sleepResyncPayloadSchema",
+      handlerExport: "handleSleepResync",
+      queueAffinity: "api",
+    },
+  ],
   customRoutes: [
     {
       name: "sleepNights",
@@ -38,6 +75,15 @@ export const manifest: ModuleManifest = {
       handlerExport: "sleepNightsGet",
       // The response aggregates the settings, the plans, the night exceptions and the tenant's time zone into
       // resolved nights; it is not an item of any database, so the generic item reads cannot express it.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "sleepNightPut",
+      method: "PUT",
+      path: "/api/sleep/nights/:night",
+      handlerExport: "sleepNightPut",
+      // A find-or-create and a patch of the night's one exception under the per-night lock, answered with the
+      // resolved night, for callers that hold no item version.
       justification: "transactional-semantics",
     },
   ],

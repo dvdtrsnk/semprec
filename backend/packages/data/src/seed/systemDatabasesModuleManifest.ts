@@ -76,6 +76,7 @@ export {
   createReplaceEventPeopleRouteHandler,
 } from "../calendar/eventParticipantsRouteHandlers.js";
 export { createDuplicateCalendarItemRouteHandler } from "../calendar/duplicateCalendarItemRouteHandler.js";
+export { createMaterializeEventOccurrenceRouteHandler } from "../calendar/eventOccurrenceRouteHandlers.js";
 export { createAreaOverviewRouteHandler } from "../areas/areaOverviewRouteHandler.js";
 
 const AREA_VALUE = { areaValue: true } as const;
@@ -688,6 +689,14 @@ export const manifest: ModuleManifest = {
       path: "/api/calendar/items/:id/duplicate",
       handlerExport: "createDuplicateCalendarItemRouteHandler",
       // The copy and its edges commit together under the source's row lock, with the request's idempotency key (issue gh-1796).
+      justification: "transactional-semantics",
+    },
+    {
+      name: "materializeEventOccurrence",
+      method: "POST",
+      path: "/api/events/series/:seriesId/occurrences/:date",
+      handlerExport: "createMaterializeEventOccurrenceRouteHandler",
+      // The existence check, the copy of the series Event and its edges commit together under the occurrence's advisory lock (issue gh-1843).
       justification: "transactional-semantics",
     },
     {

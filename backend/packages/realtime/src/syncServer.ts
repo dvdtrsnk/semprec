@@ -140,6 +140,12 @@ function rejectUpgrade(socket: Duplex): void {
  *   envelope's tenant.
  * - `invalidation` with `scope: "sempStatus"` sends a frame with no field but its scope to every socket of
  *   the envelope's tenant.
+ * - `invalidation` with `scope: "notificationPreferences"`, `"badgeCounts"` or `"account"` sends a frame with no
+ *   field but its scope only to the sockets of the user the message names inside the envelope's tenant.
+ * - `invalidation` with `scope: "overview"` sends a frame with no field but its scope to every socket of the
+ *   envelope's tenant.
+ * - `invalidation` with `scope: "mcpServers"` sends a frame with no field but its scope to every socket of the
+ *   envelope's tenant.
  * - `invalidation` with `scope: "inboxCards"` sends a thin frame naming the card and the operation to
  *   every socket of the envelope's tenant, narrowed to one user's sockets when the message names one.
  * - `notification_created` and `notification_read_state` fetch the referenced row(s)' current,
@@ -487,6 +493,22 @@ export async function createSyncServer(pool: Pool, options: SyncServerOptions): 
           }
           if (parsed.scope === "sempStatus") {
             sendToTenant(tenantId, { type: "invalidate", scope: "sempStatus" });
+            return;
+          }
+          if (parsed.scope === "overview") {
+            sendToTenant(tenantId, { type: "invalidate", scope: "overview" });
+            return;
+          }
+          if (parsed.scope === "mcpServers") {
+            sendToTenant(tenantId, { type: "invalidate", scope: "mcpServers" });
+            return;
+          }
+          if (
+            parsed.scope === "notificationPreferences" ||
+            parsed.scope === "badgeCounts" ||
+            parsed.scope === "account"
+          ) {
+            sendToTenant(tenantId, { type: "invalidate", scope: parsed.scope }, parsed.userId);
             return;
           }
           if (parsed.scope === "inboxCards") {

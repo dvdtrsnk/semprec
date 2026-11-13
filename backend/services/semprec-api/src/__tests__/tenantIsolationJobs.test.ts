@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { escapeIdentifier, type Pool } from "pg";
 import * as Y from "yjs";
 import { z } from "zod";
@@ -96,6 +96,32 @@ import {
 import { createApiActionRegistry } from "../actionRegistryComposition.js";
 import { createMailSyncAdapters } from "../mailSyncAdapters.js";
 import { runTranscriptionFixture } from "./transcriptionHttpFixture.js";
+
+/** What the spy on the APNs background send recorded: the device token and the data of one silent push. */
+interface RecordedBackgroundPush {
+  deviceToken: string;
+  data: unknown;
+}
+
+const backgroundPushes = vi.hoisted(() => ({ sent: [] as RecordedBackgroundPush[] }));
+
+// Passthrough spy on the APNs background send the `sleep.resync` task calls by default: a call still reaches the
+// real adapter, which answers `not-configured` without a network request while no APNs configuration is set, so
+// the job's own wiring runs and the case observes which registration each run sent to. The path is the module
+// the task imports (`packages/data/src/push/apnsAdapter.ts`), given as a string because this package may not
+// import another package's source.
+vi.mock("../../../../packages/data/src/push/apnsAdapter.js", async (importOriginal) => {
+  const actual = await importOriginal<{
+    sendApnsBackgroundPush(target: { deviceToken: string }, data: Record<string, unknown>): Promise<unknown>;
+  }>();
+  return {
+    ...actual,
+    async sendApnsBackgroundPush(target: { deviceToken: string }, data: Record<string, unknown>) {
+      backgroundPushes.sent.push({ deviceToken: target.deviceToken, data });
+      return actual.sendApnsBackgroundPush(target, data);
+    },
+  };
+});
 
 /**
  * Two-tenant proof that every task of the `api` affinity set keeps its data, notifications and side
@@ -793,6 +819,41 @@ const invitationTransports: MailTransportFactory = {
   },
 };
 
+/** The queue name of the sleep module's resync task (`sleepModuleManifest.ts`, issue gh-1838). */
+const SLEEP_RESYNC_TASK = "sleep.resync";
+
+/** Revokes `tenant`'s user's registrations and gives the user one active iOS APNs registration; returns its device token. */
+async function seedIosRegistration(tenant: Tenant): Promise<string> {
+  const deviceToken = randomUUID();
+  await inTenant(tenant, async () => {
+    // The registrations other cases left for this user are not this job's business.
+    await revokeAllPushSubscriptionsForUser(pool, tenant.userId);
+    await upsertApnsSubscription(pool, {
+      userId: tenant.userId,
+      sessionId: null,
+      platform: "ios",
+      deviceToken,
+      apnsEnvironment: "sandbox",
+    });
+  });
+  return deviceToken;
+}
+
+/** The device tokens of `tenant`'s user's active APNs registrations. */
+async function activeApnsTokens(tenant: Tenant): Promise<string[]> {
+  const found = await rows<{ device_token: string }>(
+    tenant,
+    "SELECT device_token FROM push_subscriptions WHERE user_id = $1 AND channel = 'apns' AND revoked_at IS NULL",
+    [tenant.userId],
+  );
+  return found.map((row) => row.device_token);
+}
+
+/** The silent pushes sent since the last `seed` of the `sleep.resync` case. */
+function sleepResyncSends(): RecordedBackgroundPush[] {
+  return [...backgroundPushes.sent];
+}
+
 /** The invitation of `tenant`'s Event to its person, as the system writer stores it: pending, naming the mailbox. */
 interface SeededInvitation {
   eventId: string;
@@ -1429,6 +1490,26 @@ const cases: Record<string, TaskCase> = {
           [tenant.userId],
         ),
       ).toEqual([{ active: 1 }]);
+    },
+  },
+  [SLEEP_RESYNC_TASK]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      // The default sender is the real APNs adapter behind the spy above. With no APNs configuration it answers
+      // `not-configured` without a network request, which the job accepts, so the run neither fails nor revokes.
+      // Every tenant gets an active iOS registration of its own, so a job that read or pushed for a tenant other
+      // than its own would have a registration to send to; the spy shows which one each run sent to.
+      useUnconfiguredApns();
+      for (const other of [tenantA, tenantB]) await seedIosRegistration(other);
+      backgroundPushes.sent.length = 0;
+      return { tenantId: tenant.tenantId };
+    },
+    async expectDone(tenant) {
+      // Exactly one silent push, to the one registration of this tenant's user and to none of another tenant's;
+      // `not-configured` does not revoke, so that registration is still active.
+      const tokens = await activeApnsTokens(tenant);
+      expect(tokens).toHaveLength(1);
+      expect(sleepResyncSends()).toEqual([{ deviceToken: tokens[0], data: { kind: "sleepResync" } }]);
     },
   },
   [CORE_TASK_NAMES.TENANT_EXPORT]: {
@@ -2290,6 +2371,14 @@ describe("background task isolation across two tenants: api runtime (issue #1056
             outcome: { attempts: null, lastError: null },
             effects: { rowCountDeltas: {}, changedTables: [], notificationKinds: [], queuedJobs: [] },
           });
+        }
+        if (name === SLEEP_RESYNC_TASK) {
+          // Both tenants have an active iOS registration, and the payload names A: only the scope check keeps B's
+          // job from pushing to its own registration for A's change, or to A's. Neither run sent anything, and
+          // both registrations are still active.
+          expect(sleepResyncSends()).toEqual([]);
+          expect(await activeApnsTokens(tenantA)).toHaveLength(1);
+          expect(await activeApnsTokens(tenantB)).toHaveLength(1);
         }
         if (name === CORE_TASK_NAMES.PUSH_DISMISS) {
           // The registration of A's user is global data; only the user check keeps B's job from reaching it.

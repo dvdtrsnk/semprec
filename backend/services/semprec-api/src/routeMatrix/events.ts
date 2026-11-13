@@ -43,4 +43,12 @@ export const EVENTS_ROUTES: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
+  {
+    name: "event occurrence materialize",
+    method: "POST",
+    path: `/api/events/series/${EXAMPLE_ID}/occurrences/2026-10-14`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
 ];

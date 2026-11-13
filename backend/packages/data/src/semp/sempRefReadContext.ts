@@ -18,6 +18,7 @@ import { getApprovalRequest } from "../mcp/approvalRequestsStore.js";
 import { getBlob } from "../blobs/blobsStore.js";
 import { loadBlobMetadataForItems } from "../blobs/blobMetadata.js";
 import { listTranscriptSpeakers } from "../transcription/transcriptionSpeakerEdges.js";
+import { expandTranscriptSegmentRef } from "../transcription/transcriptSegmentRef.js";
 import type { BlobRow, ItemRow } from "../types.js";
 import { readSleepNightContext } from "./sempSleepNightContext.js";
 
@@ -251,6 +252,10 @@ export async function readSempRefContext(
       attachedThisTurn: options.attachedThisTurn === true,
     });
   }
+  if (ref.kind === "transcriptSegment") {
+    const expansion = await expandTranscriptSegmentRef(client, ref);
+    return expansion && { ...expansion, blob: null };
+  }
   if (ref.kind === "agentRun") {
     const run = await getAgentRun(client, ref.agentRunId);
     if (!run) return null;
@@ -325,20 +330,9 @@ export async function readSempRefContext(
     const block = await blockDetails(client, item.id, ref.blockId);
     return block === null ? null : { label, state, details: { page: item.properties, ...{ block } }, blob: null };
   }
-  if (ref.kind === "transcriptSegment" || database.ownerModuleId === "transcripts") {
-    if (database.ownerModuleId !== "transcripts") return null;
+  if (database.ownerModuleId === "transcripts") {
     const segments = segmentsSchema.parse(item.computed.segments ?? []);
     const speakers = item.deletedAt ? [] : await listTranscriptSpeakers(client, item.id, item);
-    if (ref.kind === "transcriptSegment") {
-      const index = segments.findIndex((segment) => segment.startsAt <= ref.startsAt && segment.endsAt >= ref.endsAt);
-      if (index < 0) return null;
-      return {
-        label,
-        state,
-        details: { segments: segments.slice(Math.max(0, index - 3), index + 4), speakers },
-        blob: null,
-      };
-    }
     return {
       label,
       state,

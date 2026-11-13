@@ -43,9 +43,11 @@ interface FindingRow {
   status: string;
 }
 interface ProblemRow {
+  id: string;
   source_id: string;
   dedupe_key: string;
   occurrence_count: number;
+  resolution_kind: string | null;
 }
 async function snapshot() {
   return withTenantTransaction(pool, tenant, async (client) => {
@@ -53,7 +55,7 @@ async function snapshot() {
       "SELECT id, fingerprint, last_seen_at, status FROM agent_guidance_drift_findings ORDER BY fingerprint",
     );
     const problems = await client.query<ProblemRow>(
-      "SELECT source_id, dedupe_key, occurrence_count FROM semp_problems ORDER BY dedupe_key",
+      "SELECT id, source_id, dedupe_key, occurrence_count, resolution_kind FROM semp_problems ORDER BY dedupe_key, first_seen_at",
     );
     const notifications = await client.query<{ kind: string; source_id: string }>(
       "SELECT kind, source_id FROM notifications ORDER BY kind, source_id",
@@ -701,7 +703,7 @@ describe("guidance drift production composition", () => {
     expect(await snapshot()).toEqual(before);
   });
 
-  it("merges two activation notifications for one finding into one problem", async () => {
+  it("resolves the problem of a resolved finding and starts a new one when the finding returns", async () => {
     tenant = await createTestTenant(admin);
     const owner = await createUser(admin, {
       tenantId: tenant,
@@ -731,18 +733,33 @@ describe("guidance drift production composition", () => {
     const action = createAgentGuidanceDriftActionForApi(pool, gateway);
     await runInTenant(tenant, () => action({ projectItemId: project }));
     const first = await snapshot();
+    expect(first.problems).toMatchObject([{ resolution_kind: null }]);
     content = { contradictions: [] };
     await runInTenant(tenant, () => action({ projectItemId: project }));
+    const resolved = await snapshot();
+    expect(resolved.findings).toMatchObject([{ status: "resolved" }]);
+    expect(resolved.problems).toMatchObject([{ id: first.problems[0]?.id, resolution_kind: "recovered" }]);
     content = { contradictions: [finding("files.read", "again")] };
     await runInTenant(tenant, () => action({ projectItemId: project }));
     const final = await snapshot();
     expect(final.findings).toHaveLength(1);
     expect(final.findings[0]?.id).toBe(first.findings[0]?.id);
     expect(final.findings[0]?.status).toBe("active");
-    expect(final.problems).toHaveLength(1);
-    expect(final.problems[0]).toMatchObject({ source_id: final.findings[0]?.id, occurrence_count: 2 });
+    // the returning finding is a new episode: the resolved problem stays resolved and a new one is active
+    expect(final.problems).toHaveLength(2);
+    expect(final.problems[0]).toMatchObject({
+      id: first.problems[0]?.id,
+      occurrence_count: 1,
+      resolution_kind: "recovered",
+    });
+    expect(final.problems[1]).toMatchObject({
+      source_id: final.findings[0]?.id,
+      occurrence_count: 1,
+      resolution_kind: null,
+    });
+    expect(final.problems[1]?.id).not.toBe(first.problems[0]?.id);
     expect(final.notifications.filter((row) => row.kind === "agent_guidance_drift")).toHaveLength(2);
-    expect(final.notifications.filter((row) => row.kind === "semp_problem")).toHaveLength(1);
+    expect(final.notifications.filter((row) => row.kind === "semp_problem")).toHaveLength(2);
   });
 
   it("rolls back the finding and notification when the problem write fails", async () => {

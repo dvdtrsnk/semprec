@@ -53,6 +53,11 @@ export type RealtimeMessage =
     }
   | { type: "invalidation"; scope: "projectAgent"; projectItemId: string }
   | { type: "invalidation"; scope: "sempStatus" }
+  | { type: "invalidation"; scope: "notificationPreferences"; userId: string }
+  | { type: "invalidation"; scope: "badgeCounts"; userId: string }
+  | { type: "invalidation"; scope: "account"; userId: string }
+  | { type: "invalidation"; scope: "overview" }
+  | { type: "invalidation"; scope: "mcpServers" }
   | {
       type: "invalidation";
       scope: "inboxCards";
@@ -279,6 +284,16 @@ export function parseRealtimeMessage(raw: unknown): RealtimeMessage | null {
       }
       if (value.scope === "sempStatus") {
         return { type: "invalidation", scope: "sempStatus" };
+      }
+      if (value.scope === "overview") {
+        return { type: "invalidation", scope: "overview" };
+      }
+      if (value.scope === "mcpServers") {
+        return { type: "invalidation", scope: "mcpServers" };
+      }
+      if (value.scope === "notificationPreferences" || value.scope === "badgeCounts" || value.scope === "account") {
+        // Per-user: a message that names no valid user has no socket it may go to, so it is malformed.
+        return isUuid(value.userId) ? { type: "invalidation", scope: value.scope, userId: value.userId } : null;
       }
       if (value.scope === "inboxCards") {
         if (

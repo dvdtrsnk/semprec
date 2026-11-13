@@ -5,6 +5,7 @@ import { requireManagedTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
 import { getBlock } from "../docs/blocks.js";
 import { readRefDocumentStates } from "../docs/docsStore.js";
+import { validateTranscriptSegmentRefs } from "../transcription/transcriptSegmentRef.js";
 
 const SERIES_ID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -63,19 +64,15 @@ export async function validateSempMessageRefs(
       valid.add(entry.index);
     }
   }
-  const segments = refs.flatMap((ref, index) => (ref.kind === "transcriptSegment" ? [{ ...ref, index }] : []));
+  // A segment ref names a transcript and a range `transcript.segment.get` could read (issue #1834); the kind's
+  // validator decides each ref over one statement that reads the segments of every transcript named.
+  const segments = refs.flatMap((ref, index) => (ref.kind === "transcriptSegment" ? [{ ref, index }] : []));
   if (segments.length) {
-    const { rows } = await client.query<{ ordinal: number }>(
-      `SELECT r.ordinal::int FROM unnest($1::uuid[]) WITH ORDINALITY AS r(item_id, ordinal)
-       JOIN items i ON i.id = r.item_id JOIN databases d ON d.id = i.database_id AND d.tenant_id = i.tenant_id
-       WHERE d.owner_module_id = 'transcripts'`,
-      [segments.map((ref) => ref.itemId)],
+    const accepted = await validateTranscriptSegmentRefs(
+      client,
+      segments.map((entry) => entry.ref),
     );
-    for (const row of rows) {
-      const entry = segments[row.ordinal - 1];
-      if (!entry) throw new Error("Invalid reference ordinal");
-      valid.add(entry.index);
-    }
+    for (const [position, entry] of segments.entries()) if (accepted[position]) valid.add(entry.index);
   }
   const blocks = refs.flatMap((ref, index) => (ref.kind === "block" ? [{ ...ref, index }] : []));
   if (blocks.length) {

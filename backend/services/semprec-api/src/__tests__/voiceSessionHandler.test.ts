@@ -27,8 +27,11 @@ import {
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   login,
+  requestSempTurnCancel,
   seedSystem,
+  startSempTurnCancelListener,
   withTransaction,
+  type SempTurnCancelRequest,
 } from "@semprec/data";
 import { createDispatcher } from "../app.js";
 import { createSyncUpgradeHandler } from "../syncHandler.js";
@@ -216,9 +219,9 @@ describe("voice session through the real gateway and registered worker", () => {
     );
     return owned;
   }
-  function send(child: OwnedChild, type: string): void {
+  function send(child: OwnedChild, type: string, extra: Record<string, string | number> = {}): void {
     if (!child.child.connected) throw new Error("Fixture child disconnected");
-    child.child.send({ type });
+    child.child.send({ type, ...extra });
   }
   beforeAll(async () => {
     directory = await mkdtemp(join(tmpdir(), "semprec-voice-test-"));
@@ -2276,4 +2279,593 @@ describe("voice session through the real gateway and registered worker", () => {
     );
     expect(invisible.rows).toEqual([]);
   }, 30_000);
+
+  describe("stop commands", () => {
+    let cancels: SempTurnCancelRequest[];
+    let cancelListener: Awaited<ReturnType<typeof startSempTurnCancelListener>> | undefined;
+    let speechHeld: boolean;
+    let modelHeld: boolean;
+    let releaseRequest = 0;
+    let restoreSubscribe: (() => void) | undefined;
+
+    beforeEach(async () => {
+      cancels = [];
+      speechHeld = false;
+      modelHeld = false;
+      // Observes the requests the session sends, as the process that runs the turn would receive them.
+      cancelListener = await startSempTurnCancelListener(pool, (request) => cancels.push(request));
+    });
+    afterEach(async () => {
+      // A held fixture response would keep a turn open past the case.
+      if (gateway?.child.connected) {
+        if (speechHeld) send(gateway, "releaseSpeech");
+        if (modelHeld) send(gateway, "releaseModel");
+      }
+      restoreSubscribe?.();
+      restoreSubscribe = undefined;
+      await cancelListener?.close();
+      cancelListener = undefined;
+    });
+
+    /** Opens a session whose speech-to-text provider has accepted audio, so a scripted transcript can be delivered. */
+    async function openSession(): Promise<void> {
+      if (!gateway) throw new Error("Missing fixture gateway");
+      const ownedGateway = gateway;
+      const sttBefore = ownedGateway.messages.filter((entry) => entry.type === "sttReady").length;
+      const audioBefore = ownedGateway.messages.filter((entry) => entry.type === "audioAccepted").length;
+      socket = new WebSocket(url, { headers: { Authorization: `Bearer ${token}` } });
+      socket.on("message", (data, binary) => {
+        if (binary) {
+          audioFrames++;
+          return;
+        }
+        frames.push(JSON.parse(messageText(data)) as unknown);
+      });
+      await once(socket, "open");
+      socket.send(JSON.stringify({ type: "start", language: "en" }));
+      await vi.waitFor(() => expect(frames).toContainEqual({ type: "ready" }), { timeout: 10_000 });
+      socket.send(Buffer.concat([Buffer.from([1]), Buffer.alloc(640)]));
+      await vi.waitFor(
+        () => {
+          expect(ownedGateway.messages.filter((entry) => entry.type === "sttReady")).toHaveLength(sttBefore + 1);
+          expect(ownedGateway.messages.filter((entry) => entry.type === "audioAccepted")).toHaveLength(audioBefore + 1);
+        },
+        { timeout: 10_000 },
+      );
+    }
+
+    /** Delivers `text` as a final transcript and waits until the session has sent it back to the client. */
+    async function say(text: string): Promise<void> {
+      if (!gateway) throw new Error("Missing fixture gateway");
+      send(gateway, "finalText", { text });
+      await vi.waitFor(() => expect(frames).toContainEqual({ type: "transcript", text, final: true }), {
+        timeout: 10_000,
+      });
+    }
+
+    const userMessages = (threadId: string) =>
+      runInTenant(tenant, () =>
+        pool.query<{ id: string; text: string; source: string | null }>(
+          "SELECT id, text, source FROM semp_messages WHERE thread_id = $1 AND role = 'user' ORDER BY created_at, id",
+          [threadId],
+        ),
+      );
+    const assistantFor = (userMessageId: string) =>
+      runInTenant(tenant, () =>
+        pool.query<{ id: string; status: string; error_code: string | null; agent_run_id: string | null }>(
+          "SELECT id, status, error_code, agent_run_id FROM semp_messages WHERE reply_to_message_id = $1 AND role = 'assistant'",
+          [userMessageId],
+        ),
+      );
+
+    /**
+     * Says the first question while the model and the speech are held, and returns once the turn is running and its
+     * first sentence is being spoken. The model's first text is held until the session watches the run: the text
+     * deltas are live only, so a delta sent before the watch exists would never be spoken.
+     */
+    async function startHeldTurn() {
+      if (!gateway) throw new Error("Missing fixture gateway");
+      const ownedGateway = gateway;
+      await openSession();
+      const descriptor = Object.getOwnPropertyDescriptor(sync, "subscribeVoice");
+      if (!descriptor || typeof descriptor.value !== "function")
+        throw new Error("Missing voice subscription descriptor");
+      const originalSubscribe = descriptor.value as typeof sync.subscribeVoice;
+      let subscription: ReturnType<typeof originalSubscribe> | undefined;
+      Object.defineProperty(sync, "subscribeVoice", {
+        ...descriptor,
+        value: function (this: typeof sync, input: Parameters<typeof originalSubscribe>[0]) {
+          subscription = originalSubscribe.call(this, input);
+          return subscription;
+        },
+      });
+      restoreSubscribe = () => Object.defineProperty(sync, "subscribeVoice", descriptor);
+      send(ownedGateway, "holdSpeech");
+      speechHeld = true;
+      send(ownedGateway, "holdModel");
+      modelHeld = true;
+      const armedBefore = ownedGateway.messages.filter((entry) => entry.type === "firstTextArmed").length;
+      const heldBefore = ownedGateway.messages.filter((entry) => entry.type === "firstTextHeld").length;
+      send(ownedGateway, "holdFirstText");
+      await vi.waitFor(() =>
+        expect(ownedGateway.messages.filter((entry) => entry.type === "firstTextArmed")).toHaveLength(armedBefore + 1),
+      );
+      await say("A spoken question.");
+      const source = await vi.waitFor(async () => {
+        const result = await runInTenant(tenant, () =>
+          pool.query<{ id: string; thread_id: string }>(
+            "SELECT id, thread_id FROM semp_messages WHERE role = 'user' AND text = 'A spoken question.' ORDER BY created_at DESC, id DESC LIMIT 1",
+          ),
+        );
+        expect(result.rows).toHaveLength(1);
+        return result.rows[0]!;
+      });
+      await vi.waitFor(
+        () =>
+          expect(ownedGateway.messages.filter((entry) => entry.type === "firstTextHeld")).toHaveLength(heldBefore + 1),
+        { timeout: 20_000 },
+      );
+      const assistant = await vi.waitFor(
+        async () => {
+          const result = await assistantFor(source.id);
+          expect(result.rows[0]).toMatchObject({ status: "running", agent_run_id: expect.any(String) });
+          return result.rows[0]!;
+        },
+        { timeout: 20_000 },
+      );
+      await vi.waitFor(() => expect(subscription).toBeDefined(), { timeout: 10_000 });
+      await subscription;
+      const request = ++releaseRequest;
+      send(ownedGateway, "releaseFirstText", { request });
+      await vi.waitFor(() =>
+        expect(
+          ownedGateway.messages.some(
+            (entry) =>
+              (entry.type === "firstTextReleased" || entry.type === "firstTextDisarmed") && entry.request === request,
+          ),
+        ).toBe(true),
+      );
+      await vi.waitFor(() => expect(frames).toContainEqual({ type: "speaking", state: "started" }), {
+        timeout: 20_000,
+      });
+      return { source, assistant };
+    }
+
+    it.each(["Stop", "zruš."])(
+      "cancels the running turn on the command %j, stops speaking and stores no message for it",
+      async (command) => {
+        if (!gateway) throw new Error("Missing fixture gateway");
+        const { source, assistant } = await startHeldTurn();
+        const stoppedBefore = frames.filter(
+          (frame) => JSON.stringify(frame) === '{"type":"speaking","state":"stopped"}',
+        );
+        const messagesBefore = await userMessages(source.thread_id);
+
+        await say(command);
+
+        await vi.waitFor(
+          async () => {
+            expect(await assistantFor(source.id)).toMatchObject({
+              rows: [{ id: assistant.id, status: "error", error_code: "cancelled" }],
+            });
+          },
+          { timeout: 20_000 },
+        );
+        await vi.waitFor(() =>
+          expect(
+            frames.filter((frame) => JSON.stringify(frame) === '{"type":"speaking","state":"stopped"}'),
+          ).toHaveLength(stoppedBefore.length + 1),
+        );
+        const audioAtStop = audioFrames;
+        expect(await userMessages(source.thread_id)).toEqual(messagesBefore);
+        const stored = await runInTenant(tenant, () =>
+          pool.query("SELECT 1 FROM semp_messages WHERE lower(text) = lower($1)", [command]),
+        );
+        expect(stored.rowCount).toBe(0);
+        expect(cancels).toEqual([{ tenantId: tenant, assistantMessageId: assistant.id }]);
+        const run = await runInTenant(tenant, () =>
+          pool.query<{ status: string; error_code: string | null }>(
+            "SELECT status, error_code FROM agent_runs WHERE id = $1",
+            [assistant.agent_run_id],
+          ),
+        );
+        expect(run.rows).toEqual([{ status: "error", error_code: "cancelled" }]);
+
+        // The session survives the command: the next utterance is a new turn that is answered and spoken.
+        send(gateway, "releaseModel");
+        modelHeld = false;
+        send(gateway, "releaseSpeech");
+        speechHeld = false;
+        send(gateway, "finalSecond");
+        const second = await vi.waitFor(
+          async () => {
+            const result = await runInTenant(tenant, () =>
+              pool.query<{ id: string }>(
+                "SELECT id FROM semp_messages WHERE thread_id = $1 AND role = 'user' AND text = 'A second question.'",
+                [source.thread_id],
+              ),
+            );
+            expect(result.rows).toHaveLength(1);
+            return result.rows[0]!;
+          },
+          { timeout: 10_000 },
+        );
+        await vi.waitFor(async () => expect((await assistantFor(second.id)).rows[0]?.status).toBe("done"), {
+          timeout: 20_000,
+        });
+        await vi.waitFor(() => expect(audioFrames).toBeGreaterThan(audioAtStop), { timeout: 10_000 });
+        expect(
+          frames.filter(
+            (frame) => typeof frame === "object" && frame !== null && "type" in frame && frame.type === "error",
+          ),
+        ).toEqual([]);
+        expect(socket?.readyState).toBe(WebSocket.OPEN);
+        expect(cancels).toHaveLength(1);
+      },
+      70_000,
+    );
+
+    it("stores a sentence that only contains a stop word as a message and cancels nothing", async () => {
+      if (!gateway) throw new Error("Missing fixture gateway");
+      const { source, assistant } = await startHeldTurn();
+
+      await say("stop the music");
+
+      const stored = await vi.waitFor(async () => {
+        const messages = await userMessages(source.thread_id);
+        expect(messages.rows.map((row) => row.text)).toEqual(["A spoken question.", "stop the music"]);
+        return messages.rows[1]!;
+      });
+      expect(stored.source).toBe("voice");
+      expect((await assistantFor(stored.id)).rows).toMatchObject([{ status: "queued" }]);
+      // The running turn is untouched and finishes once the model answers.
+      expect((await assistantFor(source.id)).rows).toMatchObject([{ id: assistant.id, status: "running" }]);
+      send(gateway, "releaseModel");
+      modelHeld = false;
+      send(gateway, "releaseSpeech");
+      speechHeld = false;
+      await vi.waitFor(
+        async () => {
+          expect((await assistantFor(source.id)).rows[0]?.status).toBe("done");
+          expect((await assistantFor(stored.id)).rows[0]?.status).toBe("done");
+        },
+        { timeout: 30_000 },
+      );
+      expect(cancels).toEqual([]);
+    }, 70_000);
+
+    it("ends the turn quietly when the command lands before the turn has a run, and the session goes on", async () => {
+      if (!gateway) throw new Error("Missing fixture gateway");
+      const priorQuestions = await runInTenant(tenant, () =>
+        pool.query<{ id: string }>("SELECT id FROM semp_messages WHERE role = 'user' AND text = 'A spoken question.'"),
+      );
+      await openSession();
+      // The turn handler reads the system settings between the claim of the reply and the start of its run. With the
+      // table locked, the reply stays `running` without a run for as long as the lock is held.
+      const lock = await admin.connect();
+      let locked = false;
+      let assistantId: string;
+      let sourceId: string;
+      try {
+        await lock.query("BEGIN");
+        await lock.query("LOCK TABLE databases IN ACCESS EXCLUSIVE MODE");
+        locked = true;
+        send(gateway, "final");
+        const source = await vi.waitFor(async () => {
+          const result = await runInTenant(tenant, () =>
+            pool.query<{ id: string }>(
+              "SELECT id FROM semp_messages WHERE role = 'user' AND text = 'A spoken question.' AND NOT (id = ANY($1::uuid[])) ORDER BY created_at DESC, id DESC LIMIT 1",
+              [priorQuestions.rows.map((row) => row.id)],
+            ),
+          );
+          expect(result.rows).toHaveLength(1);
+          return result.rows[0]!;
+        });
+        sourceId = source.id;
+        const assistant = await vi.waitFor(
+          async () => {
+            const result = await assistantFor(sourceId);
+            expect(result.rows[0]).toMatchObject({ status: "running", agent_run_id: null });
+            return result.rows[0]!;
+          },
+          { timeout: 20_000 },
+        );
+        assistantId = assistant.id;
+
+        await say("Stop");
+
+        await vi.waitFor(() => expect(cancels).toEqual([{ tenantId: tenant, assistantMessageId: assistantId }]), {
+          timeout: 10_000,
+        });
+      } finally {
+        if (locked) await lock.query("ROLLBACK");
+        else await lock.query("ROLLBACK").catch(() => undefined);
+        lock.release();
+      }
+      await vi.waitFor(
+        async () => {
+          expect(await assistantFor(sourceId)).toMatchObject({
+            rows: [{ id: assistantId, status: "error", error_code: "cancelled", agent_run_id: null }],
+          });
+        },
+        { timeout: 20_000 },
+      );
+
+      // The cancellation answered the command: the session reports no error and takes the next utterance.
+      send(gateway, "finalSecond");
+      const second = await vi.waitFor(
+        async () => {
+          const result = await runInTenant(tenant, () =>
+            pool.query<{ id: string }>(
+              "SELECT id FROM semp_messages WHERE role = 'user' AND text = 'A second question.' ORDER BY created_at DESC, id DESC LIMIT 1",
+            ),
+          );
+          expect(result.rows).toHaveLength(1);
+          return result.rows[0]!;
+        },
+        { timeout: 10_000 },
+      );
+      await vi.waitFor(async () => expect((await assistantFor(second.id)).rows[0]?.status).toBe("done"), {
+        timeout: 30_000,
+      });
+      expect(
+        frames.filter(
+          (frame) => typeof frame === "object" && frame !== null && "type" in frame && frame.type === "error",
+        ),
+      ).toEqual([]);
+      expect(socket?.readyState).toBe(WebSocket.OPEN);
+      expect(cancels).toHaveLength(1);
+    }, 70_000);
+
+    it("ends the turn quietly when the command lands before the run watch starts, and the session goes on", async () => {
+      if (!gateway) throw new Error("Missing fixture gateway");
+      const ownedGateway = gateway;
+      const priorQuestions = await runInTenant(tenant, () =>
+        pool.query<{ id: string }>("SELECT id FROM semp_messages WHERE role = 'user' AND text = 'A spoken question.'"),
+      );
+      await openSession();
+      const descriptor = Object.getOwnPropertyDescriptor(sync, "subscribeVoice");
+      if (!descriptor || typeof descriptor.value !== "function")
+        throw new Error("Missing voice subscription descriptor");
+      const originalSubscribe = descriptor.value as typeof sync.subscribeVoice;
+      let reached = false;
+      let openWatch!: () => void;
+      const watchOpen = new Promise<void>((resolveWatch) => {
+        openWatch = resolveWatch;
+      });
+      // The session has found the run of the reply and is about to watch it: the watch waits here for the command.
+      Object.defineProperty(sync, "subscribeVoice", {
+        ...descriptor,
+        value: async function (this: typeof sync, input: Parameters<typeof originalSubscribe>[0]) {
+          reached = true;
+          await watchOpen;
+          return originalSubscribe.call(this, input);
+        },
+      });
+      restoreSubscribe = () => Object.defineProperty(sync, "subscribeVoice", descriptor);
+      send(ownedGateway, "holdModel");
+      modelHeld = true;
+      try {
+        send(ownedGateway, "final");
+        const source = await vi.waitFor(async () => {
+          const result = await runInTenant(tenant, () =>
+            pool.query<{ id: string }>(
+              "SELECT id FROM semp_messages WHERE role = 'user' AND text = 'A spoken question.' AND NOT (id = ANY($1::uuid[])) ORDER BY created_at DESC, id DESC LIMIT 1",
+              [priorQuestions.rows.map((row) => row.id)],
+            ),
+          );
+          expect(result.rows).toHaveLength(1);
+          return result.rows[0]!;
+        });
+        const assistant = await vi.waitFor(
+          async () => {
+            const result = await assistantFor(source.id);
+            expect(result.rows[0]).toMatchObject({ status: "running", agent_run_id: expect.any(String) });
+            return result.rows[0]!;
+          },
+          { timeout: 20_000 },
+        );
+        await vi.waitFor(() => expect(reached).toBe(true), { timeout: 10_000 });
+
+        await say("Stop");
+
+        await vi.waitFor(
+          async () => {
+            expect(await assistantFor(source.id)).toMatchObject({
+              rows: [{ id: assistant.id, status: "error", error_code: "cancelled" }],
+            });
+          },
+          { timeout: 20_000 },
+        );
+        expect(cancels).toEqual([{ tenantId: tenant, assistantMessageId: assistant.id }]);
+      } finally {
+        openWatch();
+      }
+
+      // The cancellation answered the command: the session reports no error and takes the next utterance.
+      send(ownedGateway, "releaseModel");
+      modelHeld = false;
+      send(ownedGateway, "finalSecond");
+      const second = await vi.waitFor(
+        async () => {
+          const result = await runInTenant(tenant, () =>
+            pool.query<{ id: string }>(
+              "SELECT id FROM semp_messages WHERE role = 'user' AND text = 'A second question.' ORDER BY created_at DESC, id DESC LIMIT 1",
+            ),
+          );
+          expect(result.rows).toHaveLength(1);
+          return result.rows[0]!;
+        },
+        { timeout: 10_000 },
+      );
+      await vi.waitFor(async () => expect((await assistantFor(second.id)).rows[0]?.status).toBe("done"), {
+        timeout: 30_000,
+      });
+      expect(
+        frames.filter(
+          (frame) => typeof frame === "object" && frame !== null && "type" in frame && frame.type === "error",
+        ),
+      ).toEqual([]);
+      expect(socket?.readyState).toBe(WebSocket.OPEN);
+    }, 70_000);
+
+    const errorFrames = () =>
+      frames.filter(
+        (frame) => typeof frame === "object" && frame !== null && "type" in frame && frame.type === "error",
+      );
+
+    it("fails the session as unavailable when the reply ends as an error other than a cancellation", async () => {
+      if (!gateway) throw new Error("Missing fixture gateway");
+      const { source, assistant } = await startHeldTurn();
+      const closed = once(socket!, "close");
+
+      send(gateway, "failModel");
+      modelHeld = false;
+
+      await vi.waitFor(
+        async () => {
+          const reply = (await assistantFor(source.id)).rows[0];
+          expect(reply).toMatchObject({ id: assistant.id, status: "error" });
+          expect(reply?.error_code).not.toBeNull();
+          expect(reply?.error_code).not.toBe("cancelled");
+        },
+        { timeout: 20_000 },
+      );
+      await vi.waitFor(() => expect(errorFrames()).toEqual([{ type: "error", code: "unavailable" }]), {
+        timeout: 10_000,
+      });
+      await closed;
+      expect(cancels).toEqual([]);
+    }, 70_000);
+
+    it("fails the session as unavailable when the turn is cancelled and this session did not ask for it", async () => {
+      const { source, assistant } = await startHeldTurn();
+      const closed = once(socket!, "close");
+
+      // Another cause of a cancellation, such as a deactivated tenant: the notification comes from outside the session.
+      await runInTenant(tenant, () =>
+        withTransaction(pool, (client) =>
+          requestSempTurnCancel(client, { tenantId: tenant, assistantMessageId: assistant.id }),
+        ),
+      );
+
+      await vi.waitFor(
+        async () => {
+          expect(await assistantFor(source.id)).toMatchObject({
+            rows: [{ id: assistant.id, status: "error", error_code: "cancelled" }],
+          });
+        },
+        { timeout: 20_000 },
+      );
+      await vi.waitFor(() => expect(errorFrames()).toEqual([{ type: "error", code: "unavailable" }]), {
+        timeout: 10_000,
+      });
+      await closed;
+      expect(cancels).toEqual([{ tenantId: tenant, assistantMessageId: assistant.id }]);
+    }, 70_000);
+
+    it("fails the session as unavailable when the lookup of the running turn fails, and cancels nothing", async () => {
+      if (!gateway) throw new Error("Missing fixture gateway");
+      const priorQuestions = await runInTenant(tenant, () =>
+        pool.query<{ id: string }>("SELECT id FROM semp_messages WHERE role = 'user' AND text = 'A spoken question.'"),
+      );
+      await openSession();
+      send(gateway, "final");
+      const source = await vi.waitFor(async () => {
+        const result = await runInTenant(tenant, () =>
+          pool.query<{ id: string }>(
+            "SELECT id FROM semp_messages WHERE role = 'user' AND text = 'A spoken question.' AND NOT (id = ANY($1::uuid[])) ORDER BY created_at DESC, id DESC LIMIT 1",
+            [priorQuestions.rows.map((row) => row.id)],
+          ),
+        );
+        expect(result.rows).toHaveLength(1);
+        return result.rows[0]!;
+      });
+      await vi.waitFor(async () => expect((await assistantFor(source.id)).rows[0]?.status).toBe("done"), {
+        timeout: 30_000,
+      });
+      // With the turn over, the lookup of the stop command is the next use of the table by this session. The runtime
+      // role holds its privilege on the table through `semprec_side`, which loses the read privilege for the length of
+      // the command; no other case runs meanwhile.
+      await admin.query("REVOKE SELECT ON semp_messages FROM semprec_side");
+      try {
+        const privilege = await admin.query<{ allowed: boolean }>(
+          "SELECT has_table_privilege('semprec_data', 'semp_messages', 'SELECT') AS allowed",
+        );
+        expect(privilege.rows).toEqual([{ allowed: false }]);
+        const closed = once(socket!, "close");
+
+        await say("Stop");
+
+        await vi.waitFor(() => expect(frames).toContainEqual({ type: "error", code: "unavailable" }), {
+          timeout: 10_000,
+        });
+        await closed;
+      } finally {
+        await admin.query("GRANT SELECT ON semp_messages TO semprec_side");
+      }
+      expect(cancels).toEqual([]);
+    });
+
+    it("does nothing for a stop command when no turn is running: before the first message and after a finished turn", async () => {
+      if (!gateway) throw new Error("Missing fixture gateway");
+      const messagesBefore = await runInTenant(tenant, () =>
+        pool.query<{ count: string }>("SELECT count(*)::text AS count FROM semp_messages"),
+      );
+      const priorQuestions = await runInTenant(tenant, () =>
+        pool.query<{ id: string }>("SELECT id FROM semp_messages WHERE role = 'user' AND text = 'A spoken question.'"),
+      );
+      await openSession();
+
+      await say("Stop");
+      send(gateway, "final");
+      const source = await vi.waitFor(
+        async () => {
+          const result = await runInTenant(tenant, () =>
+            pool.query<{ id: string; thread_id: string }>(
+              "SELECT id, thread_id FROM semp_messages WHERE role = 'user' AND text = 'A spoken question.' AND NOT (id = ANY($1::uuid[])) ORDER BY created_at DESC LIMIT 1",
+              [priorQuestions.rows.map((row) => row.id)],
+            ),
+          );
+          expect(result.rows).toHaveLength(1);
+          return result.rows[0]!;
+        },
+        { timeout: 10_000 },
+      );
+      await vi.waitFor(async () => expect((await assistantFor(source.id)).rows[0]?.status).toBe("done"), {
+        timeout: 30_000,
+      });
+      await say("zruš");
+      send(gateway, "finalSecond");
+      await vi.waitFor(
+        async () => {
+          expect((await userMessages(source.thread_id)).rows.map((row) => row.text)).toEqual([
+            "A spoken question.",
+            "A second question.",
+          ]);
+        },
+        { timeout: 10_000 },
+      );
+
+      // The admissions of a session run in order, so both commands were handled before the second question was stored.
+      expect(cancels).toEqual([]);
+      const messagesAfter = await runInTenant(tenant, () =>
+        pool.query<{ count: string }>("SELECT count(*)::text AS count FROM semp_messages"),
+      );
+      // Two user messages and their two replies: nothing for either command.
+      expect(Number(messagesAfter.rows[0]?.count) - Number(messagesBefore.rows[0]?.count)).toBe(4);
+      await vi.waitFor(
+        async () => {
+          const replies = await runInTenant(tenant, () =>
+            pool.query<{ status: string }>(
+              "SELECT status FROM semp_messages WHERE thread_id = $1 AND role = 'assistant'",
+              [source.thread_id],
+            ),
+          );
+          expect(replies.rows.map((row) => row.status)).toEqual(["done", "done"]);
+        },
+        { timeout: 30_000 },
+      );
+    }, 70_000);
+  });
 });

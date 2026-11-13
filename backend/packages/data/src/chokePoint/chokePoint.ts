@@ -17,6 +17,7 @@ import { createValueLinkOps } from "./valueLinkOps.js";
 import { createItemTrashOps } from "./itemTrash.js";
 import { getValueLinksForItems } from "./valueLinkReads.js";
 import { listItemRelationsWithClient, type ItemRelationEntry, type VisibleItemRelationEntry } from "./relationReads.js";
+import { listRelatedWithClient, type RelatedResolver } from "./relatedOps.js";
 import { withTransaction } from "../db/pool.js";
 import { getDerivedValuesForItems } from "../derived/derivedValueReads.js";
 import { runAutomationBatchReader } from "./hooks.js";
@@ -46,6 +47,15 @@ export function createChokePoint(
   ): Promise<ItemRelationEntry[] | null>;
   function listItemRelations(itemId: string, relationPropertyId?: string, reader?: DatabaseReader) {
     return withTransaction(pool, (client) => listItemRelationsWithClient(client, itemId, relationPropertyId, reader));
+  }
+
+  /**
+   * The collections related to one item (issue #1839), in one transaction; `null` when the item is not found. An agent
+   * (a `reader` that is its project, issue #1810) or an external client (issue #1998) needs `read` access to the
+   * item's database and gets no collection it may not read; a read without a reader lists every collection.
+   */
+  function listRelatedCollections(itemId: string, resolver: RelatedResolver, reader?: DatabaseReader) {
+    return withTransaction(pool, (client) => listRelatedWithClient(client, itemId, resolver, reader));
   }
 
   return mergeOps(
@@ -91,6 +101,7 @@ export function createChokePoint(
         );
       },
       listItemRelations,
+      listRelatedCollections,
     },
   );
 }

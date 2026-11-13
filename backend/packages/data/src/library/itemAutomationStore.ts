@@ -238,6 +238,23 @@ export async function listErroredItemAutomationForDatabases(
   return rows.map(mapRow);
 }
 
+/**
+ * Whether any item of the database still has an automation error: a row in `error` of an item that is not
+ * soft-deleted, the same items the retry sweep looks at (`listErroredItemAutomationForDatabases`).
+ */
+export async function databaseHasItemAutomationError(client: PoolClient, databaseId: string): Promise<boolean> {
+  const { rows } = await client.query<{ present: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM item_automation ia
+       JOIN items i ON i.id = ia.item_id AND i.tenant_id = ia.tenant_id
+       WHERE ia.tenant_id = app_tenant_default() AND ia.status = 'error'
+         AND i.database_id = $1 AND i.deleted_at IS NULL
+     ) AS present`,
+    [databaseId],
+  );
+  return rows[0]?.present === true;
+}
+
 export async function listRetryableLibraryAutomationForDatabases(
   client: PoolClient,
   databaseIds: string[],

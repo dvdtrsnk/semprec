@@ -6,6 +6,7 @@ import { withTransaction, requireSingleRow } from "../db/pool.js";
 import { NotFoundError } from "../errors.js";
 import { AGENT_RUN_ERROR_CODES, type AgentRunErrorCode } from "./agentRunErrorCodes.js";
 import { publishAgentRunInvalidation } from "./agentRunInvalidation.js";
+import { raiseAgentHeartbeatProblem, raiseAgentRunProblem } from "../semp/agentProblems.js";
 
 export { AGENT_RUN_ERROR_CODES, type AgentRunErrorCode };
 
@@ -273,6 +274,26 @@ export async function getLatestRunOfOccurrence(
 }
 
 /**
+ * The first run of the retry chain `runId` belongs to (issue #1911): the run reached by following
+ * `retry_of_run_id` until it is `NULL`; the run itself when it retries nothing. Throws `NotFoundError`
+ * when the current tenant scope shows no run with that id.
+ */
+export async function getRetryChainFirstRunId(client: Pool | PoolClient, runId: string): Promise<string> {
+  const { rows } = await client.query<{ id: string }>(
+    `WITH RECURSIVE chain AS (
+       SELECT id, retry_of_run_id FROM agent_runs WHERE id = $1
+       UNION
+       SELECT r.id, r.retry_of_run_id FROM agent_runs r JOIN chain c ON r.id = c.retry_of_run_id
+     )
+     SELECT id FROM chain WHERE retry_of_run_id IS NULL`,
+    [runId],
+  );
+  const first = rows[0];
+  if (!first) throw new NotFoundError(`agent run ${runId} not found`);
+  return first.id;
+}
+
+/**
  * Closes a run that is still `running` and reports whether this call did it. The `status =
  * 'running'` guard lives in the `UPDATE` itself, so of two concurrent closers exactly one wins
  * and the row keeps the first status, result and `finished_at`. Losing that race (the run was
@@ -338,7 +359,9 @@ export async function finishAgentRun(
  * Returns `finishAgentRun`'s result: when the close lost to another writer (`false`), the run's
  * outcome was already decided elsewhere and no notification is written.
  *
- * Silently skips the notification when the current tenant has no user, matching
+ * Also raises the run's `agents` problem in that transaction (issue #1911), see `raiseFailedRunProblem`.
+ *
+ * Silently skips the notification and the problem when the current tenant has no user, matching
  * `notifyHeartbeatError`.
  */
 export async function finishAgentRunWithErrorNotification(
@@ -365,7 +388,34 @@ export async function finishAgentRunWithErrorNotification(
     sourceId: agentRunId,
     transitionInstance: agentRunId,
   });
+  await raiseFailedRunProblem(client, userId, agentRunId);
   return true;
+}
+
+/**
+ * The `agents` problem of the run `agentRunId` that just failed (issue #1911), raised in the same
+ * transaction as its close and its `agent_run_error` notification. A heartbeat tick raises the problem of its
+ * heartbeat, so the tick's other reports merge into it; a supervisor or MCP run raises the problem of its
+ * retry chain. A failed chat turn raises nothing here, and neither does a heartbeat-triggered run that
+ * names no heartbeat. The run's project item is attached only while it still names an item of the tenant's
+ * Projects database (`raiseAgentRunProblem` drops a dangling one), so the close never fails on it.
+ */
+async function raiseFailedRunProblem(client: PoolClient, userId: string, agentRunId: string): Promise<void> {
+  const run = await getAgentRun(client, agentRunId);
+  if (!run) throw new NotFoundError(`agent run ${agentRunId} not found`);
+  if (run.heartbeatId !== null) {
+    await raiseAgentHeartbeatProblem(client, { userId, heartbeatId: run.heartbeatId, occurrenceKey: run.id });
+    return;
+  }
+  // A chat turn is a problem per reply (issue #1931), and a heartbeat-triggered run that names no heartbeat
+  // has no tick to report.
+  if (run.triggeredBy === "user" || run.triggeredBy === "heartbeat") return;
+  await raiseAgentRunProblem(client, {
+    userId,
+    firstRunId: await getRetryChainFirstRunId(client, run.id),
+    failedRunId: run.id,
+    projectItemId: run.projectItemId,
+  });
 }
 
 /** The longest MCP client name a run stores, in characters as the check on `mcp_client_name` counts them. */

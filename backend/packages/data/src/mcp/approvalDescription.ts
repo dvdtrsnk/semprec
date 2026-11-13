@@ -23,6 +23,9 @@
 //   approval.journalMerge     {periodType, period, survivorName, mergedName}   (issue #2017; the stored titles of the two entries, `null` when the period has no two live entries; no page content)
 //   approval.mcpInvoke        {serverName, toolName}
 //   approval.moduleTool       {toolName}   (issue #1791; the manifest name of the module agent tool)
+//   approval.heartbeatCreate      {heartbeatName, projectName, rule, task}   (issue #1846, `scheduler/heartbeatApprovalDescription.ts`; the stored form of the rule and a cut JSON string of the task)
+//   approval.heartbeatUpdate      {heartbeatName, projectName, changes}   (issue #1846; `changes` lists each changed field with its new value)
+//   approval.heartbeatSetEnabled  {heartbeatName, projectName, state}   (issue #1846)
 //   approval.changesSeries    {taskName, fromRule, toRule}
 //   approval.breaksLink       {itemName, databaseKey, propertyName, sourceItemName, sourceDatabaseKey, newValueName}   (issue #1758, `approvalBreaksLink.ts`)
 // Constrained by: docs/adr/2026-09-18-exactly-once-execution-of-approved-destructive-operations.md

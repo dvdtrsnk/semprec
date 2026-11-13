@@ -21,6 +21,7 @@ import { putBlockWithClient } from "../docs/docStore.js";
 import { pageContentV2Schema } from "./proposalEnvelope.js";
 import { insertProposalPageContent } from "./proposalPageContent.js";
 import { LOCKED_PROPOSAL_STATUSES } from "./inboxTypesStore.js";
+import { assertProposalVersion, incompatibleStatusError } from "./proposalPreconditions.js";
 import {
   aiProposalPatch,
   appendHistoryEntry,
@@ -470,6 +471,11 @@ async function assertValidEnvelopeForCard(
  * envelope's `{ speaker }` metadata as the relation write itself — the user-owned mapping only
  * ever exists once a human confirmed it. A `fileFromAttachment` step (issue #1703) moves an attachment
  * of the card's source Inbox item into Files inside the same transaction; `executeProposalSteps` does it.
+ *
+ * `ifVersion` (issue #1852) is the `updatedAt` the caller last saw. It is checked after the card is locked, after
+ * the answer for a card that is already `confirmed` (returned unchanged, whatever `ifVersion` says, so a replayed
+ * decision succeeds) and after the refusal of any status other than `proposed`: an `ifVersion` that is not the
+ * locked card's `updatedAt` throws the 409 `version_conflict` and nothing is written. Without it nothing is checked.
  */
 export async function confirmProposalWithClient(
   client: PoolClient,
@@ -477,13 +483,15 @@ export async function confirmProposalWithClient(
   proposalId: string,
   credential?: ConfirmProposalCredentialInput,
   actingUserId?: string,
+  ifVersion?: string,
 ): Promise<ItemRow> {
   const proposal = await lockLiveProposal(client, config.processingProposalsDatabaseId, proposalId);
   const status = proposal.properties.status;
   if (status === "confirmed") return proposal;
   if (status !== "proposed") {
-    throw new ValidationError(`Cannot confirm a proposal in status '${String(status)}'`, { field: "status" });
+    throw incompatibleStatusError(`Cannot confirm a proposal in status '${String(status)}'`, status);
   }
+  assertProposalVersion(proposal, ifVersion);
 
   const envelope = parseStoredProposalEnvelope(proposal.properties.proposal, proposal.id);
   if (!envelope) throw new ValidationError("Proposal has no computed envelope to confirm", { field: "proposal" });
@@ -797,20 +805,24 @@ export async function confirmProposalWithClient(
  * `POST /api/proposals/:id/reject` (issue #105): locks the proposal as `rejected` without
  * ever writing a destination. Idempotent under retry (an already-`rejected` proposal is
  * returned as-is); rejecting a `confirmed` proposal is refused, since its destination write
- * already happened and rejecting now could not undo it.
+ * already happened and rejecting now could not undo it. `ifVersion` (issue #1852) is checked as in
+ * `confirmProposalWithClient`: after the lock, the `rejected` answer and the `confirmed` refusal, and
+ * before anything is written.
  */
 export async function rejectProposalWithClient(
   client: PoolClient,
   config: ProposalActionConfig,
   proposalId: string,
   message?: string,
+  ifVersion?: string,
 ): Promise<ItemRow> {
   const proposal = await lockLiveProposal(client, config.processingProposalsDatabaseId, proposalId);
   const status = proposal.properties.status;
   if (status === "rejected") return proposal;
   if (status === "confirmed") {
-    throw new ValidationError("Cannot reject a proposal that has already been confirmed", { field: "status" });
+    throw incompatibleStatusError("Cannot reject a proposal that has already been confirmed", status);
   }
+  assertProposalVersion(proposal, ifVersion);
 
   const updated = await updateItemWithClient(
     client,
@@ -819,7 +831,9 @@ export async function rejectProposalWithClient(
       itemId: proposal.id,
       propertiesPatch: {
         status: "rejected",
-        history: appendHistoryEntry(proposal.properties.history, message ?? "Rejected by user.", "user"),
+        history: appendHistoryEntry(proposal.properties.history, message ?? "Rejected by user.", "user", {
+          kind: "rejected",
+        }),
       },
     },
     { allowedSystemKeys: ["status", "history"] },

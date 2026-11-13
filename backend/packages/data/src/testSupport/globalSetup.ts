@@ -92,6 +92,11 @@ export default async function setup(): Promise<() => Promise<void>> {
     // ICU collations (`cs-x-icu`, `und-x-icu`; issue #1524) are unusable in a SQL_ASCII database,
     // which is what initdb picks on a host with the C locale; production (postgres:16-alpine) is UTF8.
     initdbFlags: ["--encoding=UTF8"],
+    // `resetDatabase` truncates every table of the schema in one statement and drops the dynamic
+    // `items_p_*` partitions; with the default of 64 lock slots per transaction the shared lock
+    // table of the whole server runs out under concurrent test files once the schema has grown
+    // ("out of shared memory", hint "increase max_locks_per_transaction").
+    postgresFlags: ["-c", "max_locks_per_transaction=1024"],
   });
 
   async function removeDatabaseDir(): Promise<void> {

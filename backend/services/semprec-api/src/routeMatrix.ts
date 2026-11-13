@@ -43,6 +43,9 @@ import { LIBRARY_ROUTES } from "./routeMatrix/library.js";
 import { INBOX_CARDS_ROUTES } from "./routeMatrix/inboxCards.js";
 import { SLEEP_ROUTES } from "./routeMatrix/sleep.js";
 import { BADGE_COUNTS_ROUTES } from "./routeMatrix/badgeCounts.js";
+import { OVERVIEW_ROUTES } from "./routeMatrix/overview.js";
+import { DATABASE_GRANTS_ROUTES } from "./routeMatrix/databaseGrants.js";
+import { SEARCH_ROUTES } from "./routeMatrix/search.js";
 
 /**
  * The single documented artifact issue #143 asks for: every route delivered through auth-v1,
@@ -160,4 +163,7 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
   ...INBOX_CARDS_ROUTES,
   ...SLEEP_ROUTES,
   ...BADGE_COUNTS_ROUTES,
+  ...OVERVIEW_ROUTES,
+  ...DATABASE_GRANTS_ROUTES,
+  ...SEARCH_ROUTES,
 ];

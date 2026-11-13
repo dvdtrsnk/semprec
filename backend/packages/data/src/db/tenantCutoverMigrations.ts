@@ -58,6 +58,7 @@ import { runTasksTodayViewCutoverMigration } from "../tasks/todayViewCutoverMigr
 import { runEventsRecurrenceCutoverMigration } from "../calendar/eventsRecurrenceCutoverMigration.js";
 import { runTranscriptNameBackfillCutoverMigration } from "../transcription/transcriptNameBackfillCutoverMigration.js";
 import { runSleepSettingsAreaCutoverMigration } from "../sleep/sleepSettingsAreaCutoverMigration.js";
+import { runEventsOccurrenceCutoverMigration } from "../calendar/eventsOccurrenceCutoverMigration.js";
 
 /**
  * Runs the data-driven post-migration cutovers — the ones that read and write tenant rows — once
@@ -155,6 +156,9 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     // and the Areas database, and stands after the steps above (the entry of issue gh-1830, a blocker of that issue,
     // among them), before the area-note cutover that stays last.
     await runSleepSettingsAreaCutoverMigration(pool);
+    // Issue gh-1843: the Events `seriesId` and `occurrenceDate` properties. It needs no other step's result and
+    // stands after the recurrence step of gh-1817, before the area-note cutover that stays last.
+    await runEventsOccurrenceCutoverMigration(pool);
     // Last: it converts each area in its own transaction and reports failed areas only after every area ran.
     await runAreaNoteCutoverMigration(pool);
   });

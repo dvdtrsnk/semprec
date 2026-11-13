@@ -39,6 +39,19 @@ describe("core module manifests (module-contract issue #226)", () => {
       { moduleId: "schemaCore", name: "heartbeat.list", handlerExport: "createHeartbeatListTool" },
       { moduleId: "schemaCore", name: "heartbeat.history", handlerExport: "createHeartbeatHistoryTool" },
       { moduleId: "schemaCore", name: "heartbeat.trigger", handlerExport: "createGuardedHeartbeatTriggerTool" },
+      { moduleId: "schemaCore", name: "heartbeat.create", handlerExport: "createHeartbeatCreateTool" },
+      { moduleId: "schemaCore", name: "heartbeat.update", handlerExport: "createHeartbeatUpdateTool" },
+      { moduleId: "schemaCore", name: "heartbeat.setEnabled", handlerExport: "createHeartbeatSetEnabledTool" },
+    ]);
+    // The write tools of issue #1846 declare `requiresApproval`, so they are offered only to a caller that asks for them.
+    const gated = await registry.getAgentToolDefinitions(new Set(), { includeApprovalGated: true });
+    expect(gated.map((tool) => [tool.name, tool.requiresApproval === true, typeof tool.snapshot])).toEqual([
+      ["heartbeat.list", false, "undefined"],
+      ["heartbeat.history", false, "undefined"],
+      ["heartbeat.trigger", false, "undefined"],
+      ["heartbeat.create", true, "function"],
+      ["heartbeat.update", true, "function"],
+      ["heartbeat.setEnabled", true, "function"],
     ]);
     const tools = await registry.getAgentToolDefinitions(new Set());
     expect(tools.map((tool) => tool.name)).toEqual(["heartbeat.list", "heartbeat.history", "heartbeat.trigger"]);

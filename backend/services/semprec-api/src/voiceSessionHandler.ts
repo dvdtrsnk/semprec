@@ -11,6 +11,8 @@ import {
 import {
   getSempThread,
   getSempVoiceDelivery,
+  listRunningSempTurnIds,
+  requestSempTurnCancel,
   sendSempMessage,
   withTransaction,
   type HeartbeatRuleKindRegistry,
@@ -19,6 +21,7 @@ import type { SyncServer, VoiceRunFrame } from "@semprec/realtime";
 import { AiGatewayFailedError, runInTenant } from "@semprec/shared";
 import { DEFAULT_MESSAGE_SPEECH_VOICE } from "./sempSpeechHandler.js";
 import type { VoiceIdentity, VoiceSender, VoiceSessionHandler } from "./voiceChannel.js";
+import { isVoiceStopCommand } from "./voiceStopCommand.js";
 
 interface Session {
   identity: VoiceIdentity;
@@ -35,6 +38,8 @@ interface Session {
   speech: Promise<void>;
   speechController: AbortController | undefined;
   textState: VoiceTextState;
+  /** The assistant messages this session asked to cancel; a cancelled reply among them ends its turn quietly. */
+  stoppedTurns: Set<string>;
   speaking: boolean;
   dispose: (() => Promise<void>) | undefined;
 }
@@ -165,6 +170,33 @@ export function createVoiceSessionHandler(
       session.sender.sendControl({ type: "speaking", state: "stopped" });
     }
   }
+  /**
+   * Handles a stop command: speech output stops at once, and every running turn of the session's thread is asked to
+   * cancel. The lookup runs after the admissions already queued, so `threadId` is the thread of the earlier utterances;
+   * with no thread or no running turn nothing else happens. The command is never stored as a message.
+   */
+  function stopCommand(session: Session): void {
+    stopSpeech(session);
+    const tenantId = session.identity.tenantId;
+    session.admission = session.admission
+      .then(async () => {
+        const threadId = session.threadId;
+        if (threadId === undefined || session.sender.signal.aborted) return;
+        await runInTenant(tenantId, () =>
+          withTransaction(pool, async (client) => {
+            for (const assistantMessageId of await listRunningSempTurnIds(client, threadId)) {
+              session.stoppedTurns.add(assistantMessageId);
+              await requestSempTurnCancel(client, { tenantId, assistantMessageId });
+            }
+          }),
+        );
+      })
+      .catch((error: unknown) => {
+        if (isSessionCancellation(error, session.sender.signal)) return;
+        session.failures.push(error);
+        fail(session, error);
+      });
+  }
   function pump(session: Session): void {
     if (session.speechController || session.sender.signal.aborted || !session.textState.hasSentences) return;
     const controller = new AbortController();
@@ -225,16 +257,27 @@ export function createVoiceSessionHandler(
   async function turn(session: Session, result: Awaited<ReturnType<typeof admit>>): Promise<void> {
     const signal = session.sender.signal;
     signal.throwIfAborted();
-    let delivery = await runInTenant(session.identity.tenantId, () =>
-      getSempVoiceDelivery(pool, result.threadId, result.assistantMessageId),
-    );
-    while (delivery && !delivery.runId && (delivery.status === "queued" || delivery.status === "running")) {
-      await delay(100, undefined, { signal });
-      delivery = await runInTenant(session.identity.tenantId, () =>
+    const readDelivery = () =>
+      runInTenant(session.identity.tenantId, () =>
         getSempVoiceDelivery(pool, result.threadId, result.assistantMessageId),
       );
+    /** True for a reply that ended as the cancellation this session asked for with a stop command. */
+    const stoppedByCommand = (reply: Awaited<ReturnType<typeof readDelivery>>): boolean =>
+      reply?.status === "error" &&
+      reply.errorCode === "cancelled" &&
+      session.stoppedTurns.has(result.assistantMessageId);
+    let delivery = await readDelivery();
+    while (delivery && !delivery.runId && (delivery.status === "queued" || delivery.status === "running")) {
+      await delay(100, undefined, { signal });
+      delivery = await readDelivery();
     }
     signal.throwIfAborted();
+    if (stoppedByCommand(delivery)) {
+      // The command landed before the turn had a run to watch: the cancellation answers it, nothing is left to speak.
+      stopSpeech(session);
+      session.stoppedTurns.delete(result.assistantMessageId);
+      return;
+    }
     if (!delivery?.runId || !delivery.firstEventId) throw new Error("Voice turn unavailable");
     session.textState.beginTurn();
     let lastEventId = delivery.firstEventId;
@@ -283,42 +326,67 @@ export function createVoiceSessionHandler(
     };
     let turnFailed = false;
     let turnFailure: unknown;
+    let stopped = false;
     try {
-      session.dispose = await sync.subscribeVoice({
-        tenantId: session.identity.tenantId,
-        userId: session.identity.userId,
-        runId: delivery.runId,
-        threadId: result.threadId,
-        sempMessageId: result.assistantMessageId,
-        afterEventId: delivery.firstEventId,
-        signal,
-        onFrame,
-        onFailure(error, cause) {
-          failed = true;
-          watchFailure = error;
-          if (cause === "overloaded") session.sender.fail("overloaded");
-        },
-      });
-      for (;;) {
+      try {
+        session.dispose = await sync.subscribeVoice({
+          tenantId: session.identity.tenantId,
+          userId: session.identity.userId,
+          runId: delivery.runId,
+          threadId: result.threadId,
+          sempMessageId: result.assistantMessageId,
+          afterEventId: delivery.firstEventId,
+          signal,
+          onFrame,
+          onFailure(error, cause) {
+            failed = true;
+            watchFailure = error;
+            if (cause === "overloaded") session.sender.fail("overloaded");
+          },
+        });
+      } catch (watchError) {
+        // The watch refuses a reply that was cancelled before it started: when this session's stop command did that,
+        // the turn is over and nothing failed. Any other refusal is the failure it reports.
+        if (signal.aborted || !session.stoppedTurns.has(result.assistantMessageId)) throw watchError;
+        let cancelled: boolean;
+        try {
+          cancelled = stoppedByCommand(await readDelivery());
+        } catch (readError) {
+          // The refusal of the watch stays primary; the failed lookup is kept next to it.
+          throw new AggregateError([watchError, readError], "Voice run watch and reply lookup failed", {
+            // eslint-disable-next-line preserve-caught-error
+            cause: watchError,
+          });
+        }
+        if (!cancelled) throw watchError;
+        stopped = true;
+      }
+      while (!stopped) {
         signal.throwIfAborted();
         if (failed) throw watchFailure;
-        delivery = await runInTenant(session.identity.tenantId, () =>
-          getSempVoiceDelivery(pool, result.threadId, result.assistantMessageId),
-        );
+        delivery = await readDelivery();
         signal.throwIfAborted();
-        if (!delivery || delivery.status === "error") throw new Error("Voice turn unavailable");
+        if (!delivery) throw new Error("Voice turn unavailable");
+        if (delivery.status === "error") {
+          // A turn this session stopped by voice ends as a cancellation: that answers the command, it is no failure.
+          if (!stoppedByCommand(delivery)) throw new Error("Voice turn unavailable");
+          stopped = true;
+          break;
+        }
         if (delivery.status === "done") {
           if (!delivery.lastEventId || delivery.runId === null) throw new Error("Voice turn unavailable");
           if (BigInt(lastEventId) >= BigInt(delivery.lastEventId)) break;
         }
         await delay(100, undefined, { signal });
       }
-      session.textState.finishMessage(undefined);
+      if (stopped) stopSpeech(session);
+      else session.textState.finishMessage(undefined);
       await session.speech;
     } catch (error) {
       turnFailed = true;
       turnFailure = error;
     }
+    session.stoppedTurns.delete(result.assistantMessageId);
     let cleanupFailed = false;
     let cleanupFailure: unknown;
     try {
@@ -364,6 +432,7 @@ export function createVoiceSessionHandler(
         speech: Promise.resolve(),
         speechController: undefined,
         textState: new VoiceTextState(),
+        stoppedTurns: new Set(),
         speaking: false,
         dispose: undefined,
       };
@@ -396,6 +465,10 @@ export function createVoiceSessionHandler(
                     return;
                   }
                   if (!sender.sendControl({ type: "transcript", text, final: true }) || !text.trim()) return;
+                  if (isVoiceStopCommand(text)) {
+                    stopCommand(session);
+                    return;
+                  }
                   if (session.queued >= MAX_QUEUED_TURNS) {
                     sender.fail("overloaded");
                     return;

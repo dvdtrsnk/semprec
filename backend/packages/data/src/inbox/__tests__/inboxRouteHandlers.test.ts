@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import type { Pool } from "pg";
 import { setInvalidationHook, type InvalidationEvent } from "../../realtimeHook.js";
 import { createTenantZeroUser, getTenantZeroId, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
@@ -25,6 +26,7 @@ import {
   createConfirmProposalRouteHandler,
   createInboxCardsRouteHandler,
   createInboxTypesRouteHandler,
+  createRejectProposalRouteHandler,
 } from "../inboxRouteHandlers.js";
 import { matchTranscriptToEvent } from "../../transcription/transcriptEventMatch.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../../transcription/transcriptionJob.js";
@@ -1004,6 +1006,348 @@ describe("inbox custom route handlers (issue #239)", () => {
       await expect(
         handler({ params: { id: proposalId }, body: { credential: { credentialType: "bearer_token" } } }),
       ).rejects.toThrow(ValidationError);
+    });
+  });
+
+  describe("createRejectProposalRouteHandler (issue #1845)", () => {
+    /** The ids of the cards `GET /api/inbox/cards` lists for the tenant's only user. */
+    async function listedCardIds(): Promise<string[]> {
+      const userId = (await createTenantZeroUser(pool)).id;
+      const answer = await createInboxCardsRouteHandler(pool)({ identity: { user: { id: userId, locale: "en" } } });
+      if (!("body" in answer)) throw new Error("expected a raw JSON body");
+      const body = z.object({ cards: z.array(z.object({ cardId: z.string() })) }).parse(answer.body);
+      return body.cards.map((card) => card.cardId);
+    }
+
+    /** Sets a card's stored `status` through the choke point: `needsClarification` has no producer in the tick of these tests. */
+    async function setStatus(cardId: string, status: string): Promise<void> {
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(
+          client,
+          { databaseId: proposalsId, itemId: cardId, propertiesPatch: { status } },
+          { allowedSystemKeys: ["status"] },
+        ),
+      );
+    }
+
+    function historyOf(item: ItemRow): unknown[] {
+      return z.array(z.unknown()).parse(item.properties.history);
+    }
+
+    async function reject(proposalId: string, body: unknown = {}): Promise<ItemRow> {
+      const answer = await createRejectProposalRouteHandler(pool)({ params: { id: proposalId }, body });
+      expect(answer.status).toBe(200);
+      if (!("item" in answer)) throw new Error("expected an item answer");
+      return answer.item;
+    }
+
+    it.each(["proposed", "needsClarification", "invalid"])(
+      "closes a %s card: status rejected, one rejected history entry, gone from the card list",
+      async (status) => {
+        const proposalId = await createDatabaseProposal("Buy milk");
+        if (status !== "proposed") await setStatus(proposalId, status);
+        const before = await itemsStore.getItemById(pool, proposalsId, proposalId);
+        expect(await listedCardIds()).toContain(proposalId);
+
+        const item = await reject(proposalId);
+
+        expect(item.id).toBe(proposalId);
+        expect(item.properties.status).toBe("rejected");
+        const history = historyOf(item);
+        expect(history).toHaveLength(historyOf(before!).length + 1);
+        expect(history.at(-1)).toMatchObject({ author: "user", message: "Rejected by user.", kind: "rejected" });
+        expect(await listedCardIds()).not.toContain(proposalId);
+      },
+    );
+
+    it("closes a transcript card", async () => {
+      const cardId = await runInTenant(getTenantZeroId(), () =>
+        withTransaction(pool, async (client) => {
+          const transcriptsId = await databaseIdFor("transcripts");
+          const transcript = await createItemWithClient(
+            client,
+            { databaseId: transcriptsId, properties: { name: "Standup", date: "2026-08-28T08:00:00.000Z" } },
+            { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+          );
+          await matchTranscriptToEvent(client, { transcriptId: transcript.id, durationSeconds: 60 });
+          const { rows } = await client.query<{ id: string }>(
+            "SELECT id FROM items WHERE database_id = $1 AND properties->>'kind' = 'transcript'",
+            [proposalsId],
+          );
+          if (!rows[0]) throw new Error("matchTranscriptToEvent stored no card");
+          return rows[0].id;
+        }),
+      );
+      expect(await listedCardIds()).toContain(cardId);
+
+      const item = await reject(cardId);
+
+      expect(item.properties.status).toBe("rejected");
+      expect(historyOf(item).at(-1)).toMatchObject({ author: "user", kind: "rejected" });
+      expect(await listedCardIds()).not.toContain(cardId);
+    });
+
+    it("stores the supplied message as the text of the history entry", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+
+      const item = await reject(proposalId, { message: "Already done by hand" });
+
+      expect(historyOf(item).at(-1)).toMatchObject({
+        author: "user",
+        message: "Already done by hand",
+        kind: "rejected",
+      });
+    });
+
+    it("accepts a null body as a reject without a message", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+
+      const item = await reject(proposalId, null);
+
+      expect(item.properties.status).toBe("rejected");
+      expect(historyOf(item).at(-1)).toMatchObject({ message: "Rejected by user." });
+    });
+
+    it("answers a repeated call with the same card and adds no second history entry", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+      const first = await reject(proposalId);
+
+      const second = await reject(proposalId, { message: "Changed my mind about the reason" });
+
+      // The first answer is the update's result and the second a read of the stored row, so only their stored fields compare.
+      expect({ id: second.id, properties: second.properties, updatedAt: second.updatedAt }).toEqual({
+        id: first.id,
+        properties: first.properties,
+        updatedAt: first.updatedAt,
+      });
+      expect(historyOf(second)).toHaveLength(historyOf(first).length);
+    });
+
+    it("refuses a confirmed card with validation_failed on status and writes nothing", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+      await createConfirmProposalRouteHandler(pool)({ params: { id: proposalId }, body: {} });
+      const before = await itemsStore.getItemById(pool, proposalsId, proposalId);
+
+      await expect(
+        createRejectProposalRouteHandler(pool)({ params: { id: proposalId }, body: {} }),
+      ).rejects.toMatchObject({ status: 400, code: "validation_failed", details: { field: "status" } });
+
+      expect(await itemsStore.getItemById(pool, proposalsId, proposalId)).toEqual(before);
+      expect(before?.properties.status).toBe("confirmed");
+    });
+
+    it("answers 404 for an unknown card id", async () => {
+      await expect(
+        createRejectProposalRouteHandler(pool)({ params: { id: randomUUID() }, body: {} }),
+      ).rejects.toBeInstanceOf(NotFoundError);
+    });
+
+    it("answers 404 for a soft-deleted card", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+      await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, proposalsId, proposalId));
+
+      await expect(
+        createRejectProposalRouteHandler(pool)({ params: { id: proposalId }, body: {} }),
+      ).rejects.toBeInstanceOf(NotFoundError);
+    });
+
+    it("rejects a request with no `id` path parameter", async () => {
+      await expect(createRejectProposalRouteHandler(pool)({ params: {}, body: {} })).rejects.toThrow(ValidationError);
+    });
+
+    it.each([
+      ["an array body", []],
+      ["a string body", "nope"],
+      ["a number message", { message: 7 }],
+      ["a null message", { message: null }],
+      ["an empty message", { message: "" }],
+      ["a blank message", { message: "   " }],
+      ["a message over the length cap", { message: "x".repeat(1001) }],
+    ])("refuses %s with validation_failed and leaves the card open", async (_label, body) => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+
+      await expect(createRejectProposalRouteHandler(pool)({ params: { id: proposalId }, body })).rejects.toMatchObject({
+        status: 400,
+        code: "validation_failed",
+      });
+
+      const card = await itemsStore.getItemById(pool, proposalsId, proposalId);
+      expect(card?.properties.status).toBe("proposed");
+    });
+
+    it("accepts a message of exactly the length cap", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+
+      const item = await reject(proposalId, { message: "x".repeat(1000) });
+
+      expect(item.properties.status).toBe("rejected");
+    });
+  });
+
+  describe("ifVersion on confirm and reject (issue #1852)", () => {
+    /** Older than any stored `updatedAt`, so it never equals the version a card holds. */
+    const STALE_VERSION = "2000-01-01T00:00:00.000Z";
+    const handlers = { confirm: createConfirmProposalRouteHandler, reject: createRejectProposalRouteHandler } as const;
+    type Action = keyof typeof handlers;
+    const ACTIONS: Action[] = ["confirm", "reject"];
+    const TERMINAL_STATUS: Record<Action, string> = { confirm: "confirmed", reject: "rejected" };
+
+    async function storedCard(cardId: string): Promise<ItemRow> {
+      const card = await itemsStore.getItemById(pool, proposalsId, cardId);
+      if (!card) throw new Error(`Card ${cardId} is missing`);
+      return card;
+    }
+
+    /** What an action may write: every item, every queued job and every history entry. */
+    async function writtenState(cardId: string): Promise<{ items: string[]; jobs: number; card: ItemRow }> {
+      const items = await pool.query<{ id: string; updated_at: Date }>("SELECT id, updated_at FROM items ORDER BY id");
+      const jobs = await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM graphile_worker.jobs");
+      return {
+        items: items.rows.map((row) => `${row.id} ${row.updated_at.toISOString()}`),
+        jobs: jobs.rows[0]!.n,
+        card: await storedCard(cardId),
+      };
+    }
+
+    function call(action: Action, cardId: string, body: Record<string, unknown>) {
+      return handlers[action](pool)({ params: { id: cardId }, body });
+    }
+
+    function itemOf(answer: Awaited<ReturnType<typeof call>>): ItemRow {
+      if (!("item" in answer)) throw new Error("expected an item answer");
+      return answer.item;
+    }
+
+    it.each(ACTIONS)(
+      "%s: a stale ifVersion on an open card answers 409 with the card and writes nothing",
+      async (action) => {
+        const cardId = await createDatabaseProposal("Buy milk");
+        const before = await writtenState(cardId);
+
+        await expect(call(action, cardId, { ifVersion: STALE_VERSION })).rejects.toMatchObject({
+          status: 409,
+          code: "version_conflict",
+          details: { current: { id: cardId, updatedAt: before.card.updatedAt } },
+        });
+
+        expect(await writtenState(cardId)).toEqual(before);
+        expect(before.card.properties.status).toBe("proposed");
+      },
+    );
+
+    it.each(ACTIONS)("%s: the current ifVersion of an open card succeeds", async (action) => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      const { updatedAt } = await storedCard(cardId);
+
+      const item = itemOf(await call(action, cardId, { ifVersion: updatedAt }));
+
+      expect(item.properties.status).toBe(TERMINAL_STATUS[action]);
+      expect((await storedCard(cardId)).properties.status).toBe(TERMINAL_STATUS[action]);
+    });
+
+    it.each(ACTIONS)(
+      "%s: a stale ifVersion on a card already in the terminal state answers 200 unchanged",
+      async (action) => {
+        const cardId = await createDatabaseProposal("Buy milk");
+        await call(action, cardId, {});
+        const before = await writtenState(cardId);
+
+        const item = itemOf(await call(action, cardId, { ifVersion: STALE_VERSION }));
+
+        expect(item.properties).toEqual(before.card.properties);
+        expect(item.updatedAt).toBe(before.card.updatedAt);
+        expect(await writtenState(cardId)).toEqual(before);
+      },
+    );
+
+    it.each(ACTIONS)("%s: without an ifVersion an open card is decided as before", async (action) => {
+      const cardId = await createDatabaseProposal("Buy milk");
+
+      const item = itemOf(await call(action, cardId, {}));
+
+      expect(item.properties.status).toBe(TERMINAL_STATUS[action]);
+    });
+
+    it.each(ACTIONS)("%s: an unknown card answers 404 before the version is compared", async (action) => {
+      await expect(call(action, randomUUID(), { ifVersion: STALE_VERSION })).rejects.toBeInstanceOf(NotFoundError);
+    });
+
+    it("confirm: a rejected card answers 400 on status with its current status, also with a stale ifVersion", async () => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      await call("reject", cardId, {});
+      const before = await writtenState(cardId);
+
+      for (const body of [{}, { ifVersion: STALE_VERSION }]) {
+        await expect(call("confirm", cardId, body)).rejects.toMatchObject({
+          status: 400,
+          code: "validation_failed",
+          details: { field: "status", currentStatus: "rejected" },
+        });
+      }
+      expect(await writtenState(cardId)).toEqual(before);
+    });
+
+    it("confirm: a card that needs clarification answers 400 on status with its current status", async () => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(
+          client,
+          { databaseId: proposalsId, itemId: cardId, propertiesPatch: { status: "needsClarification" } },
+          { allowedSystemKeys: ["status"] },
+        ),
+      );
+      const { updatedAt } = await storedCard(cardId);
+
+      await expect(call("confirm", cardId, { ifVersion: updatedAt })).rejects.toMatchObject({
+        status: 400,
+        code: "validation_failed",
+        details: { field: "status", currentStatus: "needsClarification" },
+      });
+    });
+
+    it("confirm: a card without a stored status answers 400 on status with a null current status", async () => {
+      const cardId = await withTransaction(pool, async (client) => {
+        const card = await createItemWithClient(
+          client,
+          { databaseId: proposalsId, properties: { kind: "inbox", proposal: null } },
+          { allowedSystemKeys: ["kind", "proposal"] },
+        );
+        return card.id;
+      });
+
+      await expect(call("confirm", cardId, {})).rejects.toMatchObject({
+        status: 400,
+        details: { field: "status", currentStatus: null },
+      });
+    });
+
+    it("reject: a confirmed card answers 400 on status with its current status, also with a stale ifVersion", async () => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      await call("confirm", cardId, {});
+      const before = await writtenState(cardId);
+
+      for (const body of [{}, { ifVersion: STALE_VERSION }]) {
+        await expect(call("reject", cardId, body)).rejects.toMatchObject({
+          status: 400,
+          code: "validation_failed",
+          details: { field: "status", currentStatus: "confirmed" },
+        });
+      }
+      expect(await writtenState(cardId)).toEqual(before);
+    });
+
+    it.each(ACTIONS)("%s: a malformed ifVersion answers 400 on the field and writes nothing", async (action) => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      const before = await writtenState(cardId);
+
+      for (const ifVersion of [7, null, "", "yesterday", "2026-08-28", ["2026-08-28T09:00:00.000Z"]]) {
+        await expect(call(action, cardId, { ifVersion })).rejects.toMatchObject({
+          status: 400,
+          code: "validation_failed",
+          details: { field: "ifVersion" },
+        });
+      }
+      expect(await writtenState(cardId)).toEqual(before);
     });
   });
 

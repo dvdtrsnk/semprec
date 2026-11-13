@@ -11,6 +11,7 @@ import {
   NotFoundError,
   PAGES_MODULE_ID,
   readerOfWriter,
+  searchItemGroups,
   ValidationError,
   withTransaction,
   type Actor,
@@ -34,12 +35,13 @@ type BreadcrumbEntry = NonNullable<
 
 /**
  * The sole neutral implementation of `GenericApplicationPort` (issue #219): built only over
- * `packages/data`'s public choke-point facade (`createChokePoint`), never a store or SQL
+ * `packages/data`'s public entry points — the choke-point facade (`createChokePoint`), the page
+ * store (`createDocStore`) and the global search query (`searchItemGroups`) — never a store or SQL
  * directly — `packages/application` is core (see `core-knows-nobody` in
  * `dependency-cruiser.rules.json`) and stays ignorant of which transport (REST today, MCP/AgentTool
  * in #220) is calling it. A composition root (e.g. `semprec-api`'s `app.ts`) constructs one
  * instance per injected `Pool` and threads it through every binding dispatch; there is no other
- * path into the 46-operation catalog's business logic.
+ * path into the 47-operation catalog's business logic.
  */
 
 /**
@@ -522,6 +524,22 @@ export function createGenericApplicationService(
       );
     },
 
+    /**
+     * Global search (issue #1842): the data function runs in the caller's tenant, and an agent actor's project limits it
+     * to the databases the project may read. Only a person (a REST session that is not acting for an agent) is given
+     * the `chat` group of Semp threads (issue #1854); an agent run and an MCP client are not.
+     */
+    async searchItems(actor, input) {
+      return searchItemGroups(pool, {
+        q: input.q,
+        scope: input.scope,
+        perGroupLimit: input.perGroupLimit,
+        cursor: input.cursor,
+        agentProjectItemId: writerIdentityOf(actor).agentProjectItemId,
+        humanActor: humanWriterUserIdOf(actor) !== undefined,
+      });
+    },
+
     // ---- relations ----
     async setRelation(actor, input) {
       return chokePoint.setRelation(input, writerIdentityOf(actor), actor.userId);
@@ -567,6 +585,14 @@ export function createGenericApplicationService(
       if (!relations)
         throw new NotFoundError(`Item ${input.itemId} not found`, { resource: "item", itemId: input.itemId });
       return relations;
+    },
+
+    /** The choke point answers `null` for an unknown, trashed or foreign item, the same not-found as `listRelations`. */
+    async listRelatedCollections(actor, input) {
+      const related = await chokePoint.listRelatedCollections(input.itemId, resolver, readerOf(actor));
+      if (!related)
+        throw new NotFoundError(`Item ${input.itemId} not found`, { resource: "item", itemId: input.itemId });
+      return related;
     },
 
     async unlinkValue(actor, input) {

@@ -7,6 +7,7 @@ import { NotFoundError, ValidationError } from "../errors.js";
 import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
 import { connectMcpServer, type McpClientHandle } from "./mcpConnectionFactory.js";
 import { McpConnectionError } from "./mcpConnectionError.js";
+import { publishMcpServersInvalidation } from "./mcpServersInvalidation.js";
 import { deactivateMcpToolRegistrationsNotIn, upsertMcpToolRegistration } from "./mcpToolRegistrationsStore.js";
 import { assertAcceptableMcpToolSchema } from "./mcpToolSchemaPolicy.js";
 import { logger } from "./logger.js";
@@ -128,7 +129,9 @@ function safeSyncErrorMessage(err: unknown): string {
  * `active` flips), and records `syncStatus: 'ok'`/`lastSynced`/`syncError: null` on the server
  * item. A connection or validation failure instead records `syncStatus: 'error'` with a safe
  * message and leaves `mcp_tool_registrations` exactly as it was — prior registrations remain
- * authoritative. The connection is always closed, on both the success and failure path.
+ * authoritative. A successful pass announces one `mcpServers` invalidation once its transaction has
+ * committed (`publishMcpServersInvalidation`); a failed one announces nothing. The connection is always
+ * closed, on both the success and failure path.
  */
 export async function syncMcpServerTools(
   pool: Pool,
@@ -176,6 +179,9 @@ export async function syncMcpServerTools(
         },
         { allowedSystemKeys: MCP_SERVER_SYNC_ALLOWED_KEYS },
       );
+      // The registrations changed, and with them the effective tools of every project that has grants on the
+      // server: one announcement for the tenant, in this transaction. The failure path below writes none.
+      publishMcpServersInvalidation(client);
     });
 
     toolCount = parsedTools.length;

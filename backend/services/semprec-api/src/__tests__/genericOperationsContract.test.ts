@@ -119,7 +119,7 @@ async function buildFixtures(): Promise<Fixtures> {
 type ContractCase = (fx: Fixtures, headers: Record<string, string>, baseUrl: string) => Promise<void>;
 
 /**
- * One REST exercise per operation in the closed 46-operation catalog (issue #219's acceptance
+ * One REST exercise per operation in the closed 47-operation catalog (issue #219's acceptance
  * criterion: "a parameterized contract test covers all 28 operations over REST", extended to
  * `property.getByKey` by issue #432). Each case
  * issues the real HTTP request a REST caller would send and asserts only that it reaches
@@ -490,6 +490,20 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     const body = (await res.json()) as { relations: { targetItemId: string }[] };
     expect(body.relations.map((relation) => relation.targetItemId)).toEqual([fx.targetItem.id]);
   },
+  "relation.related": async (fx, headers, baseUrl) => {
+    // `itemA` is linked to the target item, and the target database holds the inverse property of that relation.
+    const res = await fetch(`${baseUrl}/api/items/${fx.itemA.id}/related`, { headers });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([
+      {
+        databaseKey: null,
+        databaseId: fx.targetDatabase.id,
+        count: 1,
+        via: "direct",
+        filter: { type: "relation_contains", property: "assignedFrom", value: fx.itemA.id },
+      },
+    ]);
+  },
   "link.unlink": async (fx, headers, baseUrl) => {
     await withTransaction(pool, (client) =>
       insertValueLink(client, {
@@ -774,6 +788,32 @@ const CASES: Record<GenericOperationName, ContractCase> = {
             { value: "Arrival", count: 1 },
             { value: "Dune", count: 1 },
           ],
+        },
+      ],
+    });
+  },
+  search: async (_fx, headers, baseUrl) => {
+    const tasks = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "tasks"));
+    if (!tasks) throw new Error("Tasks not seeded");
+    const task = await chokePoint.createItem({ databaseId: tasks.id, properties: { name: "Contract search task" } });
+    const res = await fetch(`${baseUrl}/api/search?q=contract%20search&scope=task,event&perGroupLimit=2`, { headers });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      groups: [
+        {
+          type: "task",
+          total: 1,
+          items: [
+            {
+              itemId: task.id,
+              databaseId: tasks.id,
+              databaseKey: "tasks",
+              title: "Contract search task",
+              subtitleParts: [],
+              snippet: null,
+            },
+          ],
+          nextCursor: null,
         },
       ],
     });

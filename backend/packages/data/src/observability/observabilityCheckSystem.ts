@@ -21,7 +21,7 @@ import {
 } from "./observabilityChecksStore.js";
 import { raiseProblem, resolveProblem } from "../semp/sempProblemsStore.js";
 import { AGENTS_PROCESS_PROBLEM_KEY, mailProblemKey } from "../semp/sourceProblemKeys.js";
-import { writeOperatorAlert } from "./operatorAlerts.js";
+import { resolveOperatorAlertProblems, writeOperatorAlert } from "./operatorAlerts.js";
 import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
 import { FAILED_JOB_RETENTION_MS } from "./queueFailedJobsPrune.js";
 
@@ -117,6 +117,13 @@ async function checkProcessHeartbeats(pool: Pool, helpers: ObservabilityCheckSys
                 }
               : undefined,
         });
+      } else if (
+        processStatus.process === "agents" &&
+        transition.previousStatus === "alerting" &&
+        transition.status === "ok"
+      ) {
+        // The agents process beats again: close the problem the stale alert raised for each admin (issue #1915).
+        await resolveOperatorAlertProblems(pool, client, AGENTS_PROCESS_PROBLEM_KEY);
       }
     });
   }

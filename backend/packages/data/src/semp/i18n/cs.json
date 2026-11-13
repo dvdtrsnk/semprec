@@ -44,5 +44,14 @@
   "status.aiBudgetMissing.shortText": "AI nemá nastavený limit.",
   "status.aiBudgetExhausted.title": "Limit AI je vyčerpán",
   "status.aiBudgetExhausted.text": "Limit útraty za AI je vyčerpán. Obnoví se {resetTime}.",
-  "status.aiBudgetExhausted.shortText": "Limit AI je vyčerpán, obnoví se {resetTime}."
+  "status.aiBudgetExhausted.shortText": "Limit AI je vyčerpán, obnoví se {resetTime}.",
+  "reply.failure.budgetExceeded": "Odpověď se nepodařila, protože je vyčerpaný limit výdajů na AI.",
+  "reply.failure.modelError": "Odpověď se nepodařila, protože model AI požadavek nedokončil.",
+  "reply.failure.cancelled": "Odpověď byla zrušena dříve, než se dokončila.",
+  "reply.failure.interrupted": "Odpověď byla přerušena restartem dříve, než se dokončila.",
+  "reply.failure.internal": "Odpověď se nepodařila kvůli vnitřní chybě.",
+  "reply.failure.toolTimeout": "Spojení s nástrojem {connector} vypršelo po {seconds} s, proto je odpověď neúplná.",
+  "reply.failure.toolUnavailable": "Nástroj {connector} není dostupný, proto je odpověď neúplná.",
+  "reply.failure.toolError": "Nástroj {connector} vrátil chybu, proto je odpověď neúplná.",
+  "reply.failure.unnamedConnector": "(bez názvu)"
 }

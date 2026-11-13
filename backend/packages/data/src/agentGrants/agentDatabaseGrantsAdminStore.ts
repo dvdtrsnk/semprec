@@ -5,7 +5,7 @@ import { parseAgentDatabaseAccess, type AgentDatabaseAccess } from "./agentDatab
 // The user-only writes of `agent_database_grants` (issue #1810), the counterpart of
 // `mcp/mcpGrantsAdminStore.ts`. This module is deliberately not exported from this package's
 // `index.ts`: `agent-runtime` depends on `@semprec/data`, so keeping the writes off the public surface is
-// what makes them unreachable from agent code. The routes that will call them are issue #1841's.
+// what makes them unreachable from agent code. The routes that call them are issue #1841's, through `agentDatabaseGrantsForProject.ts`.
 
 export interface SetAgentDatabaseGrantInput {
   projectItemId: string;

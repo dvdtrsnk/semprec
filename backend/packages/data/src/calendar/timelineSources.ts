@@ -3,6 +3,7 @@ import type { WallClock } from "../calendarTime.js";
 import { readBirthdayTimelineItems } from "./timelineBirthdaySource.js";
 import { readHolidayTimelineItems } from "./timelineHolidaySource.js";
 import { readEventTimelineItems, readTaskTimelineItems } from "./timelineRead.js";
+import { readEventOccurrenceTimelineItems } from "./timelineEventOccurrenceSource.js";
 import { readSleepTimelineItems } from "./timelineSleepSource.js";
 
 /** One entry of the calendar timeline in its full shape (issue #1717). */
@@ -55,6 +56,22 @@ export interface CalendarTimelineItem {
   updatedAt: string;
   /** `false` for a stored Event or Task; a source sets `true` on an entry that is not a stored row. */
   readOnly: boolean;
+}
+
+/**
+ * One occurrence of a recurring Event (issue gh-1877), in the full shape of an Event. A virtual occurrence is not a
+ * stored row: its `id` is `<seriesId>@<date>` (`formatOccurrenceId`), `readOnly` is `true` and `overridden` is
+ * `false`, and a client materializes it (`POST /api/events/series/:seriesId/occurrences/:date`) before it edits it.
+ * An occurrence that has an item of its own is that item: its `id` is the item's, `readOnly` is `false` and
+ * `overridden` is `true`. `date` and `endDate` are those of the occurrence, which for an item are its stored values.
+ */
+export interface CalendarEventOccurrence extends CalendarTimelineItem {
+  kind: "event";
+  /** The id of the series Event. */
+  seriesId: string;
+  /** The day the series rule assigns to the occurrence; a moved item keeps it. */
+  occurrenceDate: string;
+  overridden: boolean;
 }
 
 /**
@@ -129,7 +146,7 @@ export type CalendarDerivedTimelineItem =
   CalendarBirthdayTimelineItem | CalendarHolidayTimelineItem | CalendarSleepTimelineItem;
 
 /** Everything a source may return: a stored Event or Task, or a derived entry. `kind` tells them apart. */
-export type CalendarTimelineEntry = CalendarTimelineItem | CalendarDerivedTimelineItem;
+export type CalendarTimelineEntry = CalendarTimelineItem | CalendarEventOccurrence | CalendarDerivedTimelineItem;
 
 /** What every source of one timeline read is given: the requested range and the tenant's zone, day and time. */
 export interface CalendarTimelineContext {
@@ -163,4 +180,5 @@ export const CALENDAR_TIMELINE_SOURCES: readonly CalendarTimelineSource[] = [
   { id: "birthdays", readItems: readBirthdayTimelineItems },
   { id: "holidays", readItems: readHolidayTimelineItems },
   { id: "sleep", readItems: readSleepTimelineItems },
+  { id: "eventOccurrences", readItems: readEventOccurrenceTimelineItems },
 ];

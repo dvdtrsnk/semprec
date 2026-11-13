@@ -162,6 +162,22 @@ async function waitForRowLockWaiter(): Promise<void> {
   throw new Error("No transaction waited for a row lock");
 }
 
+/**
+ * Waits until a backend waits for a lock and returns the statements of all backends that wait. `pg_stat_activity`
+ * is the server's own view of that wait, so no timing guess stands in for it.
+ */
+async function waitingStatements(): Promise<string[]> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const { rows } = await adminPool.query<{ query: string }>(
+      "SELECT query FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'",
+    );
+    if (rows.length > 0) return rows.map((row) => row.query);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("No backend waited for a lock");
+}
+
 function asDays(value: unknown): string[] {
   if (!Array.isArray(value)) throw new Error("wakeDays is not a list");
   return value.map((day) => String(day));
@@ -447,16 +463,21 @@ describe("a wake day is in at most one sleep plan: concurrent writes (issue gh-1
     const fromWeekday = await chokePoint(tenant).create(planProperties("From weekday", []));
     const fromWeekend = await chokePoint(tenant).create(planProperties("From weekend", []));
     const firstMove = holdPlanWriteOpen(tenant, fromWeekday.id, ["mon"]);
+    let secondMove: Promise<unknown> | undefined;
     try {
       await firstMove.written;
 
-      // Resolves while the first transaction still holds its locks: the two moves touch different plans.
-      await chokePoint(tenant).patch(fromWeekend.id, { wakeDays: ["sat"] });
+      // The two moves touch different plans, so the second one waits for no plan row and for no day. The one lock
+      // it waits for is the tenant's single `sleep.resync` job (issue gh-1838), which the open transaction enqueued.
+      secondMove = chokePoint(tenant).patch(fromWeekend.id, { wakeDays: ["sat"] });
+      expect(await waitingStatements()).toEqual([expect.stringContaining("graphile_worker.add_job")]);
       firstMove.release();
       await firstMove.done;
+      await secondMove;
     } finally {
       firstMove.release();
       await firstMove.done.catch(() => undefined);
+      await secondMove?.catch(() => undefined);
     }
 
     expect(await plansHolding(tenant, "mon")).toEqual([fromWeekday.id]);

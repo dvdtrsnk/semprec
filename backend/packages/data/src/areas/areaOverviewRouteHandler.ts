@@ -28,7 +28,7 @@ const ARCHIVED_PROJECT_STATUS = "archived";
  * The active-project rule (issue #1760): a project of the user's own whose status is `inProgress` or `longTerm`.
  * A system project stores a `systemActive` value, `true` or `false`, and a user's project stores none.
  */
-const ACTIVE_PROJECTS_FILTER: FilterNode = {
+export const ACTIVE_PROJECTS_FILTER: FilterNode = {
   type: "and",
   nodes: [
     { type: "is_empty", property: "systemActive" },

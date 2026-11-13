@@ -4164,6 +4164,58 @@ describe("item routes (issue #241)", () => {
     });
   });
 
+  describe("GET /api/items/:id/related (issue #1839)", () => {
+    it("rejects an unauthenticated request", async () => {
+      const res = await fetch(`${baseUrl}/api/items/${randomUUID()}/related`);
+      expect(res.status).toBe(401);
+    });
+
+    it("rejects an id that is not a uuid with 400 and an unknown id with 404 not_found", async () => {
+      const headers = await authHeader();
+      const malformed = await fetch(`${baseUrl}/api/items/not-a-uuid/related`, { headers });
+      expect(malformed.status).toBe(400);
+      const unknown = await fetch(`${baseUrl}/api/items/${randomUUID()}/related`, { headers });
+      expect(unknown.status).toBe(404);
+      expect(((await unknown.json()) as ErrorBody).error.code).toBe("not_found");
+    });
+
+    it("answers a bare array: empty for an item without connections, and the connected collections otherwise", async () => {
+      const source = await chokePoint.createDatabase({ name: "Tasks" });
+      const target = await chokePoint.createDatabase({ name: "People" });
+      const { property } = await chokePoint.createRelationProperty({
+        sourceDatabaseId: source.id,
+        key: "assignedTo",
+        name: "Assigned To",
+        targetDatabaseId: target.id,
+      });
+      const task = await chokePoint.createItem({ databaseId: source.id, properties: {} });
+      const person = await chokePoint.createItem({ databaseId: target.id, properties: {} });
+      const headers = await authHeader();
+
+      const before = await fetch(`${baseUrl}/api/items/${person.id}/related`, { headers });
+      expect(before.status).toBe(200);
+      expect(await before.json()).toEqual([]);
+
+      await chokePoint.createRelation({
+        relationPropertyId: property.id,
+        callerItemId: task.id,
+        targetItemId: person.id,
+      });
+      const after = await fetch(`${baseUrl}/api/items/${person.id}/related`, { headers });
+      expect(after.status).toBe(200);
+      // The relation has no inverse property, so the person is found from the target side of the task's property.
+      expect(await after.json()).toEqual([
+        {
+          databaseKey: null,
+          databaseId: source.id,
+          count: 1,
+          via: "direct",
+          filter: { type: "relation_contains", property: "assignedTo", value: person.id },
+        },
+      ]);
+    });
+  });
+
   describe("relation property resolution through property.getByKey (issue #432)", () => {
     /**
      * `UNIQUE(database_id, key)` makes more than one match unreachable through a real database, so

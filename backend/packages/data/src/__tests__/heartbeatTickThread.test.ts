@@ -290,7 +290,7 @@ describe("heartbeat runs in their tick thread", () => {
         withTransaction(pool, (client) =>
           finishTickRunWithMessage(client, {
             // a thread that does not exist: the message insert violates its foreign key
-            thread: { id: "00000000-0000-4000-8000-000000000000", tenantId: thread.tenantId },
+            thread: { ...thread, id: "00000000-0000-4000-8000-000000000000" },
             agentRunId: run.id,
             outcome: { status: "done", result: "x" },
           }),

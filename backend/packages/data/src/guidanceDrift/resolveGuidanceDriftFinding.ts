@@ -4,6 +4,7 @@ import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from ".
 import { projectAgentGuidanceStore } from "../projectAgentGuidanceStore.js";
 import { saveGuidanceSections } from "../projectAgentGuidance/projectAgentGuidanceSections.js";
 import { writeNotification } from "../notifications/notify.js";
+import { resolveGuidanceDriftProblem } from "../semp/guidanceProblemWriter.js";
 import { agentGuidanceDriftFindingsStore } from "./agentGuidanceDriftFindingsStore.js";
 
 export async function resolveGuidanceDriftFinding(
@@ -64,6 +65,9 @@ export async function resolveGuidanceDriftFinding(
     userId: input.actorUserId,
     at,
   });
+  // Every choice ends the finding for good (`upsertActive` never reactivates a decided finding), so its problem
+  // closes with it in this transaction; a dismissed finding is not a recovery, but nothing else could close it.
+  await resolveGuidanceDriftProblem(tx, { projectItemId: projectId, fingerprint: row.fingerprint });
   await writeNotification(tx, {
     userId: guidance.ownerUserId,
     kind: "agent_guidance_drift_resolved",

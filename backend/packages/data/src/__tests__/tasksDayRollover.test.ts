@@ -546,7 +546,8 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
       (await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
         .rows,
     ).toEqual(jobsBeforeRepeat.rows);
-    expect(repeatEvents).toEqual([]);
+    // The repeat writes nothing, so no item or relation is announced; the run itself still announces the day (issue #1951).
+    expect(repeatEvents).toEqual([{ scope: "overview" }]);
     expect(
       (
         await inTenant(() =>
@@ -1395,6 +1396,102 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
       expect(counts?.get(locked)).toBe(1);
       const rerun = await invalidationsDuring(run);
       expect(rerun.size).toBe(0);
+    });
+  });
+  describe("the overview invalidation (issue #1951)", () => {
+    /** The events of one run, with what a reader of the database sees of `watched` at the moment an overview event is sent. */
+    async function overviewEventsDuring(work: () => Promise<void>, watched?: string) {
+      const overview: Array<{ event: InvalidationEvent; watchedDate: Promise<unknown> | null }> = [];
+      const all: InvalidationEvent[] = [];
+      setInvalidationHook((event) => {
+        all.push(event);
+        if (event.scope !== "overview") return;
+        // A separate connection sees committed rows only, so the date it reads is the one the run left.
+        overview.push({
+          event,
+          watchedDate:
+            watched === undefined
+              ? null
+              : admin
+                  .query<{ date: string | null }>("SELECT properties->>'date' AS date FROM items WHERE id = $1", [
+                    watched,
+                  ])
+                  .then((result) => result.rows[0]?.date ?? null),
+        });
+      });
+      try {
+        await work();
+      } finally {
+        setInvalidationHook(() => {});
+      }
+      return { overview, all };
+    }
+
+    it("announces once, with no field but the scope and no acting user, after the tasks it moved have committed", async () => {
+      const moved = await task({ date: day(-2) });
+      const { overview, all } = await overviewEventsDuring(run, moved);
+
+      expect(overview.map((entry) => entry.event)).toEqual([{ scope: "overview" }]);
+      expect(await overview[0]?.watchedDate).toBe(day(0));
+      // It follows the item invalidation of the task the run moved.
+      const lastItem = all.map((event) => event.scope).lastIndexOf("item");
+      expect(lastItem).toBeGreaterThanOrEqual(0);
+      expect(all.map((event) => event.scope).indexOf("overview")).toBeGreaterThan(lastItem);
+    });
+
+    it("announces once when no task moved", async () => {
+      const kept = await task({ date: day(0) });
+      const { overview, all } = await overviewEventsDuring(run);
+
+      expect(overview.map((entry) => entry.event)).toEqual([{ scope: "overview" }]);
+      expect(all.filter((event) => event.scope === "item" && event.itemId === kept)).toEqual([]);
+    });
+
+    it("announces once when the run only closed a missed occurrence of a recurring task", async () => {
+      const first = await task({ date: day(-8) });
+      await inTenant(() =>
+        createTaskRecurrenceSetRouteHandler(pool)({
+          params: { id: first },
+          body: { preset: "daily" },
+          identity: { user: { id: randomUUID() } },
+        }),
+      );
+      const { overview } = await overviewEventsDuring(run);
+
+      expect((await row(first)).properties.status).toBe("missed");
+      expect(overview.map((entry) => entry.event)).toEqual([{ scope: "overview" }]);
+    });
+
+    it("announces nothing when a transaction of the run rolls back", async () => {
+      await task({ date: day(-2), name: "overview poison" });
+      // A trigger that rejects the rollover's write of one task: the only way to make a chunk of the run fail.
+      await admin.query(`
+        CREATE FUNCTION test_overview_rollover_poison() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.properties->>'name' = 'overview poison' THEN
+            RAISE EXCEPTION 'simulated rollover failure';
+          END IF;
+          RETURN NEW;
+        END $$`);
+      await admin.query(
+        "CREATE TRIGGER test_overview_rollover_poison BEFORE UPDATE ON items FOR EACH ROW EXECUTE FUNCTION test_overview_rollover_poison()",
+      );
+      try {
+        let failure: unknown = null;
+        const { overview } = await overviewEventsDuring(() =>
+          run().catch((err: unknown) => {
+            failure = err;
+          }),
+        );
+
+        expect(failure).toEqual(
+          expect.objectContaining({ message: expect.stringContaining("simulated rollover failure") }),
+        );
+        expect(overview).toEqual([]);
+      } finally {
+        await admin.query("DROP TRIGGER test_overview_rollover_poison ON items");
+        await admin.query("DROP FUNCTION test_overview_rollover_poison()");
+      }
     });
   });
 });

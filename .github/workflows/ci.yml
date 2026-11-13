@@ -296,7 +296,8 @@ jobs:
   # Every shard has its own ephemeral PostgreSQL. The required integration job
   # below remains the fan-in gate and succeeds only when every shard passes.
   # The accumulated backend suite exceeded the old nine-minute test budget in
-  # two observed runners on PR2054. Six shards divide the larger suite; each keeps
+  # two observed runners on PR2054; six shards then divided the suite, and ten divide
+  # it now that shards 1, 3 and 4 reached the thirty-minute budget on PR2062. Each keeps
   # a finite thirty-minute test budget, independent of the ffmpeg/build budgets.
   # The job allows 13 minutes for ffmpeg, 5 for build, 30 for tests and 2 for setup.
   integration-shard:
@@ -305,7 +306,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     steps:
       - uses: actions/checkout@v4
 
@@ -373,10 +374,10 @@ jobs:
       # The ephemeral PostgreSQL is created for this shard and removed after it by
       # `packages/data/src/testSupport/globalSetup.ts` (an embedded server, no service
       # container and no external database).
-      - name: Backend — test:integration (shard ${{ matrix.shard }}/6)
+      - name: Backend — test:integration (shard ${{ matrix.shard }}/10)
         timeout-minutes: 30
         working-directory: backend
-        run: pnpm run test:integration --shard=${{ matrix.shard }}/6
+        run: pnpm run test:integration --shard=${{ matrix.shard }}/10
 
   # Exists so the required context keeps the name `integration` while the work runs in
   # the `integration-shard` matrix above; renaming it is a branch-protection contract

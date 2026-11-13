@@ -31,6 +31,7 @@ import {
   claimSempMessage,
   createUser,
   finishAgentRun,
+  finishSempMessageTurn,
   getDatabaseByModuleId,
   handleAgentRunEventsRetentionTask,
   hashPassword,
@@ -190,6 +191,124 @@ describe("durable Semp thread history", () => {
       expect((await fetch(`${baseUrl}/api/semp/threads/not-a-uuid${suffix}`, { headers })).status).toBe(400);
     }
   });
+  it("serializes whether each reply left a failed tool call, with the reason fields only when it did (issue #1890)", async () => {
+    const tenant = await createTestTenant(admin);
+    const email = `${randomUUID()}@example.test`;
+    await createUser(admin, { tenantId: tenant, email, passwordHash: await hashPassword("thread-test-password") });
+    const session = await login(admin, { email, password: "thread-test-password", platform: "ios", ip: "127.0.0.1" });
+    const serverId = randomUUID();
+    const step = (status: "ok" | "error", extra: Record<string, unknown> = {}) => ({
+      kind: "tool",
+      toolName: "mcp_search_aaaaaaaa",
+      label: { key: "agentStep.title.namedTool", params: { toolName: "mcp_search_aaaaaaaa" } },
+      detail: { key: status === "ok" ? "agentStep.summary.done" : "agentStep.summary.failed", params: {} },
+      status,
+      startedAt: "2026-11-01T10:00:00.000Z",
+      durationMs: 40,
+      ...extra,
+    });
+    const insertReply = async (threadId: string, steps: unknown): Promise<string> => {
+      const inserted = await pool.query<{ id: string }>(
+        "INSERT INTO semp_messages (thread_id, role, status, steps) VALUES ($1, 'assistant', 'done', $2::jsonb) RETURNING id",
+        [threadId, steps === null ? null : JSON.stringify(steps)],
+      );
+      const id = inserted.rows[0]?.id;
+      if (!id) throw new Error("Missing reply");
+      return id;
+    };
+    const fixture = await runInTenant(tenant, async () => {
+      const thread = await pool.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id");
+      const threadId = thread.rows[0]?.id;
+      if (!threadId) throw new Error("Missing thread");
+      return {
+        threadId,
+        timedOut: await insertReply(threadId, [
+          step("error", {
+            errorCode: "timeout",
+            mcpServerItemId: serverId,
+            connectorName: "GitHub",
+            timeoutMs: 60000,
+          }),
+        ]),
+        complete: await insertReply(threadId, [step("ok")]),
+        withoutSummary: await insertReply(threadId, null),
+      };
+    });
+
+    const response = await fetch(`${baseUrl}/api/semp/threads/${fixture.threadId}/messages`, {
+      headers: { authorization: `Bearer ${session.token}` },
+    });
+    const body = z.object({ rows: z.array(z.object({ id: z.string() }).passthrough()) }).parse(await response.json());
+    const row = (id: string) => body.rows.find((candidate) => candidate.id === id);
+
+    expect(response.status).toBe(200);
+    expect(row(fixture.timedOut)).toMatchObject({
+      outcome: "incomplete",
+      incompleteReason: "toolTimeout",
+      mcpServerItemId: serverId,
+      timeoutMs: 60000,
+    });
+    // The connector's name is not a field of the message; the steps it is derived from are (issue #1887).
+    expect(row(fixture.timedOut)).not.toHaveProperty("connectorName");
+    expect(row(fixture.timedOut)).toHaveProperty("steps");
+    for (const id of [fixture.complete, fixture.withoutSummary]) {
+      expect(row(id)).toMatchObject({ outcome: "complete" });
+      expect(row(id)).not.toHaveProperty("incompleteReason");
+      expect(row(id)).not.toHaveProperty("mcpServerItemId");
+      expect(row(id)).not.toHaveProperty("timeoutMs");
+    }
+  });
+  it.each([
+    { locale: "cs", message: "Odpověď se nepodařila, protože je vyčerpaný limit výdajů na AI." },
+    { locale: "en", message: "I could not answer because the AI spending limit is used up." },
+  ])(
+    "serializes the error of a failed reply with its text in the user's language, $locale (issue #1907)",
+    async ({ locale, message }) => {
+      const tenant = await createTestTenant(admin);
+      const email = `${randomUUID()}@example.test`;
+      await createUser(admin, {
+        tenantId: tenant,
+        email,
+        passwordHash: await hashPassword("thread-test-password"),
+        locale,
+      });
+      const session = await login(admin, { email, password: "thread-test-password", platform: "ios", ip: "127.0.0.1" });
+      const fixture = await runInTenant(tenant, async () => {
+        const thread = await pool.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id");
+        const threadId = thread.rows[0]?.id;
+        if (!threadId) throw new Error("Missing thread");
+        const insertReply = async (status: "error" | "done", code: string | null, params: unknown) => {
+          const inserted = await pool.query<{ id: string }>(
+            `INSERT INTO semp_messages (thread_id, role, status, error_code, error_params)
+             VALUES ($1, 'assistant', $2, $3, $4::jsonb) RETURNING id`,
+            [threadId, status, code, params === null ? null : JSON.stringify(params)],
+          );
+          const id = inserted.rows[0]?.id;
+          if (!id) throw new Error("Missing reply");
+          return id;
+        };
+        return {
+          threadId,
+          budget: await insertReply("error", "budgetExceeded", { connectorName: "Calendar", timeoutMs: 15000 }),
+          legacy: await insertReply("error", null, null),
+          done: await insertReply("done", null, null),
+        };
+      });
+
+      const response = await fetch(`${baseUrl}/api/semp/threads/${fixture.threadId}/messages`, {
+        headers: { authorization: `Bearer ${session.token}` },
+      });
+      const body = z.object({ rows: z.array(z.object({ id: z.string() }).passthrough()) }).parse(await response.json());
+      const row = (id: string) => body.rows.find((candidate) => candidate.id === id);
+
+      expect(response.status).toBe(200);
+      expect(row(fixture.budget)).toMatchObject({ status: "error", error: { code: "budgetExceeded", message } });
+      // The text names nothing of the stored params.
+      expect(JSON.stringify(row(fixture.budget))).not.toContain("Calendar");
+      expect(row(fixture.legacy)).toMatchObject({ status: "error", error: { code: "internal" } });
+      expect(row(fixture.done)).not.toHaveProperty("error");
+    },
+  );
   it("returns old thread history after the real retention task removes an eligible event", async () => {
     const tenant = await createTestTenant(admin);
     const email = `${randomUUID()}@example.test`;
@@ -656,6 +775,66 @@ describe("durable Semp thread history", () => {
         error: { code: "validation_failed", details: { field: "context[0]" } },
       });
       expect(await counts()).toEqual(before);
+    }
+  });
+
+  it("validates a transcript segment ref's range, owner and trash state through the real message route", async () => {
+    const [tenant, foreignTenant] = [await createTestTenant(admin), await createTestTenant(admin)];
+    const email = `${randomUUID()}@example.test`;
+    await createUser(admin, { tenantId: tenant, email, passwordHash: await hashPassword("thread-test-password") });
+    const session = await login(admin, { email, password: "thread-test-password", platform: "ios", ip: "127.0.0.1" });
+    const createTranscript = (tenantId: string) =>
+      runInTenant(tenantId, async () => {
+        await seedSystem(pool);
+        const cp = createChokePoint(pool);
+        const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
+        if (!transcripts) throw new Error("Missing transcripts database");
+        const item = await cp.createItem({ databaseId: transcripts.id, properties: { name: "Recording" } });
+        return { databaseId: transcripts.id, itemId: item.id };
+      });
+    const own = await createTranscript(tenant);
+    const foreignTranscript = await createTranscript(foreignTenant);
+    const threadId = await runInTenant(tenant, () => withTransaction(pool, (client) => createSempChatThread(client)));
+    const post = (...refs: unknown[]) =>
+      fetch(`${baseUrl}/api/semp/threads/${threadId}/messages`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${session.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ text: "question", context: refs }),
+      });
+    const segment = (itemId: string, startsAt: number, endsAt: number) => ({
+      kind: "transcriptSegment",
+      itemId,
+      startsAt,
+      endsAt,
+    });
+    const messageCount = () =>
+      runInTenant(tenant, async () =>
+        (
+          await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM semp_messages WHERE thread_id = $1", [
+            threadId,
+          ])
+        ).rows.map((row) => row.count),
+      );
+
+    expect((await post(segment(own.itemId, 0, 900))).status).toBe(202);
+    // A transcript in the Trash is still a valid target; the history shows it as recoverable.
+    await runInTenant(tenant, () => createChokePoint(pool).softDeleteItem(own.databaseId, own.itemId));
+    expect((await post(segment(own.itemId, 10, 20))).status).toBe(202);
+    await runInTenant(tenant, () => createChokePoint(pool).restoreItem(own.databaseId, own.itemId));
+
+    const before = await messageCount();
+    for (const bad of [
+      segment(foreignTranscript.itemId, 0, 10),
+      segment(own.itemId, 0, 901),
+      segment(own.itemId, 30, 20),
+      segment(own.itemId, 20, 20),
+    ]) {
+      const response = await post(segment(own.itemId, 0, 10), bad);
+      expect(response.status, JSON.stringify(bad)).toBe(400);
+      expect(await response.json()).toMatchObject({
+        error: { code: "validation_failed", details: { field: "context[1]" } },
+      });
+      expect(await messageCount()).toEqual(before);
     }
   });
 
@@ -1190,5 +1369,116 @@ describe("durable Semp thread history", () => {
       pool.query("SELECT key FROM graphile_worker.jobs WHERE key = $1", [`sempMessage:${ids.assistantMessageId}`]),
     );
     expect(job.rows).toEqual([{ key: `sempMessage:${ids.assistantMessageId}` }]);
+  });
+
+  it("serves changed-item cards with the ids of the item, its current state and values, and none for another tenant's thread (issue #1888)", async () => {
+    const tenant = await createTestTenant(admin);
+    const foreignTenant = await createTestTenant(admin);
+    const [email, foreignEmail] = [`${randomUUID()}@example.test`, `${randomUUID()}@example.test`];
+    const user = await createUser(admin, {
+      tenantId: tenant,
+      email,
+      passwordHash: await hashPassword("thread-test-password"),
+    });
+    await createUser(admin, {
+      tenantId: foreignTenant,
+      email: foreignEmail,
+      passwordHash: await hashPassword("thread-test-password"),
+    });
+    const session = await login(admin, { email, password: "thread-test-password", platform: "ios", ip: "127.0.0.1" });
+    const foreignSession = await login(admin, {
+      email: foreignEmail,
+      password: "thread-test-password",
+      platform: "ios",
+      ip: "127.0.0.1",
+    });
+    const fixture = await runInTenant(tenant, async () => {
+      await seedSystem(pool);
+      const chokePoint = createChokePoint(pool);
+      const tasks = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "tasks"));
+      if (!tasks) throw new Error("Missing tasks database");
+      const moved = await chokePoint.createItem({
+        databaseId: tasks.id,
+        properties: { name: "Moved task", date: "2026-11-02" },
+      });
+      const deleted = await chokePoint.createItem({ databaseId: tasks.id, properties: { name: "Deleted task" } });
+      await chokePoint.updateItem({
+        databaseId: tasks.id,
+        itemId: moved.id,
+        propertiesPatch: { date: "2026-11-09" },
+      });
+      await chokePoint.softDeleteItem(tasks.id, deleted.id);
+      const threadId = await withTransaction(pool, async (client) => {
+        const id = await createSempChatThread(client);
+        const turn = await insertSempUserTurn(client, id, "Move my task", []);
+        expect(await claimSempMessage(client, id, turn.assistantMessageId)).toBe(true);
+        const run = await createAgentRun(client, {
+          triggeredBy: "user",
+          unit: "session",
+          task: "cards",
+          userId: user.id,
+          threadId: id,
+        });
+        const event = await insertAgentRunEvent(client, run.id, "message", { kind: "message", text: "moved" });
+        await startSempMessageTurn(client, turn.assistantMessageId, run.id, event.id);
+        expect(
+          await finishSempMessageTurn(client, turn.assistantMessageId, {
+            status: "done",
+            text: "Moved it",
+            lastEventId: event.id,
+            summary: {
+              steps: [],
+              durationMs: null,
+              tokens: { input: 0, output: 0 },
+              changes: [
+                {
+                  itemId: moved.id,
+                  databaseId: tasks.id,
+                  change: "updated",
+                  changedKeys: ["date"],
+                  before: { date: "2026-11-02" },
+                },
+                { itemId: deleted.id, databaseId: tasks.id, change: "deleted", changedKeys: [] },
+              ],
+            },
+          }),
+        ).toBe(true);
+        return id;
+      });
+      return { threadId, moved: moved.id, deleted: deleted.id, databaseId: tasks.id };
+    });
+
+    const response = await fetch(`${baseUrl}/api/semp/threads/${fixture.threadId}/messages`, {
+      headers: { authorization: `Bearer ${session.token}` },
+    });
+    expect(response.status).toBe(200);
+    const body = z
+      .object({ rows: z.array(z.object({ id: z.string(), role: z.string() }).passthrough()) })
+      .parse(await response.json());
+    const reply = body.rows.find((row) => row.role === "assistant");
+    expect(reply?.changes).toEqual([
+      {
+        itemId: fixture.moved,
+        databaseId: fixture.databaseId,
+        change: "updated",
+        changedKeys: ["date"],
+        before: { date: "2026-11-02" },
+        resolved: { label: "Moved task", databaseKey: "tasks", state: "active", values: { date: "2026-11-09" } },
+      },
+      {
+        itemId: fixture.deleted,
+        databaseId: fixture.databaseId,
+        change: "deleted",
+        changedKeys: [],
+        resolved: { label: "Deleted task", databaseKey: "tasks", state: "trashed", values: {} },
+      },
+    ]);
+    expect(Object.hasOwn(body.rows.find((row) => row.role === "user") ?? {}, "changes")).toBe(false);
+
+    const foreign = await fetch(`${baseUrl}/api/semp/threads/${fixture.threadId}/messages`, {
+      headers: { authorization: `Bearer ${foreignSession.token}` },
+    });
+    expect(foreign.status).toBe(404);
+    expect(await foreign.text()).not.toContain("Moved task");
   });
 });

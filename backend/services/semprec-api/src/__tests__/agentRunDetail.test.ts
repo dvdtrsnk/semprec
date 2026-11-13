@@ -26,15 +26,21 @@ import {
   finishAgentRun,
   getAgentRun,
   getAgentRunDetail,
+  claimSempMessage,
+  finishSempMessageTurn,
   getDatabaseByModuleId,
   hashPassword,
+  insertAgentRunEvent,
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   login,
   seedSystem,
+  sendSempMessage,
   setAgentRunMcpClientName,
+  startSempMessageTurn,
   withTransaction,
   type AgentRunRow,
+  type SempReplyStep,
 } from "@semprec/data";
 import { createDispatcher } from "../app.js";
 
@@ -139,6 +145,53 @@ function createHeartbeatWithThread(
 
 function createRun(session: Session, input: Parameters<typeof createAgentRun>[1]): Promise<AgentRunRow> {
   return runInTenant(session.tenant, () => createAgentRun(pool, { userId: session.userId, ...input }));
+}
+
+const STORED_STEP_TIMES = { startedAt: "2026-11-01T10:00:00.000Z", durationMs: 5 };
+
+/** A stored tool step of an MCP call that failed with `failureKind`, as the projector of issue #1860 writes it. */
+function failedMcpStep(failureKind: string, extra: Partial<SempReplyStep> = {}): SempReplyStep {
+  return {
+    kind: "tool",
+    toolCallId: "call-1",
+    toolName: "mcp_search_aaaaaaaa",
+    label: { key: "agentStep.title.namedTool", params: { toolName: "search" } },
+    detail: { key: "agentStep.summary.failed", params: {} },
+    status: "error",
+    errorCode: failureKind,
+    connectorName: "GitHub",
+    ...STORED_STEP_TIMES,
+    ...extra,
+  };
+}
+
+/**
+ * Gives `run` (still running) the single reply of its thread, finished as `done` with `steps` stored on it the
+ * way the turn handler stores them, and then closes the run as done.
+ */
+async function finishRunWithReply(session: Session, run: AgentRunRow, steps: SempReplyStep[]): Promise<void> {
+  const threadId = run.threadId;
+  if (threadId === null) throw new Error("The run has no thread");
+  await runInTenant(session.tenant, async () => {
+    const event = await insertAgentRunEvent(pool, run.id, "user_message", {
+      kind: "user_message",
+      text: "tick",
+      context: [],
+    });
+    await withTransaction(pool, async (client) => {
+      const sent = await sendSempMessage(client, { threadId, text: "tick", context: [], hasContext: false });
+      await claimSempMessage(client, threadId, sent.assistantMessageId);
+      await startSempMessageTurn(client, sent.assistantMessageId, run.id, event.id);
+      const stored = await finishSempMessageTurn(client, sent.assistantMessageId, {
+        status: "done",
+        text: "The answer.",
+        lastEventId: event.id,
+        summary: { steps, durationMs: null, tokens: { input: 0, output: 0 }, changes: [] },
+      });
+      expect(stored).toBe(true);
+    });
+    await finishAgentRun(pool, run.id, "done", "finished");
+  });
 }
 
 function finishRun(session: Session, runId: string): Promise<boolean> {
@@ -498,6 +551,150 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
       expect(detailOfOne.approvals.count).toBe(1);
       expect(detailOfSix.approvals.count).toBe(6);
       expect(statementsForOne).toBe(4);
+      expect(statementsForSix).toBe(statementsForOne);
+    } finally {
+      await counted.end();
+    }
+  });
+
+  it("shows a finished tick run whose server was unavailable as error, with a summary naming the server", async () => {
+    const owner = await tenantSession();
+    const projectItemId = await createProject(owner, "Weekly review");
+    const { heartbeatId, tickThreadId } = await createHeartbeatWithThread(owner, projectItemId, "Sunday planning");
+    const run = await createRun(owner, {
+      projectItemId,
+      heartbeatId,
+      threadId: tickThreadId,
+      triggeredBy: "heartbeat",
+      task: "Plan the week",
+    });
+    await finishRunWithReply(owner, run, [failedMcpStep("unavailable")]);
+
+    const answer = await readDetail(owner, run.id);
+
+    expect(answer.status).toBe(200);
+    expect(answer.body).toMatchObject({
+      status: "done",
+      displayStatus: "error",
+      errorCode: null,
+      // The default locale of a user is Czech.
+      errorSummary: "GitHub není dostupný",
+    });
+  });
+
+  it("gives the seconds of the stored timeout in the summary of a tick run whose call timed out", async () => {
+    const owner = await tenantSession();
+    const projectItemId = await createProject(owner, "Weekly review");
+    const { heartbeatId, tickThreadId } = await createHeartbeatWithThread(owner, projectItemId, "Sunday planning");
+    const run = await createRun(owner, {
+      projectItemId,
+      heartbeatId,
+      threadId: tickThreadId,
+      triggeredBy: "heartbeat",
+      task: "Plan the week",
+    });
+    await finishRunWithReply(owner, run, [failedMcpStep("timeout", { timeoutMs: 15000 })]);
+
+    const answer = await readDetail(owner, run.id);
+
+    expect(answer.body).toMatchObject({
+      displayStatus: "error",
+      errorCode: null,
+      errorSummary: "spojení vypršelo (15 s)",
+    });
+  });
+
+  it("keeps a finished tick run whose failed call was retried successfully as done, without an error summary", async () => {
+    const owner = await tenantSession();
+    const projectItemId = await createProject(owner, "Weekly review");
+    const { heartbeatId, tickThreadId } = await createHeartbeatWithThread(owner, projectItemId, "Sunday planning");
+    const run = await createRun(owner, {
+      projectItemId,
+      heartbeatId,
+      threadId: tickThreadId,
+      triggeredBy: "heartbeat",
+      task: "Plan the week",
+    });
+    const registration = randomUUID();
+    const retried: SempReplyStep = {
+      kind: "tool",
+      toolCallId: "call-2",
+      toolName: "mcp_search_aaaaaaaa",
+      label: { key: "agentStep.title.namedTool", params: { toolName: "search" } },
+      detail: { key: "agentStep.summary.done", params: {} },
+      status: "ok",
+      mcpToolRegistrationId: registration,
+      ...STORED_STEP_TIMES,
+    };
+    await finishRunWithReply(owner, run, [
+      failedMcpStep("timeout", { mcpToolRegistrationId: registration, timeoutMs: 60000 }),
+      retried,
+    ]);
+
+    const answer = await readDetail(owner, run.id);
+
+    expect(answer.body).toMatchObject({ displayStatus: "done", errorCode: null, errorSummary: null });
+  });
+
+  it("keeps waiting_approval and gives no error summary to a finished tick run with a pending request and an incomplete reply", async () => {
+    const owner = await tenantSession();
+    const projectItemId = await createProject(owner, "Weekly review");
+    const { heartbeatId, tickThreadId } = await createHeartbeatWithThread(owner, projectItemId, "Sunday planning");
+    const run = await createRun(owner, {
+      projectItemId,
+      heartbeatId,
+      threadId: tickThreadId,
+      triggeredBy: "heartbeat",
+      task: "Plan the week",
+    });
+    await finishRunWithReply(owner, run, [failedMcpStep("unavailable")]);
+    const requestId = await createRequest(owner, run.id);
+
+    const waiting = await readDetail(owner, run.id);
+    await decide(owner, requestId, "approved");
+    const decided = await readDetail(owner, run.id);
+
+    expect(waiting.status).toBe(200);
+    expect(waiting.body).toMatchObject({
+      status: "done",
+      displayStatus: "waiting_approval",
+      errorCode: null,
+      errorSummary: null,
+    });
+    // Once nothing waits any more, the incomplete reply reads as the error it is.
+    expect(decided.body).toMatchObject({
+      displayStatus: "error",
+      errorCode: null,
+      errorSummary: "GitHub není dostupný",
+    });
+  });
+
+  it("runs one statement more for a finished run to read its reply, whatever the number of its approval requests", async () => {
+    const owner = await tenantSession();
+    const projectItemId = await createProject(owner, "Weekly review");
+    const { heartbeatId, tickThreadId } = await createHeartbeatWithThread(owner, projectItemId, "Sunday planning");
+    const input = { projectItemId, heartbeatId, threadId: tickThreadId, triggeredBy: "heartbeat", task: "t" } as const;
+    const one = await createRun(owner, input);
+    const six = await createRun(owner, input);
+    await createRequest(owner, one.id);
+    for (let index = 0; index < 6; index += 1) await createRequest(owner, six.id);
+    await runInTenant(owner.tenant, async () => {
+      await finishAgentRun(pool, one.id, "done", "finished");
+      await finishAgentRun(pool, six.id, "done", "finished");
+    });
+    const finishedOne = await runInTenant(owner.tenant, () => getAgentRun(pool, one.id));
+    const finishedSix = await runInTenant(owner.tenant, () => getAgentRun(pool, six.id));
+    if (!finishedOne || !finishedSix) throw new Error("The runs are missing");
+    const counted = await createRuntimeRolePool(admin, "semprec_data");
+    try {
+      const query = vi.spyOn(counted, "query");
+      await runInTenant(owner.tenant, () => getAgentRunDetail(counted, finishedOne));
+      const statementsForOne = query.mock.calls.length;
+      await runInTenant(owner.tenant, () => getAgentRunDetail(counted, finishedSix));
+      const statementsForSix = query.mock.calls.length - statementsForOne;
+      query.mockRestore();
+
+      expect(statementsForOne).toBe(5);
       expect(statementsForSix).toBe(statementsForOne);
     } finally {
       await counted.end();

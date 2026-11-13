@@ -9,6 +9,7 @@ import type {
   GuidanceManifestPort,
   GuidanceNotificationWriter,
   GuidanceProblemWriter,
+  ResolveGuidanceDriftProblemInput,
   RaiseGuidanceDriftProblemInput,
   GuidanceReferenceStore,
   ProjectAgentGuidance,
@@ -147,12 +148,20 @@ function fakeFindings(): GuidanceDriftFindingStore<FakeTx> & { rows: Map<string,
   };
 }
 
-function fakeProblems(): GuidanceProblemWriter<FakeTx> & { raised: RaiseGuidanceDriftProblemInput[] } {
+function fakeProblems(): GuidanceProblemWriter<FakeTx> & {
+  raised: RaiseGuidanceDriftProblemInput[];
+  resolved: ResolveGuidanceDriftProblemInput[];
+} {
   const raised: RaiseGuidanceDriftProblemInput[] = [];
+  const resolved: ResolveGuidanceDriftProblemInput[] = [];
   return {
     raised,
+    resolved,
     async raise(_tx, input) {
       raised.push(input);
+    },
+    async resolve(_tx, input) {
+      resolved.push(input);
     },
   };
 }
@@ -283,6 +292,7 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
     const guidance = fakeGuidance(baseGuidanceRow());
     const findings = fakeFindings();
     const notifications = fakeNotifications();
+    const problems = fakeProblems();
     let respondWithContradiction = true;
     const action = createAgentGuidanceDriftAction({
       toolCallUsage: {
@@ -295,15 +305,23 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
       references: fakeReferences(),
       findings,
       notifications,
-      problems: fakeProblems(),
+      problems,
       manifest: fakeManifest(),
       gateway: fakeGateway(() => (respondWithContradiction ? [CONTRADICTION_A] : [])),
       clock: () => new Date("2026-02-01T00:00:00.000Z"),
     });
 
     await action({ projectItemId: "project-1" });
+    expect(problems.resolved).toEqual([]);
     respondWithContradiction = false;
     await action({ projectItemId: "project-1" });
+    await action({ projectItemId: "project-1" });
+    const fingerprint = fingerprintGuidanceDriftSubject("project-1", "permission", {
+      operation: "files.delete",
+      databaseId: null,
+    });
+    // once for the transition; the repeat run finds the finding already resolved
+    expect(problems.resolved).toEqual([{ projectItemId: "project-1", fingerprint }]);
 
     const finding = [...findings.rows.values()][0];
     expect(finding).toBeDefined();
@@ -320,6 +338,40 @@ describe("createAgentGuidanceDriftAction (issue #85)", () => {
         }),
       },
     });
+  });
+
+  it("leaves the problem alone when the store reports no resolution because the finding was decided meanwhile", async () => {
+    const findings = fakeFindings();
+    const problems = fakeProblems();
+    let respondWithContradiction = true;
+    const action = createAgentGuidanceDriftAction({
+      toolCallUsage: {
+        async listProjectToolCallGroups() {
+          return [];
+        },
+      },
+      transactions: fakeTransactions(),
+      guidance: fakeGuidance(baseGuidanceRow()),
+      references: fakeReferences(),
+      findings: {
+        ...findings,
+        async resolve(tx, findingId, resolvedAt) {
+          const { finding } = await findings.resolve(tx, findingId, resolvedAt);
+          return { finding, transitionedToResolved: false };
+        },
+      },
+      notifications: fakeNotifications(),
+      problems,
+      manifest: fakeManifest(),
+      gateway: fakeGateway(() => (respondWithContradiction ? [CONTRADICTION_A] : [])),
+      clock: () => new Date("2026-02-01T00:00:00.000Z"),
+    });
+
+    await action({ projectItemId: "project-1" });
+    respondWithContradiction = false;
+    await action({ projectItemId: "project-1" });
+
+    expect(problems.resolved).toEqual([]);
   });
 
   it("dedupes and resolves identically regardless of the contradictions' report order", async () => {
@@ -714,6 +766,7 @@ describe("behavior guidance drift", () => {
     const guidance = fakeGuidance(baseGuidanceRow());
     const findings = fakeFindings();
     const notifications = fakeNotifications();
+    const problems = fakeProblems();
     let count = 3;
     let mentioned = false;
     let day = 1;
@@ -746,7 +799,7 @@ describe("behavior guidance drift", () => {
       references: fakeReferences(),
       findings,
       notifications,
-      problems: fakeProblems(),
+      problems,
       manifest: fakeManifest(),
       gateway,
       clock: () => new Date(`2026-02-0${day}T00:00:00Z`),
@@ -769,10 +822,13 @@ describe("behavior guidance drift", () => {
       },
     });
     expect(notifications.created.filter((notification) => notification.payload.kind === "behavior")).toHaveLength(1);
+    expect(problems.resolved).toEqual([]);
     mentioned = true;
     day = 3;
     await action({ projectItemId: "project-1" });
     expect([...findings.rows.values()].find((row) => row.payload.kind === "behavior")?.status).toBe("resolved");
+    // only the behavior finding resolved: the permission finding stays reported and keeps its problem
+    expect(problems.resolved).toEqual([{ projectItemId: "project-1", fingerprint }]);
     expect([...findings.rows.values()].find((row) => row.payload.kind === "permission")?.status).toBe("active");
     expect(
       notifications.created.filter(

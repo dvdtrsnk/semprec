@@ -9,9 +9,12 @@ import { isOnItemEventRule, parseHeartbeatRule, type HeartbeatRuleKindRegistry }
 import { NotFoundError, ValidationError } from "../errors.js";
 import { guardInboxThreadSend } from "../inbox/inboxThreadSendGuard.js";
 import { resolveSempHistoryContexts } from "../semp/sempRefHistory.js";
+import { resolveSempHistoryChanges } from "../semp/sempChangeHistory.js";
 import type { SempReplyStep } from "../semp/sempReplySteps.js";
 import { parseStoredSempReplySteps } from "../semp/sempStoredSteps.js";
 import { sempMessageSearchVectorSql } from "../semp/sempMessageSearch.js";
+import { deriveReplyOutcome, type ReplyOutcome } from "../agentRuns/replyOutcome.js";
+import { parseSempReplyErrorCode, parseSempReplyErrorParams, renderSempReplyFailure } from "../semp/sempReplyErrors.js";
 
 interface ThreadRow {
   id: string;
@@ -36,15 +39,20 @@ interface MessageRow {
   system_key: string | null;
   system_params: unknown;
   context: unknown;
+  changes: unknown;
   reply_to_message_id: string | null;
   agent_run_id: string | null;
   event_from_id: string | null;
   status: string | null;
   steps: unknown;
+  error_code: string | null;
+  error_params: unknown;
   created_at: string;
   run_started_at: Date | null;
   run_finished_at: Date | null;
   run_status: string | null;
+  /** The language of the tenant's user (`users.locale`), read by the same statement as the page. */
+  user_locale: string | null;
 }
 
 export async function createSempChatThread(client: PoolClient): Promise<string> {
@@ -318,9 +326,33 @@ export async function getSempThread(
 /** A message of the thread history: with the stored `steps` of an assistant reply that has a finished-turn summary (issue #1887). */
 export type SempThreadHistoryMessage = SempThreadMessage & { steps?: SempReplyStep[] };
 
-function stepsOf(row: MessageRow): { steps?: SempReplyStep[] } {
-  const steps = parseStoredSempReplySteps(row.steps);
-  return steps === undefined ? {} : { steps };
+/** The derived fields of a message read (issue #1890): `incompleteReason`, `mcpServerItemId` and `timeoutMs` only when incomplete. */
+function replyOutcomeFields(
+  reply: ReplyOutcome,
+): Pick<SempThreadMessage, "outcome" | "incompleteReason" | "mcpServerItemId" | "timeoutMs"> {
+  if (reply.outcome === "complete") return { outcome: "complete" };
+  return {
+    outcome: "incomplete",
+    incompleteReason: reply.incompleteReason,
+    ...(reply.mcpServerItemId !== undefined ? { mcpServerItemId: reply.mcpServerItemId } : {}),
+    ...(reply.timeoutMs !== undefined ? { timeoutMs: reply.timeoutMs } : {}),
+  };
+}
+
+/**
+ * The `error` of each message of a page (issue #1907): `{ code, message }` for a failed message, with the text
+ * rendered from the stored code and params in the locale of the tenant's user (Czech while it has none), and
+ * `undefined` for any other message.
+ */
+async function renderedErrors(rows: readonly MessageRow[]): Promise<(SempThreadMessage["error"] | undefined)[]> {
+  return Promise.all(
+    rows.map(async (row) => {
+      if (row.status !== "error") return undefined;
+      const code = parseSempReplyErrorCode(row.error_code);
+      const params = parseSempReplyErrorParams(row.error_params);
+      return { code, message: await renderSempReplyFailure(code, params, row.user_locale ?? "cs") };
+    }),
+  );
 }
 
 export async function listSempThreadMessages(
@@ -330,9 +362,10 @@ export async function listSempThreadMessages(
   before: { createdAt: string; id: string } | null,
 ) {
   const { rows } = await client.query<MessageRow>(
-    `SELECT m.id, m.role, m.text, m.system_key, m.system_params, m.context, m.reply_to_message_id, m.agent_run_id,
-            m.event_from_id, m.status, m.steps, to_char(m.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at,
-            r.started_at AS run_started_at, r.finished_at AS run_finished_at, r.status AS run_status
+    `SELECT m.id, m.role, m.text, m.system_key, m.system_params, m.context, m.changes, m.reply_to_message_id, m.agent_run_id,
+            m.event_from_id, m.status, m.steps, m.error_code, m.error_params, to_char(m.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at,
+            r.started_at AS run_started_at, r.finished_at AS run_finished_at, r.status AS run_status,
+            (SELECT u.locale FROM users u WHERE u.tenant_id = (SELECT app_tenant_default())) AS user_locale
        FROM semp_messages m LEFT JOIN agent_runs r ON r.tenant_id = m.tenant_id AND r.id = m.agent_run_id
        WHERE m.thread_id = $1
          AND ($2::timestamptz IS NULL OR (m.created_at, m.id) < ($2::timestamptz, $3::uuid))
@@ -345,29 +378,42 @@ export async function listSempThreadMessages(
     client,
     page.map((row) => row.context),
   );
+  // The one reader of `semp_messages.steps` (issue #1887) parses each row once; the reply outcome (issue #1890) is derived from its result.
+  const stepsOfRows = page.map((row) => parseStoredSempReplySteps(row.steps));
+  const changes = await resolveSempHistoryChanges(
+    client,
+    page.map((row) => row.changes),
+  );
+  const errors = await renderedErrors(page);
   const last = page.at(-1);
   return {
-    rows: page.map((row, index): SempThreadHistoryMessage => ({
-      id: row.id,
-      role: assertKnownValue(["user", "assistant", "system"] as const, row.role, "message role"),
-      text: row.text,
-      system: row.system_key === null ? null : { key: row.system_key, params: row.system_params },
-      context: contexts[index],
-      replyToMessageId: row.reply_to_message_id,
-      agentRunId: row.agent_run_id,
-      eventFromId: row.event_from_id,
-      status: row.status,
-      ...stepsOf(row),
-      createdAt: row.created_at,
-      run:
-        row.run_started_at === null
-          ? null
-          : {
-              startedAt: row.run_started_at.toISOString(),
-              finishedAt: row.run_finished_at?.toISOString() ?? null,
-              status: assertKnownValue(["running", "done", "error"] as const, row.run_status ?? "", "run status"),
-            },
-    })),
+    rows: page.map((row, index): SempThreadHistoryMessage => {
+      const steps = stepsOfRows[index];
+      return {
+        id: row.id,
+        role: assertKnownValue(["user", "assistant", "system"] as const, row.role, "message role"),
+        text: row.text,
+        system: row.system_key === null ? null : { key: row.system_key, params: row.system_params },
+        context: contexts[index],
+        replyToMessageId: row.reply_to_message_id,
+        agentRunId: row.agent_run_id,
+        eventFromId: row.event_from_id,
+        status: row.status,
+        ...(steps === undefined ? {} : { steps }),
+        createdAt: row.created_at,
+        ...(changes[index] === undefined ? {} : { changes: changes[index] }),
+        ...replyOutcomeFields(deriveReplyOutcome(steps ?? [])),
+        ...(errors[index] === undefined ? {} : { error: errors[index] }),
+        run:
+          row.run_started_at === null
+            ? null
+            : {
+                startedAt: row.run_started_at.toISOString(),
+                finishedAt: row.run_finished_at?.toISOString() ?? null,
+                status: assertKnownValue(["running", "done", "error"] as const, row.run_status ?? "", "run status"),
+              },
+      };
+    }),
     nextCursor:
       hasMore && last
         ? Buffer.from(JSON.stringify({ createdAt: last.created_at, id: last.id })).toString("base64url")

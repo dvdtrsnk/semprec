@@ -10,8 +10,11 @@ export type SempProblemCategory = "mail" | "agents" | "guidance" | "automation" 
 /** Mirrors the CHECK on `semp_problems.severity`. */
 export type SempProblemSeverity = "critical" | "warning";
 
-/** Extended by the recovery issue (#1915). */
-const SEMP_PROBLEM_RESOLUTION_KINDS = ["recovered"] as const;
+/**
+ * How a problem was closed: `recovered` when its source works again, `sourceDeleted` when the source
+ * itself was deleted (issue #1915).
+ */
+const SEMP_PROBLEM_RESOLUTION_KINDS = ["recovered", "sourceDeleted"] as const;
 export type SempProblemResolutionKind = (typeof SEMP_PROBLEM_RESOLUTION_KINDS)[number];
 
 export type RaiseProblemOutcome = "created" | "merged" | "escalated";
@@ -45,6 +48,20 @@ interface RaiseRow {
 }
 
 /**
+ * Takes the transaction-scoped advisory lock that serializes every raise of the problem `dedupeKey` in the
+ * current tenant, and releases it with the caller's transaction. `raiseProblem` takes it first. A caller that
+ * decides to resolve from state another writer changes (a check that no source still fails) takes it before
+ * reading that state: a raise of the same key that already holds it commits first and its failing source is
+ * then visible to the read, and a raise that waits finds the problem resolved and creates a new one.
+ */
+export async function lockProblemKey(client: PoolClient, dedupeKey: string): Promise<void> {
+  await client.query(
+    "SELECT pg_advisory_xact_lock(hashtextextended('semp_problems:' || app_tenant_default()::text || ':' || $1::text, 0))",
+    [dedupeKey],
+  );
+}
+
+/**
  * Records one report of a problem in the caller's open transaction (it never opens one): creates
  * the active problem for `(tenant, dedupeKey)` or merges into it. A merge increases
  * `occurrence_count` and sets `last_seen_at`, unless `occurrenceKey` was already recorded for
@@ -71,10 +88,7 @@ export async function raiseProblem(client: PoolClient, input: RaiseProblemInput)
       throw new ValidationError("Invalid projectItemId", { field: "projectItemId" });
     }
   }
-  await client.query(
-    "SELECT pg_advisory_xact_lock(hashtextextended('semp_problems:' || app_tenant_default()::text || ':' || $1::text, 0))",
-    [input.dedupeKey],
-  );
+  await lockProblemKey(client, input.dedupeKey);
   const previous = await client.query<{ id: string; last_occurrence_key: string | null }>(
     `SELECT id, last_occurrence_key FROM semp_problems
      WHERE tenant_id = app_tenant_default() AND dedupe_key = $1 AND resolved_at IS NULL`,

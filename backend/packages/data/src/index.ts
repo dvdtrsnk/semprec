@@ -21,6 +21,7 @@ export { buildItemSearchQuery } from "./search/itemSearchQuery.js";
 export { indexItem } from "./search/itemSearchIndexer.js";
 export { enqueueItemSearchBackfill, type ItemSearchBackfillOptions } from "./search/itemSearchBackfill.js";
 export { enqueueTenantSearchReindex } from "./search/itemSearchFanout.js";
+export { searchItemGroups, type SearchItemGroupsInput } from "./search/searchItemsQuery.js";
 export { enqueueMailGmailPseudoFolderCleanup } from "./mail/gmailPseudoFolderCleanupJob.js";
 export { enqueueMailMessagePreviewBackfill } from "./mail/mailMessagePreviewBackfillJob.js";
 export { enqueueMailThreadBackfill } from "./mail/mailThreadBackfillJob.js";
@@ -77,13 +78,13 @@ export {
 export { sensitiveSourceDatabaseIdsByItem } from "./agentGrants/inheritedSensitivity.js";
 export type { AgentDatabaseAccess } from "./agentGrants/agentDatabaseGrantsStore.js";
 export { allowItemsForTurn, clearForRun } from "./agentGrants/agentRunReadAllowancesStore.js";
+export { setAgentDatabaseGrantForProjectSettings } from "./agentGrants/agentDatabaseGrantsForProject.js";
 export { requireApprovalForWrite } from "./chokePoint/writeApproval.js";
 export { postApprovalOutcomeMessage } from "./mcp/approvalOutcomeMessage.js";
 export { getDatabaseByModuleId, type CreateDatabaseInput } from "./chokePoint/databasesStore.js";
-export type { CreatePropertyInput } from "./chokePoint/propertiesStore.js";
+export { type CreatePropertyInput, listPropertiesByDatabase } from "./chokePoint/propertiesStore.js";
 export type { ListItemsOptions } from "./chokePoint/itemsStore.js";
 export { findIdempotentReplay, getItemById, getItemsByIds, lockItemById } from "./chokePoint/itemsStore.js";
-export { listPropertiesByDatabase } from "./chokePoint/propertiesStore.js";
 export { writeComputed } from "./chokePoint/itemsStore.js";
 export type { CreateViewInput, PatchViewInput } from "./chokePoint/viewsStore.js";
 export * from "./chokePoint/viewTypeRegistry.js";
@@ -111,6 +112,7 @@ export { computeNextFireAt } from "./scheduler/nextFireAt.js";
 export * from "./scheduler/schedulerStore.js";
 export * from "./scheduler/actions.js";
 export * from "./scheduler/heartbeatAgentTools.js";
+export * from "./scheduler/heartbeatWriteAgentTools.js";
 export {
   handleHeartbeatSweepTask,
   createHeartbeatFireCoreTask,
@@ -184,10 +186,10 @@ export { approvalNotificationBody } from "./notifications/approvalNotificationBo
 export { approvalNotificationLinkHref } from "./notifications/approvalNotificationLink.js";
 
 export * from "./agentRuns/agentRunsStore.js";
-export { getAgentRunDetail } from "./agentRuns/agentRunDetail.js";
+export { getAgentRunDetail, getAgentRunReplyOutcome } from "./agentRuns/agentRunDetail.js";
 export { agentRunErrorFields, agentRunErrorSummary } from "./agentRuns/agentRunErrorSummary.js";
-export { deriveRunDisplayStatus } from "./agentRuns/agentRunDisplayStatus.js";
-export type { AgentRunDisplayStatus } from "./agentRuns/agentRunDisplayStatus.js";
+export { deriveReplyOutcome, REPLY_INCOMPLETE_REASONS, type ReplyOutcome } from "./agentRuns/replyOutcome.js";
+export { deriveRunDisplayStatus, type AgentRunDisplayStatus } from "./agentRuns/agentRunDisplayStatus.js";
 export { AgentRunError, AiBudgetExceededError, agentRunErrorCodeOf } from "./agentRuns/agentRunErrorCodes.js";
 export * from "./agentRuns/agentRunEventsStore.js";
 export {
@@ -228,20 +230,7 @@ export {
   TRANSCRIPTION_OWNER_PROCESS,
   type TranscriptionJobPayload,
 } from "./transcription/transcriptionJob.js";
-export {
-  TRANSCRIPTION_CREATE_COMPUTED_KEY,
-  TRANSCRIPTION_PREPARE_COMPUTED_KEY,
-  TRANSCRIPTION_DIARIZE_COMPUTED_KEY,
-  TRANSCRIPTION_ASR_COMPUTED_KEY,
-  TRANSCRIPT_DURATION_SECONDS_COMPUTED_KEY,
-  TRANSCRIPT_FINALIZED_AT_COMPUTED_KEY,
-  TRANSCRIPT_SEGMENTS_COMPUTED_KEY,
-  TRANSCRIPT_LANGUAGE_COMPUTED_KEY,
-  TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY,
-  TRANSCRIPT_MEETING_NOTES_COMPUTED_KEY,
-  TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY,
-  TRANSCRIPTION_EVENT_RECOMMENDATION_COMPUTED_KEY,
-} from "./transcription/transcriptionComputedKeys.js";
+export * from "./transcription/transcriptionComputedKeys.js";
 export {
   FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
   TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
@@ -267,6 +256,12 @@ export {
   type TranscriptEventCandidate,
 } from "./transcription/transcriptEventMatch.js";
 export { resolveTranscriptDisplayName, resolveTranscriptSuggestedName } from "./transcription/transcriptDisplayName.js";
+export {
+  expandTranscriptSegmentRef,
+  labelTranscriptSegmentRefs,
+  validateTranscriptSegmentRef,
+  validateTranscriptSegmentRefs,
+} from "./transcription/transcriptSegmentRef.js";
 export {
   proposeSpeakerMappings,
   readSpeakerSuggestionContext,
@@ -508,11 +503,9 @@ export {
 export { sweepUnreferencedBlobs, handleBlobsUnreferencedSweepTask } from "./blobs/unreferencedBlobSweep.js";
 export { openBlobFromRoots, primaryRootForBlob } from "./blobs/openBlobFromRoots.js";
 export type { BlobRootName, OpenBlobFromRootsInput } from "./blobs/openBlobFromRoots.js";
-export { loadBlobMetadataForItems } from "./blobs/blobMetadata.js";
-export type { BlobMetadata, ItemBlobMetadata } from "./blobs/blobMetadata.js";
-export { detectFileType } from "./blobs/fileTypeDetection.js";
+export { loadBlobMetadataForItems, type BlobMetadata, type ItemBlobMetadata } from "./blobs/blobMetadata.js";
+export { detectFileType, type DetectedFile, type DetectedFileType } from "./blobs/fileTypeDetection.js";
 export { recomputePersonLastContact } from "./people/lastContact.js";
-export type { DetectedFile, DetectedFileType } from "./blobs/fileTypeDetection.js";
 export { findFileItemByBlobId } from "./chokePoint/itemsStore.js";
 export type { BlobStorageWriter, WriteStreamOptions } from "./mail/blobStorage.js";
 export { LocalFsBlobStorageWriter, MaxBytesExceededError, resolveBlobStorageDir } from "./mail/blobStorage.js";
@@ -658,6 +651,15 @@ export {
   parseEventRecurrenceRule,
   type EventRecurrenceRule,
 } from "./calendar/eventRecurrenceRule.js";
+export { formatOccurrenceId, parseOccurrenceId } from "./calendar/eventOccurrenceId.js";
+export { expandEventOccurrences } from "./calendar/eventOccurrences.js";
+export { createMaterializeEventOccurrenceRouteHandler } from "./calendar/eventOccurrenceRouteHandlers.js";
+export {
+  materializeEventOccurrence,
+  type MaterializeEventOccurrenceInput,
+  type MaterializeEventOccurrenceOptions,
+  type MaterializeEventOccurrenceResult,
+} from "./calendar/materializeEventOccurrence.js";
 export { manifest as inboxPipelineModuleManifest } from "./inbox/inboxModuleManifest.js";
 
 export * from "./auth/types.js";
@@ -697,56 +699,48 @@ export { handlePushDismissTask } from "./push/pushDismissJob.js";
 
 // `mcpGrantsAdminStore.ts`'s user-only grant/risk-class/approval mutations are deliberately
 // NOT exported here — see that file's header comment (issue #124).
-export type {
-  McpToolDisplayLabel,
-  McpToolRegistration,
-  UpsertMcpToolRegistrationInput,
-} from "./mcp/mcpToolRegistrationsStore.js";
 export {
+  type McpToolDisplayLabel,
+  type McpToolRegistration,
+  type UpsertMcpToolRegistrationInput,
   upsertMcpToolRegistration,
   getMcpToolRegistration,
   listMcpToolRegistrationsForServer,
 } from "./mcp/mcpToolRegistrationsStore.js";
-export type { ProjectMcpGrant } from "./mcp/mcpProjectGrantsStore.js";
-export { listProjectMcpGrants, getProjectMcpGrant } from "./mcp/mcpProjectGrantsStore.js";
+export { type ProjectMcpGrant, listProjectMcpGrants, getProjectMcpGrant } from "./mcp/mcpProjectGrantsStore.js";
 export { assertValidMcpConnectionConfig, type McpConnectionConfig } from "./mcp/mcpConnectionConfig.js";
 export {
   McpConnectionError,
   MCP_CONNECTION_ERROR_REASONS,
   type McpConnectionErrorReason,
 } from "./mcp/mcpConnectionError.js";
-export type { McpClientHandle, ConnectMcpServerOptions } from "./mcp/mcpConnectionFactory.js";
-export { connectMcpServer } from "./mcp/mcpConnectionFactory.js";
+export { type McpClientHandle, type ConnectMcpServerOptions, connectMcpServer } from "./mcp/mcpConnectionFactory.js";
 export { syncMcpServerTools, type SyncMcpServerToolsOptions, type SyncMcpServerToolsResult } from "./mcp/mcpSync.js";
 export { getGrantedMcpAgentTools, type McpAgentToolProjection } from "./mcp/mcpAgentTools.js";
 export { resolveGrantedMcpTool, type McpToolInvocationTarget } from "./mcp/mcpToolInvocation.js";
-export type {
-  McpToolGrantForProject,
-  McpToolGrantServerState,
-  ReclassifyMcpToolInput,
-} from "./mcp/mcpAgentPageGrants.js";
 export {
+  type McpToolGrantForProject,
+  type McpToolGrantServerState,
+  type ReclassifyMcpToolInput,
   countEffectiveMcpGrants,
   listMcpToolGrantsForProject,
   setProjectMcpGrantForAgentPage,
   reclassifyMcpTool,
 } from "./mcp/mcpAgentPageGrants.js";
-export type {
-  ApprovalDescription,
-  BreaksLinkEntry,
-  EndsInheritanceEntry,
-  ApprovalRequest,
-  ApprovalRequestPayload,
-  McpInvokeApprovalRequestPayload,
-  ModuleToolApprovalRequestPayload,
-  GenericOperationApprovalRequestPayload,
-  ApprovalRequestStatus,
-  ApprovalRequestDecision,
-  ApprovalRequestSourceKind,
-  CreatePendingApprovalRequestInput,
-  ApprovalRequestOutcome,
-} from "./mcp/approvalRequestsStore.js";
 export {
+  type ApprovalDescription,
+  type BreaksLinkEntry,
+  type EndsInheritanceEntry,
+  type ApprovalRequest,
+  type ApprovalRequestPayload,
+  type McpInvokeApprovalRequestPayload,
+  type ModuleToolApprovalRequestPayload,
+  type GenericOperationApprovalRequestPayload,
+  type ApprovalRequestStatus,
+  type ApprovalRequestDecision,
+  type ApprovalRequestSourceKind,
+  type CreatePendingApprovalRequestInput,
+  type ApprovalRequestOutcome,
   APPROVAL_REQUEST_REASON_MAX_LENGTH,
   APPROVAL_REQUEST_SOURCE_KINDS,
   countPendingApprovalRequests,
@@ -761,11 +755,9 @@ export {
   markApprovalRequestExecutionSucceeded,
   recordApprovalRequestOutcome,
 } from "./mcp/approvalRequestsStore.js";
-export type { ApprovalRequestArgumentValues } from "./mcp/approvalRequestArguments.js";
-export { toApprovalRequestArgumentValues } from "./mcp/approvalRequestArguments.js";
+export { toApprovalRequestArgumentValues, type ApprovalRequestArgumentValues } from "./mcp/approvalRequestArguments.js";
 export { buildDestructiveApprovalDescription, buildMcpInvokeApprovalDescription } from "./mcp/approvalDescription.js";
-export type { ApprovalConflictReason } from "./mcp/approvalConflictReason.js";
-export { approvalConflictReason } from "./mcp/approvalConflictReason.js";
+export { approvalConflictReason, type ApprovalConflictReason } from "./mcp/approvalConflictReason.js";
 export {
   attachLiveStepApprovals,
   getApprovalRequestSourceKind,
@@ -898,6 +890,7 @@ export {
   type SempThreadKind,
 } from "./semp/sempThreadsListStore.js";
 export { enqueueSempMessage } from "./semp/sempMessageQueue.js";
+export * from "./semp/sempTurnCancellation.js";
 export { reindexSempMessageSearch, type SempMessageSearchReindexOptions } from "./semp/sempMessageSearch.js";
 export { validateSempMessageRefs } from "./semp/sempMessageRefs.js";
 export { readSempRefContext, type SempRefContext, type SempRefReadOptions } from "./semp/sempRefReadContext.js";
@@ -922,10 +915,10 @@ export {
 export { enqueueSempThreadTitleIfFirst, handleSempThreadTitle } from "./semp/sempThreadTitle.js";
 export { buildSempReplySummary, type SempReplySummary } from "./semp/sempReplySummary.js";
 export { projectSempReplySteps, type SempReplyStep } from "./semp/sempReplySteps.js";
+export { classifySempTurnFailure, renderSempReplyFailure } from "./semp/sempReplyErrors.js";
 export { projectSempReplyChanges, type SempReplyChange } from "./semp/sempReplyChanges.js";
 
-export type { ResolvedModuleAgentTool } from "./agentTools/moduleAgentTools.js";
-export { resolveModuleAgentToolsForRun } from "./agentTools/moduleAgentTools.js";
+export { resolveModuleAgentToolsForRun, type ResolvedModuleAgentTool } from "./agentTools/moduleAgentTools.js";
 export { describeModuleToolFailure } from "./agentTools/describeModuleToolFailure.js";
 
 export { createMailboxListRouteHandler, createMailboxDetailRouteHandler } from "./mail/mailboxRouteHandlers.js";

@@ -8,6 +8,13 @@ export interface InFlightAgentRuns {
   register(tenantId: string, controller: AbortController, semp?: boolean): () => void;
   /** Aborts every controller registered for `tenantId` and returns how many it aborted. */
   abortTenant(tenantId: string): number;
+  /**
+   * Tracks `controller` under the assistant message `assistantMessageId` of `tenantId`, so that one turn can be aborted
+   * by `abortTurn`; the returned function stops tracking it. Independent of `register`, which tracks the same job per tenant.
+   */
+  registerTurn(tenantId: string, assistantMessageId: string, controller: AbortController): () => void;
+  /** Aborts the controllers registered for that turn of that tenant; `false` when this process runs no such turn. */
+  abortTurn(tenantId: string, assistantMessageId: string): boolean;
   abortSemp(): number;
   trackSemp<T>(work: () => Promise<T>): Promise<T>;
   observeSempSettlement(): SempSettlementObservation;
@@ -17,6 +24,9 @@ export interface InFlightAgentRuns {
 export function createInFlightAgentRuns(): InFlightAgentRuns {
   const byTenant = new Map<string, Set<AbortController>>();
   const sempControllers = new Set<AbortController>();
+  // Keyed by both ids: a turn is found only under the tenant that runs it, so a message id of another tenant matches nothing.
+  const byTurn = new Map<string, Set<AbortController>>();
+  const turnKey = (tenantId: string, assistantMessageId: string) => `${tenantId}/${assistantMessageId}`;
   let sempAborted = false;
   const active = new Set<Promise<void>>();
   let observer: { failures: unknown[]; disposed: boolean } | undefined;
@@ -76,6 +86,27 @@ export function createInFlightAgentRuns(): InFlightAgentRuns {
         current.delete(controller);
         if (current.size === 0) byTenant.delete(tenantId);
       };
+    },
+    registerTurn(tenantId, assistantMessageId, controller) {
+      const key = turnKey(tenantId, assistantMessageId);
+      let controllers = byTurn.get(key);
+      if (!controllers) {
+        controllers = new Set();
+        byTurn.set(key, controllers);
+      }
+      controllers.add(controller);
+      return () => {
+        const current = byTurn.get(key);
+        if (!current) return;
+        current.delete(controller);
+        if (current.size === 0) byTurn.delete(key);
+      };
+    },
+    abortTurn(tenantId, assistantMessageId) {
+      const controllers = byTurn.get(turnKey(tenantId, assistantMessageId));
+      if (!controllers) return false;
+      for (const controller of controllers) controller.abort();
+      return true;
     },
     abortTenant(tenantId) {
       const controllers = byTenant.get(tenantId);

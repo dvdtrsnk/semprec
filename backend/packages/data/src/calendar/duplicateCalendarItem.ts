@@ -32,7 +32,15 @@ import { EVENT_PEOPLE_PROPERTY_KEY } from "./eventParticipantEdgeHook.js";
 const EVENT_PROJECT_RELATION_KEY = "project";
 
 /** The Events properties a copy takes from its source. Its date and times come from the request. */
-const EVENT_PROPERTY_KEYS = ["name", "type", "place", "url", "description", "alertMinutes", "travelMinutes"] as const;
+export const EVENT_PROPERTY_KEYS = [
+  "name",
+  "type",
+  "place",
+  "url",
+  "description",
+  "alertMinutes",
+  "travelMinutes",
+] as const;
 
 /**
  * The Events relations whose edges a copy takes, besides the calendar edge, which the create gives it. A key
@@ -44,7 +52,7 @@ const EVENT_RELATION_KEYS = [EVENT_PROJECT_RELATION_KEY, EVENT_PEOPLE_PROPERTY_K
 const EVENT_COMPANY_RELATION_KEY = "company";
 
 /** The Events relation whose single edge is the calendar the Event belongs to. */
-const EVENT_CALENDAR_RELATION_KEY = "calendar";
+export const EVENT_CALENDAR_RELATION_KEY = "calendar";
 
 /** The Tasks properties a copy takes from its source. Its `status` is `notDone`, its date and times are described at `taskTimes`. */
 const TASK_PROPERTY_KEYS = ["name", "flagged", "description", "notifications"] as const;
@@ -107,7 +115,7 @@ interface SourceEdge {
  * The live edges `itemId` holds on its relation property `key`, or `null` when the database has no relation
  * property of that key. An edge whose other end is in the trash, in an archived database or gone is left out.
  */
-async function liveEdgesOf(
+export async function liveEdgesOf(
   client: PoolClient,
   databaseId: string,
   itemId: string,
@@ -138,21 +146,25 @@ function withoutInvitation(metadata: Record<string, unknown>): Record<string, un
 }
 
 /** The properties of `source` named by `keys` that hold a value; a missing or `null` one is left out of the copy. */
-function copiedProperties(source: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> {
+export function copiedProperties(source: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> {
   return Object.fromEntries(
     keys.flatMap((key) => (source[key] === undefined || source[key] === null ? [] : [[key, source[key]]])),
   );
 }
 
 /**
- * The `endDate` of an Event copy: the request's, or else the source's moved by as many days as `date` moves. A source
- * without a readable `date` and `endDate` gives the copy none.
+ * The `endDate` of an Event copy that starts on `copyDate`: `requestedEndDate` when there is one, or else the source's
+ * moved by as many days as the date moves. A source without a readable `date` and `endDate` gives the copy none.
  */
-function copiedEndDate(source: Record<string, unknown>, input: DuplicateCalendarItemInput): string | undefined {
-  if (input.endDate !== undefined) return input.endDate;
+export function copiedEndDate(
+  source: Record<string, unknown>,
+  copyDate: string,
+  requestedEndDate: string | undefined,
+): string | undefined {
+  if (requestedEndDate !== undefined) return requestedEndDate;
   const { date, endDate } = source;
-  if (!isCalendarDate(date) || !isCalendarDate(endDate) || !isCalendarDate(input.date)) return undefined;
-  const days = DateTime.fromISO(input.date, { zone: "utc" }).diff(DateTime.fromISO(date, { zone: "utc" }), "days").days;
+  if (!isCalendarDate(date) || !isCalendarDate(endDate) || !isCalendarDate(copyDate)) return undefined;
+  const days = DateTime.fromISO(copyDate, { zone: "utc" }).diff(DateTime.fromISO(date, { zone: "utc" }), "days").days;
   return DateTime.fromISO(endDate, { zone: "utc" }).plus({ days }).toFormat("yyyy-MM-dd");
 }
 
@@ -176,7 +188,13 @@ function taskTimes(source: Record<string, unknown>, input: DuplicateCalendarItem
  */
 async function copyEdges(
   client: PoolClient,
-  write: { databaseId: string; fromItemId: string; toItemId: string; writer: WriterIdentity; userId: string },
+  write: {
+    databaseId: string;
+    fromItemId: string;
+    toItemId: string;
+    writer: WriterIdentity;
+    userId: string | undefined;
+  },
   keys: readonly string[],
   metadataOf: (key: string, metadata: Record<string, unknown>) => Record<string, unknown>,
 ): Promise<void> {
@@ -198,6 +216,29 @@ async function copyEdges(
       );
     }
   }
+}
+
+/**
+ * Copies onto the Event `write.toItemId` the live edges of the Event `write.fromItemId` that an Event copy takes:
+ * those of `EVENT_RELATION_KEYS`, and `company` only when the source has no project edge. The `invitation` of a
+ * participant edge is dropped. The calendar edge is not copied: the create of the copy gives it.
+ */
+export async function copyEventEdges(
+  client: PoolClient,
+  write: {
+    databaseId: string;
+    fromItemId: string;
+    toItemId: string;
+    writer: WriterIdentity;
+    userId: string | undefined;
+  },
+): Promise<void> {
+  const project = await liveEdgesOf(client, write.databaseId, write.fromItemId, EVENT_PROJECT_RELATION_KEY);
+  const keys =
+    project && project.edges.length > 0 ? EVENT_RELATION_KEYS : [...EVENT_RELATION_KEYS, EVENT_COMPANY_RELATION_KEY];
+  await copyEdges(client, write, keys, (key, metadata) =>
+    key === EVENT_PEOPLE_PROPERTY_KEY ? withoutInvitation(metadata) : metadata,
+  );
 }
 
 /**
@@ -285,7 +326,7 @@ export async function duplicateCalendarItem(client: PoolClient, input: Duplicate
   const writer: WriterIdentity = { writerKind: "user" };
   const { userId } = input.actor;
   const options: CreateItemWithClientOptions = { writer, actingUserId: userId, humanWriterUserId: userId };
-  const endDate = kind === "event" ? copiedEndDate(source.properties, input) : undefined;
+  const endDate = kind === "event" ? copiedEndDate(source.properties, input.date, input.endDate) : undefined;
   const properties: Record<string, unknown> =
     kind === "event"
       ? {
@@ -317,12 +358,7 @@ export async function duplicateCalendarItem(client: PoolClient, input: Duplicate
 
   const write = { databaseId: database.id, fromItemId: source.id, toItemId: copy.id, writer, userId };
   if (kind === "event") {
-    const project = await liveEdgesOf(client, database.id, source.id, EVENT_PROJECT_RELATION_KEY);
-    const keys =
-      project && project.edges.length > 0 ? EVENT_RELATION_KEYS : [...EVENT_RELATION_KEYS, EVENT_COMPANY_RELATION_KEY];
-    await copyEdges(client, write, keys, (key, metadata) =>
-      key === EVENT_PEOPLE_PROPERTY_KEY ? withoutInvitation(metadata) : metadata,
-    );
+    await copyEventEdges(client, write);
   } else {
     await copyEdges(client, write, TASK_RELATION_KEYS, (_key, metadata) => metadata);
     await startCopySeries(client, { databaseId: database.id, source, copy, date: input.date, writer, userId });

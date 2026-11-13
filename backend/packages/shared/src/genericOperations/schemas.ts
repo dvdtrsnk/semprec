@@ -4,7 +4,7 @@ import { filterNodeSchema, sortSpecSchema } from "./filterSort.js";
 import type { GenericOperationName } from "./operationNames.js";
 
 /**
- * Strict Zod input schemas for the 48-operation catalog (issues #252, #1404, #1676, #1679, #1709, #1722, #1725, #1699, #1759, #1765, #1861, #2017), extracted from #37's
+ * Strict Zod input schemas for the 50-operation catalog (issues #252, #1404, #1676, #1679, #1709, #1722, #1725, #1699, #1759, #1765, #1861, #2017, #1842, #1839), extracted from #37's
  * domain-command validators into transport-independent shape. Every schema below is a strict
  * object: an unrecognized key — including a spoofed `actor`/`userId`/`agentProjectItemId` or a
  * server-derived/protected field like `system`, `schemaLocked`, `ownerProjectItemId`,
@@ -408,6 +408,137 @@ export const DatabaseFacetsInputSchema = z
   .strict();
 export type DatabaseFacetsInput = z.infer<typeof DatabaseFacetsInputSchema>;
 
+/**
+ * The groups of `search` results in their fixed order (issue #1842). `contact` holds People and Companies together;
+ * `mail` is an accepted scope value whose group a later issue fills, so it is always empty for now. `chat` holds the
+ * Semp threads of a person (issue #1854); an agent actor is never given it.
+ */
+export const SEARCH_GROUP_TYPES = [
+  "task",
+  "event",
+  "project",
+  "area",
+  "contact",
+  "journal",
+  "file",
+  "mail",
+  "chat",
+] as const;
+export type SearchGroupType = (typeof SEARCH_GROUP_TYPES)[number];
+
+/** The groups whose results are items, in the order of `SEARCH_GROUP_TYPES`; the others are threads and carry `threadId` instead of an item and a database. */
+export const SEARCH_ITEM_GROUP_TYPES = ["task", "event", "project", "area", "contact", "journal", "file"] as const;
+export type SearchItemGroupType = (typeof SEARCH_ITEM_GROUP_TYPES)[number];
+const SEARCH_THREAD_GROUP_TYPES = ["mail", "chat"] as const;
+
+/** The closed set of `kind`s of a result's `subtitleParts`; `movedFrom` and `missedInEvent` are emitted by later issues. */
+export const SEARCH_SUBTITLE_KINDS = [
+  "date",
+  "time",
+  "timeRange",
+  "place",
+  "recurrence",
+  "project",
+  "area",
+  "people",
+  "phone",
+  "relationship",
+  "status",
+  "count",
+  "sender",
+  "movedFrom",
+  "missedInEvent",
+] as const;
+export type SearchSubtitleKind = (typeof SEARCH_SUBTITLE_KINDS)[number];
+
+const SEARCH_MAX_QUERY_LENGTH = 200;
+const SEARCH_DEFAULT_PER_GROUP_LIMIT = 4;
+const SEARCH_MAX_PER_GROUP_LIMIT = 50;
+/** An opaque keyset token is far shorter; the cap only keeps an absurd value out of the decoder. */
+const SEARCH_MAX_CURSOR_LENGTH = 512;
+
+/**
+ * Searches the tenant's tasks, events, projects, areas, contacts, journal days and files (issue #1842). `scope` is a
+ * non-empty set of group types and defaults to all of them; `perGroupLimit` is the most results returned per group;
+ * `cursor` is the `nextCursor` of one group and continues that group, so it is allowed only with exactly one scope
+ * type. The cursor's content is checked by the operation, not by this schema.
+ */
+export const SearchInputSchema = z
+  .object({
+    q: z.string().min(1).max(SEARCH_MAX_QUERY_LENGTH),
+    scope: z
+      .array(z.enum(SEARCH_GROUP_TYPES))
+      .min(1)
+      .max(SEARCH_GROUP_TYPES.length)
+      .refine((scope) => new Set(scope).size === scope.length, "scope must not repeat a type")
+      .default([...SEARCH_GROUP_TYPES]),
+    perGroupLimit: z.number().int().min(1).max(SEARCH_MAX_PER_GROUP_LIMIT).default(SEARCH_DEFAULT_PER_GROUP_LIMIT),
+    cursor: z.string().min(1).max(SEARCH_MAX_CURSOR_LENGTH).optional(),
+  })
+  .strict()
+  .superRefine((input, ctx) => {
+    if (input.cursor !== undefined && input.scope.length !== 1) {
+      ctx.addIssue({ code: "custom", path: ["cursor"], message: "cursor requires a scope of exactly one type" });
+    }
+  });
+export type SearchInput = z.infer<typeof SearchInputSchema>;
+
+/**
+ * One structured piece of a result's subtitle. The client composes the text (relative words such as "today" depend on
+ * the clock and time zone, and MCP clients need no text), so `value` is canonical: a `YYYY-MM-DD` date, an `HH:mm`
+ * time, `HH:mm-HH:mm` for a `timeRange`, a stored key for `recurrence`, `relationship` and `status`, a decimal integer
+ * for `count`, and the stored title of the linked item for the kinds that carry `itemId`.
+ */
+const SearchSubtitlePartSchema = z
+  .object({ kind: z.enum(SEARCH_SUBTITLE_KINDS), value: z.string(), itemId: canonicalUuid.optional() })
+  .strict();
+export type SearchSubtitlePart = z.infer<typeof SearchSubtitlePartSchema>;
+
+const searchResultFields = {
+  title: z.string(),
+  subtitleParts: z.array(SearchSubtitlePartSchema),
+  /**
+   * An excerpt of at most 160 characters of plain text from the stored text of the item that matched the query (its
+   * page and, for a Journal day, its Inbox entries). It is `null` for a result found through anything else, and for the
+   * thread-backed groups, whose excerpts later issues build.
+   */
+  snippet: z.string().nullable(),
+};
+
+const SearchItemResultSchema = z
+  .object({ itemId: canonicalUuid, databaseId: canonicalUuid, databaseKey: z.string().min(1), ...searchResultFields })
+  .strict();
+export type SearchItemResult = z.infer<typeof SearchItemResultSchema>;
+
+const SearchThreadResultSchema = z.object({ threadId: canonicalUuid, ...searchResultFields }).strict();
+export type SearchThreadResult = z.infer<typeof SearchThreadResultSchema>;
+
+/** A group is item-backed or thread-backed by its `type`; `total` counts every match of the group, not only the listed ones. */
+const SearchGroupSchema = z.discriminatedUnion("type", [
+  z
+    .object({
+      type: z.enum(SEARCH_ITEM_GROUP_TYPES),
+      total: z.number().int().min(0),
+      items: z.array(SearchItemResultSchema),
+      nextCursor: z.string().min(1).nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.enum(SEARCH_THREAD_GROUP_TYPES),
+      total: z.number().int().min(0),
+      items: z.array(SearchThreadResultSchema),
+      nextCursor: z.string().min(1).nullable(),
+    })
+    .strict(),
+]);
+export type SearchGroup = z.infer<typeof SearchGroupSchema>;
+export type SearchItemGroup = Extract<SearchGroup, { type: SearchItemGroupType }>;
+
+/** The groups that have matches, in the order of `SEARCH_GROUP_TYPES`; a group without a match is omitted. */
+export const SearchOutputSchema = z.object({ groups: z.array(SearchGroupSchema) }).strict();
+export type SearchOutput = z.infer<typeof SearchOutputSchema>;
+
 /** Matches the `view_items.position` `integer` (int4) column's range. */
 const viewItemPosition = z.number().int().min(0).max(2147483647);
 
@@ -504,6 +635,10 @@ export const RelationListInputSchema = z
   })
   .strict();
 export type RelationListInput = z.infer<typeof RelationListInputSchema>;
+
+/** The collections related to one record, with their counts (issue #1839). */
+export const RelationRelatedInputSchema = z.object({ itemId: canonicalUuid }).strict();
+export type RelationRelatedInput = z.infer<typeof RelationRelatedInputSchema>;
 
 export const PageEnsureInputSchema = z.object({ itemId: canonicalUuid }).strict();
 export type PageEnsureInput = z.infer<typeof PageEnsureInputSchema>;
@@ -664,7 +799,7 @@ export const PageRestoreVersionInputSchema = z
   .strict();
 export type PageRestoreVersionInput = z.infer<typeof PageRestoreVersionInputSchema>;
 
-/** Exhaustive mapped type over the 48 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 50 literal operation names — see the `_assertInputByOperationExhaustive` check below. */
 export interface InputByOperation {
   "database.list": DatabaseListInput;
   "database.get": DatabaseGetInput;
@@ -699,6 +834,7 @@ export interface InputByOperation {
   "relation.set": RelationSetInput;
   "relation.delete": RelationDeleteInput;
   "relation.list": RelationListInput;
+  "relation.related": RelationRelatedInput;
   "page.restoreVersion": PageRestoreVersionInput;
   "link.unlink": ValueLinkInput;
   "link.relink": ValueLinkInput;
@@ -714,6 +850,7 @@ export interface InputByOperation {
   "page.duplicate": PageDuplicateInput;
   "page.rename": PageRenameInput;
   "database.facets": DatabaseFacetsInput;
+  search: SearchInput;
 }
 
 /** Fails to compile if `InputByOperation`'s keys and `GenericOperationName`'s literals ever diverge in either direction. */

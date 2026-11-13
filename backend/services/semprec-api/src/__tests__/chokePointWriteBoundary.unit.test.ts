@@ -58,7 +58,10 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "project mcp grants": "services/semprec-api/src/mcpAgentPageHandler.ts",
   "project mcp grant toggle": "services/semprec-api/src/mcpAgentPageHandler.ts",
   "mcp tool registration reclassify": "services/semprec-api/src/mcpAgentPageHandler.ts",
+  "project database grants": "packages/data/src/agentGrants/agentDatabaseGrantsRouteHandlers.ts",
+  "project database grant set": "packages/data/src/agentGrants/agentDatabaseGrantsRouteHandlers.ts",
   "confirm proposal": "packages/data/src/inbox/inboxRouteHandlers.ts",
+  "reject proposal": "packages/data/src/inbox/inboxRouteHandlers.ts",
   "inbox types": "packages/data/src/inbox/inboxRouteHandlers.ts",
   "inbox cards": "packages/data/src/inbox/inboxRouteHandlers.ts",
   "inbox cards count": "packages/data/src/inbox/inboxRouteHandlers.ts",
@@ -130,6 +133,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "create/replace relation": "services/semprec-api/src/itemsHandler.ts",
   "delete relation": "services/semprec-api/src/itemsHandler.ts",
   "list relations": "services/semprec-api/src/itemsHandler.ts",
+  "list related collections": "services/semprec-api/src/itemsHandler.ts",
   "ensure page": "services/semprec-api/src/itemsHandler.ts",
   "get page": "services/semprec-api/src/itemsHandler.ts",
   "read page markdown": "services/semprec-api/src/pageMarkdownHandler.ts",
@@ -171,6 +175,7 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "calendar agenda": "packages/data/src/calendar/agendaRouteHandler.ts",
   "calendar item duplicate": "packages/data/src/calendar/duplicateCalendarItemRouteHandler.ts",
   "calendar cancellation impact": "packages/data/src/calendar/cancellationImpactRouteHandler.ts",
+  "event occurrence materialize": "packages/data/src/calendar/eventOccurrenceRouteHandlers.ts",
   "task occurrence materialize": "packages/data/src/tasks/taskOccurrenceRoutes.ts",
   "task host event put": "packages/data/src/tasks/taskHostEventRouteHandlers.ts",
   "task host event remove": "packages/data/src/tasks/taskHostEventRouteHandlers.ts",
@@ -190,6 +195,9 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "library cover candidates refresh": "packages/data/src/library/libraryCoverCandidateRouteHandlers.ts",
   "library cover candidate select": "packages/data/src/library/libraryCoverCandidateRouteHandlers.ts",
   "sleep nights": "packages/data/src/sleep/sleepRouteHandlers.ts",
+  "sleep night put": "packages/data/src/sleep/sleepRouteHandlers.ts",
+  "overview summary": "packages/data/src/overview/overviewRouteHandler.ts",
+  "global search": "services/semprec-api/src/searchHandler.ts",
 };
 
 const apiRoutes: RouteMatrixEntry[] = ROUTE_MATRIX.filter((route) => route.surface === "api");

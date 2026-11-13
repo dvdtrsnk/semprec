@@ -7,6 +7,7 @@
  * docs/adr/2026-09-17-shared-package-mirrors-rather-than-imports-data-row-types.md for the
  * rationale and the dependency-cruiser rule (`no-shared-data-import`) that enforces it.
  */
+import type { FilterNode } from "./filterSort.js";
 
 /** Mirrors `packages/data/src/types.ts`'s `PROPERTY_TYPES` — the single source of truth for the actual enum lives there; this list must be kept identical. */
 export const PROPERTY_TYPES = [
@@ -201,6 +202,21 @@ export interface HiddenRelationListEntry {
 }
 
 export type RelationListEntry = VisibleRelationListEntry | HiddenRelationListEntry;
+
+/**
+ * One collection related to a record, as `relation.related` returns it (issue #1839): `count` records of the
+ * database are connected to the record, `via` says whether they are connected to the record itself (`direct`) or
+ * through a project of it (`project`), and `filter` is the filter tree that selects exactly those records when it is
+ * passed to a query of the database. `filter` is `null` for the Threads database, which a client opens by the
+ * viewed record's id instead. `databaseKey` is `null` for a database a user created.
+ */
+export interface RelatedCollection {
+  databaseKey: string | null;
+  databaseId: string;
+  count: number;
+  via: "direct" | "project";
+  filter: FilterNode | null;
+}
 
 /**
  * The page after `page.restoreVersion` (issue #1617): the restored instant as ISO 8601 and the ids

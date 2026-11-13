@@ -28,6 +28,7 @@ import {
 } from "./schedulerStore.js";
 import { resolveAgentRunLane, resolveHeartbeatFireTaskName } from "./actions.js";
 import { isOnItemEventRule, type HeartbeatRuleKindRegistry } from "./rule.js";
+import { resolveHeartbeatReadScope } from "./heartbeatRunScope.js";
 
 export const HEARTBEAT_HISTORY_DEFAULT_LIMIT = 10;
 export const HEARTBEAT_HISTORY_MAX_LIMIT = 100;
@@ -97,33 +98,6 @@ export type HeartbeatTriggerTool = (currentRunId: string, args: unknown) => Prom
 async function resolveCallingProjectItemId(pool: Pool, currentRunId: string): Promise<string | null> {
   const run = await getAgentRun(pool, currentRunId);
   return run?.projectItemId ?? null;
-}
-
-/**
- * What `heartbeat.list` and `heartbeat.history` may read for one run (issue #2018): `project` is the run's own
- * project; `tenant` is every project of the tenant minus the ones the sensitive rule leaves out
- * (`listHeartbeatsVisibleToChatRun`), and carries the run's project, which that rule compares grants against.
- */
-interface HeartbeatReadScope {
-  scope: "project" | "tenant";
-  projectItemId: string;
-}
-
-/**
- * The read scope of the calling run, derived from persisted rows only, never from tool arguments: `tenant` when
- * the run's `agent_runs.thread_id` points at a Semp thread of kind `chat` (a delegated run inherits the thread,
- * issue #1452), otherwise `project`. A run without a thread, or on an `item` or `tick` thread, keeps the own
- * project. `null` when the run is unknown or has no project.
- */
-async function resolveHeartbeatReadScope(pool: Pool, currentRunId: string): Promise<HeartbeatReadScope | null> {
-  const run = await getAgentRun(pool, currentRunId);
-  if (!run?.projectItemId) return null;
-  if (run.threadId === null) return { scope: "project", projectItemId: run.projectItemId };
-  const { rows } = await pool.query<{ is_chat: boolean }>(
-    "SELECT EXISTS (SELECT 1 FROM semp_threads WHERE id = $1 AND kind = 'chat') AS is_chat",
-    [run.threadId],
-  );
-  return { scope: rows[0]?.is_chat === true ? "tenant" : "project", projectItemId: run.projectItemId };
 }
 
 function toListEntry(heartbeat: HeartbeatRow): HeartbeatListEntry {

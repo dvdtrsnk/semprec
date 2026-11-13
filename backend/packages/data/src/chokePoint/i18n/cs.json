@@ -1,5 +1,8 @@
 {
   "agentTool.heartbeat.list.label": "Seznam heartbeatů",
   "agentTool.heartbeat.history.label": "Historie heartbeatů",
-  "agentTool.heartbeat.trigger.label": "Spuštění heartbeatu"
+  "agentTool.heartbeat.trigger.label": "Spuštění heartbeatu",
+  "agentTool.heartbeat.create.label": "Vytvoření heartbeatu",
+  "agentTool.heartbeat.update.label": "Změna heartbeatu",
+  "agentTool.heartbeat.setEnabled.label": "Zapnutí a vypnutí heartbeatu"
 }

@@ -32,10 +32,12 @@ const control = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("partial") }),
   z.strictObject({ type: z.literal("final") }),
   z.strictObject({ type: z.literal("finalSecond") }),
+  z.strictObject({ type: z.literal("finalText"), text: z.string().min(1).max(32) }),
   z.strictObject({ type: z.literal("holdSpeech") }),
   z.strictObject({ type: z.literal("releaseSpeech") }),
   z.strictObject({ type: z.literal("holdModel") }),
   z.strictObject({ type: z.literal("releaseModel") }),
+  z.strictObject({ type: z.literal("failModel") }),
   z.strictObject({ type: z.literal("holdFirstText") }),
   z.strictObject({ type: z.literal("releaseFirstText"), request: z.number().int().min(1).max(100) }),
   z.strictObject({ type: z.literal("approvalTarget"), itemId: z.string().uuid() }),
@@ -324,9 +326,15 @@ process.on("message", (value: unknown) => {
   switch (parsed.data.type) {
     case "partial":
     case "final":
-    case "finalSecond": {
+    case "finalSecond":
+    case "finalText": {
       const partial = parsed.data.type === "partial";
-      const text = parsed.data.type === "finalSecond" ? "A second question." : "A spoken question.";
+      const text =
+        parsed.data.type === "finalText"
+          ? parsed.data.text
+          : parsed.data.type === "finalSecond"
+            ? "A second question."
+            : "A spoken question.";
       for (const ws of providerSockets)
         if (ws.readyState === WebSocket.OPEN)
           ws.send(
@@ -355,6 +363,12 @@ process.on("message", (value: unknown) => {
       break;
     case "releaseModel":
       for (const res of pendingModel) endModel(res);
+      pendingModel.clear();
+      holdModel = false;
+      break;
+    case "failModel":
+      // Ends every held model stream in the middle of the answer, so that the turn fails with a model error.
+      for (const res of pendingModel) res.destroy();
       pendingModel.clear();
       holdModel = false;
       break;

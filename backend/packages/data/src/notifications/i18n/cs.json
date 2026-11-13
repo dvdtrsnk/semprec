@@ -33,6 +33,9 @@
   "approval.journalMerge.year": "Sloučit duplicitní záznamy deníku za rok {period}: „{mergedName}“ do „{survivorName}“.",
   "approval.mcpInvoke": "Zavolat „{toolName}“ na MCP serveru „{serverName}“.",
   "approval.moduleTool": "Spustit nástroj modulu „{toolName}“.",
+  "approval.heartbeatCreate": "Vytvořit automatizaci „{heartbeatName}“ v projektu „{projectName}“ s plánem {rule}. Úkol: {task}",
+  "approval.heartbeatUpdate": "Změnit automatizaci „{heartbeatName}“ v projektu „{projectName}“ ({changes}).",
+  "approval.heartbeatSetEnabled": "Nastavit automatizaci „{heartbeatName}“ v projektu „{projectName}“ jako {state}.",
   "notification.body.canUndo": "Lze ji později vzít zpět.",
   "notification.body.cannotUndo": "Semp tuto akci nedokáže vrátit zpět."
 }

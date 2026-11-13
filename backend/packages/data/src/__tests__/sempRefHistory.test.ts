@@ -536,7 +536,7 @@ describe("Semp history reference resolution", () => {
             { kind: "transcriptSegment", itemId: firstTranscript.id, startsAt: 0, endsAt: 1 },
             { kind: "transcriptSegment", itemId: secondTranscript.id, startsAt: 0, endsAt: 1 },
           ],
-          labels: ["First recording", "Second recording"],
+          labels: ["First recording 0:00-0:01", "Second recording 0:00-0:01"],
           keys: ["transcripts", "transcripts"],
           query: "AS r(item_id, database_id, ordinal)",
         },

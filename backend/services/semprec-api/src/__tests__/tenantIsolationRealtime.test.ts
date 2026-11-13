@@ -16,6 +16,7 @@ import {
   createPendingApprovalRequest,
   createPendingApprovalRequestAndPublish,
   createSempChatThread,
+  createTasksDayRolloverAction,
   decideAndEnqueueApprovalRequest,
   getNotificationById,
   createChokePoint,
@@ -33,6 +34,8 @@ import {
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   login,
+  patchNotificationPreferences,
+  publishAccountInvalidation,
   provisionTenant,
   publishSempThreadInvalidation,
   resolveMailModuleIds,
@@ -90,7 +93,10 @@ import { createSyncUpgradeHandler } from "../syncHandler.js";
  * Absence is proven without sleeping: after the event under test reached the socket that should
  * receive it, a sentinel event is published in the checked socket's own tenant. NOTIFYs are
  * delivered over the server's single LISTEN connection in commit order, so everything a NOTIFY
- * made the checked socket receive arrives before the sentinel.
+ * made the checked socket receive arrives before the sentinel. The one frame that is not made by a
+ * NOTIFY of its own is the doc invalidation, which the server sends after it read the doc again, up
+ * to a second after the write; `TestSocket.drainUntil` sets aside such a frame of the socket's own
+ * tenant and returns one of any other tenant.
  *
  * Frames a socket sends are not ordered against that connection. For those, the foreign frame is
  * sent before a request of B1's own whose reply is awaited, and the handlers do the same work in
@@ -169,6 +175,8 @@ class TestSocket {
   };
   closeCode: number | undefined;
   readonly closed: Promise<number>;
+  /** The tenant this socket is authenticated in, when the test knows it; `drainUntil` reads it. */
+  ownTenantId: string | undefined;
 
   private constructor(private readonly ws: WebSocket) {
     ws.on("error", this.onError);
@@ -295,12 +303,29 @@ class TestSocket {
     }
   }
 
-  /** Consumes frames up to and including the first match; returns the frames that arrived before it. */
+  /**
+   * Consumes frames up to and including the first match; returns the frames that arrived before it.
+   *
+   * A socket that knows its tenant (`ownTenantId`) can still receive the doc invalidation of an earlier write of that
+   * tenant, and nothing orders that frame against a sentinel: the writer announces a doc update after its commit,
+   * through a pooled connection of its own and without being awaited, and the server then reads the doc before it
+   * sends the frame, which it does again a second later when the doc was written twice within that second. That
+   * frame is the echo of an earlier case, not of the event this drain checks, so it is not returned. It is dropped
+   * only after the admin pool confirmed that the item it names belongs to the socket's tenant: a doc invalidation of
+   * any other tenant is returned like every other frame and fails the drain's empty list.
+   */
   async drainUntil(predicate: (frame: Frame) => boolean): Promise<Frame[]> {
     const before: Frame[] = [];
     for (;;) {
       const frame = await this.next();
       if (predicate(frame)) return before;
+      if (
+        this.ownTenantId !== undefined &&
+        isDocInvalidation(frame) &&
+        (await isItemOfTenant(frame, this.ownTenantId))
+      ) {
+        continue;
+      }
       before.push(frame);
     }
   }
@@ -320,6 +345,19 @@ function isSentinel(databaseId: string): (frame: Frame) => boolean {
 
 function isDocFrame(docId: string): (frame: Frame) => boolean {
   return (frame) => frame.kind === "binary" && frame.docId === docId;
+}
+
+/** The doc invalidation (`scope: "doc"`) the server sends to every socket of the tenant that wrote a doc. */
+function isDocInvalidation(frame: Frame): boolean {
+  return frame.kind === "text" && frame.type === "invalidate" && frame.body.scope === "doc";
+}
+
+/** Whether the item `frame` names belongs to `tenantId`, read by the admin pool, which no tenant scope narrows. */
+async function isItemOfTenant(frame: Frame, tenantId: string): Promise<boolean> {
+  const itemId = frame.kind === "text" ? frame.body.itemId : undefined;
+  if (typeof itemId !== "string") return false;
+  const { rows } = await adminPool.query<{ tenant_id: string }>("SELECT tenant_id FROM items WHERE id = $1", [itemId]);
+  return rows[0]?.tenant_id === tenantId;
 }
 
 function isAgentEvent(runId: string): (frame: Frame) => boolean {
@@ -558,6 +596,9 @@ async function reconnectAll(): Promise<void> {
   a2SessionId = sessionA2.sessionId;
   const attempts = [connect(sessionA1.cookie), connect(sessionA2.cookie), connect(sessionB1.cookie)] as const;
   [a1, a2, b1] = await joinSocketAttempts(attempts, ownedSockets);
+  a1.ownTenantId = tenantA.tenantId;
+  a2.ownTenantId = tenantA.tenantId;
+  b1.ownTenantId = tenantB.tenantId;
 }
 
 async function joinSocketAttempts<T extends readonly Promise<TestSocket>[]>(
@@ -931,10 +972,75 @@ function pendingApprovalInput(agentRunId: string) {
   } as const;
 }
 
+function isUserScopedFrame(scope: "notificationPreferences" | "badgeCounts" | "account"): (frame: Frame) => boolean {
+  return (frame) => frame.kind === "text" && frame.type === "invalidate" && frame.body.scope === scope;
+}
+
+/** Changes the notification preferences of `fixture`'s user in its tenant through the runtime role, rolling back on request. */
+async function patchPreferencesIn(fixture: TenantFixture, rollBack = false): Promise<void> {
+  await runInTenant(fixture.tenantId, () =>
+    withTransaction(pool, async (client) => {
+      await patchNotificationPreferences(client, fixture.userId, { reminders: false });
+      if (rollBack) throw new Error("rollback notificationPreferences announcement");
+    }),
+  );
+}
+
+function isMcpServersFrame(frame: Frame): boolean {
+  return frame.kind === "text" && frame.type === "invalidate" && frame.body.scope === "mcpServers";
+}
+
 /**
- * Every socket in `sockets` receives the approval request invalidation, the agent run invalidation and the Semp
- * thread invalidation paired with it. They are published over separate connections, so they may arrive in any order.
- * The run was created before (`createRunOnThread` consumed that announcement), and its project is null.
+ * Creates an MCP server item in `tenantId` and switches it off through the choke point of the runtime role, the write
+ * that announces the tenant's `mcpServers` scope. Its creation announces nothing of that scope.
+ */
+async function switchMcpServerOffIn(tenantId: string): Promise<void> {
+  await runInTenant(tenantId, async () => {
+    const database = (await chokePoint.listDatabases()).find((entry) => entry.ownerModuleId === "mcpServers");
+    if (!database) throw new Error("The mcpServers database was not provisioned");
+    const server = await chokePoint.createItem({
+      databaseId: database.id,
+      properties: {
+        name: "Isolation server",
+        connectionConfig: { transport: "http", url: "https://mcp.example.test/mcp" },
+      },
+    });
+    await chokePoint.updateItem({ databaseId: database.id, itemId: server.id, propertiesPatch: { active: false } });
+  });
+}
+
+function isOverviewFrame(frame: Frame): boolean {
+  return frame.kind === "text" && frame.type === "invalidate" && frame.body.scope === "overview";
+}
+
+/**
+ * Runs the nightly rollover of `fixture`'s tenant through the runtime role, over the tenant's fixture database (which
+ * holds no task) so that nothing moves. The action's own transactions commit before it announces the day.
+ */
+async function runRolloverIn(fixture: TenantFixture): Promise<void> {
+  await runInTenant(fixture.tenantId, () =>
+    createTasksDayRolloverAction(pool)(
+      { tasksDatabaseId: fixture.databaseId },
+      { heartbeatId: randomUUID(), projectItemId: randomUUID() },
+    ),
+  );
+}
+
+/** Publishes the account invalidation of `fixture`'s user in its tenant through the runtime role, rolling back on request. */
+async function publishAccountIn(fixture: TenantFixture, rollBack = false): Promise<void> {
+  await runInTenant(fixture.tenantId, () =>
+    withTransaction(pool, async (client) => {
+      publishAccountInvalidation(client, fixture.userId);
+      if (rollBack) throw new Error("rollback account announcement");
+    }),
+  );
+}
+
+/**
+ * Every socket in `sockets` receives the approval request invalidation, the agent run invalidation, the badge
+ * count invalidation of the run's owner and the Semp thread invalidation paired with it. They are published over
+ * separate connections, so they may arrive in any order. The run was created before (`createRunOnThread` consumed
+ * that announcement), its project is null and its actor is the fixture's user.
  */
 async function expectRequestAndThreadInvalidations(
   sockets: readonly TestSocket[],
@@ -944,13 +1050,14 @@ async function expectRequestAndThreadInvalidations(
 ): Promise<void> {
   await Promise.all(
     sockets.map(async (socket) => {
-      const pending = new Set(["approvalRequest", "sempThread", "agentRuns"]);
+      const pending = new Set(["approvalRequest", "sempThread", "agentRuns", "badgeCounts"]);
       while (pending.size > 0) {
         const frame = await socket.next();
         if (frame.kind !== "text" || frame.type !== "invalidate") continue;
         if (matches(frame.body, { scope: "approvalRequest", approvalRequestId })) pending.delete("approvalRequest");
         if (matches(frame.body, { scope: "sempThread", threadId })) pending.delete("sempThread");
         if (matches(frame.body, { scope: "agentRuns", agentRunId, projectItemId: null })) pending.delete("agentRuns");
+        if (matches(frame.body, { scope: "badgeCounts" })) pending.delete("badgeCounts");
       }
     }),
   );
@@ -1112,6 +1219,144 @@ const notifyCases = {
         await raiseProblemIn(tenantB);
 
         await b1.nextMatching(isSempStatusFrame());
+        const sentinel = await publishSentinel(tenantA.tenantId);
+        expect(await a1.drainUntil(isSentinel(sentinel))).toEqual([]);
+        expect(await a2.drainUntil(isSentinel(sentinel))).toEqual([]);
+        return ["invalidate"];
+      },
+      "notificationPreferences scope, from a preference change of A's user, once to both of A's sockets and not to B1, with nothing for a rolled-back one":
+        async () => {
+          await expect(patchPreferencesIn(tenantA, true)).rejects.toThrow(
+            "rollback notificationPreferences announcement",
+          );
+          const rollbackSentinel = await publishSentinel(tenantA.tenantId);
+          for (const socket of [a1, a2]) {
+            expect(
+              (await socket.drainUntil(isSentinel(rollbackSentinel))).filter(
+                isUserScopedFrame("notificationPreferences"),
+              ),
+            ).toEqual([]);
+          }
+
+          await patchPreferencesIn(tenantA);
+          const frames = await Promise.all(
+            [a1, a2].map((socket) => socket.nextMatching(isUserScopedFrame("notificationPreferences"))),
+          );
+          for (const frame of frames) {
+            expect(frame).toMatchObject({
+              kind: "text",
+              body: { type: "invalidate", scope: "notificationPreferences" },
+            });
+            expect(frame.kind === "text" ? Object.keys(frame.body).sort() : []).toEqual(["scope", "type"]);
+          }
+          const sentinel = await publishSentinel(tenantA.tenantId);
+          for (const socket of [a1, a2]) {
+            expect(
+              (await socket.drainUntil(isSentinel(sentinel))).filter(isUserScopedFrame("notificationPreferences")),
+            ).toEqual([]);
+          }
+          await expectNothingReceived(b1, tenantB.tenantId);
+          return ["invalidate"];
+        },
+      "notificationPreferences scope, from a preference change of B's user, which reaches B1 only": async () => {
+        await patchPreferencesIn(tenantB);
+
+        await b1.nextMatching(isUserScopedFrame("notificationPreferences"));
+        const sentinel = await publishSentinel(tenantA.tenantId);
+        expect(await a1.drainUntil(isSentinel(sentinel))).toEqual([]);
+        expect(await a2.drainUntil(isSentinel(sentinel))).toEqual([]);
+        return ["invalidate"];
+      },
+      "mcpServers scope, from switching A's MCP server off, once to both of A's sockets and not to B1": async () => {
+        await switchMcpServerOffIn(tenantA.tenantId);
+
+        const frames = await Promise.all([a1, a2].map((socket) => socket.nextMatching(isMcpServersFrame)));
+        for (const frame of frames) {
+          expect(frame).toMatchObject({ kind: "text", body: { type: "invalidate", scope: "mcpServers" } });
+          expect(frame.kind === "text" ? Object.keys(frame.body).sort() : []).toEqual(["scope", "type"]);
+        }
+        const sentinel = await publishSentinel(tenantA.tenantId);
+        for (const socket of [a1, a2]) {
+          expect((await socket.drainUntil(isSentinel(sentinel))).filter(isMcpServersFrame)).toEqual([]);
+        }
+        await expectNothingReceived(b1, tenantB.tenantId);
+        return ["invalidate"];
+      },
+      "mcpServers scope, from switching B's MCP server off, which reaches B1 only": async () => {
+        await switchMcpServerOffIn(tenantB.tenantId);
+
+        await b1.nextMatching(isMcpServersFrame);
+        const sentinel = await publishSentinel(tenantA.tenantId);
+        expect(await a1.drainUntil(isSentinel(sentinel))).toEqual([]);
+        expect(await a2.drainUntil(isSentinel(sentinel))).toEqual([]);
+        return ["invalidate"];
+      },
+      "overview scope, from the end of A's rollover, once to both of A's sockets and not to B1": async () => {
+        await runRolloverIn(tenantA);
+
+        const frames = await Promise.all([a1, a2].map((socket) => socket.nextMatching(isOverviewFrame)));
+        for (const frame of frames) {
+          expect(frame).toMatchObject({ kind: "text", body: { type: "invalidate", scope: "overview" } });
+          expect(frame.kind === "text" ? Object.keys(frame.body).sort() : []).toEqual(["scope", "type"]);
+        }
+        const sentinel = await publishSentinel(tenantA.tenantId);
+        for (const socket of [a1, a2]) {
+          expect((await socket.drainUntil(isSentinel(sentinel))).filter(isOverviewFrame)).toEqual([]);
+        }
+        await expectNothingReceived(b1, tenantB.tenantId);
+        return ["invalidate"];
+      },
+      "overview scope, from the end of B's rollover, which reaches B1 only": async () => {
+        await runRolloverIn(tenantB);
+
+        await b1.nextMatching(isOverviewFrame);
+        const sentinel = await publishSentinel(tenantA.tenantId);
+        expect(await a1.drainUntil(isSentinel(sentinel))).toEqual([]);
+        expect(await a2.drainUntil(isSentinel(sentinel))).toEqual([]);
+        return ["invalidate"];
+      },
+      "account scope, from a profile change of A's user, once to both of A's sockets and not to B1, with nothing for a rolled-back one":
+        async () => {
+          await expect(publishAccountIn(tenantA, true)).rejects.toThrow("rollback account announcement");
+          const rollbackSentinel = await publishSentinel(tenantA.tenantId);
+          for (const socket of [a1, a2]) {
+            expect(
+              (await socket.drainUntil(isSentinel(rollbackSentinel))).filter(isUserScopedFrame("account")),
+            ).toEqual([]);
+          }
+
+          await publishAccountIn(tenantA);
+          const frames = await Promise.all([a1, a2].map((socket) => socket.nextMatching(isUserScopedFrame("account"))));
+          for (const frame of frames) {
+            expect(frame).toMatchObject({ kind: "text", body: { type: "invalidate", scope: "account" } });
+            expect(frame.kind === "text" ? Object.keys(frame.body).sort() : []).toEqual(["scope", "type"]);
+          }
+          const sentinel = await publishSentinel(tenantA.tenantId);
+          for (const socket of [a1, a2]) {
+            expect((await socket.drainUntil(isSentinel(sentinel))).filter(isUserScopedFrame("account"))).toEqual([]);
+          }
+          await expectNothingReceived(b1, tenantB.tenantId);
+          return ["invalidate"];
+        },
+      "account scope, from a profile change of B's user, which reaches B1 only": async () => {
+        await publishAccountIn(tenantB);
+
+        await b1.nextMatching(isUserScopedFrame("account"));
+        const sentinel = await publishSentinel(tenantA.tenantId);
+        expect(await a1.drainUntil(isSentinel(sentinel))).toEqual([]);
+        expect(await a2.drainUntil(isSentinel(sentinel))).toEqual([]);
+        return ["invalidate"];
+      },
+      "badgeCounts scope, from a decision request of B's run, which reaches B1 only": async () => {
+        const { runId } = await createRunOnThread(tenantB, [b1]);
+        await runInTenant(tenantB.tenantId, () =>
+          withTransaction(pool, (client) =>
+            createPendingApprovalRequestAndPublish(client, pendingApprovalInput(runId)),
+          ),
+        );
+
+        const frame = await b1.nextMatching(isUserScopedFrame("badgeCounts"));
+        expect(frame.kind === "text" ? Object.keys(frame.body).sort() : []).toEqual(["scope", "type"]);
         const sentinel = await publishSentinel(tenantA.tenantId);
         expect(await a1.drainUntil(isSentinel(sentinel))).toEqual([]);
         expect(await a2.drainUntil(isSentinel(sentinel))).toEqual([]);

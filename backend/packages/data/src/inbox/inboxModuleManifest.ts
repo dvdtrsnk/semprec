@@ -13,6 +13,7 @@ export {
   createInboxCardsCountRouteHandler,
   createInboxCardsRouteHandler,
   createInboxTypesRouteHandler,
+  createRejectProposalRouteHandler,
 } from "./inboxRouteHandlers.js";
 
 /**
@@ -72,6 +73,15 @@ export const manifest: ModuleManifest = {
       // A cross-destination write (item creation/patch plus, for an MCP server proposal, a
       // stored credential) committed in one transaction with the proposal's own status
       // transition — issue #239's "cross-database write in one transaction" justification.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "rejectProposal",
+      method: "POST",
+      path: "/api/proposals/:id/reject",
+      handlerExport: "createRejectProposalRouteHandler",
+      // A status transition, its history entry and the Journal recompute committed in one
+      // transaction, which the generic item update cannot express (`status` is system-owned).
       justification: "transactional-semantics",
     },
     {

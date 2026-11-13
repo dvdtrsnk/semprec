@@ -132,7 +132,12 @@ import {
   prepareSleepWrite,
   sleepItemCreateHook,
   sleepItemUpdateHook,
+  sleepNightUpdatePreLockHook,
   sleepPreWriteTransform,
+  sleepResyncCreateHook,
+  sleepResyncDeleteHook,
+  sleepResyncRestoreHook,
+  sleepResyncUpdateHook,
 } from "./sleep/sleepWriteHooks.js";
 import { SLEEP_NIGHTS_MODULE_ID, SLEEP_PLANS_MODULE_ID, SLEEP_SETTINGS_MODULE_ID } from "./seed/sleepModuleKeys.js";
 
@@ -310,6 +315,8 @@ for (const moduleId of [SLEEP_SETTINGS_MODULE_ID, SLEEP_PLANS_MODULE_ID, SLEEP_N
 }
 registerItemCreateHook(sleepItemCreateHook);
 registerItemUpdateHook(sleepItemUpdateHook);
+// An update that names `night` takes the lock of that night before it locks the exception's row, the order of the PUT.
+registerItemUpdatePreLockHook(SLEEP_NIGHTS_MODULE_ID, sleepNightUpdatePreLockHook);
 // Issue gh-1799: a wake day is in at most one plan; the hooks run after the validation hooks above.
 registerItemCreateHook(keepWakeDaysInOnePlan);
 registerItemUpdateHook(keepWakeDaysInOnePlan);
@@ -328,6 +335,14 @@ registerItemUpdateHook(taskCompletedInEventHook);
 // recomputations use. Recorded in docs/adr/2026-11-13-event-trash-and-restore-write-the-tasks-they-host.md.
 registerItemDeleteHook(eventHostedTasksDeleteHook);
 registerItemRestoreHook(eventHostedTasksRestoreHook);
+
+// Issue gh-1838: every change of sleep data, and a change of the System settings time zone, enqueues the debounced
+// resync push. After the validation and plan hooks above, so a write they refuse enqueues nothing, and after the hooks
+// of issue #1819, the Shared-file ordering blocker of this issue.
+registerItemCreateHook(sleepResyncCreateHook);
+registerItemUpdateHook(sleepResyncUpdateHook);
+registerItemDeleteHook(sleepResyncDeleteHook);
+registerItemRestoreHook(sleepResyncRestoreHook);
 
 // Issue gh-1812: the cover candidates of a permanently deleted item go with it, whatever its database (an item of
 // another database has none). gh-1812 declares only #1809 as a blocker, and that one for shared-file ordering.

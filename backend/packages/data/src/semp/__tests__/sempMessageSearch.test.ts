@@ -251,7 +251,7 @@ describe("Semp message search vector", () => {
           true,
         );
         expect(await claimSempMessage(client, failed, failedId)).toBe(true);
-        expect(await finishSempMessageTurn(client, failedId, { status: "error", interrupted: false })).toBe(true);
+        expect(await finishSempMessageTurn(client, failedId, { status: "error" })).toBe(true);
       });
       expect(await vectorText(own, emptyId)).toBeNull();
       expect(await vectorText(own, failedId)).toBeNull();
