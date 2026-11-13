@@ -67,6 +67,7 @@ export { itemDeleteWithClient } from "./chokePoint/itemTrash.js";
 export { SYSTEM_WRITER, type WriterIdentity, type WriterKind } from "./chokePoint/writerKind.js";
 export {
   assertAgentDatabaseAccess,
+  listUnreadableDatabaseIds,
   type AssertAgentDatabaseAccessInput,
   type RequiredAgentDatabaseAccess,
 } from "./agentGrants/agentDatabaseAccess.js";
@@ -230,6 +231,7 @@ export {
   TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY,
   TRANSCRIPT_MEETING_NOTES_COMPUTED_KEY,
   TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY,
+  TRANSCRIPTION_EVENT_RECOMMENDATION_COMPUTED_KEY,
 } from "./transcription/transcriptionComputedKeys.js";
 export {
   FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
@@ -246,7 +248,15 @@ export {
   createTranscriptListRouteHandler,
   createTranscriptSummariesRouteHandler,
 } from "./transcription/transcriptionRouteHandlers.js";
-export { matchTranscriptToEvent } from "./transcription/transcriptEventMatch.js";
+export {
+  createTranscriptEventCard,
+  matchTranscriptToEvent,
+  readEventRecommendationContext,
+  type AmbiguousTranscriptEventMatch,
+  type EventRecommendation,
+  type EventRecommendationContext,
+  type TranscriptEventCandidate,
+} from "./transcription/transcriptEventMatch.js";
 export {
   proposeSpeakerMappings,
   readSpeakerSuggestionContext,
@@ -290,6 +300,11 @@ export {
 } from "./moduleWorkers.js";
 export { manifest as libraryModuleManifest } from "./library/libraryModuleManifest.js";
 export { createLibraryAutomationRetryRouteHandler } from "./library/libraryAutomationRouteHandlers.js";
+export {
+  createLibraryCoverCandidateSelectRouteHandler,
+  createLibraryCoverCandidatesListRouteHandler,
+  createLibraryCoverCandidatesRefreshRouteHandler,
+} from "./library/libraryCoverCandidateRouteHandlers.js";
 export {
   createMailLiveSyncRoot,
   createNoopMailLiveSyncLifecycleFactory,
@@ -457,6 +472,8 @@ export {
 } from "./docs/pageMarkdown.js";
 export { readProjectNotes } from "./docs/projectNotesRead.js";
 export { listPageChanges, type PageChange, type PageChangeKind } from "./docs/pageChanges.js";
+export { resolvePageOwnerDatabase } from "./docs/pageOwnerDatabase.js";
+export { computePageReplaceProjection, type PageReplaceCheck } from "./docs/pageReplaceApproval.js";
 export { PAGE_TITLE_MAX_LENGTH, normalizePageTitle } from "./docs/pageTitle.js";
 
 export {
@@ -549,6 +566,18 @@ export {
   weeksOfMonth,
   type JournalPeriodType,
 } from "./journal/journalStore.js";
+export { ensureJournalPeriodForWriter, type JournalPeriodSelector } from "./journal/journalPeriodForWriter.js";
+export {
+  mergeJournalDuplicatesForWriter,
+  type ApprovedJournalPair,
+  type JournalMergeOutcome,
+  type JournalMergePeriod,
+} from "./journal/journalMergeForWriter.js";
+export {
+  computeJournalMergeProjection,
+  mergeApprovedJournalDuplicates,
+  type JournalMergeCheck,
+} from "./journal/journalMergeApproval.js";
 export {
   mergeJournalDuplicates,
   type MergeJournalDuplicatesInput,
@@ -852,7 +881,8 @@ export {
 } from "./semp/sempThreadsListStore.js";
 export { enqueueSempMessage } from "./semp/sempMessageQueue.js";
 export { validateSempMessageRefs } from "./semp/sempMessageRefs.js";
-export { readSempRefContext, type SempRefContext } from "./semp/sempRefReadContext.js";
+export { readSempRefContext, type SempRefContext, type SempRefReadOptions } from "./semp/sempRefReadContext.js";
+export { listSleepNightReadItemIds } from "./semp/sempSleepNightContext.js";
 export {
   getMessageSpeech,
   getMessageSpeechSource,

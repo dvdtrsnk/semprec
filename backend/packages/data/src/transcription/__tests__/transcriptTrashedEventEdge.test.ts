@@ -174,7 +174,9 @@ function unlink(
 }
 
 /** The match step of the transcription worker, in its own transaction. */
-function match(scope: Scope, transcriptId: string): Promise<string> {
+type MatchResult = Awaited<ReturnType<typeof matchTranscriptToEvent>>;
+
+function match(scope: Scope, transcriptId: string): Promise<MatchResult> {
   return inTenant(scope, () =>
     withTransaction(pool, (client) => matchTranscriptToEvent(client, { transcriptId, durationSeconds: 3600 })),
   );
@@ -1021,7 +1023,7 @@ describe("a transcript whose Event is in the Trash (issue #1743)", () => {
       };
 
       const purging = inTenant(world, () => cp.purgeExpiredTrashSubtree(world.event, EVERYTHING_EXPIRED));
-      let matching: Promise<string> | undefined;
+      let matching: Promise<MatchResult> | undefined;
       try {
         const purgePid = await Promise.race([
           purged,

@@ -6,6 +6,7 @@
 // Generic operation metadata determines Semp's undo capability. MCP calls have no Semp undo.
 import { GENERIC_OPERATION_NAMES, OPERATION_METADATA } from "@semprec/shared";
 import { isGenericOperationApprovalRequestPayload, type ApprovalRequest } from "../mcp/approvalRequestsStore.js";
+import { JOURNAL_PERIOD_TYPES } from "../journal/journalPeriods.js";
 import type { WriteNotificationInput } from "./notify.js";
 
 /** Body catalog key per description key (`notifications/i18n/{cs,en}.json`, `notification.approval_pending.body.*`). */
@@ -21,9 +22,21 @@ const BODY_KEY_BY_DESCRIPTION_KEY = new Map<string, string>([
   ["approval.relationPut", "approval.relationPut"],
   ["approval.relationSet", "approval.relationSet"],
   ["approval.pageRestore", "approval.pageRestore"],
+  ["approval.pageReplace", "approval.pageReplace"],
   ["approval.mcpInvoke", "approval.mcpInvoke"],
   ["approval.moduleTool", "approval.moduleTool"],
 ]);
+
+/**
+ * The body catalog key of a Journal merge: one entry per period type (`approval.journalMerge.<type>`), so the period
+ * type reaches the user as a localised word and never as the canonical key stored in the description (issue #2017).
+ * The stored params stay canonical; the entries name only `{period}` and the two titles.
+ */
+function journalMergeBodyKey(params: Readonly<Record<string, string | number | null>>): string {
+  const type = JOURNAL_PERIOD_TYPES.find((candidate) => candidate === params.periodType);
+  if (type === undefined) throw new Error("approvalNotificationBody: unknown Journal period type in the description");
+  return `approval.journalMerge.${type}`;
+}
 
 /**
  * The body fields of a `writeNotification` call for an approval request. A request without a
@@ -36,7 +49,10 @@ export function approvalNotificationBody(
 ): Pick<WriteNotificationInput, "bodyKey" | "bodyParams" | "bodySuffixKey"> {
   const { description } = request;
   if (description === null) return {};
-  const bodyKey = BODY_KEY_BY_DESCRIPTION_KEY.get(description.key);
+  const bodyKey =
+    description.key === "approval.journalMerge"
+      ? journalMergeBodyKey(description.params)
+      : BODY_KEY_BY_DESCRIPTION_KEY.get(description.key);
   if (bodyKey === undefined) {
     throw new Error(`approvalNotificationBody: no body entry for approval description "${description.key}"`);
   }

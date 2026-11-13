@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { fauxAssistantMessage, fauxProvider, fauxToolCall, type FauxResponseStep } from "@earendil-works/pi-ai";
+import {
+  fauxAssistantMessage,
+  fauxProvider,
+  fauxToolCall,
+  type Context,
+  type FauxResponseStep,
+} from "@earendil-works/pi-ai";
 import { closeIdleThreadSessions } from "@semprec/agent-runtime";
 import { runInTenant, type LabeledSempMessageRef } from "@semprec/shared";
 import {
@@ -51,6 +57,15 @@ function newHealthRecord(name: string): Promise<ItemRow> {
 
 function itemRef(item: ItemRow, label: string): LabeledSempMessageRef {
   return { kind: "item", itemId: item.id, databaseId: item.databaseId, label };
+}
+
+/** The text of the tool result the model saw in the live turn, before the run history stores it. */
+function liveToolResultText(messages: Context["messages"], toolCallId: string): string | undefined {
+  for (const message of messages) {
+    if (message.role !== "toolResult" || message.toolCallId !== toolCallId) continue;
+    return message.content.map((part) => (part.type === "text" ? part.text : "")).join("");
+  }
+  return undefined;
 }
 
 const toolCall = (name: string, args: Record<string, unknown>, id: string) =>
@@ -225,9 +240,14 @@ describe("one-turn read allowances of a Semp turn (issue #1849)", () => {
     it("lets the agent read the attached record in that turn without a grant, refuses another record of the database, refuses the attached one in the next turn without the ref, and leaves no row", async () => {
       const [attached, sibling] = [await newHealthRecord("Attached record"), await newHealthRecord("Sibling record")];
       const faux = fauxProvider();
+      let liveReadText: string | undefined;
       faux.setResponses([
         toolCall("item_get", { itemId: attached.id }, "read-attached"),
-        toolCall("item_get", { itemId: sibling.id }, "read-sibling"),
+        (context) => {
+          // The health database is sensitive: the stored result is redacted (issue #1827), the live turn keeps the real one.
+          liveReadText = liveToolResultText(context.messages, "read-attached");
+          return toolCall("item_get", { itemId: sibling.id }, "read-sibling");
+        },
         fauxAssistantMessage("first done"),
         toolCall("item_get", { itemId: attached.id }, "read-again"),
         fauxAssistantMessage("second done"),
@@ -240,7 +260,8 @@ describe("one-turn read allowances of a Semp turn (issue #1849)", () => {
       if (!runId) throw new Error("The first turn has no run");
       const read = await toolOutcome(runId, "read-attached");
       expect(read.isError).toBe(false);
-      expect(read.text).toContain("Attached record");
+      expect(liveReadText).toContain("Attached record");
+      expect(read.text).toBe("[redacted: sensitive]");
       const refused = await toolOutcome(runId, "read-sibling");
       expect(refused.isError).toBe(true);
       expect(refused.text).toContain("forbidden");

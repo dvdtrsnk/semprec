@@ -91,6 +91,8 @@ interface Fixtures {
   secondTarget: ItemRow;
   /** A subpage of `itemA`, present only after the `prepare` of a case that needs an existing page. */
   subpageItemId?: string;
+  /** The version token of `itemA`'s page, present only after the `prepare` of `page.replace`. */
+  pageEtag?: string;
 }
 
 /**
@@ -291,6 +293,9 @@ const CASES: Record<GenericOperationName, Case> = {
     },
   },
   "page.ensure": { args: (fx) => ({ itemId: fx.itemA.id }) },
+  "page.ensureJournalPeriod": { args: () => ({ type: "week", date: "2026-10-16" }) },
+  // Destructive for an agent (issue #2017): held for approval, also for a period that has no duplicate.
+  "page.mergeJournalDuplicates": { args: () => ({ type: "day", period: "2026-10-16" }) },
   "page.createSubpage": { args: (fx) => ({ parent: { itemId: fx.itemA.id }, title: "Agent subpage" }) },
   "page.duplicate": {
     args: (fx) => ({ pageItemId: fx.subpageItemId }),
@@ -307,9 +312,12 @@ const CASES: Record<GenericOperationName, Case> = {
     },
   },
   "page.insert": { args: (fx) => ({ itemId: fx.itemA.id, placement: "end", markdown: "Agent text" }) },
-  // REST-only (issue #1765): valid arguments, so only the gateway's refusal can keep it from running.
+  // Destructive for an agent (issue #1844): the call is held for approval, with the version token the page has now.
   "page.replace": {
-    args: (fx) => ({ itemId: fx.itemA.id, markdown: "Agent replacement", expectedEtag: "A".repeat(43) }),
+    args: (fx) => ({ itemId: fx.itemA.id, markdown: "Agent replacement", expectedEtag: fx.pageEtag }),
+    prepare: async (fx) => {
+      fx.pageEtag = (await createDocStore(pool).readPageMarkdown(fx.itemA.id)).etag;
+    },
   },
   "page.changes": { args: (fx) => ({ itemId: fx.itemA.id, since: new Date(Date.now() - 60 * 1000).toISOString() }) },
   "page.get": { args: (fx) => ({ itemId: fx.itemA.id, format: "summary" }) },
@@ -371,26 +379,116 @@ describe("generic operation AgentTools contract (issue #220)", () => {
     await pool?.end();
   });
 
-  it("does not discover or invoke page operations through a persisted project agent", async () => {
+  it("discovers and invokes the page operations through a persisted project agent, which a sensitive database still refuses (issue #1844)", async () => {
     const projectItemId = await createProjectItem();
     const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "page grants" });
     const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
     const discovered = await listGrantedGenericOperationAgentTools(pool, moduleRegistry, run.id, testMetadataResolver);
     for (const name of ["page.get", "page.ensure", "page.restoreVersion", "page.insert", "page.changes"] as const) {
-      expect(discovered).not.toContain(name);
-      const args =
-        name === "page.restoreVersion"
-          ? { itemId: projectItemId, at: new Date().toISOString() }
-          : { itemId: projectItemId };
-      const outcome = await tools[name](run.id, args);
-      expect(outcome.error).toBe(true);
-      expect(outcome.result).toContain("Unknown operation");
-      expect(outcome.approvalRequestId).toBeUndefined();
+      expect(discovered).toContain(name);
     }
-    expect((await pool.query("SELECT id FROM docs WHERE item_id = $1", [projectItemId])).rows).toHaveLength(0);
+
+    const read = await tools["page.get"](run.id, { itemId: projectItemId });
+    expect(read.error).toBe(false);
+    const written = await tools["page.insert"](run.id, { itemId: projectItemId, placement: "end", markdown: "Hello" });
+    expect(written.error).toBe(false);
+
+    const health = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "healthRecords"));
+    if (!health) throw new Error("Health records not seeded");
+    const record = await chokePoint.createItem({ databaseId: health.id, properties: { name: "Private diagnosis" } });
+    for (const outcome of [
+      await tools["page.get"](run.id, { itemId: record.id }),
+      await tools["page.insert"](run.id, { itemId: record.id, placement: "end", markdown: "Refused" }),
+    ]) {
+      expect(outcome.error).toBe(true);
+      expect(outcome.result).toMatch(/^forbidden:/);
+    }
+    expect((await pool.query("SELECT id FROM docs WHERE item_id = $1", [record.id])).rows).toHaveLength(0);
     expect((await pool.query("SELECT id FROM approval_requests WHERE agent_run_id = $1", [run.id])).rows).toHaveLength(
       0,
     );
+  });
+
+  it("writes a summary into the Journal week of a date through the AgentTool names page.ensureJournalPeriod and page.insert, authored ai_agent (issue #1861)", async () => {
+    const projectItemId = await createProjectItem();
+    const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "journal summary" });
+    const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
+    expect(await listGrantedGenericOperationAgentTools(pool, moduleRegistry, run.id, testMetadataResolver)).toContain(
+      "page.ensureJournalPeriod",
+    );
+
+    const ensured = await tools["page.ensureJournalPeriod"](run.id, { type: "week", date: "2026-10-16" });
+    expect(ensured.error).toBe(false);
+    const week: unknown = JSON.parse(ensured.result);
+    if (typeof week !== "object" || week === null || !("itemId" in week) || typeof week.itemId !== "string") {
+      throw new Error("Missing itemId in the week");
+    }
+    const weekItemId = week.itemId;
+    expect(week).toMatchObject({ period: "2026-W42" });
+    const again = await tools["page.ensureJournalPeriod"](run.id, { type: "week", period: "2026-W42" });
+    expect(JSON.parse(again.result)).toMatchObject({ itemId: weekItemId });
+    const inserted = await tools["page.insert"](run.id, {
+      itemId: weekItemId,
+      placement: "end",
+      markdown: "Sprint summary",
+    });
+    expect(inserted.error).toBe(false);
+
+    const authors = await pool.query<{ created_by: string }>(
+      `SELECT u.created_by FROM doc_updates u JOIN docs d ON d.id = u.doc_id WHERE d.item_id = $1 ORDER BY u.id`,
+      [weekItemId],
+    );
+    expect(authors.rows.map((row) => row.created_by)).toEqual(["ai_agent"]);
+    const refused = await tools["page.ensureJournalPeriod"](run.id, { type: "week", period: "2026-W99" });
+    expect(refused.error).toBe(true);
+    expect(refused.result).toMatch(/^validation_failed:/);
+  });
+
+  it("holds page.mergeJournalDuplicates for a day with two live entries for approval through its AgentTool name and merges nothing (issue #2017)", async () => {
+    const journal = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "journal"));
+    if (!journal) throw new Error("Journal not seeded");
+    // Two live entries of one period are a state the lazy creation never produces, so the fixture creates them directly.
+    const entries: string[] = [];
+    for (let n = 0; n < 2; n += 1) {
+      const created = await withTransaction(pool, (client) =>
+        createItemWithClient(
+          client,
+          { databaseId: journal.id, properties: { name: "\u{1F4D3} 2037-05-01", type: "day", period: "2037-05-01" } },
+          { allowedSystemKeys: ["name", "type", "period"] },
+        ),
+      );
+      entries.push(created.id);
+    }
+    const projectItemId = await createProjectItem();
+    const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "journal merge" });
+    const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
+    expect(await listGrantedGenericOperationAgentTools(pool, moduleRegistry, run.id, testMetadataResolver)).toContain(
+      "page.mergeJournalDuplicates",
+    );
+
+    const outcome = await tools["page.mergeJournalDuplicates"](run.id, { type: "day", period: "2037-05-01" });
+
+    expect(outcome.error).toBe(false);
+    expect(outcome.result).toContain("requires human approval");
+    const requests = await pool.query<{ tool_name: string; status: string; payload: { operationName?: string } }>(
+      `SELECT tool_name, status, payload FROM approval_requests WHERE agent_run_id = $1`,
+      [run.id],
+    );
+    expect(requests.rows).toEqual([
+      {
+        tool_name: "page.mergeJournalDuplicates",
+        status: "pending",
+        payload: expect.objectContaining({ operationName: "page.mergeJournalDuplicates" }),
+      },
+    ]);
+    const live = await pool.query<{ id: string }>(
+      `SELECT id FROM items WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL`,
+      [entries],
+    );
+    expect(live.rows.map((row) => row.id).sort()).toEqual([...entries].sort());
+    const refused = await tools["page.mergeJournalDuplicates"](run.id, { type: "day", period: "2026-02-30" });
+    expect(refused.error).toBe(true);
+    expect(refused.result).toMatch(/^validation_failed:/);
   });
 
   it("validates Areas writes through the actual agent tools", async () => {
@@ -712,14 +810,7 @@ describe("generic operation AgentTools contract (issue #220)", () => {
           ? await inTenantZero(() => tools[operation](run.id, testCase.args(fx)))
           : await tools[operation](run.id, testCase.args(fx));
 
-      if (
-        operation === "page.get" ||
-        operation === "page.ensure" ||
-        operation === "page.restoreVersion" ||
-        operation === "page.insert" ||
-        operation === "page.changes" ||
-        REST_ONLY_OPERATION_NAMES.some((name) => name === operation)
-      ) {
+      if (REST_ONLY_OPERATION_NAMES.some((name) => name === operation)) {
         expect(outcome.error).toBe(true);
         expect(outcome.approvalRequestId).toBeUndefined();
         expect(outcome.result).toContain("Unknown operation");
@@ -748,6 +839,10 @@ describe("generic operation AgentTools contract (issue #220)", () => {
             [fx.itemA.id],
           );
           expect(rows.map((row) => row.created_by)).toEqual(["ai_agent"]);
+        }
+        if (operation === "page.ensureJournalPeriod") {
+          // The week containing the date, named by its canonical key, created for the run's tenant.
+          expect(JSON.parse(outcome.result)).toMatchObject({ period: "2026-W42", range: { from: "2026-10-12" } });
         }
         if (operation === "item.count") {
           // Both fixture items are counted; only `itemA` has a target under the grouping relation.

@@ -112,6 +112,30 @@ describe("toPiMessages (issue #647)", () => {
     });
   });
 
+  it("converts a redacted sensitive tool_result to an ordinary tool result message holding the marker (issue #1827)", () => {
+    const [converted] = toPiMessages(
+      entries({
+        kind: "tool_result",
+        toolCallId: "call-1",
+        name: "item_get",
+        operation: "item.get",
+        result: { content: [{ type: "text", text: "[redacted: sensitive]" }], details: { error: false } },
+        isError: false,
+      }),
+      model,
+    );
+
+    expect(converted).toEqual({
+      role: "toolResult",
+      toolCallId: "call-1",
+      toolName: "item_get",
+      content: [{ type: "text", text: "[redacted: sensitive]" }],
+      details: { error: false },
+      isError: false,
+      timestamp: 100,
+    });
+  });
+
   it("adds only wake-time images to the reconstructed user message", () => {
     const [entry] = entries({ kind: "user_message", text: "question", context: [] });
     if (!entry) throw new Error("Missing entry");
@@ -180,5 +204,43 @@ describe("toPiMessages (issue #647)", () => {
     expect(() => toPiMessages(entries(message), model)).toThrow(
       `conversation entry e0 (kind '${message.kind}') ${reason}`,
     );
+  });
+});
+
+describe("toPiMessages of a history stored redacted (issue #2001)", () => {
+  it("hands pi the markers: a redacted assistant reply, a toolCall block with redacted arguments and a redacted result, each call still paired", () => {
+    const converted = toPiMessages(
+      entries(
+        {
+          kind: "message",
+          role: "assistant",
+          text: "[redacted: sensitive]",
+          content: [
+            { type: "text", text: "[redacted: sensitive]" },
+            { type: "toolCall", id: "call-1", name: "item_patch", arguments: { redacted: "[redacted: sensitive]" } },
+          ],
+          stopReason: "toolUse",
+        },
+        { kind: "tool_use", toolCallId: "call-1", name: "item_patch", arguments: "[redacted: sensitive]" },
+        {
+          kind: "tool_result",
+          toolCallId: "call-1",
+          name: "item_patch",
+          result: { content: [{ type: "text", text: "[redacted: sensitive]" }], details: { error: false } },
+          isError: false,
+        },
+      ),
+      model,
+    );
+    expect(converted).toMatchObject([
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "[redacted: sensitive]" },
+          { type: "toolCall", id: "call-1", arguments: { redacted: "[redacted: sensitive]" } },
+        ],
+      },
+      { role: "toolResult", toolCallId: "call-1", content: [{ type: "text", text: "[redacted: sensitive]" }] },
+    ]);
   });
 });

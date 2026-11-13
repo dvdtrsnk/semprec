@@ -34,6 +34,7 @@ import {
   type ReplacePageMarkdownInput,
 } from "./pageMarkdown.js";
 import { listPageChanges, type ListPageChangesOptions, type PageChange } from "./pageChanges.js";
+import { assertAgentPageAccess } from "./pageOwnerDatabase.js";
 
 function assertKind(doc: DocRow, expected: DocKind): void {
   if (doc.kind !== expected) {
@@ -98,18 +99,32 @@ export function createDocStore(pool: Pool) {
       return withTransaction(pool, (client) => docsStore.getDocByItemId(client, itemId));
     },
 
-    async getPageSummary(itemId: string, locale: string, limit?: number) {
-      return withTransaction(pool, (client) => readPageSummary(client, itemId, locale, limit));
+    /**
+     * The summary of a page. For an agent (`agentProjectItemId`) its project needs read access to the database that
+     * owns the page, checked first in the read's own transaction (`assertAgentPageAccess`); the same holds for every
+     * method of this store that takes the parameter.
+     */
+    async getPageSummary(itemId: string, locale: string, limit?: number, agentProjectItemId?: string) {
+      return withTransaction(pool, async (client) => {
+        await assertAgentPageAccess(client, agentProjectItemId, itemId, "read");
+        return readPageSummary(client, itemId, locale, limit);
+      });
     },
 
     /** The page as canonical Markdown plus its version token (issue #1678); never creates a document. */
-    async readPageMarkdown(itemId: string) {
-      return withTransaction(pool, (client) => readPageMarkdown(client, itemId));
+    async readPageMarkdown(itemId: string, agentProjectItemId?: string) {
+      return withTransaction(pool, async (client) => {
+        await assertAgentPageAccess(client, agentProjectItemId, itemId, "read");
+        return readPageMarkdown(client, itemId);
+      });
     },
 
     /** Inserts Markdown into a page (issue #1679) in one transaction; the caller supplies the write's origin. */
-    async insertPageMarkdown(itemId: string, input: InsertPageMarkdownInput) {
-      return withTransaction(pool, (client) => insertPageMarkdown(client, itemId, input));
+    async insertPageMarkdown(itemId: string, input: InsertPageMarkdownInput, agentProjectItemId?: string) {
+      return withTransaction(pool, async (client) => {
+        await assertAgentPageAccess(client, agentProjectItemId, itemId, "write");
+        return insertPageMarkdown(client, itemId, input);
+      });
     },
 
     /** Replaces a page's body from Markdown under the version token the caller read (issue #1765) in one transaction. */
@@ -121,11 +136,18 @@ export function createDocStore(pool: Pool) {
      * What was written to the page of `itemId` since `options.since` by `options.by` (issue #1680). The item is read in
      * the caller's tenant like any item read, so a foreign or unknown id is one `NotFoundError`; an item without a page
      * document has no changes (`[]`), and then only the future check applies since there is no history to bound `since`.
+     * An agent's access is checked in this lookup transaction, before the history is replayed in its own snapshot
+     * transaction (`listPageChanges`), so a revoke that commits between the two is not seen by that replay.
      */
-    async listPageChanges(itemId: string, options: ListPageChangesOptions): Promise<PageChange[]> {
+    async listPageChanges(
+      itemId: string,
+      options: ListPageChangesOptions,
+      agentProjectItemId?: string,
+    ): Promise<PageChange[]> {
       const doc = await withTransaction(pool, async (client) => {
         const [item] = await getItemsByIds(client, [itemId]);
         if (!item) throw new NotFoundError("Item not found", { resource: "item", itemId });
+        await assertAgentPageAccess(client, agentProjectItemId, itemId, "read");
         return docsStore.getDocByItemId(client, itemId);
       });
       if (!doc) {
@@ -137,10 +159,11 @@ export function createDocStore(pool: Pool) {
       return listPageChanges(pool, doc.id, options);
     },
 
-    async ensurePage(itemId: string): Promise<{ docId: string }> {
+    async ensurePage(itemId: string, agentProjectItemId?: string): Promise<{ docId: string }> {
       return withTransaction(pool, async (client) => {
         const [visible] = await getItemsByIds(client, [itemId]);
         if (!visible) throw new NotFoundError("Item not found", { resource: "item", itemId });
+        await assertAgentPageAccess(client, agentProjectItemId, itemId, "write");
         const item = await lockItemById(client, visible.databaseId, itemId);
         if (!item || item.deletedAt) throw new NotFoundError("Item not found", { resource: "item", itemId });
         const doc = await docsStore.getOrCreateDoc(client, itemId, "page");
@@ -149,18 +172,36 @@ export function createDocStore(pool: Pool) {
     },
 
     /** Creates one subpage (issue #1676) in one transaction; `origin` is derived server-side from the caller. */
-    async createSubpage(input: PageCreateSubpageInput, origin: CreatedBy): Promise<PageCreateSubpageOutput> {
-      return withTransaction(pool, (client) => createSubpageWithClient(client, input, origin));
+    async createSubpage(
+      input: PageCreateSubpageInput,
+      origin: CreatedBy,
+      agentProjectItemId?: string,
+    ): Promise<PageCreateSubpageOutput> {
+      return withTransaction(pool, (client) => createSubpageWithClient(client, input, origin, agentProjectItemId));
     },
 
     /** Copies a subpage with every page nested in it (issue #1722) in one transaction; see `duplicatePageWithClient`. */
-    async duplicatePage(pageItemId: string, options: DuplicatePageOptions): Promise<PageDuplicateOutput> {
-      return withTransaction(pool, (client) => duplicatePageWithClient(client, pageItemId, options));
+    async duplicatePage(
+      pageItemId: string,
+      options: DuplicatePageOptions,
+      agentProjectItemId?: string,
+    ): Promise<PageDuplicateOutput> {
+      return withTransaction(pool, async (client) => {
+        await assertAgentPageAccess(client, agentProjectItemId, pageItemId, "write");
+        return duplicatePageWithClient(client, pageItemId, options);
+      });
     },
 
     /** Renames a subpage (issue #1725) in one transaction; `origin` is derived server-side from the caller. */
-    async renamePage(input: PageRenameInput, origin: CreatedBy): Promise<PageRenameOutput> {
-      return withTransaction(pool, (client) => renamePageWithClient(client, input, origin));
+    async renamePage(
+      input: PageRenameInput,
+      origin: CreatedBy,
+      agentProjectItemId?: string,
+    ): Promise<PageRenameOutput> {
+      return withTransaction(pool, async (client) => {
+        await assertAgentPageAccess(client, agentProjectItemId, input.pageItemId, "write");
+        return renamePageWithClient(client, input, origin);
+      });
     },
 
     // ---- page content (blocks) ----

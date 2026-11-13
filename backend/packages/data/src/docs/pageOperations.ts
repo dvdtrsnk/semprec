@@ -28,12 +28,8 @@ import { loadDocWithClient, mutateDocWithClient } from "./docPersistence.js";
 import { getDocByItemId, getOrCreateDoc, readPageStatesForItems } from "./docsStore.js";
 import { lockLiveItem } from "./lockLiveItem.js";
 import { normalizePageTitle, PAGE_TITLE_MAX_LENGTH } from "./pageTitle.js";
+import { assertAgentPageAccess, MAX_SUBPAGE_CHAIN, UUID_RE } from "./pageOwnerDatabase.js";
 import { ensurePagesDatabase, PAGES_MODULE_ID } from "./pagesDatabase.js";
-
-/** A parent chain of subpages is at most this long; a longer one is refused as it cannot be walked to its host. */
-const MAX_SUBPAGE_CHAIN = 1000;
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** The Pages item properties `createSubpage` and `duplicatePage` write; both are system-owned by the `pages` process. */
 const PAGES_ALLOWED_SYSTEM_KEYS = ["title", "parentItemId"] as const;
@@ -174,13 +170,18 @@ async function convertBlocksToSubpages(
  * inserts a `page` block naming it into the parent's document, so the three exist together or, if any step fails
  * (including the creation of a Journal period entry), none of them. `origin` is the caller's, derived server-side.
  * With `fromBlockIds` it converts existing blocks instead of creating one (`convertBlocksToSubpages`).
+ *
+ * For an agent (`agentProjectItemId`) the parent page must be writable for its project: the check follows the parent's
+ * lock, because a Journal period is created by that step, and a refusal rolls the whole transaction back with it.
  */
 export async function createSubpageWithClient(
   client: PoolClient,
   input: PageCreateSubpageInput,
   origin: CreatedBy,
+  agentProjectItemId?: string,
 ): Promise<PageCreateSubpageOutput> {
   const parent = await lockLiveParent(client, input.parent);
+  await assertAgentPageAccess(client, agentProjectItemId, parent.id, "write");
   const parentDoc = await getOrCreateDoc(client, parent.id, "page");
   const pagesDatabase = await ensurePagesDatabase(client);
   await assertParentChainIsAcyclic(client, pagesDatabase.id, parent);

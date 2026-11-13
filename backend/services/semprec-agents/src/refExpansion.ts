@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 import type { Readable } from "node:stream";
 import {
+  ForbiddenError,
   extractAttachmentText,
   isTextExtractableContentType,
   openBlobFromRoots,
@@ -85,6 +86,11 @@ async function readRefBytes(stream: Readable, cap: number, signal?: AbortSignal)
  * item relates to are read only as far as that project may read their databases: a related item in a database it may
  * not read appears as `{ id, hidden: true }` and is not named. The referenced item itself is read because the user
  * attached it.
+ *
+ * A `sleepNight` ref (issue #1853) is the exception, because the sleep databases are sensitive: it is read when the
+ * project holds a grant on them, or when `attachedThisTurn` says the refs are those of the turn that is starting, for
+ * which the one-run read access of issue #1849 is opened. Otherwise it renders as `sleepNight: unavailable (no
+ * access).` and expands nothing from the sleep databases; the other refs and the turn go on.
  */
 export async function expandSempRefs(
   pool: Pool,
@@ -92,6 +98,7 @@ export async function expandSempRefs(
   roots?: StorageRoots,
   signal?: AbortSignal,
   agentProjectItemId?: string,
+  options: { attachedThisTurn?: boolean } = {},
 ): Promise<{ context: LabeledSempMessageRef[]; text: string; images: AgentImage[] }> {
   if (!Array.isArray(stored)) return { context: [], text: "", images: [] };
   const entries: unknown[] = stored;
@@ -109,15 +116,21 @@ export async function expandSempRefs(
     }
     let label = old.success ? old.data.label : "";
     try {
-      const observed = await withTransaction(pool, async (client) => {
-        const resolved = await readSempRefContext(
-          client,
-          ref,
-          agentProjectItemId === undefined ? undefined : { agentProjectItemId },
-        );
-        const primary = roots && resolved?.blob ? await primaryRootForBlob(client, resolved.blob.id) : null;
-        return { resolved, primary };
-      });
+      const observed = await withTransaction(
+        pool,
+        async (client) => {
+          const resolved = await readSempRefContext(
+            client,
+            ref,
+            agentProjectItemId === undefined ? undefined : { agentProjectItemId },
+            options,
+          );
+          const primary = roots && resolved?.blob ? await primaryRootForBlob(client, resolved.blob.id) : null;
+          return { resolved, primary };
+        },
+        // A night is resolved from several rows of three databases, which must describe one state.
+        ref.kind === "sleepNight" ? { isolation: "repeatable_read" } : {},
+      );
       signal?.throwIfAborted();
       const { resolved, primary } = observed;
       if (!resolved) {
@@ -172,7 +185,12 @@ export async function expandSempRefs(
     } catch (error) {
       if (error instanceof BlobReadCleanupError) throw error;
       signal?.throwIfAborted();
-      sections.push(`${ref.kind}: unavailable.`);
+      // Only a sleep night is refused by an access check; the refusal is rendered as the state of the ref and does not fail the turn.
+      sections.push(
+        ref.kind === "sleepNight" && error instanceof ForbiddenError
+          ? `${ref.kind}: unavailable (no access).`
+          : `${ref.kind}: unavailable.`,
+      );
     }
     context.push({ ...ref, label });
   }

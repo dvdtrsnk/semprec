@@ -238,8 +238,11 @@ describe("runAgentSession", () => {
       const durableForRun = () =>
         notifications
           .filter((n) => n.channel === "semprec_events")
-          .map((n) => JSON.parse(n.payload ?? "{}") as { tenantId: string; message: { agentRunId?: string } })
-          .filter((envelope) => envelope.message.agentRunId === run.id);
+          .map(
+            (n) =>
+              JSON.parse(n.payload ?? "{}") as { tenantId: string; message: { type?: string; agentRunId?: string } },
+          )
+          .filter((envelope) => envelope.message.type === "agent_run_event" && envelope.message.agentRunId === run.id);
       const deltasForRun = () =>
         notifications
           .filter((n) => n.channel === "semprec_agent_stream")

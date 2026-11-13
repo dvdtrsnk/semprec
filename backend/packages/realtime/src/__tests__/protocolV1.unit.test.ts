@@ -179,6 +179,59 @@ describe("parseRealtimeMessage (issue #163)", () => {
     ])
       expect(parseRealtimeMessage({ ...valid, ...malformed })).toBeNull();
   });
+  it("validates an agentRuns invalidation with a project, and with a null project (issue #1863)", () => {
+    const valid = {
+      type: "invalidation",
+      scope: "agentRuns",
+      projectItemId: DOC_ID,
+      agentRunId: RUN_ID,
+      userId: DOC_ID,
+    };
+    expect(parseRealtimeMessage(valid)).toEqual(valid);
+    expect(parseRealtimeMessage({ ...valid, projectItemId: null })).toEqual({ ...valid, projectItemId: null });
+    // The user is optional in the catalog; the sync server is what refuses to deliver without one.
+    const { userId: _userId, ...withoutUser } = valid;
+    expect(parseRealtimeMessage(withoutUser)).toEqual(withoutUser);
+  });
+  it("drops an agentRuns invalidation with a malformed run, project or user id (issue #1863)", () => {
+    const valid = { type: "invalidation", scope: "agentRuns", projectItemId: DOC_ID, agentRunId: RUN_ID };
+    for (const malformed of [
+      { agentRunId: "not-a-uuid" },
+      { agentRunId: "" },
+      { agentRunId: undefined },
+      { agentRunId: null },
+      { agentRunId: 7 },
+      { projectItemId: "not-a-uuid" },
+      { projectItemId: undefined },
+      { projectItemId: 7 },
+      { userId: "not-a-uuid" },
+      { userId: 7 },
+    ])
+      expect(parseRealtimeMessage({ ...valid, ...malformed })).toBeNull();
+  });
+  it("validates a projectAgent invalidation and keeps only the project id (issue #1866)", () => {
+    const valid = { type: "invalidation", scope: "projectAgent", projectItemId: DOC_ID };
+    expect(parseRealtimeMessage(valid)).toEqual(valid);
+    // The scope is tenant-wide: a user the message carries is not kept.
+    expect(parseRealtimeMessage({ ...valid, userId: RUN_ID })).toEqual(valid);
+  });
+  it("drops a projectAgent invalidation whose project id is not a UUID (issue #1866)", () => {
+    const valid = { type: "invalidation", scope: "projectAgent", projectItemId: DOC_ID };
+    for (const malformed of [
+      { projectItemId: "not-a-uuid" },
+      { projectItemId: "" },
+      { projectItemId: undefined },
+      { projectItemId: null },
+      { projectItemId: 7 },
+    ])
+      expect(parseRealtimeMessage({ ...valid, ...malformed })).toBeNull();
+  });
+  it("validates a sempStatus invalidation and keeps nothing but its scope (issue #1868)", () => {
+    const valid = { type: "invalidation", scope: "sempStatus" };
+    expect(parseRealtimeMessage(valid)).toEqual(valid);
+    // Whatever else a message carries (a problem's text, a user) is not kept.
+    expect(parseRealtimeMessage({ ...valid, userId: RUN_ID, title: "private problem text" })).toEqual(valid);
+  });
   it("validates a mailThread invalidation (issue #1816)", () => {
     const valid = { type: "invalidation", scope: "mailThread", threadId: DOC_ID, userId: RUN_ID };
     expect(parseRealtimeMessage(valid)).toEqual(valid);

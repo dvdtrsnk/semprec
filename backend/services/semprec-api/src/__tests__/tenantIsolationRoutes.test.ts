@@ -29,6 +29,7 @@ import {
   resetDatabase,
   setTenantAiBudget,
   storeCredential,
+  stubDnsLookup,
   type GmailMailClient,
 } from "@semprec/data/testSupport";
 import {
@@ -57,6 +58,7 @@ import {
   TRANSCRIPT_SEGMENTS_COMPUTED_KEY,
   TRANSCRIPTION_OWNER_PROCESS,
   getOrCreateJournalItem,
+  ensureJournalPeriodDoc,
   hashPassword,
   handleObservabilityCheckSystemTask,
   handleAgentRunEventsRetentionTask,
@@ -363,11 +365,16 @@ function expectNoneOf(text: string, ids: readonly string[], what: string): void 
  * Expects a successful answer that contains none of A's ids and, so that an empty answer cannot
  * pass for the wrong reason, every one of `ownIds` (B's own rows the request must return).
  */
-async function expectExcludesA(caller: Caller, request: Request, ownIds: readonly string[] = []): Promise<Answer> {
+async function expectExcludesA(
+  caller: Caller,
+  request: Request,
+  ownIds: readonly string[] = [],
+  moreIdsOfA: readonly string[] = [],
+): Promise<Answer> {
   const answer = await send(caller, request);
   const what = `${request.method} ${request.path}`;
   expect(answer.status, `${what}: ${answer.text}`).toBeLessThan(300);
-  expectNoneOf(answer.text, a.ids, what);
+  expectNoneOf(answer.text, [...a.ids, ...moreIdsOfA], what);
   expect(
     ownIds.filter((id) => !answer.text.includes(id)),
     `${what} is missing B's own rows`,
@@ -1449,6 +1456,50 @@ async function actionItemRows(
       [ACTION_ITEM_TASK_NAME],
     );
     return { states: states.rows, tasks: tasks.rows.map((row) => row.id) };
+  });
+}
+
+/**
+ * A Books item of `tenant` made through the API, with its metadata job queued by the refresh route (issue gh-1812).
+ * `runCoverCandidateJobs` runs the job, which stores one candidate whose image URL names the item.
+ */
+async function seedCoverCandidateItem(tenant: TenantFixture): Promise<{ itemId: string; imageUrl: string }> {
+  const created = await sendOk(tenant.member, {
+    method: "POST",
+    path: `/api/databases/${await databaseIdFor(tenant.tenantId, "books")}/items`,
+    body: { properties: { name: "Candidate probe" } },
+  });
+  const itemId = readString(created, "id");
+  await sendOk(tenant.member, { method: "POST", path: `/api/items/${itemId}/cover-candidates/refresh`, body: {} });
+  return { itemId, imageUrl: `https://covers.example.test/${itemId}.jpg` };
+}
+
+/** Runs the queued library metadata jobs with a fetcher that finds every item and offers one candidate named by its id. */
+async function runCoverCandidateJobs(): Promise<void> {
+  const tasks = createCoreTaskList(pool, createActionRegistry(), async (item) => ({
+    status: "found",
+    source: "openLibrary",
+    candidates: [{ title: `Candidate of ${item.id}`, coverUrl: `https://covers.example.test/${item.id}.jpg` }],
+  }));
+  const task = tasks[CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS];
+  if (!task) throw new Error("Missing library metadata task");
+  await runOnce({ pgPool: pool, taskList: { [CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS]: task } });
+}
+
+/** The automation status and stored candidate image URLs of an item, read in its tenant. */
+async function coverCandidateState(
+  tenant: TenantFixture,
+  itemId: string,
+): Promise<{ status: string; imageUrls: string[] }> {
+  return inTenantTransaction(tenant.tenantId, async (client) => {
+    const status = await client.query<{ status: string }>("SELECT status FROM item_automation WHERE item_id = $1", [
+      itemId,
+    ]);
+    const urls = await client.query<{ image_url: string }>(
+      "SELECT image_url FROM library_cover_candidates WHERE item_id = $1 ORDER BY idx",
+      [itemId],
+    );
+    return { status: status.rows[0]?.status ?? "none", imageUrls: urls.rows.map((row) => row.image_url) };
   });
 }
 
@@ -3053,6 +3104,77 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const answer = await expectForeignLikeRandom(b.member, [foreign.itemId], ([id]) => retry(id!));
     expect(answer.status).toBe(404);
     expect(await stateOf(a, foreign.itemId)).toEqual(before);
+  },
+  // Each tenant gets a Books item whose metadata job has run once and stored one cover candidate, seeded here and
+  // used by no other case (issue gh-1812): the job is the only writer of the stored set.
+  "library cover candidates list": async () => {
+    const [own, foreign] = [await seedCoverCandidateItem(b), await seedCoverCandidateItem(a)];
+    await runCoverCandidateJobs();
+    const listOf = (id: string): Request => ({ method: "GET", path: `/api/items/${id}/cover-candidates` });
+    // B lists its own candidate, so the 404 B gets for A's item below is a refusal and not an empty fixture.
+    const listed = await expectExcludesA(b.member, listOf(own.itemId), [own.imageUrl]);
+    expectNoneOf(listed.text, [foreign.itemId, foreign.imageUrl], "B's cover candidates");
+    expect(await send(a.member, listOf(foreign.itemId))).toMatchObject({ status: 200 });
+    const answer = await expectForeignLikeRandom(b.member, [foreign.itemId], ([id]) => listOf(id!));
+    expect(answer.status).toBe(404);
+    const invalid = await send(b.member, listOf("not-a-uuid"));
+    expect(invalid.status).toBe(400);
+    expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
+  },
+  "library cover candidates refresh": async () => {
+    const [own, foreign] = [await seedCoverCandidateItem(b), await seedCoverCandidateItem(a)];
+    await runCoverCandidateJobs();
+    const refresh = (id: string): Request => ({
+      method: "POST",
+      path: `/api/items/${id}/cover-candidates/refresh`,
+      body: {},
+    });
+    const before = await coverCandidateState(a, foreign.itemId);
+    expect(before).toEqual({ status: "done", imageUrls: [foreign.imageUrl] });
+    // B refreshes its own item, so the 404 B gets for A's item below is a refusal and not a missing route.
+    expect((await send(b.member, refresh(own.itemId))).status).toBe(202);
+    expect(await coverCandidateState(b, own.itemId)).toEqual({ status: "pending", imageUrls: [own.imageUrl] });
+    const answer = await expectForeignLikeRandom(b.member, [foreign.itemId], ([id]) => refresh(id!));
+    expect(answer.status).toBe(404);
+    expect(await coverCandidateState(a, foreign.itemId)).toEqual(before);
+    const invalid = await send(b.member, refresh("not-a-uuid"));
+    expect(invalid.status).toBe(400);
+    expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
+  },
+  "library cover candidate select": async () => {
+    const [own, foreign] = [await seedCoverCandidateItem(b), await seedCoverCandidateItem(a)];
+    await runCoverCandidateJobs();
+    const selectOf = (id: string, index = 0): Request => ({
+      method: "POST",
+      path: `/api/items/${id}/cover-candidates/${index}/select`,
+      body: {},
+    });
+    const coverOf = async (tenant: TenantFixture, itemId: string): Promise<unknown> => {
+      const item = await sendOk(tenant.member, { method: "GET", path: `/api/items/${itemId}` });
+      return z.object({ properties: z.record(z.string(), z.unknown()) }).parse(JSON.parse(item)).properties
+        .coverOverride;
+    };
+    // The candidate host resolves to a private address, so a request that reaches the download is refused with a
+    // 400 on `index`, which shows the route is mounted and checked the address; no image is fetched or stored.
+    const dns = stubDnsLookup({ "covers.example.test": ["10.0.0.1"] });
+    try {
+      const refused = await send(b.member, selectOf(own.itemId));
+      expect(refused.status).toBe(400);
+      expect(readString(refused.text, "error", "code")).toBe("validation_failed");
+      expect(dns.calls).toHaveLength(1);
+      // A position with no candidate is a 404 before any download.
+      expect((await send(b.member, selectOf(own.itemId, 2))).status).toBe(404);
+      const answer = await expectForeignLikeRandom(b.member, [foreign.itemId], ([id]) => selectOf(id!));
+      expect(answer.status).toBe(404);
+      expect(dns.calls).toHaveLength(1);
+      const invalid = await send(b.member, selectOf("not-a-uuid"));
+      expect(invalid.status).toBe(400);
+      expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
+    } finally {
+      dns.restore();
+    }
+    expect(await coverOf(a, foreign.itemId)).toBeUndefined();
+    expect(await coverOf(b, own.itemId)).toBeUndefined();
   },
   "inbox types": async () => {
     await expectExcludesA(b.member, { method: "GET", path: "/api/inbox-types" });
@@ -4735,11 +4857,23 @@ interface McpProbe {
     foreign: readonly string[],
     args: (values: readonly string[]) => Record<string, unknown>,
   ): Promise<void>;
-  /** `tools/call` succeeds, returns none of A's ids and returns every one of `ownIds`. */
-  excludesA(args: Record<string, unknown>, ownIds: readonly string[]): Promise<void>;
+  /**
+   * `tools/call` succeeds, returns none of A's ids (nor of `moreIdsOfA`, rows the case seeded for A itself) and
+   * returns every one of `ownIds`.
+   */
+  excludesA(args: Record<string, unknown>, ownIds: readonly string[], moreIdsOfA?: readonly string[]): Promise<void>;
+  /**
+   * `tools/call` answers 200 without any id of A (nor of `moreIdsOfA`, rows the case seeded for A itself), whether the
+   * call ran or was held for approval, which a run credential is for an operation that needs it. Returns the answer's
+   * text so the case can tell the two apart; an error in it is not a failure here.
+   */
+  touchesNoneOfA(args: Record<string, unknown>, moreIdsOfA: readonly string[]): Promise<string>;
 }
 
 type McpCase = (probe: McpProbe) => Promise<void>;
+
+/** How many days the `page.mergeJournalDuplicates` isolation case has used, one per caller. */
+let mergedJournalDays = 0;
 
 const MCP_CASES = {
   "database.list": (p) => p.excludesA({ limit: 200 }, [b.databaseId, b.targetDatabaseId]),
@@ -4943,7 +5077,61 @@ const MCP_CASES = {
     await p.foreignLikeRandom([a.itemId], ([itemId]) => ({ itemId, placement: "end", markdown: "Foreign insert" }));
     await p.excludesA({ itemId: b.itemId, placement: "end", markdown: "Own insert" }, []);
   },
-  // REST-only (issue #1765): MCP answers A's item as an unknown tool, exactly as it answers a random id, and writes nothing.
+  "page.ensureJournalPeriod": async (p) => {
+    // Both tenants have an entry for the day, so the call names no id and resolves the period in B's own Journal:
+    // B must get B's item and document and none of A's.
+    const ensureDay = (tenant: TenantFixture) =>
+      inTenantTransaction(tenant.tenantId, (client) => ensureJournalPeriodDoc(client, "day", "2026-10-16"));
+    const ownA = await ensureDay(a);
+    const ownB = await ensureDay(b);
+    await p.excludesA({ type: "day", date: "2026-10-16" }, [ownB.itemId, ownB.docId], [ownA.itemId, ownA.docId]);
+  },
+  "page.mergeJournalDuplicates": async (p) => {
+    // The call names a period and no id, so it resolves in the caller's own Journal. Both tenants hold two live entries of
+    // that day; every call gets a day of its own, because the caller that merges leaves its period without a duplicate.
+    const period = `2026-12-${String(10 + ++mergedJournalDays)}`;
+    const seedEntries = (tenant: TenantFixture) =>
+      inTenantTransaction(tenant.tenantId, async (client) => {
+        const journal = await getDatabaseByModuleId(client, "journal");
+        if (!journal) throw new Error("Journal database is not seeded");
+        const entries: string[] = [];
+        for (let n = 0; n < 2; n += 1) {
+          // Two live entries of one period are a state the lazy creation never produces, so the fixture creates them directly.
+          const entry = await createItemWithClient(
+            client,
+            { databaseId: journal.id, properties: { name: `\u{1F4D3} ${period}`, type: "day", period } },
+            { allowedSystemKeys: ["name", "type", "period"] },
+          );
+          entries.push(entry.id);
+        }
+        return entries;
+      });
+    const liveOf = (tenant: TenantFixture, ids: readonly string[]) =>
+      inTenantTransaction(tenant.tenantId, async (client) => {
+        const { rows } = await client.query<{ id: string }>(
+          "SELECT id FROM items WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL ORDER BY id",
+          [ids],
+        );
+        return rows.map((row) => row.id);
+      });
+    const ownA = await seedEntries(a);
+    const ownB = await seedEntries(b);
+
+    const answer = await p.touchesNoneOfA({ type: "day", period }, ownA);
+
+    // A's two entries are live whatever B's caller did.
+    expect(await liveOf(a, ownA)).toEqual([...ownA].sort());
+    const liveB = await liveOf(b, ownB);
+    if (answer.includes('"error"')) {
+      // A run credential is held for approval, and nothing is merged until the user decides.
+      expect(liveB).toEqual([...ownB].sort());
+    } else {
+      // A session merges B's pair and names B's two entries; one of them is in B's Trash.
+      for (const id of ownB) expect(answer).toContain(id);
+      expect(liveB).toHaveLength(1);
+    }
+  },
+  // The probe's version token never matches: MCP answers A's item exactly as it answers a random id, and writes nothing.
   "page.replace": async (p) => {
     await p.foreignLikeRandom([a.itemId], ([itemId]) => ({
       itemId,
@@ -4985,8 +5173,15 @@ function mcpProbe(caller: Caller, operation: GenericOperationName): McpProbe {
       const answer = await expectForeignLikeRandom(caller, foreign, (values) => mcpCall(operation, args(values)));
       expect(answer.status).toBe(200);
     },
-    async excludesA(args, ownIds) {
-      const answer = await expectExcludesA(caller, mcpCall(operation, args), ownIds);
+    async touchesNoneOfA(args, moreIdsOfA) {
+      const request = mcpCall(operation, args);
+      const answer = await send(caller, request);
+      expect(answer.status).toBe(200);
+      expectNoneOf(answer.text, [...a.ids, ...moreIdsOfA], `${request.method} ${request.path}`);
+      return answer.text;
+    },
+    async excludesA(args, ownIds, moreIdsOfA) {
+      const answer = await expectExcludesA(caller, mcpCall(operation, args), ownIds, moreIdsOfA);
       expect(answer.status).toBe(200);
       // A list or query that errors would contain no ids trivially.
       expect(answer.text).not.toContain('"error"');

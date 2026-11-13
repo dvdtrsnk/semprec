@@ -23,6 +23,12 @@ const paramsByKey: Record<string, string[]> = {
   "approval.viewDelete": ["viewName", "databaseName"],
   "approval.relationDelete": ["fromItemName", "fromDatabaseKey", "toItemName", "toDatabaseKey"],
   "approval.pageRestore": ["itemName", "databaseKey", "databaseName"],
+  "approval.pageReplace": ["itemName", "databaseKey", "databaseName"],
+  "approval.journalMerge.year": ["period", "survivorName", "mergedName"],
+  "approval.journalMerge.quarter": ["period", "survivorName", "mergedName"],
+  "approval.journalMerge.month": ["period", "survivorName", "mergedName"],
+  "approval.journalMerge.week": ["period", "survivorName", "mergedName"],
+  "approval.journalMerge.day": ["period", "survivorName", "mergedName"],
   "approval.mcpInvoke": ["serverName", "toolName"],
   "approval.moduleTool": ["toolName"],
 };
@@ -130,5 +136,67 @@ describe("approval notification body", () => {
       bodySuffixKey: "notification.body.canUndo",
     });
     expect(JSON.stringify(body)).not.toContain("private value");
+  });
+  it("renders a Journal merge from the period and the two titles only, and promises no app undo (issue #2017)", () => {
+    const params = {
+      periodType: "day",
+      period: "2026-10-16",
+      survivorName: "Entry first",
+      mergedName: "Entry second",
+    };
+    const body = approvalNotificationBody({
+      riskClass: "destructive",
+      description: { key: "approval.journalMerge", params },
+      payload: {
+        operationName: "page.mergeJournalDuplicates",
+        canonicalInput: { type: "day", period: "2026-10-16", secret: "private value" },
+        actor: { runId: "run", agentProjectItemId: "project", userId: "user" },
+        resourceSnapshot: { kind: "journal_merge", resourceId: "day:2026-10-16", sha256: null },
+      },
+    });
+    expect(body).toEqual({
+      bodyKey: "approval.journalMerge.day",
+      bodyParams: params,
+      bodySuffixKey: "notification.body.cannotUndo",
+    });
+    expect(JSON.stringify(body)).not.toContain("private value");
+  });
+  it.each([
+    ["year", "2026", { en: "for the year 2026", cs: "za rok 2026" }],
+    ["quarter", "2026-Q4", { en: "for the quarter 2026-Q4", cs: "za čtvrtletí 2026-Q4" }],
+    ["month", "2026-10", { en: "for the month 2026-10", cs: "za měsíc 2026-10" }],
+    ["week", "2026-W42", { en: "for the week 2026-W42", cs: "za týden 2026-W42" }],
+    ["day", "2026-10-16", { en: "for the day 2026-10-16", cs: "za den 2026-10-16" }],
+  ] as const)(
+    "names a %s Journal merge with a localised period word and never the canonical type key (issue #2017)",
+    (periodType, period, words) => {
+      const { bodyKey, bodyParams } = approvalNotificationBody({
+        ...mcp,
+        riskClass: "destructive",
+        description: {
+          key: "approval.journalMerge",
+          params: { periodType, period, survivorName: "First", mergedName: "Second" },
+        },
+      });
+      expect(bodyKey).toBe(`approval.journalMerge.${periodType}`);
+      // The stored params stay canonical; only the catalog entry turns the type into a word.
+      expect(bodyParams).toMatchObject({ periodType, period });
+      for (const locale of ["en", "cs"] as const) {
+        const rendered = catalog(locale)[bodyKey!]!.replace(/\{(\w+)\}/g, (_, name: string) =>
+          String(bodyParams![name]),
+        );
+        expect(rendered).toContain(words[locale]);
+        // The English word is the type key only by coincidence; the Czech sentence must not carry it.
+        if (locale === "cs") expect(rendered).not.toContain(`${periodType} ${period}`);
+      }
+    },
+  );
+  it("refuses a Journal merge description whose period type is not canonical", () => {
+    expect(() =>
+      approvalNotificationBody({
+        ...mcp,
+        description: { key: "approval.journalMerge", params: { periodType: "decade", period: "2020" } },
+      }),
+    ).toThrow(/unknown Journal period type/);
   });
 });

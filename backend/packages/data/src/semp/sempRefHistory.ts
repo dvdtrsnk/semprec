@@ -89,6 +89,9 @@ export async function resolveSempHistoryContexts(client: PoolClient, contexts: r
           ? { label: typeof row.name === "string" ? row.name : null, databaseKey: "tasks", state: "active" }
           : PURGED,
       );
+    } else if (kind === "sleepNight") {
+      // A night is virtual: no row can be purged, and its label is the client's to render from the night.
+      values = entries.map(() => ({ label: null, databaseKey: null, state: "active" }));
     } else if (kind === "mailAttachment") {
       const ids = entries.map(({ ref }) => {
         if (ref.kind !== "mailAttachment") throw new Error("Invalid attachment reference group");

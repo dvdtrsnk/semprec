@@ -51,6 +51,11 @@ const EXPECTED_ROWS: Record<
   "relation.delete": { schema: schemas.RelationDeleteInputSchema, method: "deleteRelation" },
   "relation.list": { schema: schemas.RelationListInputSchema, method: "listRelations" },
   "page.ensure": { schema: schemas.PageEnsureInputSchema, method: "ensurePage" },
+  "page.ensureJournalPeriod": { schema: schemas.PageEnsureJournalPeriodInputSchema, method: "ensureJournalPeriod" },
+  "page.mergeJournalDuplicates": {
+    schema: schemas.PageMergeJournalDuplicatesInputSchema,
+    method: "mergeJournalDuplicates",
+  },
   "page.createSubpage": { schema: schemas.PageCreateSubpageInputSchema, method: "createSubpage" },
   "page.duplicate": { schema: schemas.PageDuplicateInputSchema, method: "duplicatePage" },
   "page.rename": { schema: schemas.PageRenameInputSchema, method: "renamePage" },
@@ -260,26 +265,38 @@ const EXPECTED_METADATA: Record<
     reversible: true,
   },
   "page.ensure": {
-    requiresCapability: "core.page.write",
+    requiresCapability: "core.item.write",
     requiresApproval: false,
     riskClass: "write",
     reversible: true,
   },
-  "page.get": { requiresCapability: "core.page.read", requiresApproval: false, riskClass: "read", reversible: true },
+  "page.ensureJournalPeriod": {
+    requiresCapability: "core.item.write",
+    requiresApproval: false,
+    riskClass: "write",
+    reversible: true,
+  },
+  "page.mergeJournalDuplicates": {
+    requiresCapability: "core.item.write",
+    requiresApproval: true,
+    riskClass: "destructive",
+    reversible: false,
+  },
+  "page.get": { requiresCapability: "core.item.read", requiresApproval: false, riskClass: "read", reversible: true },
   "page.changes": {
-    requiresCapability: "core.page.read",
+    requiresCapability: "core.item.read",
     requiresApproval: false,
     riskClass: "read",
     reversible: true,
   },
   "page.insert": {
-    requiresCapability: "core.page.write",
+    requiresCapability: "core.item.write",
     requiresApproval: false,
     riskClass: "write",
     reversible: true,
   },
   "page.replace": {
-    requiresCapability: "core.page.write",
+    requiresCapability: "core.item.write",
     requiresApproval: true,
     riskClass: "destructive",
     reversible: true,
@@ -303,7 +320,7 @@ const EXPECTED_METADATA: Record<
     reversible: true,
   },
   "page.restoreVersion": {
-    requiresCapability: "core.page.write",
+    requiresCapability: "core.item.write",
     requiresApproval: true,
     riskClass: "destructive",
     reversible: true,
@@ -318,15 +335,15 @@ const EXPECTED_METADATA: Record<
 };
 
 describe("GENERIC_OPERATION_NAMES", () => {
-  it("has exactly 46 entries with no duplicates", () => {
-    expect(GENERIC_OPERATION_NAMES).toHaveLength(46);
-    expect(new Set(GENERIC_OPERATION_NAMES).size).toBe(46);
+  it("has exactly 48 entries with no duplicates", () => {
+    expect(GENERIC_OPERATION_NAMES).toHaveLength(48);
+    expect(new Set(GENERIC_OPERATION_NAMES).size).toBe(48);
   });
 });
 
 describe("REST_ONLY_OPERATION_NAMES", () => {
-  it("names exactly the two select-option operations and the page replace", () => {
-    expect([...REST_ONLY_OPERATION_NAMES]).toEqual(["property.option.add", "property.option.update", "page.replace"]);
+  it("names exactly the two select-option operations", () => {
+    expect([...REST_ONLY_OPERATION_NAMES]).toEqual(["property.option.add", "property.option.update"]);
   });
 });
 
@@ -408,8 +425,62 @@ describe("select-option input schemas (issue #1699)", () => {
   });
 });
 
+describe("page.ensureJournalPeriod input (issue #1861)", () => {
+  const schema = schemas.PageEnsureJournalPeriodInputSchema;
+
+  it("accepts a type with a calendar date or with a period key, and nothing else", () => {
+    expect(schema.safeParse({ type: "week", date: "2026-10-16" }).success).toBe(true);
+    expect(schema.safeParse({ type: "week", period: "2026-W42" }).success).toBe(true);
+    for (const type of ["year", "quarter", "month", "week", "day"]) {
+      expect(schema.safeParse({ type, date: "2026-10-16" }).success, type).toBe(true);
+    }
+  });
+
+  it.each([
+    ["neither a date nor a period", { type: "day" }],
+    ["both a date and a period", { type: "day", date: "2026-10-16", period: "2026-10-16" }],
+    ["an unknown type", { type: "decade", date: "2026-10-16" }],
+    ["no type", { date: "2026-10-16" }],
+    ["a date that is not a calendar day", { type: "day", date: "2026-02-30" }],
+    ["a date with a time", { type: "day", date: "2026-10-16T10:00:00Z" }],
+    ["an empty period", { type: "day", period: "" }],
+    ["an unknown key", { type: "day", date: "2026-10-16", itemId: "x" }],
+  ])("rejects %s", (_name, input) => {
+    expect(schema.safeParse(input).success).toBe(false);
+  });
+
+  it("names the date field when neither or both are given", () => {
+    const parsed = schema.safeParse({ type: "day" });
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues[0]?.path.join(".")).toBe("date");
+  });
+});
+
+describe("page.mergeJournalDuplicates input (issue #2017)", () => {
+  const schema = schemas.PageMergeJournalDuplicatesInputSchema;
+
+  it("accepts every Journal period type with a period key, which the operation itself validates", () => {
+    for (const type of ["year", "quarter", "month", "week", "day"]) {
+      expect(schema.safeParse({ type, period: "2026-10-16" }).success, type).toBe(true);
+    }
+  });
+
+  it.each([
+    ["an unknown type", { type: "decade", period: "2026" }, "type"],
+    ["no type", { period: "2026-10-16" }, "type"],
+    ["no period", { type: "day" }, "period"],
+    ["an empty period", { type: "day", period: "" }, "period"],
+    ["a date instead of a period", { type: "day", date: "2026-10-16" }, "period"],
+    ["an unknown key", { type: "day", period: "2026-10-16", itemId: "x" }, ""],
+  ])("rejects %s", (_name, input, field) => {
+    const parsed = schema.safeParse(input);
+    expect(parsed.success).toBe(false);
+    if (field !== "") expect(parsed.error?.issues.map((issue) => issue.path.join("."))).toContain(field);
+  });
+});
+
 describe("GENERIC_OPERATION_BINDINGS", () => {
-  it("has exactly the 46 catalog rows and no others", () => {
+  it("has exactly the 48 catalog rows and no others", () => {
     expect(Object.keys(GENERIC_OPERATION_BINDINGS).sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
   });
 

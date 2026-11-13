@@ -72,6 +72,15 @@ const taskTraceRefSchema = z.strictObject({
   traceDay: calendarDay,
 });
 
+/**
+ * One night of sleep, named by the calendar day of its evening: the plan of the wake day merged with an optional
+ * exception is a computed value, not an item, so the ref carries no item id. It is virtual: no row has to exist for it.
+ */
+const sleepNightRefSchema = z.strictObject({
+  kind: z.literal("sleepNight"),
+  night: calendarDay,
+});
+
 /** Closed union of the objects a message sent to Semp can reference. */
 export const sempMessageRefSchema = z.discriminatedUnion("kind", [
   itemRefSchema,
@@ -82,6 +91,7 @@ export const sempMessageRefSchema = z.discriminatedUnion("kind", [
   approvalRequestRefSchema,
   taskOccurrenceRefSchema,
   taskTraceRefSchema,
+  sleepNightRefSchema,
 ]);
 
 export type SempMessageRef = z.infer<typeof sempMessageRefSchema>;
@@ -96,6 +106,7 @@ export const labeledSempMessageRefSchema = z.discriminatedUnion("kind", [
   approvalRequestRefSchema.safeExtend({ label: z.string() }),
   taskOccurrenceRefSchema.safeExtend({ label: z.string() }),
   taskTraceRefSchema.safeExtend({ label: z.string() }),
+  sleepNightRefSchema.safeExtend({ label: z.string() }),
 ]);
 
 export type LabeledSempMessageRef = z.infer<typeof labeledSempMessageRefSchema>;
@@ -131,12 +142,13 @@ export const SEMP_MESSAGE_REF_KINDS = [
   "approvalRequest",
   "taskOccurrence",
   "taskTrace",
+  "sleepNight",
 ] as const satisfies readonly SempMessageRef["kind"][];
 
 /**
  * Dedup identity of a ref: the kind plus its id fields, the block id for
- * blocks and the range for segments. `messageId` of an agent run ref is not
- * part of the identity.
+ * blocks, the range for segments and the night for a sleep night. `messageId`
+ * of an agent run ref is not part of the identity.
  */
 export function messageRefKey(ref: SempMessageRef): string {
   switch (ref.kind) {
@@ -156,5 +168,7 @@ export function messageRefKey(ref: SempMessageRef): string {
       return `taskOccurrence:${ref.seriesId}:${ref.occurrenceDate}`;
     case "taskTrace":
       return `taskTrace:${ref.itemId}:${ref.databaseId}:${ref.traceDay}`;
+    case "sleepNight":
+      return `sleepNight:${ref.night}`;
   }
 }

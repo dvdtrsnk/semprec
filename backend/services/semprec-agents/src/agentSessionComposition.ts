@@ -244,6 +244,7 @@ async function createGenericOperationTools(
           error: result.error,
           ...(result.approvalRequestId !== undefined ? { approvalRequestId: result.approvalRequestId } : {}),
           ...(result.changes !== undefined ? { changes: result.changes } : {}),
+          ...(result.sensitive === true ? { sensitive: true } : {}),
         },
       };
     },

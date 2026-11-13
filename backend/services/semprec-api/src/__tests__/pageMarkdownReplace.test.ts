@@ -649,15 +649,23 @@ describe("PUT /api/items/:id/page.md (issue #1765)", () => {
       expect((await put(undefined, hostA, "Anonymous", { etag: FILLER_ETAG })).status).toBe(401);
     });
 
-    it("refuses a run credential as an unknown operation until page operations are approval-gated, and writes nothing", async () => {
+    it("holds a run credential's replace for approval with a 403 approval_required, writes nothing, and answers a credential without core.item.write like an unknown operation (issue #1844)", async () => {
       const host = await harness.createHost(harness.tenantA);
       await insertMarkdown(host, "Unchanged");
       const before = { state: await stateOf(), page: await read(host) };
-      const token = await harness.mintRunCredential(harness.tenantA, ["core.page.write"]);
+      const token = await harness.mintRunCredential(harness.tenantA, ["core.item.write"]);
 
-      const answer = await put({ Authorization: `Bearer ${token}` }, host, "By the agent", { etag: before.page.etag });
+      const held = await put({ Authorization: `Bearer ${token}` }, host, "By the agent", { etag: before.page.etag });
 
-      expect(answer.status).toBe(404);
+      expect(held.status).toBe(403);
+      expect(parseError(held).code).toBe("approval_required");
+      expect({ state: await stateOf(), page: await read(host) }).toEqual(before);
+
+      const withheld = await harness.mintRunCredential(harness.tenantA, ["core.item.read"]);
+      const refused = await put({ Authorization: `Bearer ${withheld}` }, host, "By the agent", {
+        etag: before.page.etag,
+      });
+      expect(refused.status).toBe(404);
       expect({ state: await stateOf(), page: await read(host) }).toEqual(before);
     });
   });

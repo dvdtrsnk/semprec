@@ -122,3 +122,77 @@ describe("parseServerFrame approvalRequest invalidation (issue #1789)", () => {
     expect(parseServerFrame(JSON.stringify(frame))).toBeNull();
   });
 });
+
+describe("parseServerFrame agentRuns invalidation (issue #1863)", () => {
+  const agentRunId = "4c0e8a1b-6d52-4f93-a7b1-3e5d9c2f8a14";
+  const projectItemId = "8e3b5d27-1a94-4c06-b2f8-6a0d7e9c3b51";
+
+  it("parses a well-formed agentRuns invalidate frame and round-trips what the server sends", () => {
+    const frame = { type: "invalidate", scope: "agentRuns", projectItemId, agentRunId } as const;
+    expect(parseServerFrame(JSON.stringify(frame))).toEqual(frame);
+  });
+
+  it("parses a frame of a run without a project", () => {
+    const frame = { type: "invalidate", scope: "agentRuns", projectItemId: null, agentRunId } as const;
+    expect(parseServerFrame(JSON.stringify(frame))).toEqual(frame);
+  });
+
+  it("keeps only the two ids of the frame", () => {
+    expect(
+      parseServerFrame(
+        JSON.stringify({ type: "invalidate", scope: "agentRuns", projectItemId, agentRunId, task: "private" }),
+      ),
+    ).toEqual({ type: "invalidate", scope: "agentRuns", projectItemId, agentRunId });
+  });
+
+  it.each([
+    ["a missing run id", { type: "invalidate", scope: "agentRuns", projectItemId }],
+    ["a null run id", { type: "invalidate", scope: "agentRuns", projectItemId, agentRunId: null }],
+    ["a non-string run id", { type: "invalidate", scope: "agentRuns", projectItemId, agentRunId: 7 }],
+    ["a non-uuid run id", { type: "invalidate", scope: "agentRuns", projectItemId, agentRunId: "run-1" }],
+    ["a missing project id", { type: "invalidate", scope: "agentRuns", agentRunId }],
+    ["a non-string project id", { type: "invalidate", scope: "agentRuns", projectItemId: 7, agentRunId }],
+    ["a non-uuid project id", { type: "invalidate", scope: "agentRuns", projectItemId: "project-1", agentRunId }],
+  ])("ignores %s", (_label, frame) => {
+    expect(parseServerFrame(JSON.stringify(frame))).toBeNull();
+  });
+});
+
+describe("parseServerFrame projectAgent invalidation (issue #1866)", () => {
+  const projectItemId = "8e3b5d27-1a94-4c06-b2f8-6a0d7e9c3b51";
+
+  it("parses a well-formed projectAgent invalidate frame and round-trips what the server sends", () => {
+    const frame = { type: "invalidate", scope: "projectAgent", projectItemId } as const;
+    expect(parseServerFrame(JSON.stringify(frame))).toEqual(frame);
+  });
+
+  it("keeps only the project id of the frame", () => {
+    expect(
+      parseServerFrame(
+        JSON.stringify({ type: "invalidate", scope: "projectAgent", projectItemId, guidance: "private" }),
+      ),
+    ).toEqual({ type: "invalidate", scope: "projectAgent", projectItemId });
+  });
+
+  it.each([
+    ["a missing project id", { type: "invalidate", scope: "projectAgent" }],
+    ["a null project id", { type: "invalidate", scope: "projectAgent", projectItemId: null }],
+    ["a non-string project id", { type: "invalidate", scope: "projectAgent", projectItemId: 7 }],
+    ["a non-uuid project id", { type: "invalidate", scope: "projectAgent", projectItemId: "project-1" }],
+  ])("ignores %s", (_label, frame) => {
+    expect(parseServerFrame(JSON.stringify(frame))).toBeNull();
+  });
+});
+
+describe("parseServerFrame sempStatus invalidation (issue #1868)", () => {
+  it("parses a sempStatus invalidate frame and round-trips what the server sends", () => {
+    const frame = { type: "invalidate", scope: "sempStatus" } as const;
+    expect(parseServerFrame(JSON.stringify(frame))).toEqual(frame);
+  });
+
+  it("keeps nothing but the scope of the frame", () => {
+    expect(
+      parseServerFrame(JSON.stringify({ type: "invalidate", scope: "sempStatus", title: "private problem text" })),
+    ).toEqual({ type: "invalidate", scope: "sempStatus" });
+  });
+});

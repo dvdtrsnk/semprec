@@ -181,6 +181,9 @@ const ROUTE_HANDLER_FILES: Record<string, string> = {
   "transcript speaker assign": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
   "transcript speaker candidates": "packages/data/src/transcription/transcriptionRouteHandlers.ts",
   "library automation retry": "packages/data/src/library/libraryAutomationRouteHandlers.ts",
+  "library cover candidates list": "packages/data/src/library/libraryCoverCandidateRouteHandlers.ts",
+  "library cover candidates refresh": "packages/data/src/library/libraryCoverCandidateRouteHandlers.ts",
+  "library cover candidate select": "packages/data/src/library/libraryCoverCandidateRouteHandlers.ts",
   "sleep nights": "packages/data/src/sleep/sleepRouteHandlers.ts",
 };
 

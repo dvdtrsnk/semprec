@@ -5,7 +5,7 @@ import {
   extractResultSnapshot,
   pushRunStatus,
   runAgentSessionForRun,
-  runAgentTurn,
+  runAgentTurnWithStoredForm,
   type CreateAgentSession,
 } from "@semprec/agent-runtime";
 import {
@@ -163,9 +163,16 @@ export function createRunAgentForHeartbeats(
       await pushRunStatus(pool, run.id, "running");
       if (signal.aborted) throw new AgentRunCancelledError();
       const session = createAgentSession({ task: run.task, signal });
-      const last = await runAgentTurn(pool, run.id, session.messages(), undefined, signal);
+      // The job result becomes `agent_runs.result`: it comes from the stored form of the last message (issue #2001).
+      const { storedLastMessage } = await runAgentTurnWithStoredForm(
+        pool,
+        run.id,
+        session.messages(),
+        undefined,
+        signal,
+      );
       await pushRunStatus(pool, run.id, "done");
-      return { result: extractResultSnapshot(last) ?? undefined };
+      return { result: extractResultSnapshot(storedLastMessage) ?? undefined };
     } catch (err) {
       try {
         await pushRunStatus(pool, run.id, "error");

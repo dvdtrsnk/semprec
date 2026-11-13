@@ -8,6 +8,7 @@ import {
   type SessionAgentRunsFilter,
 } from "@semprec/data";
 import type { CompactionAdapter } from "./compaction.js";
+import { redactReplayedToolCalls } from "./sensitiveMessageRedaction.js";
 import type { AgentMessage, AgentMessageKind, ConversationEntry } from "./types.js";
 
 /**
@@ -129,7 +130,8 @@ function validateProtocolInvariants(entries: ConversationEntry[]): void {
  * A stored `'compaction'` event's payload *is* the continuation state as of that point —
  * encountering one resets the walk to it (rather than appending to it) so a restart replays the
  * same checkpoint instead of re-deriving, and potentially re-compacting, the full raw history all
- * over again.
+ * over again. Every consumer of the walk, a compaction included, gets the redacted form of the stored
+ * history (issue #2001: `redactReplayedToolCalls`), never the live session.
  */
 async function walkStoredEntries(
   pool: Pool,
@@ -164,7 +166,7 @@ async function walkStoredEntries(
     parentId = entry.id;
   }
 
-  return entries;
+  return redactReplayedToolCalls(entries);
 }
 
 export async function reconstructBoundedThreadHistory(

@@ -159,22 +159,32 @@ class FakeAudioGatewayClient implements AudioGatewayClient {
 }
 
 /**
- * A fake `AiGatewayClientPort` for steps 5 and 7, a deterministic transport, not a model: answers
- * every meeting-notes request with fixed notes carrying `actionItems`, every speaker-suggestion
- * request with `speakerMappings`, and counts calls.
+ * A fake `AiGatewayClientPort` for steps 5, 6 and 7, a deterministic transport, not a model: answers
+ * every meeting-notes request with fixed notes carrying `actionItems`, every Event-recommendation
+ * request with `eventRecommendation`, every speaker-suggestion request with `speakerMappings`, and
+ * counts calls.
  */
 class FakeSummaryClient implements AiGatewayClientPort {
   calls: AiGatewayCompletionInput[] = [];
   failure: Error | null = null;
   speakerMappings: Array<{ speaker: string; personId: string | null; reason: string }> = [];
   actionItems: MeetingNotes["actionItems"] = [];
+  /** The answer to the Event-recommendation call (issue #1848). */
+  eventRecommendation: { eventId: string | null; reason: string } = { eventId: null, reason: "Cannot tell." };
 
   async complete(input: AiGatewayCompletionInput): Promise<AiGatewayCompletionResult> {
     this.calls.push(input);
     if (this.failure) throw this.failure;
     if (input.operation === "transcript_speaker_suggestion")
       return { content: { mappings: this.speakerMappings }, usage: { inputTokens: 10, outputTokens: 5 } };
+    if (input.operation === "transcript_event_match")
+      return { content: this.eventRecommendation, usage: { inputTokens: 10, outputTokens: 5 } };
     return { content: { ...FAKE_NOTES, actionItems: this.actionItems }, usage: { inputTokens: 10, outputTokens: 5 } };
+  }
+
+  /** The Event-recommendation calls, the paid step 6 requests. */
+  eventMatchCalls(): AiGatewayCompletionInput[] {
+    return this.calls.filter((call) => call.operation === "transcript_event_match");
   }
 
   /** The meeting-notes calls, the paid step 5 requests. */
@@ -2643,6 +2653,357 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
     const match = await readMatch((await readTranscript(file.id)).id);
     expect(match.eventIds).toEqual([]);
     expect(match.cards).toEqual([{ id: expect.any(String), kind: "transcript" }]);
+  });
+
+  async function readEventRecommendationCheckpoint(fileId: string): Promise<unknown> {
+    const { rows } = await pool.query<{ checkpoint: unknown }>(
+      "SELECT computed -> 'eventRecommendation' AS checkpoint FROM items WHERE id = $1",
+      [fileId],
+    );
+    return rows[0]?.checkpoint;
+  }
+
+  /** The `properties` of every Event-role transcript card (issue #1848). */
+  async function readEventCards(): Promise<Array<Record<string, unknown>>> {
+    const { rows } = await pool.query<{ properties: Record<string, unknown> }>(
+      `SELECT i.properties FROM items i JOIN databases d ON d.id = i.database_id
+       WHERE d.owner_module_id = 'processingProposals' AND i.properties -> 'context' ->> 'role' = 'event'
+       ORDER BY i.id`,
+    );
+    return rows.map((row) => row.properties);
+  }
+
+  /** Two Events that overlap the recording (13:00 Prague time): a sprint planning of project Apollo with Alice, and a bare call. */
+  async function createAmbiguousEvents() {
+    const planningId = await createEvent("2024-03-01", { name: "Sprint planning", timeFrom: "12:30", timeTo: "13:30" });
+    const callId = await createEvent(
+      "2024-03-01",
+      { name: "Accountant call", timeFrom: "12:45", timeTo: "13:15" },
+      "standup",
+    );
+    await createParticipant(planningId, "Alice");
+    const projects = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "projects"));
+    const events = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "events"));
+    if (!projects || !events) throw new Error("Projects/Events databases were not seeded");
+    const project = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: projects.id, properties: { name: "Apollo" } }),
+    );
+    const projectProperty = await pool.query<{ id: string }>(
+      "SELECT id FROM properties WHERE database_id = $1 AND key = 'project'",
+      [events.id],
+    );
+    await inTenantZero(() =>
+      createChokePoint(pool).createRelation({
+        relationPropertyId: projectProperty.rows[0]?.id ?? "",
+        callerItemId: planningId,
+        targetItemId: project.id,
+      }),
+    );
+    return { planningId, callId, projectId: project.id };
+  }
+
+  it("asks the model which of two overlapping Events it was and proposes the recommended one on the card, writing no edge", async () => {
+    const { file } = await createSourceFile();
+    const { planningId, callId, projectId } = await createAmbiguousEvents();
+    summaryClient.eventRecommendation = { eventId: planningId, reason: "It is about the sprint." };
+    const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
+
+    await task({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+    const transcript = await readTranscript(file.id);
+    expect(transcript.properties.status).toBe("done");
+    expect(summaryClient.eventMatchCalls()).toHaveLength(1);
+    const [call] = summaryClient.eventMatchCalls();
+    expect(call).toMatchObject({ projectItemId: null, temperature: 0, operation: "transcript_event_match" });
+    expect(call?.system).toContain("(cs)");
+    const content = call?.messages[0]?.content;
+    expect(content).toContain("Title: Greeting");
+    // The tenant has no user, so the notes are rendered in the default locale `cs`.
+    expect(content).toContain("Summary: Mluvčí 1 greets Mluvčí 2.");
+    expect(content).toContain("Short summary: A greeting.");
+    expect(content).toContain(`- id: ${planningId}\n  name: Sprint planning`);
+    expect(content).toContain("project: Apollo");
+    expect(content).toContain("participants: Alice");
+    expect(content).toContain(`- id: ${callId}\n  name: Accountant call`);
+    expect(await readMatch(transcript.id)).toMatchObject({ eventIds: [] });
+    const cards = await readEventCards();
+    expect(cards).toHaveLength(1);
+    const proposal = { entityKind: "relation", target: planningId, properties: { propertyKey: "event" } };
+    expect(cards[0]).toMatchObject({
+      kind: "transcript",
+      status: "proposed",
+      proposal,
+      aiProposal: proposal,
+      context: {
+        role: "event",
+        candidates: [
+          expect.objectContaining({ id: planningId, name: "Sprint planning", projectId, projectName: "Apollo" }),
+          expect.objectContaining({ id: callId, name: "Accountant call", projectId: null, projectName: null }),
+        ],
+        reason: "It is about the sprint.",
+        recommendedEventId: planningId,
+        recording: { durationSeconds: expect.any(Number), speakerCount: 2, quote: null },
+      },
+    });
+    expect(await readEventRecommendationCheckpoint(file.id)).toEqual({
+      recommendedEventId: planningId,
+      reason: "It is about the sprint.",
+    });
+  });
+
+  it.each([
+    { why: "answers null", answer: () => ({ eventId: null, reason: "Cannot tell." }), reason: "Cannot tell." },
+    {
+      why: "answers an id that is not a candidate",
+      answer: () => ({ eventId: randomUUID(), reason: "It was the other one." }),
+      reason: null,
+    },
+  ])("keeps the create-Event proposal on the card when the model $why", async ({ answer, reason }) => {
+    const { file } = await createSourceFile();
+    await createAmbiguousEvents();
+    summaryClient.eventRecommendation = answer();
+
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+    expect(summaryClient.eventMatchCalls()).toHaveLength(1);
+    const cards = await readEventCards();
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({
+      status: "proposed",
+      proposal: { entityKind: "database", properties: { type: "meeting", date: "2024-03-01" } },
+      context: { role: "event", reason, recommendedEventId: null },
+    });
+    expect(await readMatch((await readTranscript(file.id)).id)).toMatchObject({ eventIds: [] });
+    expect(await readEventRecommendationCheckpoint(file.id)).toEqual({ recommendedEventId: null, reason });
+  });
+
+  it("fails the step when the recommendation call fails, writes nothing, and a retry asks again and finishes", async () => {
+    const { file } = await createSourceFile();
+    const { planningId } = await createAmbiguousEvents();
+    summaryClient.eventRecommendation = { eventId: planningId, reason: "Sprint." };
+    const failing: AiGatewayClientPort = {
+      complete: (input) =>
+        input.operation === "transcript_event_match"
+          ? Promise.reject(new Error("gateway refused"))
+          : summaryClient.complete(input),
+    };
+
+    await expect(
+      createTranscriptionTask(pool, blobStorage, gatewayClient, failing)({ fileItemId: file.id }, FIRST_ATTEMPT),
+    ).rejects.toMatchObject({ name: "TranscriptionQueueError", message: "Transcription task failed" });
+    expect((await readTranscript(file.id)).properties.status).toBe("processing");
+    expect(await readEventCards()).toEqual([]);
+    expect(await readEventRecommendationCheckpoint(file.id)).toBeNull();
+
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+    expect((await readTranscript(file.id)).properties.status).toBe("done");
+    expect(await readEventCards()).toHaveLength(1);
+    expect(summaryClient.eventMatchCalls()).toHaveLength(1);
+  });
+
+  it("fails the step on a malformed answer and writes nothing", async () => {
+    const { file } = await createSourceFile();
+    await createAmbiguousEvents();
+    const malformed: AiGatewayClientPort = {
+      complete: (input) =>
+        input.operation === "transcript_event_match"
+          ? Promise.resolve({ content: { eventId: 7 }, usage: { inputTokens: 1, outputTokens: 1 } })
+          : summaryClient.complete(input),
+    };
+
+    await expect(
+      createTranscriptionTask(pool, blobStorage, gatewayClient, malformed)({ fileItemId: file.id }, FIRST_ATTEMPT),
+    ).rejects.toMatchObject({ name: "TranscriptionQueueError" });
+
+    expect(await readEventCards()).toEqual([]);
+    expect(await readEventRecommendationCheckpoint(file.id)).toBeNull();
+  });
+
+  it("makes no second call and adds no second card when a run is retried after the model answered", async () => {
+    const { file } = await createSourceFile();
+    const { planningId } = await createAmbiguousEvents();
+    summaryClient.eventRecommendation = { eventId: planningId, reason: "Sprint." };
+    const controller = new AbortController();
+    /** Requests the shutdown while step 6's call is out: the step still commits, and the run stops before step 7. */
+    const interrupting: AiGatewayClientPort = {
+      complete: (input) => {
+        if (input.operation === "transcript_event_match") controller.abort();
+        return summaryClient.complete(input);
+      },
+    };
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      interrupting,
+    )({ fileItemId: file.id }, { ...FIRST_ATTEMPT, abortSignal: controller.signal });
+    expect((await readTranscript(file.id)).properties.status).toBe("processing");
+    const cardsBefore = await readEventCards();
+    expect(cardsBefore).toHaveLength(1);
+    expect(await readEventRecommendationCheckpoint(file.id)).toEqual({
+      recommendedEventId: planningId,
+      reason: "Sprint.",
+    });
+
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+    expect((await readTranscript(file.id)).properties.status).toBe("done");
+    expect(summaryClient.eventMatchCalls()).toHaveLength(1);
+    expect(await readEventCards()).toEqual(cardsBefore);
+  });
+
+  it("makes no second call when the checkpoint exists though the card has since been purged from the Trash", async () => {
+    const { file } = await createSourceFile();
+    const { planningId } = await createAmbiguousEvents();
+    summaryClient.eventRecommendation = { eventId: planningId, reason: "Sprint." };
+    const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
+    await task({ fileItemId: file.id }, FIRST_ATTEMPT);
+    const transcript = await readTranscript(file.id);
+    // The card leaves through the Trash and its purge, which frees its idempotency key; the transcript is unfinished again.
+    const { rows: cards } = await pool.query<{ id: string; database_id: string }>(
+      `SELECT i.id, i.database_id FROM items i JOIN databases d ON d.id = i.database_id
+       WHERE d.owner_module_id = 'processingProposals' AND i.properties -> 'context' ->> 'role' = 'event'`,
+    );
+    expect(cards).toHaveLength(1);
+    const chokePoint = createChokePoint(pool);
+    await inTenantZero(() => chokePoint.softDeleteItem(cards[0]?.database_id ?? "", cards[0]?.id ?? ""));
+    await inTenantZero(() => chokePoint.purgeExpiredTrashSubtree(cards[0]?.id ?? "", new Date(Date.now() + 60_000)));
+    await withTransaction(pool, async (client) => {
+      const transcripts = await getDatabaseByModuleId(client, "transcripts");
+      if (!transcripts) throw new Error("Transcripts database was not seeded");
+      await updateItemWithClient(
+        client,
+        { databaseId: transcripts.id, itemId: transcript.id, propertiesPatch: { status: "processing" } },
+        { allowedSystemKeys: ["status"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+      );
+    });
+    const checkpoint = await readEventRecommendationCheckpoint(file.id);
+    expect(checkpoint).toEqual({ recommendedEventId: planningId, reason: "Sprint." });
+
+    await task({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+    expect(summaryClient.eventMatchCalls()).toHaveLength(1);
+    expect(await readEventRecommendationCheckpoint(file.id)).toEqual(checkpoint);
+    expect(await readEventCards()).toEqual([
+      expect.objectContaining({ context: expect.objectContaining({ reason: null, recommendedEventId: null }) }),
+    ]);
+  });
+
+  it("makes no call for a finished transcript", async () => {
+    const { file } = await createSourceFile();
+    await createAmbiguousEvents();
+    const task = createTranscriptionTask(pool, blobStorage, gatewayClient, summaryClient);
+    await task({ fileItemId: file.id }, FIRST_ATTEMPT);
+    const cardsBefore = await readEventCards();
+
+    await task({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+    expect(summaryClient.eventMatchCalls()).toHaveLength(1);
+    expect(await readEventCards()).toEqual(cardsBefore);
+  });
+
+  it("writes no card and no checkpoint when the transcript is finished while the recommendation call is out", async () => {
+    const { file } = await createSourceFile();
+    await createAmbiguousEvents();
+    /** Finishes the transcript while this run's call is out, the way a concurrent run's finalize does. */
+    class FinishingSummaryClient extends FakeSummaryClient {
+      override async complete(input: AiGatewayCompletionInput): Promise<AiGatewayCompletionResult> {
+        if (input.operation === "transcript_event_match") {
+          const transcript = await readTranscript(file.id);
+          await withTransaction(pool, async (client) => {
+            const transcripts = await getDatabaseByModuleId(client, "transcripts");
+            if (!transcripts) throw new Error("Transcripts database was not seeded");
+            await updateItemWithClient(
+              client,
+              { databaseId: transcripts.id, itemId: transcript.id, propertiesPatch: { status: "done" } },
+              { allowedSystemKeys: ["status"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+            );
+          });
+        }
+        return super.complete(input);
+      }
+    }
+    const finishing = new FinishingSummaryClient();
+
+    await createTranscriptionTask(pool, blobStorage, gatewayClient, finishing)({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+    expect(finishing.eventMatchCalls()).toHaveLength(1);
+    expect(await readEventCards()).toEqual([]);
+    expect(await readEventRecommendationCheckpoint(file.id)).toBeNull();
+  });
+
+  it("writes no card and no checkpoint when a user locks the transcript while the recommendation call is out", async () => {
+    const { file } = await createSourceFile();
+    await createAmbiguousEvents();
+    class LockingSummaryClient extends FakeSummaryClient {
+      override async complete(input: AiGatewayCompletionInput): Promise<AiGatewayCompletionResult> {
+        if (input.operation === "transcript_event_match") {
+          const transcript = await readTranscript(file.id);
+          await pool.query("UPDATE item_automation SET status = 'locked' WHERE item_id = $1", [transcript.id]);
+        }
+        return super.complete(input);
+      }
+    }
+    const locking = new LockingSummaryClient();
+
+    await createTranscriptionTask(pool, blobStorage, gatewayClient, locking)({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+    const transcript = await readTranscript(file.id);
+    expect(locking.eventMatchCalls()).toHaveLength(1);
+    expect(await readEventCards()).toEqual([]);
+    expect(await readEventRecommendationCheckpoint(file.id)).toBeNull();
+    expect(transcript.properties.status).toBe("processing");
+    expect(await readAutomationStatus(transcript.id)).toBe("locked");
+  });
+
+  it("makes no recommendation call and no checkpoint when one Event overlaps, and links it", async () => {
+    const { file } = await createSourceFile();
+    const eventId = await createEvent(FIXTURE_CREATION_TIME);
+
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+    expect(summaryClient.eventMatchCalls()).toHaveLength(0);
+    expect(await readEventRecommendationCheckpoint(file.id)).toBeNull();
+    expect(await readMatch((await readTranscript(file.id)).id)).toEqual({ eventIds: [eventId], cards: [] });
+  });
+
+  it("makes no recommendation call and no checkpoint when no Event overlaps, and creates the new-Event card", async () => {
+    const { file } = await createSourceFile();
+
+    await createTranscriptionTask(
+      pool,
+      blobStorage,
+      gatewayClient,
+      summaryClient,
+    )({ fileItemId: file.id }, FIRST_ATTEMPT);
+
+    expect(summaryClient.eventMatchCalls()).toHaveLength(0);
+    expect(await readEventRecommendationCheckpoint(file.id)).toBeNull();
+    const match = await readMatch((await readTranscript(file.id)).id);
+    expect(match.eventIds).toEqual([]);
+    expect(match.cards).toEqual([{ id: expect.any(String), kind: "transcript" }]);
+    expect(await readEventCards()).toEqual([]);
   });
 
   it("creates one transcript card when two Events overlap the recording, and a rerun adds no second card or edge", async () => {

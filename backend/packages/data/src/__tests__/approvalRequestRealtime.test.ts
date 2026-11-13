@@ -20,6 +20,7 @@ import {
 let pool: Pool;
 let approvalAnnouncements: Array<{ approvalRequestId: string; userId: string | undefined }>;
 let threadAnnouncements: Array<{ tenantId: string; threadId: string }>;
+let agentRunAnnouncements: Array<{ agentRunId: string; userId: string | undefined }>;
 
 function pendingInput(agentRunId: string, toolCallId?: string) {
   return {
@@ -39,9 +40,12 @@ describe("approval request realtime announcements (issue #1789)", () => {
     await createTenantZeroUser(pool);
     approvalAnnouncements = [];
     threadAnnouncements = [];
+    agentRunAnnouncements = [];
     setInvalidationHook((event) => {
       if (event.scope === "approvalRequest")
         approvalAnnouncements.push({ approvalRequestId: event.approvalRequestId, userId: event.userId });
+      if (event.scope === "agentRuns")
+        agentRunAnnouncements.push({ agentRunId: event.agentRunId, userId: event.userId });
     });
     setSempThreadInvalidationHook((event) => threadAnnouncements.push(event));
   });
@@ -59,17 +63,21 @@ describe("approval request realtime announcements (issue #1789)", () => {
     const threadId = await inTenantZero(() => withTransaction(pool, (client) => createSempChatThread(client)));
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "announce", threadId });
 
+    agentRunAnnouncements.length = 0;
+
     const request = await inTenantZero(() =>
       withTransaction(pool, async (client) => {
         const created = await createPendingApprovalRequestAndPublish(client, pendingInput(run.id));
         // Nothing is published while the transaction is still open.
         expect(approvalAnnouncements).toEqual([]);
         expect(threadAnnouncements).toEqual([]);
+        expect(agentRunAnnouncements).toEqual([]);
         return created;
       }),
     );
 
     expect(approvalAnnouncements).toEqual([{ approvalRequestId: request.id, userId: run.actorUserId }]);
+    expect(agentRunAnnouncements).toEqual([{ agentRunId: run.id, userId: run.actorUserId }]);
     expect(threadAnnouncements).toEqual([{ tenantId: getTenantZeroId(), threadId }]);
   });
 
@@ -90,6 +98,7 @@ describe("approval request realtime announcements (issue #1789)", () => {
       withTransaction(pool, (client) => createPendingApprovalRequestAndPublish(client, pendingInput(run.id, "call_1"))),
     );
     approvalAnnouncements.length = 0;
+    agentRunAnnouncements.length = 0;
 
     const repeated = await inTenantZero(() =>
       withTransaction(pool, (client) => createPendingApprovalRequestAndPublish(client, pendingInput(run.id, "call_1"))),
@@ -97,11 +106,13 @@ describe("approval request realtime announcements (issue #1789)", () => {
 
     expect(repeated.id).toBe(first.id);
     expect(approvalAnnouncements).toEqual([]);
+    expect(agentRunAnnouncements).toEqual([]);
     expect(threadAnnouncements).toEqual([]);
   });
 
   it("announces nothing when the creating transaction rolls back", async () => {
     const run = await createAgentRun(pool, { triggeredBy: "user", task: "announce" });
+    agentRunAnnouncements.length = 0;
 
     await expect(
       inTenantZero(() =>
@@ -114,6 +125,7 @@ describe("approval request realtime announcements (issue #1789)", () => {
 
     expect(approvalAnnouncements).toEqual([]);
     expect(threadAnnouncements).toEqual([]);
+    expect(agentRunAnnouncements).toEqual([]);
   });
 
   it("refuses to announce a change of a request whose run does not exist, and publishes nothing", async () => {
@@ -127,6 +139,7 @@ describe("approval request realtime announcements (issue #1789)", () => {
 
     expect(approvalAnnouncements).toEqual([]);
     expect(threadAnnouncements).toEqual([]);
+    expect(agentRunAnnouncements).toEqual([]);
   });
 
   it("refuses to announce outside a managed transaction", async () => {

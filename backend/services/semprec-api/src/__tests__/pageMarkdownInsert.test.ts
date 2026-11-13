@@ -217,7 +217,7 @@ describe("POST /api/items/:id/page/insert (issue #1679)", () => {
     idsOf(await insert(harness.headersA, host, { placement: "end", markdown: "By the user" }));
     expect(await lastUpdateAuthor(host)).toBe("user");
 
-    const token = await harness.mintRunCredential(harness.tenantA, ["core.page.write"]);
+    const token = await harness.mintRunCredential(harness.tenantA, ["core.item.write"]);
     const response = await fetch(`${harness.baseUrl}/mcp`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -320,9 +320,9 @@ describe("POST /api/items/:id/page/insert (issue #1679)", () => {
   describe("callers of the HTTP route", () => {
     const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
 
-    it("authors an agent run credential's insert as ai_agent when it holds core.page.write", async () => {
+    it("authors an agent run credential's insert as ai_agent when it holds core.item.write", async () => {
       const host = await harness.createHost(harness.tenantA);
-      const token = await harness.mintRunCredential(harness.tenantA, ["core.page.write"]);
+      const token = await harness.mintRunCredential(harness.tenantA, ["core.item.write"]);
 
       const ids = idsOf(await insert(bearer(token), host, { placement: "end", markdown: "By the run" }));
 
@@ -331,9 +331,9 @@ describe("POST /api/items/:id/page/insert (issue #1679)", () => {
       expect((await blocksOf(host)).map((block) => block.text)).toEqual(["By the run"]);
     });
 
-    it("answers a credential without core.page.write like an unknown operation, writing nothing", async () => {
+    it("answers a credential without core.item.write like an unknown operation, writing nothing", async () => {
       const host = await harness.createHost(harness.tenantA);
-      const token = await harness.mintRunCredential(harness.tenantA, ["core.page.read"]);
+      const token = await harness.mintRunCredential(harness.tenantA, ["core.item.read"]);
       const before = await stateOf(host);
 
       const refused = await insert(bearer(token), host, { placement: "end", markdown: "Not granted" });
@@ -345,7 +345,7 @@ describe("POST /api/items/:id/page/insert (issue #1679)", () => {
 
     it("answers a credential of another tenant exactly like an unknown item", async () => {
       const hostB = await harness.createHost(harness.tenantB);
-      const token = await harness.mintRunCredential(harness.tenantA, ["core.page.write"]);
+      const token = await harness.mintRunCredential(harness.tenantA, ["core.item.write"]);
       const foreign = await insert(bearer(token), hostB, { placement: "end", markdown: "Foreign" });
       const unknown = await insert(bearer(token), randomUUID(), { placement: "end", markdown: "Unknown" });
 

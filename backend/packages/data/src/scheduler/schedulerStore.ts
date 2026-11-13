@@ -6,6 +6,7 @@ import { getDatabase } from "../chokePoint/databasesStore.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import { requireAffectedRows, requireSingleRow, withTransaction } from "../db/pool.js";
 import { assertKnownValue } from "../dbRowValidation.js";
+import { publishProjectAgentInvalidation } from "../projectAgent/projectAgentInvalidation.js";
 import { computeNextFireAt } from "./nextFireAt.js";
 import {
   isFloatingRuleKind,
@@ -109,6 +110,16 @@ async function assertOnItemEventDatabaseExists(client: PoolClient, rule: AnyHear
   }
 }
 
+/**
+ * Announces the change of a user heartbeat to its project's agent setup, once the transaction on
+ * `client` has committed. A `system` heartbeat (a seed, an internal upsert) is not part of what a
+ * person set up and announces nothing.
+ */
+function announceUserHeartbeatChange(client: PoolClient, heartbeat: HeartbeatRow): HeartbeatRow {
+  if (heartbeat.origin === "user") publishProjectAgentInvalidation(client, heartbeat.projectItemId);
+  return heartbeat;
+}
+
 export async function createHeartbeat(
   client: PoolClient,
   input: CreateHeartbeatInput,
@@ -135,7 +146,7 @@ export async function createHeartbeat(
       input.origin ?? "system",
     ],
   );
-  return mapRow(requireSingleRow(rows, "project_heartbeats row"), moduleRuleKinds);
+  return announceUserHeartbeatChange(client, mapRow(requireSingleRow(rows, "project_heartbeats row"), moduleRuleKinds));
 }
 
 async function computeNextFireAtNow(
@@ -309,7 +320,7 @@ export async function updateHeartbeatRule(
     `UPDATE project_heartbeats SET rule = $2::jsonb, next_fire_at = $3 WHERE id = $1 RETURNING ${COLUMNS}`,
     [id, JSON.stringify(rule), nextFireAt],
   );
-  return mapRow(requireSingleRow(rows, "project_heartbeats row"), moduleRuleKinds);
+  return announceUserHeartbeatChange(client, mapRow(requireSingleRow(rows, "project_heartbeats row"), moduleRuleKinds));
 }
 
 export const HEARTBEAT_NAME_MAX_LENGTH = 200;
@@ -378,7 +389,10 @@ export async function updateHeartbeatTask(
   });
 }
 
-/** Disabling is a plain flag flip; re-enabling recomputes from now — occurrences missed while paused are not caught up. */
+/**
+ * Disabling is a plain flag flip; re-enabling recomputes from now — occurrences missed while paused are not caught up.
+ * Enabling or disabling a user heartbeat announces the change of its project's agent setup after the commit.
+ */
 export async function setHeartbeatEnabled(
   client: PoolClient,
   id: string,
@@ -394,7 +408,7 @@ export async function setHeartbeatEnabled(
       [id],
     );
     if (!rows[0]) throw new NotFoundError(`Heartbeat ${id} not found`);
-    return mapRow(rows[0], moduleRuleKinds, { tolerateUnknownRuleKind: true });
+    return announceUserHeartbeatChange(client, mapRow(rows[0], moduleRuleKinds, { tolerateUnknownRuleKind: true }));
   }
 
   // Re-enabling does need the rule: computing next_fire_at requires knowing which calculator
@@ -408,7 +422,7 @@ export async function setHeartbeatEnabled(
     `UPDATE project_heartbeats SET enabled = true, next_fire_at = $2 WHERE id = $1 RETURNING ${COLUMNS}`,
     [id, nextFireAt],
   );
-  return mapRow(requireSingleRow(rows, "project_heartbeats row"), moduleRuleKinds);
+  return announceUserHeartbeatChange(client, mapRow(requireSingleRow(rows, "project_heartbeats row"), moduleRuleKinds));
 }
 
 /** Called in the same transaction as the `timezone` settings write. */

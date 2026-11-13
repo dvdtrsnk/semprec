@@ -192,7 +192,7 @@ describe("GET /api/items/:id/page/changes (issue #1680)", () => {
       });
     }
 
-    it("lists the changes for a credential granted core.page.read and hides the operation from one that is not", async () => {
+    it("lists the changes for a credential granted core.item.read and hides the operation from one that is not", async () => {
       const { host, docId, since } = await hostWithPage();
       await writeAs(docId, "ai_agent", (doc) => {
         const block = new Y.Map<unknown>();
@@ -202,8 +202,8 @@ describe("GET /api/items/:id/page/changes (issue #1680)", () => {
         doc.getMap<Y.Map<unknown>>("blocks").set("m", block);
         doc.getArray<string>("order").push(["m"]);
       });
-      const granted = await harness.mintRunCredential(harness.tenantA, ["core.page.read"]);
-      const withheld = await harness.mintRunCredential(harness.tenantA, ["core.page.write"]);
+      const granted = await harness.mintRunCredential(harness.tenantA, ["core.item.read"]);
+      const withheld = await harness.mintRunCredential(harness.tenantA, ["core.item.write"]);
 
       const allowed = await callChanges(granted, host, since);
       expect(allowed.status).toBe(200);

@@ -439,6 +439,60 @@ describe("durable Semp thread history", () => {
     expect((await post({ kind: "item", itemId: own.itemId, databaseId: own.databaseId })).status).toBe(202);
   });
 
+  it("stores a sleep night ref once with no existence check, and refuses an invalid date on both message routes without effects (issue #1853)", async () => {
+    const tenant = await createTestTenant(admin);
+    const email = `${randomUUID()}@example.test`;
+    await createUser(admin, { tenantId: tenant, email, passwordHash: await hashPassword("thread-test-password") });
+    const session = await login(admin, { email, password: "thread-test-password", platform: "ios", ip: "127.0.0.1" });
+    const threadId = await runInTenant(tenant, () => withTransaction(pool, (client) => createSempChatThread(client)));
+    const send = (path: string, context: unknown[]) =>
+      fetch(`${baseUrl}${path}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${session.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ text: "how did I sleep", context }),
+      });
+    const night = { kind: "sleepNight", night: "2026-10-16" };
+
+    // The tenant is not seeded: no sleep database exists, and the ref is accepted all the same.
+    const accepted = await send(`/api/semp/threads/${threadId}/messages`, [
+      night,
+      { ...night },
+      { kind: "sleepNight", night: "2026-10-17" },
+    ]);
+    expect(accepted.status).toBe(202);
+    const stored = await runInTenant(tenant, () =>
+      pool.query<{ context: unknown }>(
+        "SELECT context FROM semp_messages WHERE thread_id = $1 AND role = 'user' ORDER BY id",
+        [threadId],
+      ),
+    );
+    expect(stored.rows).toEqual([{ context: [night, { kind: "sleepNight", night: "2026-10-17" }] }]);
+
+    const snapshot = () =>
+      runInTenant(tenant, async () => {
+        const threads = await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM semp_threads");
+        const messages = await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM semp_messages");
+        return { threads: threads.rows, messages: messages.rows };
+      });
+    const before = await snapshot();
+    for (const path of ["/api/semp/threads", `/api/semp/threads/${threadId}/messages`]) {
+      for (const invalid of ["2026-13-01", "2026-02-30", "tonight"]) {
+        const response = await send(path, [{ kind: "sleepNight", night: invalid }]);
+        expect(response.status).toBe(400);
+        expect(await response.json()).toMatchObject({
+          error: { code: "validation_failed", details: { field: "context[0]" } },
+        });
+        expect(await snapshot()).toEqual(before);
+      }
+      const second = await send(path, [night, { kind: "sleepNight", night: "2026-13-01" }]);
+      expect(second.status).toBe(400);
+      expect(await second.json()).toMatchObject({
+        error: { code: "validation_failed", details: { field: "context[1]" } },
+      });
+      expect(await snapshot()).toEqual(before);
+    }
+  });
+
   it("accepts and stores task occurrence and trace refs, and refuses foreign, unknown, deleted and non-task ones without effects", async () => {
     const tenant = await createTestTenant(admin);
     const foreignTenant = await createTestTenant(admin);

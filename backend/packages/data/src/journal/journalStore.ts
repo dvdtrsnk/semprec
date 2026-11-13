@@ -185,6 +185,24 @@ export interface JournalDuplicatePair {
 }
 
 /**
+ * The two live entries of a Journal period that a merge would work on, read without locking or writing anything, or
+ * `null` when the period has fewer than two (issue #2017: the approval request of a merge names them). It reads what
+ * `lockJournalDuplicatePair` reads first, so the answer can be stale by the time a merge locks the pair.
+ */
+export async function findJournalDuplicatePair(
+  client: PoolClient,
+  input: { journalDatabaseId: string; type: JournalPeriodType; period: string },
+): Promise<JournalDuplicatePair | null> {
+  const { rows } = await client.query<{ id: string }>(OLDEST_LIVE_PERIOD_ENTRIES_SQL, [
+    input.journalDatabaseId,
+    input.type,
+    input.period,
+  ]);
+  const [survivor, duplicate] = rows;
+  return survivor && duplicate ? { survivorId: survivor.id, duplicateId: duplicate.id } : null;
+}
+
+/**
  * Finds the two live entries of a Journal period that were created first and holds them for a merge (issue #1726),
  * or returns `null` when the period has fewer than two.
  *

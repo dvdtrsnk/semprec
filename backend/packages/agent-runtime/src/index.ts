@@ -3,9 +3,11 @@ export {
   runAgentSession,
   runAgentSessionForRun,
   runAgentTurn,
+  runAgentTurnWithStoredForm,
   pushRunStatus,
   extractResultSnapshot,
   AgentRunCancelledError,
+  type AgentTurnOutcome,
   type RunAgentSessionInput,
 } from "./lifecycleAdapter.js";
 export { closeIdleThreadSessions, repairInterruptedRuns } from "./startupRepair.js";

@@ -219,10 +219,10 @@ async function readMarkdownBody(req: IncomingMessage): Promise<string> {
  * response header; success is `200` with the new `ETag` and `{ trashedPages }`, the subpages the new Markdown no longer
  * links, which the operation sent to the trash. Authentication, tenant and error contract are the ones of
  * `createPageInsertRequestListener`: a run credential is passed to the gateway, anything else is a session (authored
- * `user`). `page.replace` is a REST-only operation until the approval of page operations (#1844) exists, so the gateway
- * answers a run credential as it answers an unknown operation (404) and writes nothing; the `ai_agent` origin is
- * applied by the application service once #1844 lifts that restriction. The tenant is resolved before the item, so a
- * foreign item answers like an unknown one, and `If-Match` is checked without reading the item.
+ * `user`). A run credential's `page.replace` is held for approval: the gateway answers `403 approval_required`, writes
+ * nothing and creates no `ai_agent` block, and the approved request is replayed authored `user` (issue #1844); a
+ * credential without `core.item.write` is answered like an unknown operation (404). The tenant is resolved before
+ * the item, so a foreign item answers like an unknown one, and `If-Match` is checked without reading the item.
  */
 export function createPageReplaceRequestListener(
   pool: Pool,

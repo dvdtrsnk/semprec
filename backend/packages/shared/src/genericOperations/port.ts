@@ -17,7 +17,7 @@ import type {
   ViewItem,
 } from "./rows.js";
 
-/** Exhaustive mapped type over the 46 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
+/** Exhaustive mapped type over the 48 literal operation names — see the `_assertOutputByOperationExhaustive` check below. */
 export interface OutputByOperation {
   "database.list": Page<Database>;
   "database.get": Database;
@@ -62,6 +62,8 @@ export interface OutputByOperation {
   "link.relink": { itemId: string; propertyKey: string } & ItemLink;
   "page.get": PageSummary | PageMarkdown;
   "page.ensure": { docId: string };
+  "page.ensureJournalPeriod": PageEnsureJournalPeriodOutput;
+  "page.mergeJournalDuplicates": PageMergeJournalDuplicatesOutput;
   "page.createSubpage": PageCreateSubpageOutput;
   "page.insert": { blockIds: string[] };
   "page.replace": PageReplaceOutput;
@@ -94,6 +96,23 @@ export interface PageChangeEntry {
   blockIds: string[];
   kind: "insert" | "update" | "delete";
 }
+
+/**
+ * The Journal entry of a period and its page as `page.ensureJournalPeriod` returns them (issue #1861): the canonical
+ * period key and the first and last calendar day of the period, `YYYY-MM-DD`, inclusive.
+ */
+export interface PageEnsureJournalPeriodOutput {
+  itemId: string;
+  docId: string;
+  period: string;
+  range: { from: string; to: string };
+}
+
+/**
+ * What one `page.mergeJournalDuplicates` call did (issue #2017): the entry that stays live and the entry that was
+ * merged into it and moved to the Trash, or `{ merged: false }` when the period had no two live entries to merge.
+ */
+export type PageMergeJournalDuplicatesOutput = { survivorId: string; mergedItemId: string } | { merged: false };
 
 /** The pages one `page.createSubpage` call created; one element per page (issue #2013 returns several). */
 export interface PageCreateSubpageOutput {
@@ -146,6 +165,8 @@ export interface PageSummary {
     title: string;
     databaseKey: string | null;
     journal?: { type: string; period: string };
+    /** An ancestor in a database the agent's project may not read: only its id, no title and no database key. */
+    hidden?: true;
   }> | null;
 }
 
@@ -309,6 +330,14 @@ export interface GenericApplicationPort {
     actor: AuthenticatedActor,
     input: InputByOperation["page.ensure"],
   ): Promise<OutputByOperation["page.ensure"]>;
+  ensureJournalPeriod(
+    actor: AuthenticatedActor,
+    input: InputByOperation["page.ensureJournalPeriod"],
+  ): Promise<OutputByOperation["page.ensureJournalPeriod"]>;
+  mergeJournalDuplicates(
+    actor: AuthenticatedActor,
+    input: InputByOperation["page.mergeJournalDuplicates"],
+  ): Promise<OutputByOperation["page.mergeJournalDuplicates"]>;
   getPage(actor: AuthenticatedActor, input: InputByOperation["page.get"]): Promise<OutputByOperation["page.get"]>;
   createSubpage(
     actor: AuthenticatedActor,

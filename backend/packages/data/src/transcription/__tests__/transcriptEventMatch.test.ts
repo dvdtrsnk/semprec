@@ -1,18 +1,27 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import { z } from "zod";
 import { runInTenant } from "@semprec/shared";
 import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
-import { createRuntimeRolePool, createTestTenant } from "../../testSupport/tenantFixtures.js";
+import { createRuntimeRolePool, createTestTenant, getTenantZeroId } from "../../testSupport/tenantFixtures.js";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { withTransaction } from "../../db/pool.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
-import { NotFoundError, ValidationError } from "../../errors.js";
+import { writeComputed } from "../../chokePoint/itemsStore.js";
+import { createRelationWithClient } from "../../chokePoint/relationOps.js";
+import { ConflictError, NotFoundError, ValidationError } from "../../errors.js";
 import { getSystemSettingsDatabaseId, getSystemSettingsItemId } from "../../systemSettings.js";
 import { setInboxCardsInvalidationHook, type InboxCardsInvalidationEvent } from "../../realtimeHook.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcriptionJob.js";
-import { listOverlappingEventIds, matchTranscriptToEvent } from "../transcriptEventMatch.js";
+import {
+  createTranscriptEventCard,
+  listOverlappingEventIds,
+  matchTranscriptToEvent,
+  readEventRecommendationContext,
+  type EventRecommendation,
+} from "../transcriptEventMatch.js";
 import { getCalendarClock, type CalendarClock } from "../../calendarTime.js";
 
 let pool: Pool;
@@ -228,25 +237,79 @@ describe("matchTranscriptToEvent (issue #247)", () => {
     expect(await proposalCount()).toBe(1);
   });
 
-  it("creates exactly one card and no edge when two Events overlap, and a second run adds neither", async () => {
+  it("returns the two overlapping Events as ambiguous and writes neither a card nor an edge, on every run (issue #1848)", async () => {
     const transcriptId = await createTranscript();
-    await createEvent("meeting", "2024-03-01", { timeFrom: "13:00", timeTo: "13:30" });
-    await createEvent("standup", "2024-03-01", { timeFrom: "13:10", timeTo: "13:40" });
+    const meetingId = await createEvent("meeting", "2024-03-01", {
+      timeFrom: "13:00",
+      timeTo: "13:30",
+      endDate: "2024-03-01",
+    });
+    const standupId = await createEvent("standup", "2024-03-01", { timeFrom: "13:10" });
+    const projectsId = await databaseIdFor("projects");
+    const projectId = (
+      await withTransaction(pool, (client) =>
+        createItemWithClient(client, { databaseId: projectsId, properties: { name: "Apollo" } }),
+      )
+    ).id;
+    const projectPropertyId = await propertyIdFor(eventsId, "project");
+    // An Events `project` edge is a link-rule source, so its write needs a tenant scope.
+    await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, (client) =>
+        createRelationWithClient(client, {
+          relationPropertyId: projectPropertyId,
+          callerItemId: meetingId,
+          targetItemId: projectId,
+        }),
+      ),
+    );
 
-    expect(await match(transcriptId)).toBe("suggested");
-    const [card] = await cardsFor(transcriptId);
-    expect(await match(transcriptId)).toBe("alreadySuggested");
+    const expected = {
+      outcome: "ambiguous",
+      candidates: [
+        {
+          id: meetingId,
+          name: "meeting at 2024-03-01",
+          date: "2024-03-01",
+          timeFrom: "13:00",
+          timeTo: "13:30",
+          endDate: "2024-03-01",
+          projectId,
+          projectName: "Apollo",
+        },
+        {
+          id: standupId,
+          name: "standup at 2024-03-01",
+          date: "2024-03-01",
+          timeFrom: "13:10",
+          // The choke point gave the Event the default one-hour length.
+          timeTo: "14:10",
+          endDate: null,
+          projectId: null,
+          projectName: null,
+        },
+      ],
+    };
+    expect(await match(transcriptId)).toEqual(expected);
+    expect(await match(transcriptId)).toEqual(expected);
 
     expect(await linkedEventIds(transcriptId)).toEqual([]);
-    expect(await cardsFor(transcriptId)).toEqual([card]);
-    expect(card?.properties).toMatchObject({
-      history: [
-        expect.objectContaining({
-          message: "2 Events overlapped the recording's time interval, so none was linked; proposed a new Event.",
-        }),
-      ],
-    });
-    expect(await proposalCount()).toBe(1);
+    expect(await proposalCount()).toBe(0);
+  });
+
+  it("reports a stored Event without timeTo as a candidate whose timeTo is null (issue #1848)", async () => {
+    const transcriptId = await createTranscript();
+    const pointId = await createRawEvent("meeting", { date: "2024-03-01", timeFrom: "13:15" });
+    const spanId = await createEvent("meeting", "2024-03-01", { timeFrom: "13:00", timeTo: "13:30" });
+
+    const result = await match(transcriptId);
+
+    expect(typeof result).toBe("object");
+    expect(
+      typeof result === "string" ? [] : result.candidates.map(({ id, timeFrom, timeTo }) => ({ id, timeFrom, timeTo })),
+    ).toEqual([
+      { id: spanId, timeFrom: "13:00", timeTo: "13:30" },
+      { id: pointId, timeFrom: "13:15", timeTo: null },
+    ]);
   });
 
   describe("the overlap rule in the tenant's time zone", () => {
@@ -742,5 +805,587 @@ describe("matchTranscriptToEvent per tenant, through the runtime role (issue #15
     expect(await match(prague.tenantId, prague.transcriptId)).toBe("alreadyLinked");
     expect(await edges(prague.tenantId)).toEqual(pragueEdges);
     expect(await edges(newYork.tenantId)).toEqual(newYorkEdges);
+  });
+});
+
+describe("the Event recommendation of an ambiguous recording, through the runtime role (issue #1848)", () => {
+  let adminPool: Pool;
+  let dataPool: Pool;
+  let tenant: string;
+  let otherTenant: string;
+
+  beforeAll(async () => {
+    adminPool = getTestPool();
+    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+  });
+
+  beforeEach(async () => {
+    await resetDatabase(adminPool);
+    tenant = await createTestTenant(adminPool);
+    otherTenant = await createTestTenant(adminPool);
+    for (const tenantId of [tenant, otherTenant]) await runInTenant(tenantId, () => seedSystem(dataPool));
+  });
+
+  afterAll(async () => {
+    await dataPool?.end();
+    await adminPool?.end();
+  });
+
+  const SEGMENTS = [
+    { speaker: "SPEAKER_00", text: "Hello everyone.", startsAt: 0, endsAt: 2 },
+    { speaker: "SPEAKER_01", text: "Let us plan the next sprint for iOS today.", startsAt: 2, endsAt: 6 },
+    { speaker: "SPEAKER_00", text: "Sounds good to me, I will take the login screen.", startsAt: 6, endsAt: 9 },
+  ];
+  const NOTES = {
+    title: "Sprint planning",
+    summary: "{SPEAKER_01} plans the iOS sprint, {SPEAKER_00} takes the login screen.",
+    shortSummary: "iOS sprint planned.",
+    decisions: [],
+    actionItems: [],
+  };
+
+  async function databaseId(moduleId: string): Promise<string> {
+    const { rows } = await dataPool.query<{ id: string }>(
+      "SELECT id FROM databases WHERE owner_module_id = $1 AND system",
+      [moduleId],
+    );
+    if (!rows[0]) throw new Error(`Database '${moduleId}' was not seeded`);
+    return rows[0].id;
+  }
+
+  async function relationPropertyId(moduleId: string, key: string): Promise<string> {
+    const { rows } = await dataPool.query<{ id: string }>(
+      "SELECT id FROM properties WHERE database_id = $1 AND key = $2",
+      [await databaseId(moduleId), key],
+    );
+    if (!rows[0]) throw new Error(`Property '${key}' was not seeded`);
+    return rows[0].id;
+  }
+
+  async function createIn(moduleId: string, properties: Record<string, unknown>): Promise<string> {
+    return (
+      await withTransaction(dataPool, async (client) =>
+        createItemWithClient(client, { databaseId: await databaseId(moduleId), properties }),
+      )
+    ).id;
+  }
+
+  async function link(moduleId: string, key: string, callerItemId: string, targetItemId: string): Promise<void> {
+    const propertyId = await relationPropertyId(moduleId, key);
+    await withTransaction(dataPool, (client) =>
+      createRelationWithClient(client, { relationPropertyId: propertyId, callerItemId, targetItemId }),
+    );
+  }
+
+  /** The recording 13:00-14:00 Prague time (12:00Z, an hour long) with the computed values steps 1, 4 and 5 store. */
+  async function createRecording(computed: Record<string, unknown> = {}): Promise<string> {
+    const transcriptsId = await databaseId("transcripts");
+    return withTransaction(dataPool, async (client) => {
+      const item = await createItemWithClient(
+        client,
+        { databaseId: transcriptsId, properties: { name: "Planning call", date: RECORDING_START } },
+        { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+      );
+      const values: Record<string, unknown> = {
+        segments: SEGMENTS,
+        durationSeconds: DURATION_SECONDS,
+        meetingNotes: NOTES,
+        ...computed,
+      };
+      for (const [key, value] of Object.entries(values))
+        if (value !== undefined) await writeComputed(client, transcriptsId, item.id, key, value);
+      return item.id;
+    });
+  }
+
+  /** Two Events overlapping the recording: a meeting of project Apollo with two participants, and a bare standup. */
+  async function createCandidates() {
+    const meetingId = await createIn("events", {
+      name: "Sprint planning",
+      type: "meeting",
+      date: "2024-03-01",
+      timeFrom: "13:00",
+      timeTo: "13:45",
+    });
+    const standupId = await createIn("events", {
+      name: "Accountant call",
+      type: "standup",
+      date: "2024-03-01",
+      timeFrom: "13:30",
+      timeTo: "14:00",
+    });
+    const projectId = await createIn("projects", { name: "Apollo" });
+    await link("events", "project", meetingId, projectId);
+    await link("events", "people", meetingId, await createIn("people", { name: "Zora" }));
+    await link("events", "people", meetingId, await createIn("people", { name: "Alice" }));
+    return { meetingId, standupId, projectId };
+  }
+
+  function inTenant<T>(tenantId: string, fn: () => Promise<T>): Promise<T> {
+    return runInTenant(tenantId, fn);
+  }
+
+  const readContext = (transcriptId: string) =>
+    withTransaction(dataPool, (client) =>
+      readEventRecommendationContext(client, { transcriptId, durationSeconds: DURATION_SECONDS }),
+    );
+
+  const matchInTransaction = (transcriptId: string) =>
+    withTransaction(dataPool, (client) =>
+      matchTranscriptToEvent(client, { transcriptId, durationSeconds: DURATION_SECONDS }),
+    );
+
+  /** Matches the recording, then creates the card in the same transaction, as the transcription step does. */
+  async function createCard(transcriptId: string, recommendation: EventRecommendation | null) {
+    return withTransaction(dataPool, async (client) => {
+      const matched = await matchTranscriptToEvent(client, { transcriptId, durationSeconds: DURATION_SECONDS });
+      if (typeof matched === "string") throw new Error(`Expected an ambiguous match, got '${matched}'`);
+      return createTranscriptEventCard(client, { transcriptId, candidates: matched.candidates, recommendation });
+    });
+  }
+
+  async function cardsOf(transcriptId: string) {
+    const { rows } = await dataPool.query<{ id: string; properties: Record<string, unknown> }>(
+      `SELECT i.id, i.properties FROM items i
+       JOIN item_relations r ON (r.item_a = i.id AND r.item_b = $1) OR (r.item_b = i.id AND r.item_a = $1)
+       JOIN relation_definitions d ON d.id = r.relation_definition_id
+       WHERE i.database_id = $2 AND (d.property_id_a = $3 OR d.property_id_b = $3)`,
+      [
+        transcriptId,
+        await databaseId("processingProposals"),
+        await relationPropertyId("processingProposals", "sourceTranscript"),
+      ],
+    );
+    return rows;
+  }
+
+  async function eventEdgeCount(transcriptId: string): Promise<number> {
+    const propertyId = await relationPropertyId("transcripts", "event");
+    const { rows } = await dataPool.query<{ count: string }>(
+      `SELECT count(*) FROM item_relations r JOIN relation_definitions d ON d.id = r.relation_definition_id
+       WHERE (d.property_id_a = $2 OR d.property_id_b = $2) AND (r.item_a = $1 OR r.item_b = $1)`,
+      [transcriptId, propertyId],
+    );
+    return Number(rows[0]?.count);
+  }
+
+  describe("readEventRecommendationContext", () => {
+    it("returns the candidates with their project and sorted participant names, the rendered notes and the locale", async () => {
+      await adminPool.query(
+        "INSERT INTO users (email, password_hash, locale, tenant_id) VALUES ($1, 'unused', 'en', $2)",
+        ["reader@example.com", tenant],
+      );
+      await inTenant(tenant, async () => {
+        const { meetingId, standupId, projectId } = await createCandidates();
+        const transcriptId = await createRecording();
+
+        const context = await readContext(transcriptId);
+
+        expect(context).toEqual({
+          candidates: [
+            {
+              id: meetingId,
+              name: "Sprint planning",
+              date: "2024-03-01",
+              timeFrom: "13:00",
+              timeTo: "13:45",
+              endDate: null,
+              projectId,
+              projectName: "Apollo",
+              participantNames: ["Alice", "Zora"],
+            },
+            {
+              id: standupId,
+              name: "Accountant call",
+              date: "2024-03-01",
+              timeFrom: "13:30",
+              timeTo: "14:00",
+              endDate: null,
+              projectId: null,
+              projectName: null,
+              participantNames: [],
+            },
+          ],
+          notes: {
+            title: "Sprint planning",
+            summary: "Speaker 2 plans the iOS sprint, Speaker 1 takes the login screen.",
+            shortSummary: "iOS sprint planned.",
+          },
+          locale: "en",
+        });
+      });
+    });
+
+    it("falls back to cs when the tenant has no user", async () => {
+      await inTenant(tenant, async () => {
+        await createCandidates();
+        expect((await readContext(await createRecording()))?.locale).toBe("cs");
+      });
+    });
+
+    it("leaves a project in the Trash and a participant in the Trash out", async () => {
+      await inTenant(tenant, async () => {
+        const { meetingId, projectId } = await createCandidates();
+        const [alice] = (
+          await dataPool.query<{ id: string }>("SELECT id FROM items WHERE properties ->> 'name' = 'Alice'")
+        ).rows;
+        const chokePoint = createChokePoint(dataPool);
+        await chokePoint.softDeleteItem(await databaseId("projects"), projectId);
+        await chokePoint.softDeleteItem(await databaseId("people"), alice!.id);
+
+        const candidate = (await readContext(await createRecording()))?.candidates.find(({ id }) => id === meetingId);
+
+        expect(candidate).toMatchObject({ projectId: null, projectName: null, participantNames: ["Zora"] });
+      });
+    });
+
+    it.each([
+      ["no Event overlaps the recording", async () => {}],
+      [
+        "one Event overlaps the recording",
+        async () => {
+          await createIn("events", {
+            name: "Only",
+            type: "meeting",
+            date: "2024-03-01",
+            timeFrom: "13:00",
+            timeTo: "13:30",
+          });
+        },
+      ],
+    ])("returns null when %s", async (_label, arrange) => {
+      await inTenant(tenant, async () => {
+        await arrange();
+        expect(await readContext(await createRecording())).toBeNull();
+      });
+    });
+
+    it("returns null once the transcript is linked to an Event or has its card", async () => {
+      await inTenant(tenant, async () => {
+        const { meetingId } = await createCandidates();
+        const linked = await createRecording();
+        await link("transcripts", "event", linked, meetingId);
+        const suggested = await createRecording();
+        await createCard(suggested, null);
+
+        expect(await readContext(linked)).toBeNull();
+        expect(await readContext(suggested)).toBeNull();
+      });
+    });
+
+    it("throws NotFoundError for a transcript without stored meetingNotes, and for an unknown transcript", async () => {
+      await inTenant(tenant, async () => {
+        await createCandidates();
+        const withoutNotes = await createRecording({ meetingNotes: undefined });
+
+        await expect(readContext(withoutNotes)).rejects.toThrow(NotFoundError);
+        await expect(readContext("00000000-0000-4000-8000-000000000000")).rejects.toThrow(NotFoundError);
+      });
+    });
+
+    it("reads only the calling tenant's Events, participants and projects", async () => {
+      const mine = await inTenant(tenant, async () => ({
+        ...(await createCandidates()),
+        transcriptId: await createRecording(),
+      }));
+      const theirs = await inTenant(otherTenant, async () => ({
+        ...(await createCandidates()),
+        transcriptId: await createRecording(),
+      }));
+
+      const contextIds = async (tenantId: string, transcriptId: string) =>
+        inTenant(tenantId, async () => (await readContext(transcriptId))?.candidates.map(({ id }) => id));
+
+      expect(await contextIds(tenant, mine.transcriptId)).toEqual([mine.meetingId, mine.standupId]);
+      expect(await contextIds(otherTenant, theirs.transcriptId)).toEqual([theirs.meetingId, theirs.standupId]);
+      await inTenant(tenant, async () => {
+        await expect(readContext(theirs.transcriptId)).rejects.toThrow(NotFoundError);
+      });
+    });
+  });
+
+  describe("createTranscriptEventCard", () => {
+    it("proposes the recommended Event as a relation, with the complete context and no Event edge", async () => {
+      await inTenant(tenant, async () => {
+        const { meetingId, standupId, projectId } = await createCandidates();
+        const transcriptId = await createRecording();
+
+        const created = await createCard(transcriptId, { eventId: meetingId, reason: " It is about the sprint. " });
+
+        const [card] = await cardsOf(transcriptId);
+        expect(await cardsOf(transcriptId)).toHaveLength(1);
+        expect(created).toEqual({ cardId: card?.id, recommendedEventId: meetingId, reason: "It is about the sprint." });
+        const proposal = { entityKind: "relation", target: meetingId, properties: { propertyKey: "event" } };
+        expect(card?.properties).toMatchObject({
+          kind: "transcript",
+          status: "proposed",
+          proposal,
+          aiProposal: proposal,
+          aiVersion: 1,
+          history: [
+            expect.objectContaining({
+              message:
+                "2 Events overlapped the recording's time interval, so none was linked; recommended one of them from the recording's content.",
+            }),
+          ],
+          context: {
+            role: "event",
+            candidates: [
+              {
+                id: meetingId,
+                name: "Sprint planning",
+                date: "2024-03-01",
+                timeFrom: "13:00",
+                timeTo: "13:45",
+                endDate: null,
+                projectId,
+                projectName: "Apollo",
+              },
+              {
+                id: standupId,
+                name: "Accountant call",
+                date: "2024-03-01",
+                timeFrom: "13:30",
+                timeTo: "14:00",
+                endDate: null,
+                projectId: null,
+                projectName: null,
+              },
+            ],
+            reason: "It is about the sprint.",
+            recommendedEventId: meetingId,
+            recording: {
+              durationSeconds: DURATION_SECONDS,
+              speakerCount: 2,
+              quote: { segmentIndex: 1, text: "Let us plan the next sprint for iOS today." },
+            },
+          },
+        });
+        // The candidates and the reason live only in `context`.
+        expect(Object.keys(card?.properties ?? {})).not.toEqual(expect.arrayContaining(["candidates"]));
+        expect(card?.properties).not.toHaveProperty("candidates");
+        expect(card?.properties).not.toHaveProperty("reason");
+        expect(await eventEdgeCount(transcriptId)).toBe(0);
+      });
+    });
+
+    it.each([
+      ["answers null", (_ids: string[]) => ({ eventId: null, reason: "Cannot tell." }), "Cannot tell."],
+      ["answers null with a blank reason", (_ids: string[]) => ({ eventId: null, reason: "   " }), null],
+      [
+        "answers an id that is not a candidate",
+        (_ids: string[]) => ({ eventId: "00000000-0000-4000-8000-000000000001", reason: "It was this one." }),
+        null,
+      ],
+      ["gives no recommendation", (_ids: string[]) => null, null],
+    ])(
+      "keeps the create-Event proposal and recommends nothing when the model %s",
+      async (_label, recommendationFor, expectedReason) => {
+        await inTenant(tenant, async () => {
+          const { meetingId, standupId } = await createCandidates();
+          const transcriptId = await createRecording();
+
+          const created = await createCard(transcriptId, recommendationFor([meetingId, standupId]));
+
+          const [card] = await cardsOf(transcriptId);
+          const proposal = {
+            entityKind: "database",
+            target: await databaseId("events"),
+            properties: { name: "Planning call", type: "meeting", date: "2024-03-01" },
+          };
+          expect(created).toEqual({ cardId: card?.id, recommendedEventId: null, reason: expectedReason });
+          expect(card?.properties).toMatchObject({
+            status: "proposed",
+            proposal,
+            aiProposal: proposal,
+            history: [
+              expect.objectContaining({
+                message:
+                  "2 Events overlapped the recording's time interval, so none was linked; none could be recommended from the recording's content; proposed a new Event.",
+              }),
+            ],
+            context: { role: "event", reason: expectedReason, recommendedEventId: null },
+          });
+          expect(await eventEdgeCount(transcriptId)).toBe(0);
+        });
+      },
+    );
+
+    it("recommends the second candidate as well, so the membership test looks at every candidate", async () => {
+      await inTenant(tenant, async () => {
+        const { standupId } = await createCandidates();
+        const transcriptId = await createRecording();
+
+        await createCard(transcriptId, { eventId: standupId, reason: "Names the accountant." });
+
+        expect((await cardsOf(transcriptId))[0]?.properties).toMatchObject({
+          proposal: { entityKind: "relation", target: standupId },
+          context: { recommendedEventId: standupId },
+        });
+      });
+    });
+
+    it("picks the first segment of at least five words as the quote and cuts it to 120 characters by code point", async () => {
+      await inTenant(tenant, async () => {
+        await createCandidates();
+        // 119 ASCII characters, then an emoji as the 120th code point: a cut by UTF-16 unit would keep only its high surrogate.
+        const long = `${"ab ".repeat(39)}cd😀 tail end`;
+        const transcriptId = await createRecording({
+          segments: [
+            { speaker: "SPEAKER_00", text: "Four words only here.", startsAt: 0, endsAt: 1 },
+            { speaker: "SPEAKER_01", text: `  ${long}  `, startsAt: 1, endsAt: 2 },
+            { speaker: "SPEAKER_00", text: "Another sentence with enough words.", startsAt: 2, endsAt: 3 },
+          ],
+        });
+
+        await createCard(transcriptId, null);
+
+        const context = z
+          .object({
+            recording: z.object({
+              speakerCount: z.number(),
+              quote: z.object({ segmentIndex: z.number(), text: z.string() }),
+            }),
+          })
+          .parse((await cardsOf(transcriptId))[0]?.properties.context);
+        expect(context.recording.speakerCount).toBe(2);
+        expect(context.recording.quote.segmentIndex).toBe(1);
+        expect(Array.from(context.recording.quote.text)).toHaveLength(120);
+        expect(context.recording.quote.text).toBe(Array.from(long).slice(0, 120).join(""));
+        expect(context.recording.quote.text.endsWith("😀")).toBe(true);
+      });
+    });
+
+    it("has no quote when no segment has five words", async () => {
+      await inTenant(tenant, async () => {
+        await createCandidates();
+        const transcriptId = await createRecording({
+          segments: [{ speaker: "SPEAKER_00", text: "Too short.", startsAt: 0, endsAt: 1 }],
+        });
+
+        await createCard(transcriptId, null);
+
+        expect((await cardsOf(transcriptId))[0]?.properties.context).toMatchObject({
+          recording: { durationSeconds: DURATION_SECONDS, speakerCount: 1, quote: null },
+        });
+      });
+    });
+
+    it.each([
+      ["segments", { segments: undefined }],
+      ["duration", { durationSeconds: undefined }],
+    ])("throws NotFoundError and writes no card when the transcript has no %s", async (_label, computed) => {
+      await inTenant(tenant, async () => {
+        await createCandidates();
+        const transcriptId = await createRecording(computed);
+
+        await expect(createCard(transcriptId, null)).rejects.toThrow(NotFoundError);
+
+        expect(await cardsOf(transcriptId)).toEqual([]);
+      });
+    });
+
+    it("throws ConflictError and adds no second card when the transcript already has its card", async () => {
+      await inTenant(tenant, async () => {
+        const { meetingId } = await createCandidates();
+        const transcriptId = await createRecording();
+        await createCard(transcriptId, { eventId: meetingId, reason: "First." });
+        const [first] = await cardsOf(transcriptId);
+
+        await expect(
+          withTransaction(dataPool, (client) =>
+            createTranscriptEventCard(client, {
+              transcriptId,
+              candidates: [],
+              recommendation: { eventId: null, reason: "Second." },
+            }),
+          ),
+        ).rejects.toThrow(ConflictError);
+
+        expect(await cardsOf(transcriptId)).toEqual([first]);
+      });
+    });
+
+    it("throws NotFoundError for an unknown transcript", async () => {
+      await inTenant(tenant, async () => {
+        await expect(
+          withTransaction(dataPool, (client) =>
+            createTranscriptEventCard(client, {
+              transcriptId: "00000000-0000-4000-8000-000000000000",
+              candidates: [],
+              recommendation: null,
+            }),
+          ),
+        ).rejects.toThrow(NotFoundError);
+      });
+    });
+
+    it("announces the card once after commit and none when its transaction rolls back", async () => {
+      await inTenant(tenant, async () => {
+        await createCandidates();
+        const rolledBack = await createRecording();
+        const kept = await createRecording();
+        const events: InboxCardsInvalidationEvent[] = [];
+        setInboxCardsInvalidationHook((event) => events.push(event));
+        try {
+          await expect(
+            withTransaction(dataPool, async (client) => {
+              const matched = await matchTranscriptToEvent(client, {
+                transcriptId: rolledBack,
+                durationSeconds: DURATION_SECONDS,
+              });
+              if (typeof matched === "string") throw new Error("expected an ambiguous match");
+              await createTranscriptEventCard(client, {
+                transcriptId: rolledBack,
+                candidates: matched.candidates,
+                recommendation: null,
+              });
+              throw new Error("force rollback");
+            }),
+          ).rejects.toThrow("force rollback");
+          expect(events).toEqual([]);
+
+          await createCard(kept, null);
+          const [card] = await cardsOf(kept);
+          expect(events).toEqual([{ op: "created", cardId: card?.id }]);
+        } finally {
+          setInboxCardsInvalidationHook(() => {});
+        }
+      });
+    });
+
+    it("writes the card only in the calling tenant", async () => {
+      const mine = await inTenant(tenant, async () => ({
+        ...(await createCandidates()),
+        transcriptId: await createRecording(),
+      }));
+      await inTenant(otherTenant, createCandidates);
+
+      await inTenant(tenant, () => createCard(mine.transcriptId, { eventId: mine.meetingId, reason: "Mine." }));
+
+      expect(await inTenant(tenant, () => cardsOf(mine.transcriptId))).toHaveLength(1);
+      const foreignCards = await inTenant(otherTenant, async () => {
+        const { rows } = await dataPool.query<{ count: string }>("SELECT count(*) FROM items WHERE database_id = $1", [
+          await databaseId("processingProposals"),
+        ]);
+        return Number(rows[0]?.count);
+      });
+      expect(foreignCards).toBe(0);
+    });
+  });
+
+  it("matchTranscriptToEvent reports the ambiguity of the calling tenant only", async () => {
+    const mine = await inTenant(tenant, async () => ({
+      ...(await createCandidates()),
+      transcriptId: await createRecording(),
+    }));
+    await inTenant(otherTenant, createCandidates);
+
+    const result = await inTenant(tenant, () => matchInTransaction(mine.transcriptId));
+
+    expect(typeof result === "string" ? [] : result.candidates.map(({ id }) => id)).toEqual([
+      mine.meetingId,
+      mine.standupId,
+    ]);
   });
 });

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createOutboundHttp } from "../net/outboundAddressPolicy.js";
+import { createOutboundHttp, isOutboundAddressNotAllowed } from "../net/outboundAddressPolicy.js";
 import { createLogger } from "@semprec/shared";
 
 import { isBaselineOutboundUrl } from "../net/storedOutboundUrl.js";
@@ -67,21 +67,40 @@ export async function fetchLibraryJson(
 
 export type LibraryCoverDownload = (url: string) => Promise<DownloadedLibraryCover | undefined>;
 
-/** Fetches provider-supplied image URLs through the connect-time address policy. */
-export async function downloadLibraryCover(url: string): Promise<DownloadedLibraryCover | undefined> {
-  if (!isBaselineOutboundUrl(url)) return undefined;
+/** Why a cover image could not be fetched from a host that was allowed to be asked. */
+export type LibraryCoverUnavailableReason = "timeout" | "network" | "status";
+
+/**
+ * How a cover download ended, for a caller that must tell the caller's mistake from a failure of the host.
+ * `refused`: the URL is not a baseline outbound URL or its host resolves to an address the outbound policy denies,
+ * so nothing was fetched. `unusable`: the host answered, but not with a usable image (not an image type, empty, over
+ * the size cap). `unavailable`: the host could not be reached or did not answer with a success status.
+ */
+export type LibraryCoverDownloadOutcome =
+  | { kind: "downloaded"; cover: DownloadedLibraryCover }
+  | { kind: "refused" }
+  | { kind: "unusable" }
+  | { kind: "unavailable"; reason: LibraryCoverUnavailableReason };
+
+/** Fetches provider-supplied image URLs through the connect-time address policy and reports how it ended. */
+export async function downloadLibraryCoverOutcome(url: string): Promise<LibraryCoverDownloadOutcome> {
+  if (!isBaselineOutboundUrl(url)) return { kind: "refused" };
   const outbound = createOutboundHttp();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10_000);
   try {
     const response = await outbound.fetch(url, { signal: controller.signal, redirect: "error" });
     const mimeType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
-    if (!response.ok || !mimeType?.startsWith("image/")) {
+    if (!response.ok) {
       await response.body?.cancel();
-      return undefined;
+      return { kind: "unavailable", reason: "status" };
+    }
+    if (!mimeType?.startsWith("image/")) {
+      await response.body?.cancel();
+      return { kind: "unusable" };
     }
     const reader: ReadableStreamDefaultReader<Uint8Array> | undefined = response.body?.getReader();
-    if (!reader) return undefined;
+    if (!reader) return { kind: "unusable" };
     const chunks: Uint8Array[] = [];
     let length = 0;
     try {
@@ -91,17 +110,18 @@ export async function downloadLibraryCover(url: string): Promise<DownloadedLibra
         length += part.value.byteLength;
         if (length > MAX_LIBRARY_COVER_BYTES) {
           await reader.cancel();
-          return undefined;
+          return { kind: "unusable" };
         }
         chunks.push(part.value);
       }
     } finally {
       reader.releaseLock();
     }
-    if (length === 0) return undefined;
-    return { bytes: Buffer.concat(chunks), mimeType };
-  } catch {
-    return undefined;
+    if (length === 0) return { kind: "unusable" };
+    return { kind: "downloaded", cover: { bytes: Buffer.concat(chunks), mimeType } };
+  } catch (error) {
+    if (isOutboundAddressNotAllowed(error)) return { kind: "refused" };
+    return { kind: "unavailable", reason: controller.signal.aborted ? "timeout" : "network" };
   } finally {
     clearTimeout(timer);
     try {
@@ -110,6 +130,12 @@ export async function downloadLibraryCover(url: string): Promise<DownloadedLibra
       logger.error("Failed to close library cover HTTP client");
     }
   }
+}
+
+/** Fetches provider-supplied image URLs through the connect-time address policy; any failure is `undefined`. */
+export async function downloadLibraryCover(url: string): Promise<DownloadedLibraryCover | undefined> {
+  const outcome = await downloadLibraryCoverOutcome(url);
+  return outcome.kind === "downloaded" ? outcome.cover : undefined;
 }
 
 export function rankLibraryMatch(item: ItemRow, title: string, author?: string, year?: number): number {

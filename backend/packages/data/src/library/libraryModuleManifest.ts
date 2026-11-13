@@ -3,6 +3,11 @@ import { LIBRARY_GRID_VIEW_TYPE } from "../views/libraryGridViewType.js";
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "../seed/libraryModuleKeys.js";
 
 export { createLibraryAutomationRetryRouteHandler } from "./libraryAutomationRouteHandlers.js";
+export {
+  createLibraryCoverCandidateSelectRouteHandler,
+  createLibraryCoverCandidatesListRouteHandler,
+  createLibraryCoverCandidatesRefreshRouteHandler,
+} from "./libraryCoverCandidateRouteHandlers.js";
 
 /**
  * Retrofit manifest (module-contract issue #227) for the library module (issue #25): Books
@@ -35,7 +40,7 @@ function statusChips(database: string, statuses: string[]): NonNullable<ModuleDa
 
 export const manifest: ModuleManifest = {
   id: "library",
-  version: "1.2.0",
+  version: "1.3.0",
   name: "Library",
   removable: false,
   systemProject: true,
@@ -73,6 +78,31 @@ export const manifest: ModuleManifest = {
       handlerExport: "createLibraryAutomationRetryRouteHandler",
       // Issue #1793: in one transaction clears the item's manual cover choice, sets its automation row to pending
       // (a locked one too) and enqueues the metadata job, which no single generic item write can do.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "libraryCoverCandidatesList",
+      method: "GET",
+      path: "/api/items/:id/cover-candidates",
+      handlerExport: "createLibraryCoverCandidatesListRouteHandler",
+      // Issue #1812: reads the candidates the metadata job stored for one Books or Movies item; no generic read
+      // returns that table, and the route makes no request to an external service.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "libraryCoverCandidatesRefresh",
+      method: "POST",
+      path: "/api/items/:id/cover-candidates/refresh",
+      handlerExport: "createLibraryCoverCandidatesRefreshRouteHandler",
+      // Issue #1812: in one transaction sets the item's automation row to pending and enqueues the metadata job.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "libraryCoverCandidateSelect",
+      method: "POST",
+      path: "/api/items/:id/cover-candidates/:index/select",
+      handlerExport: "createLibraryCoverCandidateSelectRouteHandler",
+      // Issue #1812: stores the downloaded image as a blob and writes the cover properties in one transaction.
       justification: "transactional-semantics",
     },
   ],

@@ -48,6 +48,29 @@ let soleTenantAdminId: string;
 /** What the realtime hooks were asked to publish, in order (issue #1789). */
 let approvalAnnouncements: Array<{ approvalRequestId: string; userId: string | undefined }>;
 let threadAnnouncements: Array<{ tenantId: string; threadId: string }>;
+/** Every `approvalRequest` and `agentRuns` invalidation in publication order, with the id each names (issue #1863). */
+let invalidationLog: Array<{ scope: "approvalRequest" | "agentRuns"; id: string }>;
+
+/**
+ * The run named by the `agentRuns` invalidation published right after each `approvalRequest` one, or
+ * `null` where none followed: the two are published by one helper, so every request announcement must be
+ * followed by its run's announcement.
+ */
+function runsAnnouncedWithRequests(): Array<string | null> {
+  return invalidationLog.flatMap((entry, index) => {
+    if (entry.scope !== "approvalRequest") return [];
+    const next = invalidationLog[index + 1];
+    return [next?.scope === "agentRuns" ? next.id : null];
+  });
+}
+
+async function runIdOfRequest(approvalRequestId: string): Promise<string> {
+  const { rows } = await pool.query<{ agent_run_id: string }>(
+    "SELECT agent_run_id FROM approval_requests WHERE id = $1",
+    [approvalRequestId],
+  );
+  return rows[0]!.agent_run_id;
+}
 
 function announcementOf(request: { id: string }, userId: string) {
   return { approvalRequestId: request.id, userId };
@@ -114,14 +137,22 @@ describe("approval request decide+execute (issue #131)", () => {
     mcpServersId = await databaseIdFor("mcpServers");
     approvalAnnouncements = [];
     threadAnnouncements = [];
+    invalidationLog = [];
     setInvalidationHook((event) => {
-      if (event.scope === "approvalRequest")
+      if (event.scope === "approvalRequest") {
         approvalAnnouncements.push({ approvalRequestId: event.approvalRequestId, userId: event.userId });
+        invalidationLog.push({ scope: "approvalRequest", id: event.approvalRequestId });
+      }
+      if (event.scope === "agentRuns") invalidationLog.push({ scope: "agentRuns", id: event.agentRunId });
     });
     setSempThreadInvalidationHook((event) => threadAnnouncements.push(event));
   });
 
   afterEach(async () => {
+    // Every site that announces a request also announces its run (issue #1863), whatever the test is about.
+    const announcedRequests = invalidationLog.filter((entry) => entry.scope === "approvalRequest");
+    const expectedRuns = await Promise.all(announcedRequests.map((entry) => runIdOfRequest(entry.id)));
+    expect(runsAnnouncedWithRequests()).toEqual(expectedRuns);
     setInvalidationHook(() => {});
     setSempThreadInvalidationHook(() => {});
     await Promise.all(servers.map((server) => server.stop()));
@@ -166,12 +197,14 @@ describe("approval request decide+execute (issue #131)", () => {
     expect(contractServer.getHandshakeCount()).toBe(0);
     // The decision is announced to the owner of the request and to the thread of its run.
     expect(approvalAnnouncements).toEqual([announcementOf(request, userId)]);
+    expect(runsAnnouncedWithRequests()).toEqual([run.id]);
     expect(threadAnnouncements).toEqual([{ tenantId: getTenantZeroId(), threadId: thread.rows[0]!.id }]);
 
     await drainQueue();
 
     // The recorded outcome is announced once more, the same way.
     expect(approvalAnnouncements).toEqual([announcementOf(request, userId), announcementOf(request, userId)]);
+    expect(runsAnnouncedWithRequests()).toEqual([run.id, run.id]);
     expect(threadAnnouncements).toHaveLength(2);
 
     expect(contractServer.getLastToolCall()).toEqual({

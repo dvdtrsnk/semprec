@@ -33,7 +33,7 @@ export function isRiskClass(value: string): value is RiskClass {
 /**
  * Reads and reversible/non-destructive writes never require approval. `database.archive`,
  * `property.delete`, `view.delete`, `item.delete`, and `relation.delete` are the five
- * destructive operations that do; `page.restoreVersion` (issue #1617) is the sixth. No approval
+ * destructive operations that do; `page.restoreVersion` (issue #1617), `page.replace` (issue #1765) and `page.mergeJournalDuplicates` (issue #2017) are the sixth to eighth. No approval
  * enforcement happens in this batch position — the
  * interceptor consuming this metadata is #220.
  */
@@ -60,7 +60,7 @@ const destructive = (requiresCapability: CapabilityId, reversible: boolean): Ope
 });
 
 /**
- * Exhaustive over the 46 literal operation names, capability and approval/risk metadata checked
+ * Exhaustive over the 48 literal operation names, capability and approval/risk metadata checked
  * together in one object literal per operation: assigning this object literal to a type with
  * exactly these keys is what makes an operation missing (or an extra, misspelled one) a compile
  * error rather than a runtime gap.
@@ -105,10 +105,21 @@ export const OPERATION_METADATA: { [K in GenericOperationName]: OperationMetadat
   "relation.list": nonDestructive("core.item.read", "read"),
   "link.unlink": nonDestructive("core.item.write", "write"),
   "link.relink": nonDestructive("core.item.write", "write"),
-  "page.ensure": nonDestructive("core.page.write", "write"),
-  "page.get": nonDestructive("core.page.read", "read"),
-  "page.changes": nonDestructive("core.page.read", "read"),
-  // Additive and reversible through `item.delete`; the item-write capability is the issue's choice (#1844 refines it).
+  // The page operations hold the item capabilities: whether an agent may read or write a page is decided by its
+  // project's grant on the database that owns the page, not by a capability of its own
+  // (docs/adr/2026-11-13-page-operations-follow-the-owner-database-grant.md; issue #1844). `core.page.read` and
+  // `core.page.write` stay registered, and no operation requires them.
+  "page.ensure": nonDestructive("core.item.write", "write"),
+  // Creates an empty Journal entry and its page when the period has none, an entry the user could create themselves
+  // and trash again, so it needs no approval (issue #1861).
+  "page.ensureJournalPeriod": nonDestructive("core.item.write", "write"),
+  // Re-points links and moves one entry to the Trash, so an agent's call is held for approval every time: the
+  // assistant proposes the merge and the user decides (issue #2017). Not `reversible`: restoring the trashed entry does
+  // not move its content and links back.
+  "page.mergeJournalDuplicates": destructive("core.item.write", false),
+  "page.get": nonDestructive("core.item.read", "read"),
+  "page.changes": nonDestructive("core.item.read", "read"),
+  // Additive and reversible through `item.delete`.
   "page.createSubpage": nonDestructive("core.item.write", "write"),
   // Additive: it creates new Pages items and documents and adds one `page` block to the parent's document. The
   // item-write capability is the issue's choice (docs/adr/2026-11-10-page-duplication-copies-the-subtree-as-new-pages.md).
@@ -117,14 +128,14 @@ export const OPERATION_METADATA: { [K in GenericOperationName]: OperationMetadat
   // (docs/adr/2026-11-10-page-rename-writes-the-item-title-and-the-parent-block-together.md).
   "page.rename": nonDestructive("core.item.write", "write"),
   // Additive: it destroys no content and its blocks carry the caller as `created_by` (docs/adr/2026-10-29-agent-page-write-policy.md).
-  "page.insert": nonDestructive("core.page.write", "write"),
+  "page.insert": nonDestructive("core.item.write", "write"),
   // Discards the current body and trashes the subpages whose links vanished; the trash is restorable and an earlier
   // version can be restored, so `reversible`. docs/adr/2026-10-28-page-operation-family.md and
-  // docs/adr/2026-10-29-agent-page-write-policy.md classify it destructive. It is a REST-only operation until #1844
-  // wires the approval of page operations (`REST_ONLY_OPERATION_NAMES`), so no agent call reaches it unapproved.
-  "page.replace": destructive("core.page.write", true),
+  // docs/adr/2026-10-29-agent-page-write-policy.md classify it destructive, also after version restore exists: an
+  // agent's call is held for approval (issue #1844).
+  "page.replace": destructive("core.item.write", true),
   // Restorable by another restore to an earlier instant, so `reversible` (issue #1617).
-  "page.restoreVersion": destructive("core.page.write", true),
+  "page.restoreVersion": destructive("core.item.write", true),
 };
 
 export const APPROVAL_RISK_LEVELS = ["irreversible", "outbound", "breaksLink", "write"] as const;

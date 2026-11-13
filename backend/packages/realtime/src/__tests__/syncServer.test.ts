@@ -754,11 +754,17 @@ describe("createSyncServer realtime fan-out (issue #161)", () => {
       withTransaction(pool, (client) => createPendingApprovalRequestAndPublish(client, input)),
     );
 
-    await waitUntil(() => frames.length >= 2);
+    await waitUntil(() => frames.length >= 4);
     await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(frames).toHaveLength(2);
+    expect(frames).toHaveLength(4);
     expect(frames).toContainEqual({ type: "invalidate", scope: "approvalRequest", approvalRequestId: request.id });
     expect(frames).toContainEqual({ type: "invalidate", scope: "sempThread", threadId });
+    // The run is announced twice: when it was created, and with the committed request (issue #1863).
+    expect(
+      frames.filter(
+        (frame) => frame.scope === "agentRuns" && frame.agentRunId === run.id && frame.projectItemId === null,
+      ),
+    ).toHaveLength(2);
 
     ownerClient.close();
   });
@@ -1968,12 +1974,17 @@ describe("createSyncServer agent run watch tenancy (issue #1027)", () => {
     return typeof value === "object" && value !== null && !Array.isArray(value);
   }
 
-  /** Collects every frame the client receives, in arrival order; a frame that is not a JSON object fails the test. */
+  /**
+   * Collects every frame the client receives, in arrival order; a frame that is not a JSON object fails the test.
+   * The `agentRuns` invalidation that each run these tests create announces to its actor (issue #1863) is not what
+   * they observe and is left out.
+   */
   function collectFrames(client: WebSocket): Record<string, unknown>[] {
     const frames: Record<string, unknown>[] = [];
     client.on("message", (data) => {
       const frame: unknown = JSON.parse(messageText(data));
       if (!isRecord(frame)) throw new Error("expected a JSON object frame");
+      if (frame.type === "invalidate" && frame.scope === "agentRuns") return;
       frames.push(frame);
     });
     return frames;

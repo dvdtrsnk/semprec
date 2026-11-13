@@ -116,6 +116,21 @@ export function parseServerFrame(raw: string): OutboundFrame | null {
         const { threadId } = parsed;
         return typeof threadId === "string" ? { type: "invalidate", scope: "mailThread", threadId } : null;
       }
+      if (parsed.scope === "agentRuns") {
+        const { projectItemId, agentRunId } = parsed;
+        if (typeof agentRunId !== "string" || !UUID_PATTERN.test(agentRunId)) return null;
+        if (projectItemId === null) return { type: "invalidate", scope: "agentRuns", projectItemId: null, agentRunId };
+        return typeof projectItemId === "string" && UUID_PATTERN.test(projectItemId)
+          ? { type: "invalidate", scope: "agentRuns", projectItemId, agentRunId }
+          : null;
+      }
+      if (parsed.scope === "projectAgent") {
+        const { projectItemId } = parsed;
+        return typeof projectItemId === "string" && UUID_PATTERN.test(projectItemId)
+          ? { type: "invalidate", scope: "projectAgent", projectItemId }
+          : null;
+      }
+      if (parsed.scope === "sempStatus") return { type: "invalidate", scope: "sempStatus" };
       if (parsed.scope === "inboxCards") {
         const { op, cardId } = parsed;
         if (!(op === "created" || op === "updated" || op === "closed")) return null;

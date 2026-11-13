@@ -46,6 +46,15 @@ export type RealtimeMessage =
   | { type: "invalidation"; scope: "mailThread"; threadId: string; userId?: string }
   | {
       type: "invalidation";
+      scope: "agentRuns";
+      projectItemId: string | null;
+      agentRunId: string;
+      userId?: string;
+    }
+  | { type: "invalidation"; scope: "projectAgent"; projectItemId: string }
+  | { type: "invalidation"; scope: "sempStatus" }
+  | {
+      type: "invalidation";
       scope: "inboxCards";
       op: "created" | "updated" | "closed";
       cardId: string;
@@ -247,6 +256,29 @@ export function parseRealtimeMessage(raw: unknown): RealtimeMessage | null {
       if (value.scope === "mailThread") {
         if (!isUuid(value.threadId) || !(value.userId === undefined || isUuid(value.userId))) return null;
         return { type: "invalidation", scope: "mailThread", threadId: value.threadId, userId: value.userId };
+      }
+      if (value.scope === "agentRuns") {
+        if (
+          !isUuid(value.agentRunId) ||
+          !(value.projectItemId === null || isUuid(value.projectItemId)) ||
+          !(value.userId === undefined || isUuid(value.userId))
+        )
+          return null;
+        return {
+          type: "invalidation",
+          scope: "agentRuns",
+          projectItemId: value.projectItemId,
+          agentRunId: value.agentRunId,
+          userId: value.userId,
+        };
+      }
+      if (value.scope === "projectAgent") {
+        return isUuid(value.projectItemId)
+          ? { type: "invalidation", scope: "projectAgent", projectItemId: value.projectItemId }
+          : null;
+      }
+      if (value.scope === "sempStatus") {
+        return { type: "invalidation", scope: "sempStatus" };
       }
       if (value.scope === "inboxCards") {
         if (

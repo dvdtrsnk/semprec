@@ -370,6 +370,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
         expect(delivered).toEqual([
           ...afterSuccess,
           { scope: "approvalRequest", approvalRequestId: expect.any(String), userId: run.actorUserId },
+          { scope: "agentRuns", projectItemId, agentRunId: run.id, userId: run.actorUserId },
         ]);
         expect((await chokePoint.listItemRelations(caller.id, property.id))?.map((edge) => edge.targetItemId)).toEqual([
           second.id,
@@ -1338,6 +1339,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
         // The conflict changed no data; it announces only the request that reached its terminal state.
         expect(conflictInvalidations).toEqual([
           { scope: "approvalRequest", approvalRequestId: seriesOnly, userId: actor.userId },
+          { scope: "agentRuns", projectItemId, agentRunId: run.id, userId: actor.userId },
         ]);
         await runtime.query("UPDATE task_recurrence SET rule = $2::jsonb WHERE series_id = $1", [
           created.properties.seriesId,
@@ -1431,6 +1433,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
         // The conflict changed no data; it announces only the request that reached its terminal state.
         expect(userConflictInvalidations).toEqual([
           { scope: "approvalRequest", approvalRequestId: stale, userId: actor.userId },
+          { scope: "agentRuns", projectItemId, agentRunId: run.id, userId: actor.userId },
         ]);
         expect((await withTransaction(runtime, (client) => getApprovalRequest(client, stale)))?.executionStatus).toBe(
           "conflict",
@@ -2139,24 +2142,24 @@ describe("createGenericOperationGateway (issue #220)", () => {
     }
   });
 
-  it("requires explicit page capabilities independently of item capabilities", async () => {
+  it("serves the page operations under the item capabilities and grants nothing to the page capabilities (issue #1844)", async () => {
     const actor: AuthenticatedActor = { userId: await createUser() };
     const database = await chokePoint.createDatabase({ name: "Pages" });
     const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
     const gateway = createGenericOperationGateway(pool, testMetadataResolver);
     const itemOnly = new Set<(typeof CAPABILITY_IDS)[number]>(["core.item.read", "core.item.write"]);
-    expect(gateway.listOperations(itemOnly)).not.toContain("page.get");
-    expect(gateway.listOperations(itemOnly)).not.toContain("page.restoreVersion");
-    await expect(
-      gateway.invoke("page.get", actor, itemOnly, { itemId: item.id, format: "summary" }),
-    ).rejects.toMatchObject({ status: 404 });
-    await expect(
-      gateway.invoke("page.restoreVersion", actor, itemOnly, { itemId: item.id, at: new Date().toISOString() }),
-    ).rejects.toMatchObject({ status: 404 });
+    const pageOperations = GENERIC_OPERATION_NAMES.filter((operation) => operation.startsWith("page."));
+    expect(pageOperations).toContain("page.restoreVersion");
+    for (const operation of pageOperations) expect(gateway.listOperations(itemOnly)).toContain(operation);
     const pages = new Set<(typeof CAPABILITY_IDS)[number]>(["core.page.read", "core.page.write"]);
-    expect(gateway.listOperations(pages)).toContain("page.get");
-    expect(gateway.listOperations(pages)).toContain("page.restoreVersion");
-    expect(await gateway.invoke("page.get", actor, pages, { itemId: item.id, format: "summary" })).toMatchObject({
+    expect(gateway.listOperations(pages)).toEqual([]);
+    await expect(
+      gateway.invoke("page.get", actor, pages, { itemId: item.id, format: "summary" }),
+    ).rejects.toMatchObject({ status: 404 });
+    await expect(
+      gateway.invoke("page.restoreVersion", actor, pages, { itemId: item.id, at: new Date().toISOString() }),
+    ).rejects.toMatchObject({ status: 404 });
+    expect(await gateway.invoke("page.get", actor, itemOnly, { itemId: item.id, format: "summary" })).toMatchObject({
       docId: null,
     });
     expect((await pool.query("SELECT id FROM docs WHERE item_id = $1", [item.id])).rows).toHaveLength(0);
@@ -2191,14 +2194,14 @@ describe("createGenericOperationGateway (issue #220)", () => {
       }
     });
 
-    it("lists the page operations of core.page.write except page.replace, which REST alone dispatches (issue #1765)", () => {
+    it("lists page.replace and page.insert under core.item.write: the approval of page operations exists (issue #1844)", () => {
       const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-      const pageWrite = new Set(["core.page.write"] as const);
+      const itemWrite = new Set(["core.item.write"] as const);
 
-      const listed = gateway.listOperations(pageWrite);
+      const listed = gateway.listOperations(itemWrite);
       expect(listed).toContain("page.insert");
-      expect(listed).not.toContain("page.replace");
-      expect(OPERATION_METADATA["page.replace"].requiresCapability).toBe("core.page.write");
+      expect(listed).toContain("page.replace");
+      expect(OPERATION_METADATA["page.replace"].requiresCapability).toBe("core.item.write");
     });
   });
 
@@ -2249,7 +2252,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
       expect(rows[0]?.count).toBe(0);
     });
 
-    it("refuses page.replace for a person and for an agent run like an unknown operation, writing nothing (issue #1765)", async () => {
+    it("answers page.replace on an unknown item with not found for a person and for an agent run, creating no approval request (issue #1844)", async () => {
       const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const userId = await createUser();
       const projectItemId = await createRealAgentProjectItemId();
@@ -2260,7 +2263,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
       ];
 
       for (const actor of actors) {
-        // Valid arguments that the port accepts for a REST caller, so only the gateway refuses them here.
+        // Valid arguments for an item that does not exist: the replace projection answers not found for both actors.
         await expect(
           gateway.invoke("page.replace", actor, ALL_CAPABILITIES, {
             itemId: randomUUID(),

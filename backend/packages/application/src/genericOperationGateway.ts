@@ -17,6 +17,8 @@ import {
   approvalNotificationLinkHref,
   buildDestructiveApprovalDescription,
   changeValueLinkWithClient,
+  computeJournalMergeProjection,
+  computePageReplaceProjection,
   databaseArchiveWithClient,
   createRelationWithClient,
   deleteRelationWithClient,
@@ -27,8 +29,10 @@ import {
   isGenericOperationApprovalRequestPayload,
   itemDeleteWithClient,
   markApprovalRequestExecutionSucceeded,
+  mergeApprovedJournalDuplicates,
   propertyDeleteWithClient,
   postApprovalOutcomeMessage,
+  replacePageMarkdown,
   restorePageVersionWithClient,
   setRelationWithClient,
   terminalizeApprovalRequestAsConflict,
@@ -42,6 +46,8 @@ import {
   type DestructiveOperationCheck,
   type DestructiveResourceProjection,
   type GenericOperationApprovalRequestPayload,
+  type JournalMergeCheck,
+  type PageReplaceCheck,
   type PageRestoreCheck,
 } from "@semprec/data";
 import {
@@ -68,6 +74,8 @@ type DestructiveOperationName =
   | "item.delete"
   | "relation.delete"
   | "page.restoreVersion"
+  | "page.replace"
+  | "page.mergeJournalDuplicates"
   | "item.patch"
   | "relation.put"
   | "relation.set"
@@ -89,6 +97,8 @@ function isDestructiveOperationName(operation: GenericOperationName): operation 
     operation === "item.delete" ||
     operation === "relation.delete" ||
     operation === "page.restoreVersion" ||
+    operation === "page.replace" ||
+    operation === "page.mergeJournalDuplicates" ||
     operation === "item.patch" ||
     operation === "relation.put" ||
     operation === "relation.set" ||
@@ -96,21 +106,44 @@ function isDestructiveOperationName(operation: GenericOperationName): operation 
   );
 }
 
-/** A destructive check the choke point's own projection covers, or the page restore's, which the docs module projects (`chokePoint` may not import `docs`). */
-type GatewayCheck = DestructiveOperationCheck | PageRestoreCheck;
+/** A destructive check the choke point's own projection covers, or a page one (restore, replace), which the docs module projects, or a Journal merge, which the Journal module projects (`chokePoint` may not import `docs` or `journal`). */
+type GatewayCheck = DestructiveOperationCheck | PageRestoreCheck | PageReplaceCheck | JournalMergeCheck;
 
 /** The approval snapshot of one destructive check, computed by the module that owns the resource. */
 function projectCheck(client: PoolClient, check: GatewayCheck): Promise<DestructiveResourceProjection> {
-  return check.operation === "page.restoreVersion"
-    ? computePageRestoreProjection(client, check)
-    : computeDestructiveResourceProjection(client, check);
+  switch (check.operation) {
+    case "page.restoreVersion":
+      return computePageRestoreProjection(client, check);
+    case "page.replace":
+      return computePageReplaceProjection(client, check);
+    case "page.mergeJournalDuplicates":
+      return computeJournalMergeProjection(client, check);
+    default:
+      return computeDestructiveResourceProjection(client, check);
+  }
 }
 
 /** Maps one destructive operation's already-validated input (plus the data-layer `Actor` form of the caller, needed only by `view.delete`'s writability check) onto the shared projection/authorization check both request-time snapshotting and execution-time revalidation run. */
 function buildDestructiveCheck(operation: DestructiveOperationName, input: unknown, actor: Actor): GatewayCheck {
   switch (operation) {
     case "page.restoreVersion":
-      return { operation, input: input as { itemId: string; at: string } };
+      return {
+        operation,
+        input: input as { itemId: string; at: string },
+        agentProjectItemId: actor.agentProjectItemId,
+      };
+    case "page.replace":
+      return {
+        operation,
+        input: input as InputByOperation["page.replace"],
+        agentProjectItemId: actor.agentProjectItemId,
+      };
+    case "page.mergeJournalDuplicates":
+      return {
+        operation,
+        input: input as InputByOperation["page.mergeJournalDuplicates"],
+        agentProjectItemId: actor.agentProjectItemId,
+      };
     case "database.archive":
       return { operation, input: input as { databaseId: string } };
     case "property.delete":
@@ -185,6 +218,19 @@ async function executeDestructiveWithClient(
       const { itemId, at } = input as { itemId: string; at: string };
       return restorePageVersionWithClient(client, itemId, new Date(at));
     }
+    case "page.replace": {
+      // Authored `user`, as the restore: the approver's decision is the user's (docs/adr/2026-10-29-agent-page-write-policy.md, decision 4).
+      const { itemId, markdown, expectedEtag } = input as InputByOperation["page.replace"];
+      return replacePageMarkdown(client, itemId, { markdown, expectedEtag, origin: "user", writer, actingUserId });
+    }
+    case "page.mergeJournalDuplicates":
+      // The entries the replay's projection found must be the ones merged; a drift throws, which rolls the replay back, and the next attempt ends it as a conflict (docs/adr/2026-11-13-the-assistant-proposes-a-journal-merge-and-the-user-approves-the-pair.md).
+      return mergeApprovedJournalDuplicates(
+        client,
+        input as InputByOperation["page.mergeJournalDuplicates"],
+        currentResource,
+        writer,
+      );
     case "database.archive":
       return databaseArchiveWithClient(client, (input as { databaseId: string }).databaseId, actingUserId);
     case "property.delete":
@@ -237,10 +283,9 @@ function currentResourceFromErrorDetails(details: unknown): unknown {
 
 /**
  * Whether this gateway serves `operation` under `grantedCapabilities`. A REST-only operation
- * (`REST_ONLY_OPERATION_NAMES`: adding and changing select options, issue #1699, and replacing a page, issue #1765) is
+ * (`REST_ONLY_OPERATION_NAMES`: adding and changing select options, issue #1699) is
  * served under no grant, so the AgentTool and MCP transports, which reach the catalog through this gateway, neither
- * list nor call it. The assistant will propose a new option on an Inbox proposal instead (#1994), and page replacement
- * waits for the approval of page operations (#1844).
+ * list nor call it. The assistant will propose a new option on an Inbox proposal instead (#1994).
  */
 function isGranted(operation: GenericOperationName, grantedCapabilities: ReadonlySet<CapabilityId>): boolean {
   if (REST_ONLY_OPERATION_NAMES.some((restOnly) => restOnly === operation)) return false;

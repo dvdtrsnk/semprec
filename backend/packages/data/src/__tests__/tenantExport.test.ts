@@ -19,6 +19,7 @@ import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { getOrCreateTenantDataKey } from "../credentials/tenantKeysStore.js";
 import { withTransaction } from "../db/pool.js";
 import { insertItemOrigins } from "../inbox/itemOriginsStore.js";
+import { replaceCoverCandidates } from "../library/coverCandidatesStore.js";
 import { LocalFsBlobStorageWriter, MaxBytesExceededError, type BlobStorageWriter } from "../mail/blobStorage.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
 import { createMailThread, reassignThread } from "../mail/mailMessageMetaStore.js";
@@ -409,6 +410,23 @@ describe("tenant data export (issue #1043)", () => {
         ),
       );
     }
+    for (const [tenant, seeded] of [
+      [tenantA, seededA],
+      [tenantB, seededB],
+    ] as const) {
+      await runInTenant(tenant, () =>
+        withTransaction(pool, (client) =>
+          replaceCoverCandidates(client, seeded.itemIds[0]!, [
+            {
+              source: "openLibrary",
+              title: `Cover of ${tenant}`,
+              subtitle: null,
+              imageUrl: "https://covers.example.test/e.jpg",
+            },
+          ]),
+        ),
+      );
+    }
     const exportId = await requestExportIn(tenantA);
 
     await runExport(tenantA, exportId);
@@ -439,6 +457,15 @@ describe("tenant data export (issue #1043)", () => {
       capture_time_basis: "unknown",
       captured_at: null,
     });
+    const candidateFile = entries.get("tables/library_cover_candidates.jsonl");
+    if (!candidateFile) throw new Error("Missing cover candidates table in export");
+    const exportedCandidates: unknown = JSON.parse(candidateFile.toString("utf8").trim());
+    expect(exportedCandidates).toMatchObject({
+      item_id: seededA.itemIds[0],
+      tenant_id: tenantA,
+      title: `Cover of ${tenantA}`,
+    });
+    expect(candidateFile.toString("utf8")).not.toContain(tenantB);
     const tableNames = await expectedTableNames();
     expect(tableNames).toEqual(
       expect.arrayContaining(["items", "item_relations", "docs", "mail_attachments", "blobs"]),
