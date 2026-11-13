@@ -376,7 +376,12 @@ describe("realtime", () => {
       notifyInvalidation({ scope: "mailThread", threadId, userId });
       await vi.waitFor(() => expect(received).toHaveLength(2));
 
-      expect(received.map((notification) => JSON.parse(notification.payload ?? "{}"))).toEqual([
+      // The two NOTIFY statements run on separate pooled connections, so their arrival order is not
+      // fixed; the payload without a user id is put first before the payloads are compared.
+      const payloads = received
+        .map((notification) => notification.payload ?? "{}")
+        .sort((left, right) => Number(left.includes('"userId"')) - Number(right.includes('"userId"')));
+      expect(payloads.map((payload) => JSON.parse(payload))).toEqual([
         { tenantId: getTenantZeroId(), message: { type: "invalidation", scope: "mailThread", threadId } },
         { tenantId: getTenantZeroId(), message: { type: "invalidation", scope: "mailThread", threadId, userId } },
       ]);
@@ -401,8 +406,13 @@ describe("realtime", () => {
       notifyInboxCardsInvalidation({ op: "created", cardId, userId });
       await vi.waitFor(() => expect(received).toHaveLength(2));
 
-      // Only the card and the operation travel: no proposal, status or history of the card.
-      expect(received.map((notification) => JSON.parse(notification.payload ?? "{}"))).toEqual([
+      // Only the card and the operation travel: no proposal, status or history of the card. The two
+      // NOTIFY statements run on separate pooled connections, so the "closed" payload is put first
+      // before the payloads are compared.
+      const payloads = received
+        .map((notification) => notification.payload ?? "{}")
+        .sort((left, right) => Number(right.includes('"op":"closed"')) - Number(left.includes('"op":"closed"')));
+      expect(payloads.map((payload) => JSON.parse(payload))).toEqual([
         {
           tenantId: getTenantZeroId(),
           message: { type: "invalidation", scope: "inboxCards", op: "closed", cardId },
