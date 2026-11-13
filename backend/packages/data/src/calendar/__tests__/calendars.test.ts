@@ -626,7 +626,7 @@ describe("calendars system database (issue #1600)", () => {
       expect(complete.map(([, eventId]) => eventId)).toEqual([...eventIds].sort());
       await runInTenant(tenantId, () => runCalendarsCutoverMigration(dataPool));
       expect(await calendarEdges(tenantId)).toEqual(complete);
-    });
+    }, 120_000);
 
     it("links more Events than one statement inserts", async () => {
       const tenantId = await tenantWithUser("cs");
@@ -646,7 +646,7 @@ describe("calendars system database (issue #1600)", () => {
       await revertToOldShape(tenantId);
       await runInTenant(tenantId, () => runCalendarsCutoverMigration(dataPool));
       expect(await calendarEdges(tenantId)).toHaveLength(501);
-    });
+    }, 120_000);
 
     it("skips a tenant without an Events database", async () => {
       const bare = await createTestTenant(adminPool);

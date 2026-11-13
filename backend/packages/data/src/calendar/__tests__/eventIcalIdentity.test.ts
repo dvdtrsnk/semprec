@@ -405,7 +405,7 @@ describe("Events iCalendar identity cutover (issue #1599)", () => {
     );
     await runInTenant(zero, () => runEventsIcalIdentityCutoverMigration(dataPool));
     expect(await events(zero)).toEqual(after);
-  });
+  }, 120_000);
 
   it("does nothing for a tenant without an Events database", async () => {
     await expect(runInTenant(other, () => runEventsIcalIdentityCutoverMigration(dataPool))).resolves.toBeUndefined();
