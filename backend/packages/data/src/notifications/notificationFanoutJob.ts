@@ -26,6 +26,7 @@ import type {
 import { apnsTarget, webPushTarget } from "../push/pushTargets.js";
 import type { PushSubscriptionRow } from "../push/types.js";
 import { findSleepMuteUntil } from "../sleep/sleepMuteWindow.js";
+import { computeBadgeForUser } from "./badgeCount.js";
 import { logger } from "./logger.js";
 import { policyForKind, type NotificationKindPolicy, type NotificationSeverity } from "./notificationKinds.js";
 import {
@@ -208,6 +209,9 @@ export interface NotificationFanoutDependencies extends PushSenders {
  * `2026-11-12-a-push-inside-the-sleep-window-is-held-by-a-deferred-fan-out-job` names the case in
  * which it can run at the same time as the first one.
  *
+ * The payload of every registration carries the user's badge (issue #1891, `computeBadgeForUser`), computed
+ * once per job after the checks above, so a held or filtered notification costs no badge query.
+ *
  * `push_deliveries` (migration 0032) is the durable per-(notification, registration) dedup key the issue's
  * Task requires: `claimPushDeliveryTargets` claims a row per active registration exactly once (`ON
  * CONFLICT DO NOTHING` on every retry), and only a delivery that is still neither delivered nor
@@ -261,6 +265,9 @@ export async function handleNotificationFanoutTask(
   const statuses = await withTransaction(pool, (client) => getPushDeliveryStatuses(client, notification.id));
   const statusByRegistrationId = new Map(statuses.map((status) => [status.pushSubscriptionId, status]));
 
+  // One badge per job, computed when the push is about to go out: every registration of the user gets the same
+  // number, and a retry of the job computes it again (issue #1891).
+  const badge = await withTransaction(pool, (client) => computeBadgeForUser(client, notification.userId));
   const apns = apnsFieldsFor(notification);
   const payload: NotificationPushPayload = {
     notificationId: notification.id,
@@ -271,6 +278,7 @@ export async function handleNotificationFanoutTask(
     sourceTable: notification.sourceTable,
     sourceId: notification.sourceId,
     kind: notification.kind,
+    badge,
     ...(apns === undefined ? {} : { apns }),
   };
   const transientFailures: unknown[] = [];

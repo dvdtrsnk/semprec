@@ -478,6 +478,7 @@ describe("generic operation AgentTools (issue #220)", () => {
       expect(outcome.approvalRequestId).toBe(rows[0]!.id);
       expect(outcome.result).toContain(`Approval request ${rows[0]!.id} has been created`);
       expect(outcome.changes).toBeUndefined();
+      expect(outcome.errorCode).toBeUndefined();
     });
   });
 
@@ -672,6 +673,30 @@ describe("generic operation AgentTools (issue #220)", () => {
         }
       },
     );
+
+    it("reports the choke point code of a failed call as errorCode, and no code for any other outcome", async () => {
+      const { run, item, tools } = await patchFixture();
+
+      const stale = await tools["item.patch"](run.id, {
+        itemId: item.id,
+        properties: { due: "later" },
+        ifVersion: "2000-01-01T00:00:00.000Z",
+      });
+      const missing = await tools["item.get"](run.id, { itemId: randomUUID() });
+      const noContext = await tools["item.get"](randomUUID(), { itemId: item.id });
+      const read = await tools["item.get"](run.id, { itemId: item.id });
+
+      expect(stale.error).toBe(true);
+      expect(stale.errorCode).toBe(stale.result.split(":")[0]);
+      expect(stale.errorCode).toEqual(expect.stringMatching(/^[a-z_]+$/));
+      expect(missing.error).toBe(true);
+      expect(missing.errorCode).toBe("not_found");
+      // Not a choke point error: the run has no persisted context, so the call never reached the choke point.
+      expect(noContext.error).toBe(true);
+      expect(noContext.errorCode).toBeUndefined();
+      expect(read.error).toBe(false);
+      expect(read.errorCode).toBeUndefined();
+    });
 
     it("stores no changes for a failed patch or for a read", async () => {
       const { run, item, tools } = await patchFixture();

@@ -156,6 +156,7 @@ describe("semp_problem notifications raised by raiseProblem (issue #1466)", () =
       body: null,
       linkHref: `?page=semp-status&id=${problemId}`,
       interruptionLevel: "time-sensitive",
+      badge: 0,
       sourceTable: "semp_problems",
       sourceId: problemId,
       kind: "semp_problem",

@@ -14,6 +14,7 @@ import {
   type EventParticipantInvitation,
   type EventParticipantRole,
 } from "./eventParticipantEdgeHook.js";
+import { inviteEventPerson, replaceEventPeople } from "./eventParticipantsWrites.js";
 
 /** One participant of an Event, as `GET /api/events/:id/people` returns it. */
 interface EventParticipant {
@@ -121,5 +122,105 @@ export function createListEventPeopleRouteHandler(pool: Pool) {
     if (participants === null) throw new NotFoundError("Event not found");
     const people = orderParticipants(participants, toManifestLocale(ctx.identity.user.locale));
     return { status: 200, body: { people } };
+  };
+}
+
+/** The most people one `PUT /api/events/:id/people` may name; a longer list is refused before any lookup. */
+const MAX_REPLACED_PEOPLE = 200;
+
+const replaceBodySchema = z
+  .object({
+    people: z.array(z.object({ personId: z.uuid() }).strict()).max(MAX_REPLACED_PEOPLE),
+    sendInvites: z.boolean(),
+    mailboxId: z.uuid().optional(),
+  })
+  .strict();
+
+const inviteBodySchema = z.object({ mailboxId: z.uuid() }).strict();
+
+/** The field a failed body parse names: the first segment of the first issue's path, or the unknown key of the body itself. */
+function bodyField(error: z.ZodError): string {
+  const issue = error.issues[0];
+  const field = issue?.path[0] ?? (issue?.code === "unrecognized_keys" ? issue.keys[0] : undefined);
+  return typeof field === "string" ? field : "body";
+}
+
+/** The identity and request of the two write routes, duck-typed like `EventPeopleRouteRequestContext`. */
+interface EventPeopleWriteRouteRequestContext extends EventPeopleRouteRequestContext {
+  body: unknown;
+  identity: { user: { id: string; locale: string } };
+}
+
+/** The Event's participants as the read endpoint lists them, read in the open transaction of a write. */
+async function participantsAfterWrite(
+  client: PoolClient,
+  eventId: string,
+  locale: string,
+): Promise<EventParticipant[]> {
+  const participants = await readEventParticipants(client, eventId);
+  if (participants === null) throw new Error("The Event vanished inside the transaction that wrote its participants");
+  return orderParticipants(participants, toManifestLocale(locale));
+}
+
+/**
+ * `PUT /api/events/:id/people` (issue #1790) with the body `{ people: [{ personId }], sendInvites, mailboxId? }`:
+ * makes `people` the Event's non-organizer participants, invites the new ones that have an address when `sendInvites`
+ * is true and answers `{ people, invited, linkedOnly }`, where `people` is what the read endpoint lists after the
+ * write. `replaceEventPeople` describes the diff, the organizer edge and the one transaction the whole request runs in.
+ *
+ * An `id` that is not a UUID or a body of another shape (an unknown key, a list over 200 people, a `personId` or
+ * `mailboxId` that is not a UUID) is `400 validation_failed` on the field, before the transaction starts.
+ */
+export function createReplaceEventPeopleRouteHandler(pool: Pool) {
+  return async (ctx: EventPeopleWriteRouteRequestContext): Promise<{ status: number; body: unknown }> => {
+    const eventId = eventIdSchema.safeParse(ctx.params.id);
+    if (!eventId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
+    const body = replaceBodySchema.safeParse(ctx.body);
+    if (!body.success) {
+      throw new ValidationError("The body must be { people: [{ personId }], sendInvites, mailboxId? }", {
+        field: bodyField(body.error),
+      });
+    }
+    return withTransaction(pool, async (client) => {
+      const counts = await replaceEventPeople(client, {
+        eventId: eventId.data.toLowerCase(),
+        personIds: body.data.people.map((entry) => entry.personId.toLowerCase()),
+        sendInvites: body.data.sendInvites,
+        mailboxId: body.data.mailboxId?.toLowerCase(),
+        actingUserId: ctx.identity.user.id,
+      });
+      const people = await participantsAfterWrite(client, eventId.data.toLowerCase(), ctx.identity.user.locale);
+      return { status: 200, body: { people, invited: counts.invited, linkedOnly: counts.linkedOnly } };
+    });
+  };
+}
+
+/**
+ * `POST /api/events/:id/people/:personId/invite` (issue #1790) with the body `{ mailboxId }`: invites a person who is
+ * already linked to the Event and answers `{ people }`, the participants as the read endpoint lists them after the
+ * write. `inviteEventPerson` describes the refusals (404, 400 and the 409 `conflict` for a person who already has an
+ * invitation) and the transaction. An `id` or `personId` that is not a UUID and a body that is not `{ mailboxId }` with
+ * a UUID are `400 validation_failed` on the field, before the transaction starts.
+ */
+export function createInviteEventPersonRouteHandler(pool: Pool) {
+  return async (ctx: EventPeopleWriteRouteRequestContext): Promise<{ status: number; body: unknown }> => {
+    const eventId = eventIdSchema.safeParse(ctx.params.id);
+    if (!eventId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
+    const personId = eventIdSchema.safeParse(ctx.params.personId);
+    if (!personId.success) throw new ValidationError("'personId' must be a UUID string", { field: "personId" });
+    const body = inviteBodySchema.safeParse(ctx.body);
+    if (!body.success) {
+      throw new ValidationError("The body must be { mailboxId }, a mailbox UUID", { field: bodyField(body.error) });
+    }
+    return withTransaction(pool, async (client) => {
+      await inviteEventPerson(client, {
+        eventId: eventId.data.toLowerCase(),
+        personId: personId.data.toLowerCase(),
+        mailboxId: body.data.mailboxId.toLowerCase(),
+        actingUserId: ctx.identity.user.id,
+      });
+      const people = await participantsAfterWrite(client, eventId.data.toLowerCase(), ctx.identity.user.locale);
+      return { status: 200, body: { people } };
+    });
   };
 }

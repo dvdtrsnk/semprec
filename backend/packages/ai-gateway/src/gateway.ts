@@ -3,6 +3,7 @@ import type { Pool, PoolClient } from "pg";
 import {
   assertGatewayTenantActive,
   failGatewayCall,
+  findExhaustedWindow,
   getCurrentTenantAiBudget,
   getGatewaySpend,
   getGlobalGatewaySpend,
@@ -13,7 +14,9 @@ import {
   withTransaction,
   type AiGatewayCallRow,
 } from "@semprec/data";
+import { currentTenantScope } from "@semprec/shared";
 import { logger } from "./logger.js";
+import { announceTenantRefusal, type TenantRefusalNotice } from "./tenantRefusalAnnouncement.js";
 import type { AudioCallResult, GatewayCallContext, GlobalAiCaps, TokenCallResult } from "./types.js";
 
 /** The one message every budget refusal carries, so no caller can tell which cap tripped. */
@@ -29,9 +32,30 @@ export class BudgetExceededError extends Error {
 
 type BudgetLimit = "noTenantBudget" | "tenantDaily" | "tenantMonthly" | "globalDaily" | "globalMonthly";
 
-/** Logs which limit refused (never an amount or content) and throws the constant refusal. */
-function refuse(limit: BudgetLimit): never {
+/**
+ * A refusal caused by the tenant's own budget state. It is thrown inside the reservation transaction,
+ * carries what `announceTenantRefusal` needs, and never leaves `reserve`: the transaction rolls back,
+ * the announcement runs, and the caller receives a plain `BudgetExceededError`.
+ */
+class TenantBudgetRefusal extends BudgetExceededError {
+  constructor(readonly notice: TenantRefusalNotice) {
+    super(BUDGET_EXCEEDED_MESSAGE);
+  }
+}
+
+/**
+ * Logs which limit refused (never an amount or content) and throws the constant refusal. A refusal
+ * caused by the tenant's own state passes the window it belongs to, so `reserve` can announce it once
+ * the transaction has rolled back; an operator-wide cap passes none and is never announced, because it
+ * is not the tenant's state. The announcement needs the tenant of the active scope, so a refusal of a
+ * call that ran in none is plain.
+ */
+function refuse(limit: BudgetLimit, budgetWindow?: Pick<TenantRefusalNotice, "window" | "timezone">): never {
   logger.warn({ limit }, "AI gateway call refused: budget exceeded");
+  const scope = currentTenantScope();
+  if (budgetWindow && scope?.kind === "tenant") {
+    throw new TenantBudgetRefusal({ tenantId: scope.tenantId, ...budgetWindow });
+  }
   throw new BudgetExceededError(BUDGET_EXCEEDED_MESSAGE);
 }
 
@@ -45,12 +69,16 @@ function refuse(limit: BudgetLimit): never {
  */
 async function assertWithinBudget(client: PoolClient, globalCaps: GlobalAiCaps): Promise<void> {
   const budget = await getCurrentTenantAiBudget(client);
-  if (budget === null) refuse("noTenantBudget");
+  if (budget === null) refuse("noTenantBudget", { window: "noBudget", timezone: null });
 
   const timezone = await getSystemTimezone(client);
   const tenantSpend = await getGatewaySpend(client, timezone);
-  if (budget.dailyCapUsd !== null && tenantSpend.spentToday >= budget.dailyCapUsd) refuse("tenantDaily");
-  if (budget.monthlyCapUsd !== null && tenantSpend.spentMonth >= budget.monthlyCapUsd) refuse("tenantMonthly");
+  const exhausted = findExhaustedWindow(budget, tenantSpend);
+  if (exhausted !== null) {
+    // The daily cap is checked first, so it names the refusal when both caps are reached.
+    const dailyReached = budget.dailyCapUsd !== null && tenantSpend.spentToday >= budget.dailyCapUsd;
+    refuse(dailyReached ? "tenantDaily" : "tenantMonthly", { window: exhausted, timezone });
+  }
 
   const globalSpend = await getGlobalGatewaySpend(client);
   if (globalSpend.spentToday >= globalCaps.dailyCapUsd) refuse("globalDaily");
@@ -66,24 +94,32 @@ async function assertWithinBudget(client: PoolClient, globalCaps: GlobalAiCaps):
  * calls serialize only on the check-and-insert, never on the provider round trip — and the next
  * caller's budget check already sees this call's reservation. A `BudgetExceededError`, or the
  * tenant check's `ForbiddenError`, rolls the transaction back (no row) and propagates unchanged.
- * The lock key and the reserve/settle/fail lifecycle are
+ * Once a refusal caused by the tenant's own budget state has rolled back, `announceTenantRefusal`
+ * runs before the error propagates; it cannot change the error. The lock key and the reserve/settle/fail lifecycle are
  * docs/adr/2026-09-27-ai-budget-reservations-under-a-global-advisory-lock.md.
  */
-function reserve(pool: Pool, ctx: GatewayCallContext): Promise<AiGatewayCallRow> {
-  return withTransaction(pool, async (tx) => {
-    await tx.query("SELECT pg_advisory_xact_lock(hashtext('ai_gateway_budget'))");
-    await assertGatewayTenantActive(tx);
-    await assertWithinBudget(tx, ctx.globalCaps);
-    return reserveGatewayCall(tx, {
-      provider: ctx.provider,
-      model: ctx.model,
-      agentRunId: ctx.agentRunId,
-      sempMessageId: ctx.sempMessageId,
-      projectItemId: ctx.projectItemId,
-      operation: ctx.operation,
-      estimatedCostUsd: ctx.estimatedCostUsd,
+async function reserve(pool: Pool, ctx: GatewayCallContext): Promise<AiGatewayCallRow> {
+  try {
+    return await withTransaction(pool, async (tx) => {
+      await tx.query("SELECT pg_advisory_xact_lock(hashtext('ai_gateway_budget'))");
+      await assertGatewayTenantActive(tx);
+      await assertWithinBudget(tx, ctx.globalCaps);
+      return reserveGatewayCall(tx, {
+        provider: ctx.provider,
+        model: ctx.model,
+        agentRunId: ctx.agentRunId,
+        sempMessageId: ctx.sempMessageId,
+        projectItemId: ctx.projectItemId,
+        operation: ctx.operation,
+        estimatedCostUsd: ctx.estimatedCostUsd,
+      });
     });
-  });
+  } catch (err) {
+    if (!(err instanceof TenantBudgetRefusal)) throw err;
+    // The transaction has rolled back, so nothing is announced from inside the budget lock.
+    await announceTenantRefusal(pool, err.notice);
+    throw new BudgetExceededError(BUDGET_EXCEEDED_MESSAGE);
+  }
 }
 
 /**

@@ -65,6 +65,12 @@ describe("CORE_TASK_AFFINITY", () => {
     expect(TASK_TENANCY[CORE_TASK_NAMES.PUSH_DISMISS]).toBe("tenant");
   });
 
+  it("declares the tenant-scoped pushBadgeRefresh task in the API set (issue #1891)", () => {
+    expect(CORE_TASK_NAMES.PUSH_BADGE_REFRESH).toBe("pushBadgeRefresh");
+    expect(CORE_TASK_AFFINITY[CORE_TASK_NAMES.PUSH_BADGE_REFRESH]).toBe("api");
+    expect(TASK_TENANCY[CORE_TASK_NAMES.PUSH_BADGE_REFRESH]).toBe("tenant");
+  });
+
   it("declares the system-scoped pageOrphanSweep task in the API set (issue #1749)", () => {
     expect(CORE_TASK_NAMES.PAGE_ORPHAN_SWEEP).toBe("pageOrphanSweep");
     expect(CORE_TASK_AFFINITY[CORE_TASK_NAMES.PAGE_ORPHAN_SWEEP]).toBe("api");
@@ -75,6 +81,12 @@ describe("CORE_TASK_AFFINITY", () => {
     expect(CORE_TASK_NAMES.TASK_HOST_EVENT_ENDED).toBe("taskHostEventEnded");
     expect(CORE_TASK_AFFINITY[CORE_TASK_NAMES.TASK_HOST_EVENT_ENDED]).toBe("api");
     expect(TASK_TENANCY[CORE_TASK_NAMES.TASK_HOST_EVENT_ENDED]).toBe("tenant");
+  });
+
+  it("declares the tenant-scoped aiBudgetReset task in the API set (issue gh-2024)", () => {
+    expect(CORE_TASK_NAMES.AI_BUDGET_RESET).toBe("aiBudgetReset");
+    expect(CORE_TASK_AFFINITY[CORE_TASK_NAMES.AI_BUDGET_RESET]).toBe("api");
+    expect(TASK_TENANCY[CORE_TASK_NAMES.AI_BUDGET_RESET]).toBe("tenant");
   });
 
   it("no longer declares the retired credentialReencryptSweep (issue #1069)", () => {

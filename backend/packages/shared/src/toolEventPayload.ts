@@ -34,6 +34,12 @@ export interface ToolResultChange {
 export interface ToolResultDetails {
   approvalRequestId?: string;
   changes?: ToolResultChange[];
+  /** The `ChokePointError.code` of a failed generic operation. */
+  errorCode?: string;
+  /** The failure kind of a failed MCP tool call (issue #1444). */
+  failureKind?: string;
+  /** The id of the item a successful `item.create` created; unlike the result text it is kept when that is redacted as sensitive. */
+  createdItemId?: string;
 }
 
 export interface ToolResultEventPayload extends ToolEventPayload {
@@ -54,13 +60,16 @@ function parseChange(value: unknown): ToolResultChange | null {
 /** Lenient on purpose: a malformed `changes` entry is dropped, a malformed field is ignored, nothing throws. */
 function parseResultDetails(result: unknown): ToolResultDetails | undefined {
   if (!isRecord(result) || !isRecord(result.details)) return undefined;
-  const { approvalRequestId, changes } = result.details;
+  const { approvalRequestId, changes, errorCode, failureKind, createdItemId } = result.details;
   const parsedChanges = Array.isArray(changes)
     ? changes.map(parseChange).filter((change): change is ToolResultChange => change !== null)
     : undefined;
   const details: ToolResultDetails = {
     ...(typeof approvalRequestId === "string" ? { approvalRequestId } : {}),
     ...(parsedChanges !== undefined ? { changes: parsedChanges } : {}),
+    ...(typeof errorCode === "string" ? { errorCode } : {}),
+    ...(typeof failureKind === "string" ? { failureKind } : {}),
+    ...(typeof createdItemId === "string" ? { createdItemId } : {}),
   };
   return Object.keys(details).length > 0 ? details : undefined;
 }

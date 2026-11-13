@@ -27,6 +27,7 @@ export {
   createGetNotificationPreferencesRouteHandler,
   createPatchNotificationPreferencesRouteHandler,
 } from "../notifications/notificationPreferencesRoutes.js";
+export { createBadgeCountsRouteHandler } from "../notifications/badgeCountsRoute.js";
 export { createTriggerHeartbeatRouteHandler } from "../scheduler/triggerHeartbeatRoute.js";
 export { createSetHeartbeatEnabledRouteHandler } from "../scheduler/setHeartbeatEnabledRoute.js";
 
@@ -174,6 +175,15 @@ export const manifest: ModuleManifest = {
       // The first change inserts the caller's row and the update that sets its fields commits with
       // it in one transaction, a shape the generic item-write endpoint can't express.
       justification: "transactional-semantics",
+    },
+    {
+      name: "getBadgeCounts",
+      method: "GET",
+      path: "/api/badge-counts",
+      handlerExport: "createBadgeCountsRouteHandler",
+      // Shaped for exactly one consumer, the app icon badge: three counts of what waits for the
+      // caller's decision, not a generic count of items in a database.
+      justification: "single-consumer-read",
     },
     {
       name: "triggerHeartbeat",

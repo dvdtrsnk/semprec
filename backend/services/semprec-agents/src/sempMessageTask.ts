@@ -2,6 +2,7 @@ import type { Pool } from "pg";
 import { SempConversation, type SempThread, type SempTurnStart } from "@semprec/agent-runtime";
 import { currentTenantScope } from "@semprec/shared";
 import {
+  buildSempReplySummary,
   claimSempMessage,
   enqueueSempThreadTitleIfFirst,
   finishSempMessageTurn,
@@ -18,6 +19,7 @@ import {
   withTransaction,
   type AgentQueueTaskHandler,
   type BlobStorageWriter,
+  type SempReplySummary,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { createAgentSessionFactoryForRun } from "./agentSessionComposition.js";
@@ -205,11 +207,18 @@ export function createSempMessageTask(
             });
             const lastEventId = events.at(-1)?.id ?? start.firstEventId;
             const token = await withTransaction(pool, async (client) => {
+              const summary = await buildSempReplySummary(client, {
+                messageId: assistantMessageId,
+                agentRunId: start.agentRunId,
+                firstEventId: start.firstEventId,
+                lastEventId,
+              });
               if (
                 !(await finishSempMessageTurn(client, assistantMessageId, {
                   status: "done",
                   text: texts.join("\n"),
                   lastEventId,
+                  summary,
                 }))
               ) {
                 throw new Error("Semp message could not be completed");
@@ -232,12 +241,37 @@ export function createSempMessageTask(
                 allowanceCleanupErrors.push(cleanupError);
               }
             }
+            // The steps up to the failure are kept. The summary is read before the error state is stored, so that a
+            // failure to read it is logged and cannot stop the error state itself from being stored.
+            let summary: SempReplySummary | undefined;
+            if (failedStart) {
+              try {
+                summary = await withTransaction(pool, (client) =>
+                  buildSempReplySummary(client, {
+                    messageId: assistantMessageId,
+                    agentRunId: failedStart.agentRunId,
+                    firstEventId: failedStart.firstEventId,
+                    lastEventId: null,
+                  }),
+                );
+              } catch (summaryError) {
+                logger.error(
+                  {
+                    threadId,
+                    assistantMessageId,
+                    errorName: summaryError instanceof Error ? summaryError.name : typeof summaryError,
+                  },
+                  "Semp reply summary could not be built for a failed turn",
+                );
+              }
+            }
             try {
               await withTransaction(pool, async (client) => {
                 if (
                   !(await finishSempMessageTurn(client, assistantMessageId, {
                     status: "error",
                     interrupted: signal.aborted && signal.reason === "shutdown",
+                    ...(summary ? { summary } : {}),
                   }))
                 ) {
                   throw new Error("Semp message error state could not be stored");

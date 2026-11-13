@@ -2,12 +2,16 @@ import { z } from "zod";
 import type { PoolClient } from "pg";
 import type { PropertyRow } from "../types.js";
 import { getRelationDefinitionsByPropertyIds } from "../chokePoint/relationsStore.js";
+import { listRollupSourcesByDatabases } from "../rollup/rollupSources.js";
 import { sortKeyCast } from "./sortCompiler.js";
 import type { FilterProperties } from "./filterCompiler.js";
 
 /**
- * Resolves filter metadata in at most two batched queries: the database's relation
- * definitions, then its targets' relation properties and definitions, one level deep.
+ * Resolves filter metadata in at most three batched queries: the database's relation
+ * definitions, then its targets' relation properties and definitions, one level deep, and the
+ * source databases of its rollups. Every relation property carries the database it reaches
+ * (`targetDatabaseId`, also on the second hop of a path) and every rollup the database it aggregates
+ * (`sourceDatabaseId`), which is what the compiler checks an agent's closed databases against.
  */
 export async function buildFilterProperties(client: PoolClient, properties: PropertyRow[]): Promise<FilterProperties> {
   const relationProperties = properties.filter((property) => property.type === "relation");
@@ -28,8 +32,9 @@ export async function buildFilterProperties(client: PoolClient, properties: Prop
       key: string;
       definition_id: string | null;
       side: "a" | "b" | null;
+      target_database_id: string | null;
     }>(
-      `SELECT p.database_id, p.key, rd.id AS definition_id,
+      `SELECT p.database_id, p.key, rd.id AS definition_id, p.config ->> 'targetDatabaseId' AS target_database_id,
          CASE WHEN rd.property_id_a = p.id THEN 'a' WHEN rd.property_id_b = p.id THEN 'b' END AS side
        FROM properties p
        LEFT JOIN relation_definitions rd ON rd.property_id_a = p.id OR rd.property_id_b = p.id
@@ -46,9 +51,20 @@ export async function buildFilterProperties(client: PoolClient, properties: Prop
         type: "relation",
         relationDefinitionId: row.definition_id ?? undefined,
         relationSide: row.side ?? undefined,
+        targetDatabaseId: row.target_database_id ?? undefined,
       });
     }
   }
+
+  const rollupDatabaseIds = [
+    ...new Set(properties.filter((property) => property.type === "rollup").map((property) => property.databaseId)),
+  ];
+  const rollupSources = new Map(
+    (await listRollupSourcesByDatabases(client, rollupDatabaseIds)).map((row) => [
+      `${row.databaseId}:${row.propertyKey}`,
+      row.sourceDatabaseId,
+    ]),
+  );
 
   const filterProperties: FilterProperties = new Map();
   for (const property of properties) {
@@ -56,7 +72,11 @@ export async function buildFilterProperties(client: PoolClient, properties: Prop
       filterProperties.set(
         property.key,
         property.type === "rollup"
-          ? { type: property.type, numericRollup: sortKeyCast(property) === "::numeric" }
+          ? {
+              type: property.type,
+              numericRollup: sortKeyCast(property) === "::numeric",
+              sourceDatabaseId: rollupSources.get(`${property.databaseId}:${property.key}`),
+            }
           : { type: property.type },
       );
       continue;

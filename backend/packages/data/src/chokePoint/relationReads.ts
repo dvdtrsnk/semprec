@@ -13,6 +13,7 @@ import {
   listUnreadableDatabaseIds,
   type DatabaseReader,
 } from "../agentGrants/agentDatabaseAccess.js";
+import { itemIdsLinkedToDatabases } from "../agentGrants/inheritedSensitivity.js";
 
 /** One live edge seen from one end: the listed item's own relation property and the item on the other side. */
 export interface VisibleItemRelationEntry {
@@ -84,7 +85,9 @@ export async function listItemRelationsWithClient(
 ): Promise<ItemRelationEntry[] | null> {
   const [item] = await itemsStore.getItemsByIds(client, [itemId]);
   if (!item) return null;
-  if (reader !== undefined) await assertReaderDatabaseAccess(client, reader, item.databaseId, "read");
+  if (reader !== undefined) {
+    await assertReaderDatabaseAccess(client, reader, item.databaseId, "read", undefined, item.id);
+  }
 
   const relationProperties = (await propertiesStore.listPropertiesByDatabase(client, item.databaseId)).filter(
     (property) => property.type === "relation",
@@ -140,11 +143,16 @@ export async function listItemRelationsWithClient(
     ),
   );
   const unreadable = reader !== undefined ? await listUnreadableDatabaseIds(client, reader) : undefined;
+  // A target that inherits sensitivity from a database the agent may not read is hidden like one in such a database (issue #1999).
+  const hiddenInherited =
+    typeof reader === "string" && unreadable !== undefined
+      ? await itemIdsLinkedToDatabases(client, [...liveTargets.keys()], unreadable)
+      : new Set<string>();
   const entries: ItemRelationEntry[] = [];
   for (const { side, edge, targetItemId } of candidates) {
     const targetDatabaseId = liveTargets.get(targetItemId);
     if (targetDatabaseId === undefined) continue;
-    if (unreadable?.has(targetDatabaseId)) {
+    if (unreadable?.has(targetDatabaseId) || hiddenInherited.has(targetItemId)) {
       entries.push({
         relationPropertyId: side.property.id,
         propertyKey: side.property.key,

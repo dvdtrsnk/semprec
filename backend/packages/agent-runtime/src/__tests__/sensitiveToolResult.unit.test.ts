@@ -75,6 +75,14 @@ describe("redactSensitiveToolResult (issue #1827)", () => {
     });
   });
 
+  it("keeps the id of the item a marked item.create result created, which names no content (issue #1885)", () => {
+    const redacted = redactSensitiveToolResult(toolResult({ error: false, sensitive: true, createdItemId: "item-1" }));
+    expect(redacted.result).toEqual({
+      content: [{ type: "text", text: "[redacted: sensitive]" }],
+      details: { error: false, createdItemId: "item-1" },
+    });
+  });
+
   it("keeps only the changed keys of a marked item.patch result", () => {
     const redacted = redactSensitiveToolResult(
       toolResult({

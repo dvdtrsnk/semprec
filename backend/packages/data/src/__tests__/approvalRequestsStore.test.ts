@@ -30,6 +30,7 @@ import {
   claimApprovalRequestExecution,
   recordApprovalRequestOutcome,
   listApprovalRequestStatesByIds,
+  listApprovalRequestStatesByIdsForOwner,
 } from "../mcp/approvalRequestsStore.js";
 
 let pool: Pool;
@@ -689,6 +690,79 @@ describe("listApprovalRequestStatesByIds (issue #1862)", () => {
 
     expect(await listApprovalRequestStatesByIds(pool, [])).toEqual([]);
     expect(await listApprovalRequestStatesByIds(pool, [randomUUID()])).toEqual([]);
+  });
+});
+
+describe("listApprovalRequestStatesByIdsForOwner (issue #1887)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    await seedSystem(pool, createViewTypeRegistry());
+    ownerId = await createUser();
+  });
+
+  /** A pending request of a user in a tenant of its own, created in that tenant's scope. */
+  async function createForeignPendingRequest(): Promise<string> {
+    const foreignTenant = await createTestTenant(pool);
+    const foreignUser = await createRawUser(pool, {
+      email: `${randomUUID()}@example.com`,
+      passwordHash: "unused",
+      tenantId: foreignTenant,
+    });
+    return withTenantTransaction(pool, foreignTenant, async (client) => {
+      const run = await createAgentRun(client, { triggeredBy: "user", task: "other", userId: foreignUser.id });
+      const created = await createPendingApprovalRequest(client, {
+        agentRunId: run.id,
+        toolName: "search_web",
+        riskClass: "unclassified",
+        payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+        resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+      });
+      return created.id;
+    });
+  }
+
+  it("returns the state of the owner's requests among the requested ids, and no payload", async () => {
+    const pending = await createPendingRequest();
+    const approved = await createPendingRequest();
+    const notRequested = await createPendingRequest();
+    await decideApprovalRequest(pool, approved, "approved", ownerId);
+
+    const states = await listApprovalRequestStatesByIdsForOwner(pool, [pending, approved], ownerId);
+
+    expect(states.sort((a, b) => a.id.localeCompare(b.id))).toEqual(
+      [
+        { id: pending, status: "pending", executionStatus: "not_approved", executionResult: null },
+        { id: approved, status: "approved", executionStatus: "queued", executionResult: null },
+      ].sort((a, b) => a.id.localeCompare(b.id)),
+    );
+    expect(states.map((state) => state.id)).not.toContain(notRequested);
+  });
+
+  it("leaves out a request whose run belongs to another user, exactly like an unknown id", async () => {
+    const own = await createPendingRequest();
+    const foreign = await createForeignPendingRequest();
+
+    const states = await listApprovalRequestStatesByIdsForOwner(pool, [own, foreign, randomUUID()], ownerId);
+
+    expect(states.map((state) => state.id)).toEqual([own]);
+    // The same request is returned for the user whose run it is, so it is the owner condition that left it out.
+    const { rows } = await pool.query<{ actor_user_id: string }>(
+      `SELECT r.actor_user_id FROM approval_requests ar JOIN agent_runs r ON r.id = ar.agent_run_id WHERE ar.id = $1`,
+      [foreign],
+    );
+    const foreignOwner = rows[0]?.actor_user_id;
+    if (foreignOwner === undefined) throw new Error("The foreign request has no run");
+    expect((await listApprovalRequestStatesByIdsForOwner(pool, [foreign], foreignOwner)).map((s) => s.id)).toEqual([
+      foreign,
+    ]);
+  });
+
+  it("returns nothing for no ids and for ids no request has", async () => {
+    await createPendingRequest();
+
+    expect(await listApprovalRequestStatesByIdsForOwner(pool, [], ownerId)).toEqual([]);
+    expect(await listApprovalRequestStatesByIdsForOwner(pool, [randomUUID()], ownerId)).toEqual([]);
   });
 });
 

@@ -2,6 +2,7 @@ import type { Pool } from "pg";
 import { z } from "zod";
 import { sempMessageRefSchema } from "@semprec/shared";
 import {
+  attachLiveStepApprovals,
   getSempThread,
   listSempThreadMessages,
   listSempThreads,
@@ -235,7 +236,8 @@ export function createSempThreadRoutes(
         const ruleKinds = await heartbeatRuleKinds();
         const result = await withTransaction(pool, async (client) => {
           if (!(await getSempThread(client, id, ruleKinds))) throw new NotFoundError("Thread not found");
-          return listSempThreadMessages(client, id, limit, before);
+          const page = await listSempThreadMessages(client, id, limit, before);
+          return { ...page, rows: await attachLiveStepApprovals(client, page.rows, ctx.identity.user.id) };
         });
         return {
           status: 200,

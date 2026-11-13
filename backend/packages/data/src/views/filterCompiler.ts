@@ -1,5 +1,6 @@
 import type { Queryable } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
+import { closedDatabaseRefusal } from "./closedDatabaseRefusal.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import type { PropertyType } from "../types.js";
 import type { FilterCondition, FilterNode } from "./filterTree.js";
@@ -22,6 +23,8 @@ export interface FilterProperty {
   targetRelationProperties?: FilterProperties;
   /** Set for a rollup whose value is a number (any aggregation but `earliest`/`latest`). */
   numericRollup?: boolean;
+  /** Set for a rollup: the database whose items it aggregates (`rollup_dependencies.source_database_id`). */
+  sourceDatabaseId?: string;
 }
 
 export type FilterProperties = Map<string, FilterProperty>;
@@ -36,6 +39,21 @@ function isRelationCondition(node: FilterCondition): node is RelationCondition |
     node.type === "relation_is_empty" ||
     node.type === "relation_is_not_empty"
   );
+}
+
+/**
+ * Refuses a condition on a property that reaches a database in `closedDatabaseIds` (issue #2000): a relation property
+ * into it, or a rollup that aggregates it. The filter would otherwise tell which items link to a record of that
+ * database, or how many records they link to, without returning one. Every relation and rollup condition goes through
+ * this check, whatever its operator.
+ */
+function assertPropertyNotClosed(
+  key: string,
+  property: FilterProperty,
+  closedDatabaseIds: ReadonlySet<string> | undefined,
+): void {
+  const reached = property.type === "relation" ? property.targetDatabaseId : property.sourceDatabaseId;
+  if (reached !== undefined && closedDatabaseIds?.has(reached)) throw closedDatabaseRefusal(key, reached);
 }
 
 function isRelationEmptinessCondition(node: FilterCondition): node is RelationEmptinessCondition {
@@ -106,6 +124,7 @@ function compileRelationPathCondition(
   node: Extract<FilterCondition, { type: "relation_path_contains" }>,
   properties: FilterProperties,
   params: unknown[],
+  closedDatabaseIds: ReadonlySet<string> | undefined,
 ): string {
   const first = properties.get(node.path[0]);
   const second = first?.targetRelationProperties?.get(node.path[1]);
@@ -120,6 +139,9 @@ function compileRelationPathCondition(
   ) {
     throw new ValidationError("Filter requires a resolvable two-relation path", { field: "filter" });
   }
+  // Either hop can reach the closed database: the intermediate items, or the item the second hop ends on.
+  assertPropertyNotClosed(node.path[0], first, closedDatabaseIds);
+  assertPropertyNotClosed(node.path[1], second, closedDatabaseIds);
   const firstOwn = first.relationSide === "a" ? "item_a" : "item_b";
   const firstTarget = first.relationSide === "a" ? "item_b" : "item_a";
   const secondOwn = second.relationSide === "a" ? "item_a" : "item_b";
@@ -240,13 +262,17 @@ function compileCondition(
   properties: FilterProperties,
   params: unknown[],
   context: FilterCompileContext | undefined,
+  closedDatabaseIds: ReadonlySet<string> | undefined,
 ): string {
   if (node.type === "date_relative") return compileDateRelative(node, properties, params, context);
-  if (node.type === "relation_path_contains") return compileRelationPathCondition(node, properties, params);
+  if (node.type === "relation_path_contains") {
+    return compileRelationPathCondition(node, properties, params, closedDatabaseIds);
+  }
   const property = properties.get(node.property);
   if (!property) {
     throw new ValidationError(`Filter references unknown property '${node.property}'`, { field: node.property });
   }
+  assertPropertyNotClosed(node.property, property, closedDatabaseIds);
   if (isRelationCondition(node) !== (property.type === "relation")) {
     throw new ValidationError(
       isRelationCondition(node)
@@ -349,22 +375,27 @@ function compileCondition(
   }
 }
 
-/** `context` carries the tenant zone and clock; only `date_relative` conditions need it. */
+/**
+ * `context` carries the tenant zone and clock; only `date_relative` conditions need it. `closedDatabaseIds` are the
+ * sensitive databases an agent's project may not read (issue #2000): a condition on a relation property into one of
+ * them, or on a rollup that aggregates one, is refused with a `ForbiddenError` instead of compiled. Absent for a person.
+ */
 export function compileFilterNode(
   node: FilterNode,
   properties: FilterProperties,
   params: unknown[],
   context?: FilterCompileContext,
+  closedDatabaseIds?: ReadonlySet<string>,
 ): string {
   switch (node.type) {
     case "and":
-      return `(${node.nodes.map((n) => compileFilterNode(n, properties, params, context)).join(" AND ")})`;
+      return `(${node.nodes.map((n) => compileFilterNode(n, properties, params, context, closedDatabaseIds)).join(" AND ")})`;
     case "or":
-      return `(${node.nodes.map((n) => compileFilterNode(n, properties, params, context)).join(" OR ")})`;
+      return `(${node.nodes.map((n) => compileFilterNode(n, properties, params, context, closedDatabaseIds)).join(" OR ")})`;
     case "not":
-      return `(NOT ${compileFilterNode(node.node, properties, params, context)})`;
+      return `(NOT ${compileFilterNode(node.node, properties, params, context, closedDatabaseIds)})`;
     default:
-      return compileCondition(node, properties, params, context);
+      return compileCondition(node, properties, params, context, closedDatabaseIds);
   }
 }
 

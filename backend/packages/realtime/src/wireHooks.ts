@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 import {
   setInvalidationHook,
+  setInvalidationPublisher,
   setDocUpdateHook,
   setAgentRunEventHook,
   setNotificationCreatedHook,
@@ -42,6 +43,9 @@ export function wireRealtimeHooks(pool: Pool): void {
       logger.error({ err }, "Failed to publish invalidation realtime message");
     });
   });
+  // The awaited counterpart for a caller that acts on the outcome (the AI gateway's window ledger): it gets
+  // the failure instead of the log line above, and logs it itself.
+  setInvalidationPublisher((event) => publishRealtimeMessage(pool, { type: "invalidation", ...event }));
   setDocUpdateHook((event) => {
     publishRealtimeMessage(pool, { type: "doc_update", ...event }).catch((err: unknown) => {
       logger.error({ err }, "Failed to publish doc_update realtime message");

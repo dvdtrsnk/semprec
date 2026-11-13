@@ -74,12 +74,12 @@ export {
   type ExternalClientReader,
   type RequiredAgentDatabaseAccess,
 } from "./agentGrants/agentDatabaseAccess.js";
+export { sensitiveSourceDatabaseIdsByItem } from "./agentGrants/inheritedSensitivity.js";
 export type { AgentDatabaseAccess } from "./agentGrants/agentDatabaseGrantsStore.js";
 export { allowItemsForTurn, clearForRun } from "./agentGrants/agentRunReadAllowancesStore.js";
 export { requireApprovalForWrite } from "./chokePoint/writeApproval.js";
 export { postApprovalOutcomeMessage } from "./mcp/approvalOutcomeMessage.js";
-export type { CreateDatabaseInput } from "./chokePoint/databasesStore.js";
-export { getDatabaseByModuleId } from "./chokePoint/databasesStore.js";
+export { getDatabaseByModuleId, type CreateDatabaseInput } from "./chokePoint/databasesStore.js";
 export type { CreatePropertyInput } from "./chokePoint/propertiesStore.js";
 export type { ListItemsOptions } from "./chokePoint/itemsStore.js";
 export { findIdempotentReplay, getItemById, getItemsByIds, lockItemById } from "./chokePoint/itemsStore.js";
@@ -90,15 +90,18 @@ export * from "./chokePoint/viewTypeRegistry.js";
 export { manifest as schemaCoreModuleManifest } from "./chokePoint/schemaCoreModuleManifest.js";
 export { createSetHeartbeatEnabledRouteHandler } from "./scheduler/setHeartbeatEnabledRoute.js";
 export { createSempStatusRouteHandler, createSempStatusSummaryRouteHandler } from "./semp/sempStatusRouteHandler.js";
+export {
+  publishSempStatusInvalidationAndWait,
+  publishSempStatusInvalidationNow,
+} from "./sempStatus/sempStatusInvalidation.js";
 
 export * from "./views/filterTree.js";
-export { compileFilterNode } from "./views/filterCompiler.js";
+export { compileFilterNode, type FilterProperty, type FilterProperties } from "./views/filterCompiler.js";
 export * from "./views/sortSpec.js";
 export { compileSort } from "./views/sortCompiler.js";
 export { expandAreaFilter, resolveDatabaseAreaFilters } from "./views/areaFilter.js";
 export * from "./views/viewConfig.js";
 export * from "./views/mailboxClientViewType.js";
-export type { FilterProperty, FilterProperties } from "./views/filterCompiler.js";
 export { buildFilterProperties } from "./views/filterProperties.js";
 export type { QueryViewOptions, QueryViewResult, DatabaseQueryInput, ViewQueryInput } from "./views/viewQuery.js";
 export { manifest as viewsModuleManifest } from "./views/viewsModuleManifest.js";
@@ -200,6 +203,7 @@ export {
   handleAgentRunEventsRetentionTask,
 } from "./agentRuns/agentRunEventsRetention.js";
 export * from "./aiGateway/agentRunUsage.js";
+export { enqueueAiBudgetReset } from "./aiGateway/aiBudgetResetJob.js";
 export * from "./aiGateway/aiGatewayCallsStore.js";
 export * from "./aiGateway/aiUsageReport.js";
 export * from "./aiGateway/aiUsageSummary.js";
@@ -632,7 +636,11 @@ export {
 export { createCalendarTimelineRouteHandler } from "./calendar/timelineRouteHandler.js";
 export { createCalendarAgendaRouteHandler } from "./calendar/agendaRouteHandler.js";
 export { createCalendarCancellationImpactRouteHandler } from "./calendar/cancellationImpactRouteHandler.js";
-export { createListEventPeopleRouteHandler } from "./calendar/eventParticipantsRouteHandlers.js";
+export {
+  createInviteEventPersonRouteHandler,
+  createListEventPeopleRouteHandler,
+  createReplaceEventPeopleRouteHandler,
+} from "./calendar/eventParticipantsRouteHandlers.js";
 export { duplicateCalendarItem } from "./calendar/duplicateCalendarItem.js";
 export { convertEventDateToWallClock } from "./calendar/eventDateMigration.js";
 export { createDuplicateCalendarItemRouteHandler } from "./calendar/duplicateCalendarItemRouteHandler.js";
@@ -701,8 +709,7 @@ export {
 } from "./mcp/mcpToolRegistrationsStore.js";
 export type { ProjectMcpGrant } from "./mcp/mcpProjectGrantsStore.js";
 export { listProjectMcpGrants, getProjectMcpGrant } from "./mcp/mcpProjectGrantsStore.js";
-export type { McpConnectionConfig } from "./mcp/mcpConnectionConfig.js";
-export { assertValidMcpConnectionConfig } from "./mcp/mcpConnectionConfig.js";
+export { assertValidMcpConnectionConfig, type McpConnectionConfig } from "./mcp/mcpConnectionConfig.js";
 export {
   McpConnectionError,
   MCP_CONNECTION_ERROR_REASONS,
@@ -710,12 +717,9 @@ export {
 } from "./mcp/mcpConnectionError.js";
 export type { McpClientHandle, ConnectMcpServerOptions } from "./mcp/mcpConnectionFactory.js";
 export { connectMcpServer } from "./mcp/mcpConnectionFactory.js";
-export type { SyncMcpServerToolsOptions, SyncMcpServerToolsResult } from "./mcp/mcpSync.js";
-export { syncMcpServerTools } from "./mcp/mcpSync.js";
-export type { McpAgentToolProjection } from "./mcp/mcpAgentTools.js";
-export { getGrantedMcpAgentTools } from "./mcp/mcpAgentTools.js";
-export type { McpToolInvocationTarget } from "./mcp/mcpToolInvocation.js";
-export { resolveGrantedMcpTool } from "./mcp/mcpToolInvocation.js";
+export { syncMcpServerTools, type SyncMcpServerToolsOptions, type SyncMcpServerToolsResult } from "./mcp/mcpSync.js";
+export { getGrantedMcpAgentTools, type McpAgentToolProjection } from "./mcp/mcpAgentTools.js";
+export { resolveGrantedMcpTool, type McpToolInvocationTarget } from "./mcp/mcpToolInvocation.js";
 export type {
   McpToolGrantForProject,
   McpToolGrantServerState,
@@ -757,23 +761,22 @@ export {
   markApprovalRequestExecutionSucceeded,
   recordApprovalRequestOutcome,
 } from "./mcp/approvalRequestsStore.js";
-export type {
-  ApprovalRequestQueueEntry,
-  ApprovalRequestSafeSummary,
-  ApprovalRequestDecisionView,
-  ApprovalRequestSource,
-  DecidedApprovalRequestQueueEntry,
-} from "./mcp/approvalRequestsQueue.js";
 export type { ApprovalRequestArgumentValues } from "./mcp/approvalRequestArguments.js";
 export { toApprovalRequestArgumentValues } from "./mcp/approvalRequestArguments.js";
 export { buildDestructiveApprovalDescription, buildMcpInvokeApprovalDescription } from "./mcp/approvalDescription.js";
 export type { ApprovalConflictReason } from "./mcp/approvalConflictReason.js";
 export { approvalConflictReason } from "./mcp/approvalConflictReason.js";
 export {
+  attachLiveStepApprovals,
   getApprovalRequestSourceKind,
   listApprovalRequestsQueue,
   listApprovalRequestsQueuePage,
   toApprovalRequestDecisionView,
+  type ApprovalRequestQueueEntry,
+  type ApprovalRequestSafeSummary,
+  type ApprovalRequestDecisionView,
+  type ApprovalRequestSource,
+  type DecidedApprovalRequestQueueEntry,
 } from "./mcp/approvalRequestsQueue.js";
 export type {
   McpInvokeResult,
@@ -917,6 +920,9 @@ export {
   startSempMessageTurn,
 } from "./semp/sempMessagesStore.js";
 export { enqueueSempThreadTitleIfFirst, handleSempThreadTitle } from "./semp/sempThreadTitle.js";
+export { buildSempReplySummary, type SempReplySummary } from "./semp/sempReplySummary.js";
+export { projectSempReplySteps, type SempReplyStep } from "./semp/sempReplySteps.js";
+export { projectSempReplyChanges, type SempReplyChange } from "./semp/sempReplyChanges.js";
 
 export type { ResolvedModuleAgentTool } from "./agentTools/moduleAgentTools.js";
 export { resolveModuleAgentToolsForRun } from "./agentTools/moduleAgentTools.js";

@@ -4,6 +4,7 @@ import type { Queryable } from "../db/pool.js";
 import { getAgentRun, getAgentRunsByIds, getRootAgentRuns, type AgentRunRow } from "../agentRuns/agentRunsStore.js";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
 import { assertKnownValue } from "../dbRowValidation.js";
+import type { SempReplyStep } from "../semp/sempReplySteps.js";
 import { loadSempThreadTitleResolver, SEMP_THREAD_KINDS, type SempThreadKind } from "../semp/sempThreadsListStore.js";
 import { approvalConflictReason, type ApprovalConflictReason } from "./approvalConflictReason.js";
 import { getMcpToolRegistrationsByIds } from "./mcpToolRegistrationsStore.js";
@@ -11,12 +12,14 @@ import {
   isGenericOperationApprovalRequestPayload,
   isMcpInvokeApprovalRequestPayload,
   listApprovalRequestsPage,
+  listApprovalRequestStatesByIdsForOwner,
   listPendingApprovalRequests,
   type ApprovalDescription,
   type BreaksLinkEntry,
   type EndsInheritanceEntry,
   type ApprovalRequest,
   type ApprovalRequestSourceKind,
+  type ApprovalRequestStateView,
   type ListApprovalRequestsPageInput,
 } from "./approvalRequestsStore.js";
 
@@ -454,4 +457,63 @@ export async function listApprovalRequestsQueuePage(
     })),
     nextCursor,
   };
+}
+
+/**
+ * The live state of the approval request a stored Semp reply step asked for (issue #1887): the three fields a
+ * reader may see. The payload, the arguments and the execution result are never part of it.
+ */
+export interface LiveStepApproval {
+  status: ApprovalRequest["status"];
+  executionStatus: ApprovalRequest["executionStatus"];
+  /** Why an approved request was not carried out; `null` unless `executionStatus` is `conflict`. */
+  conflictReason: ApprovalConflictReason | null;
+}
+
+/** A stored step as the messages read returns it: with `approval` on a step that carries an `approvalRequestId`. */
+export type SempReplyStepWithApproval = SempReplyStep & {
+  /** `null` when the request no longer exists or its run belongs to another user than the caller. */
+  approval?: LiveStepApproval | null;
+};
+
+function liveStepApproval(state: ApprovalRequestStateView | undefined): LiveStepApproval | null {
+  if (state === undefined) return null;
+  return {
+    status: state.status,
+    executionStatus: state.executionStatus,
+    conflictReason: approvalConflictReason(state.executionStatus, state.executionResult),
+  };
+}
+
+/**
+ * Attaches the live approval state to the steps of `messages`, the messages of one page of a Semp thread
+ * (issue #1887). The requests of every step of the page that carries an `approvalRequestId` are read in one
+ * query, owned by `ownerUserId`, and each such step gets `approval`: the request's `status`, `executionStatus`
+ * and `conflictReason` as they are now, or `null` when the caller's scope reads no such request (a missing one
+ * and one of another user cannot be told apart). A step without an `approvalRequestId` is returned as it is. The
+ * stored steps are not rewritten: the object is added to the copy that is returned.
+ */
+export async function attachLiveStepApprovals<M extends { steps?: SempReplyStep[] }>(
+  client: Queryable,
+  messages: readonly M[],
+  ownerUserId: string,
+): Promise<Array<Omit<M, "steps"> & { steps?: SempReplyStepWithApproval[] }>> {
+  const ids = new Set(
+    messages.flatMap((message) => (message.steps ?? []).flatMap((step) => step.approvalRequestId ?? [])),
+  );
+  const states = new Map(
+    (await listApprovalRequestStatesByIdsForOwner(client, [...ids], ownerUserId)).map((state) => [state.id, state]),
+  );
+  return messages.map(({ steps, ...rest }) => ({
+    ...rest,
+    ...(steps === undefined
+      ? {}
+      : {
+          steps: steps.map((step): SempReplyStepWithApproval =>
+            step.approvalRequestId === undefined
+              ? step
+              : { ...step, approval: liveStepApproval(states.get(step.approvalRequestId)) },
+          ),
+        }),
+  }));
 }

@@ -7,6 +7,7 @@ import {
   setDocUpdateHook,
   setAgentRunEventHook,
   setInboxCardsInvalidationHook,
+  setInvalidationPublisher,
   setInvalidationHook,
   setNotificationCreatedHook,
   setNotificationReadStateHook,
@@ -38,6 +39,7 @@ let pool: Pool;
 // for a later test in this file to trip over.
 function resetHooks(): void {
   setInvalidationHook(() => {});
+  setInvalidationPublisher(async () => {});
   setDocUpdateHook(() => {});
   setNotificationCreatedHook(() => {});
   setNotificationReadStateHook(() => {});

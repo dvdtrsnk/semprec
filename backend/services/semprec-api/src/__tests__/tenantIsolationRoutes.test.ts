@@ -480,6 +480,22 @@ async function leavesAUnchanged(body: () => Promise<void>): Promise<void> {
   expect(await readAState()).toEqual(before);
 }
 
+/**
+ * Links the tenant's user to a fresh People item through the real routes, so that a case which sends an invitation does
+ * not depend on whether the case "set self person" ran before it. The Event's organizer is the person it links.
+ */
+async function linkOwnPerson(tenant: TenantFixture): Promise<void> {
+  const personId = readString(
+    await sendOk(tenant.member, {
+      method: "POST",
+      path: `/api/databases/${await databaseIdFor(tenant.tenantId, "people")}/items`,
+      body: { properties: { name: "Organizer probe" } },
+    }),
+    "id",
+  );
+  await sendOk(tenant.member, { method: "PUT", path: "/api/auth/self-person", body: { personId } });
+}
+
 interface SeededSubpage {
   hostItemId: string;
   pageItemId: string;
@@ -2994,6 +3010,129 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const answer = await expectForeignLikeRandom(b.member, [foreign.eventId], ([id]) => peopleOf(id));
     expect(answer.status).toBe(404);
   },
+  // Each tenant gets an Event and a person with an address, seeded here and used by no other case (issue gh-1790).
+  // B replaces the people of A's Event, names A's person and names A's mailbox: each answers like a random id, and
+  // A's Event keeps its people. B then invites through its own Event with its own mailbox, so the refusals are not
+  // what every request gets; that one invitation queues a single job in B and creates B's organizer edge.
+  "event people replace": async () => {
+    await linkOwnPerson(b);
+    const seed = async (tenant: TenantFixture): Promise<{ eventId: string; personId: string; keptId: string }> => {
+      const create = async (moduleId: string, properties: Record<string, unknown>): Promise<string> =>
+        readString(
+          await sendOk(tenant.member, {
+            method: "POST",
+            path: `/api/databases/${await databaseIdFor(tenant.tenantId, moduleId)}/items`,
+            body: { properties },
+          }),
+          "id",
+        );
+      const eventId = await create("events", { name: "Replace probe", date: "2026-11-02" });
+      const personId = await create("people", { name: "Replace probe person", emails: "replace-probe@example.com" });
+      const keptId = await create("people", { name: "Replace probe kept person" });
+      await sendOk(tenant.member, {
+        method: "PUT",
+        path: `/api/items/${eventId}/relations/people/${keptId}`,
+        body: {},
+      });
+      return { eventId, personId, keptId };
+    };
+    const [own, foreign] = [await seed(b), await seed(a)];
+    const replace = (
+      eventId: string | undefined,
+      people: Array<string | undefined>,
+      sendInvites: boolean,
+      mailboxId?: string,
+    ): Request => ({
+      method: "PUT",
+      path: `/api/events/${eventId}/people`,
+      body: { people: people.map((personId) => ({ personId })), sendInvites, mailboxId },
+    });
+    const peopleOf = (caller: Caller, eventId: string): Promise<string> =>
+      sendOk(caller, { method: "GET", path: `/api/events/${eventId}/people` });
+
+    await leavesAUnchanged(async () => {
+      const event = await expectForeignLikeRandom(b.member, [foreign.eventId], ([id]) =>
+        replace(id, [own.personId], false),
+      );
+      expect(event.status).toBe(404);
+      const person = await expectForeignLikeRandom(b.member, [foreign.personId], ([id]) =>
+        replace(own.eventId, [own.keptId, id], false),
+      );
+      expect(person.status).toBe(400);
+      const mailbox = await expectForeignLikeRandom(b.member, [a.mailboxItemId], ([id]) =>
+        replace(own.eventId, [own.keptId, own.personId], true, id),
+      );
+      expect(mailbox.status).toBe(400);
+      // None of the refused requests changed B's Event either.
+      expect(await peopleOf(b.member, own.eventId)).not.toContain(own.personId);
+    });
+    const replaced = await sendOk(b.member, replace(own.eventId, [own.keptId, own.personId], true, b.mailboxItemId));
+    expect(replaced).toContain(own.personId);
+    expect(readNumber(replaced, "invited")).toBe(1);
+    expectNoneOf(replaced, [foreign.eventId, foreign.personId, foreign.keptId], "B's participant list");
+    expect(await peopleOf(a.member, foreign.eventId)).not.toContain(foreign.personId);
+    expect(await peopleOf(a.member, foreign.eventId)).toContain(foreign.keptId);
+  },
+  // Each tenant gets an Event with a linked person who has an address, seeded here and used by no other case (issue
+  // gh-1790). B invites through A's Event, A's person and A's mailbox: each answers like a random id and A's Event keeps
+  // its person without an invitation. B then invites its own person with its own mailbox, which queues one job in B.
+  "event person invite": async () => {
+    await linkOwnPerson(b);
+    const seed = async (tenant: TenantFixture): Promise<{ eventId: string; personId: string }> => {
+      const create = async (moduleId: string, properties: Record<string, unknown>): Promise<string> =>
+        readString(
+          await sendOk(tenant.member, {
+            method: "POST",
+            path: `/api/databases/${await databaseIdFor(tenant.tenantId, moduleId)}/items`,
+            body: { properties },
+          }),
+          "id",
+        );
+      const eventId = await create("events", { name: "Invite probe", date: "2026-11-02" });
+      const personId = await create("people", { name: "Invite probe person", emails: "invite-probe@example.com" });
+      await sendOk(tenant.member, {
+        method: "PUT",
+        path: `/api/items/${eventId}/relations/people/${personId}`,
+        body: {},
+      });
+      return { eventId, personId };
+    };
+    const [own, foreign] = [await seed(b), await seed(a)];
+    const invite = (
+      eventId: string | undefined,
+      personId: string | undefined,
+      mailboxId: string | undefined,
+    ): Request => ({
+      method: "POST",
+      path: `/api/events/${eventId}/people/${personId}/invite`,
+      body: { mailboxId },
+    });
+    const peopleOf = (caller: Caller, eventId: string): Promise<string> =>
+      sendOk(caller, { method: "GET", path: `/api/events/${eventId}/people` });
+    const stateOfA = await peopleOf(a.member, foreign.eventId);
+
+    await leavesAUnchanged(async () => {
+      const event = await expectForeignLikeRandom(b.member, [foreign.eventId], ([id]) =>
+        invite(id, own.personId, b.mailboxItemId),
+      );
+      expect(event.status).toBe(404);
+      const person = await expectForeignLikeRandom(b.member, [foreign.personId], ([id]) =>
+        invite(own.eventId, id, b.mailboxItemId),
+      );
+      expect(person.status).toBe(404);
+      const mailbox = await expectForeignLikeRandom(b.member, [a.mailboxItemId], ([id]) =>
+        invite(own.eventId, own.personId, id),
+      );
+      expect(mailbox.status).toBe(400);
+    });
+    expect(await peopleOf(a.member, foreign.eventId)).toBe(stateOfA);
+    expect(stateOfA).toContain(foreign.personId);
+    const invited = await sendOk(b.member, invite(own.eventId, own.personId, b.mailboxItemId));
+    expect(invited).toContain(own.personId);
+    expect(invited).toContain('"status":"pending"');
+    expectNoneOf(invited, [foreign.eventId, foreign.personId], "B's participant list");
+    expect(await peopleOf(a.member, foreign.eventId)).toBe(stateOfA);
+  },
   // Each tenant gets an Event that hosts one task, seeded here and used by no other case (issue gh-1801).
   "event tasks": async () => {
     const [own, foreign] = [await taskAndEvent(b), await taskAndEvent(a)];
@@ -3260,6 +3399,51 @@ const ROUTE_CASES: Record<string, RouteCase> = {
 
     expect(await totalOf(a)).toBe(aBefore + 4);
     expect(await totalOf(b)).toBe(bBefore + 2);
+  },
+  // A gets three pending approvals and B one, on top of whatever earlier cases left; each tenant's count rises by its
+  // own approvals only, and the two fields without a source stay 0 for both.
+  "badge counts": async () => {
+    const request: Request = { method: "GET", path: "/api/badge-counts" };
+    const countsOf = async (tenant: TenantFixture) =>
+      z
+        .object({
+          pendingApprovals: z.number().int(),
+          pendingInvites: z.number().int(),
+          openInboxItems: z.number().int(),
+        })
+        .parse(JSON.parse(await sendOk(tenant.member, request)));
+    const seedApprovals = (tenant: TenantFixture, count: number) =>
+      runInTenant(tenant.tenantId, async () => {
+        for (let n = 0; n < count; n += 1) {
+          const run = await createAgentRun(pool, {
+            triggeredBy: "heartbeat",
+            task: "badge counts isolation",
+            userId: tenant.member.userId,
+          });
+          await createPendingApprovalRequest(pool, {
+            agentRunId: run.id,
+            toolName: "probe",
+            riskClass: "unclassified",
+            payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+            resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+          });
+        }
+      });
+    const [aBefore, bBefore] = [await countsOf(a), await countsOf(b)];
+
+    await seedApprovals(a, 3);
+    await seedApprovals(b, 1);
+
+    expect(await countsOf(a)).toEqual({
+      pendingApprovals: aBefore.pendingApprovals + 3,
+      pendingInvites: 0,
+      openInboxItems: 0,
+    });
+    expect(await countsOf(b)).toEqual({
+      pendingApprovals: bBefore.pendingApprovals + 1,
+      pendingInvites: 0,
+      openInboxItems: 0,
+    });
   },
   // A and B each get an Event and a Task on the same day; each reads its own two and neither of the other's.
   "calendar timeline": async () => {

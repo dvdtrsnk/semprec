@@ -42,12 +42,19 @@ function assistantText(message: AssistantMessage): string {
     .join("");
 }
 
-/** The databases and items a tool call's arguments name, as the call's events carry them. */
+/**
+ * The databases and items a tool call's arguments name, as the call's events carry them. A relation operation acts
+ * on its `callerItemId` (it has no `itemId`), so that is the item its events name: it survives the redaction of the
+ * arguments of a later call in a turn (`sensitiveTurnRedaction.ts`), which the reply summaries read it from.
+ */
 function targetsOf(args: unknown): { targetDatabaseId?: string; targetItemId?: string } {
   if (typeof args !== "object" || args === null || Array.isArray(args)) return {};
+  const item = "itemId" in args && typeof args.itemId === "string" ? args.itemId : undefined;
+  const caller = "callerItemId" in args && typeof args.callerItemId === "string" ? args.callerItemId : undefined;
+  const itemId = item ?? caller;
   return {
     ...("databaseId" in args && typeof args.databaseId === "string" ? { targetDatabaseId: args.databaseId } : {}),
-    ...("itemId" in args && typeof args.itemId === "string" ? { targetItemId: args.itemId } : {}),
+    ...(itemId !== undefined ? { targetItemId: itemId } : {}),
   };
 }
 

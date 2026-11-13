@@ -82,6 +82,28 @@ export function notifyInvalidation(event: InvalidationEvent): void {
 }
 
 /**
+ * Publishes an invalidation and reports the outcome: it resolves once the realtime message has been sent
+ * and rejects when sending it failed. For a caller whose own bookkeeping depends on the message having
+ * gone out, such as the AI gateway releasing a window it could not announce. The fire-and-forget hook
+ * above, which the write path uses, swallows a failure by design; this one hands it to the caller, which
+ * then owns logging it.
+ */
+export type InvalidationPublisher = (event: InvalidationEvent) => Promise<void>;
+
+/** Until a process wires a publisher, this one hands the event to the fire-and-forget hook of the moment. */
+let publisher: InvalidationPublisher = async (event) => {
+  hook(event);
+};
+
+export function setInvalidationPublisher(next: InvalidationPublisher): void {
+  publisher = next;
+}
+
+export function publishInvalidation(event: InvalidationEvent): Promise<void> {
+  return publisher(event);
+}
+
+/**
  * Fired on every binary Yjs update written to `doc_updates` — the CRDT-frame
  * counterpart to `InvalidationEvent`, riding the same realtime fan-out distinguished
  * only by message type (issue #23, point 8). Carries only `updateId` (issue #161) —

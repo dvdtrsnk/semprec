@@ -1,8 +1,6 @@
-import { createServer } from "node:http";
 import { assertRuntimeRole, createPool, startProcessHeartbeat } from "@semprec/data";
 import { installFatalHandlers } from "@semprec/shared";
-import { createDispatcher, createUpgradeDispatcher } from "./app.js";
-import { createSttStreamUpgradeHandler } from "./sttStreamHandler.js";
+import { createGatewayServer } from "./gatewayServer.js";
 import { resolveStartupConfig } from "./startupConfig.js";
 import { createGracefulShutdown, registerShutdownSignals } from "./shutdown.js";
 import { logger } from "./logger.js";
@@ -22,18 +20,8 @@ const heartbeat = startProcessHeartbeat(
   { onError: (err) => logger.error({ err }, "Failed to record this process's heartbeat") },
 );
 
-const dispatch = createDispatcher(
-  pool,
-  config.handlerOptions,
-  config.audioHandlerOptions,
-  config.piHandlerOptions,
-  config.ttsStreamHandlerOptions,
-);
-
-const server = createServer(dispatch);
-
-const sttStreams = createSttStreamUpgradeHandler(pool, config.sttStreamHandlerOptions);
-server.on("upgrade", createUpgradeDispatcher(sttStreams));
+// Wires the realtime hooks over this pool before the server can accept a request (see createGatewayServer).
+const { server, sttStreams } = createGatewayServer(pool, config);
 
 const shutdown = createGracefulShutdown({ server, pool, heartbeat, logger, closeStreams: () => sttStreams.closeAll() });
 registerShutdownSignals(shutdown);

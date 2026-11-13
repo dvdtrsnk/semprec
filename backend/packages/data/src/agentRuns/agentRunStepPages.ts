@@ -214,7 +214,7 @@ function messageStep(event: AgentRunEventRow): PendingStep | null {
  * A tool call failed when its result says so: `isError`, `result.details.error`, or, for a row stored
  * before the interrupted-result fix of issue #1374, a top-level `error: true`.
  */
-function toolResultFailed(payload: unknown): boolean {
+export function toolResultFailed(payload: unknown): boolean {
   if (!isRecord(payload)) return false;
   if (payload.isError === true || payload.error === true) return true;
   return isRecord(payload.result) && isRecord(payload.result.details) && payload.result.details.error === true;
@@ -230,7 +230,7 @@ function laterId(a: string, b: string): string {
 }
 
 /** A string longer than `AGENT_RUN_STEP_VALUE_MAX_LENGTH` is cut and marked; JSON longer than that becomes such a string. */
-function boundValue(value: unknown): unknown {
+export function boundValue(value: unknown): unknown {
   const text =
     typeof value === "string" ? value : typeof value === "object" && value !== null ? JSON.stringify(value) : null;
   if (text === null || text.length <= AGENT_RUN_STEP_VALUE_MAX_LENGTH) return value;
@@ -238,7 +238,7 @@ function boundValue(value: unknown): unknown {
 }
 
 /** Whether the stored result is the marker of a result redacted as sensitive (issue #1827), as a text or as the content of a result. */
-function isRedactedResult(result: unknown): boolean {
+export function isRedactedResult(result: unknown): boolean {
   if (result === REDACTED_RESULT_MARKER) return true;
   if (!isRecord(result)) return false;
   const content = result.content;

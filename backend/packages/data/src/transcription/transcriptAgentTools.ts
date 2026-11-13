@@ -6,11 +6,14 @@
 import type { Pool } from "pg";
 import { z } from "zod";
 import { currentTenantScope } from "@semprec/shared";
+import { assertAgentDatabaseAccess } from "../agentGrants/agentDatabaseAccess.js";
+import { sensitiveSourceDatabaseIds } from "../agentGrants/inheritedSensitivity.js";
 import { getAgentRun } from "../agentRuns/agentRunsStore.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { getItemById } from "../chokePoint/itemsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { getTenantUserLocale } from "../auth/usersStore.js";
+import { ForbiddenError } from "../errors.js";
 import { TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { readTranscriptDetail } from "./transcriptDetail.js";
 
@@ -43,6 +46,12 @@ type TranscriptSegmentGetArgs = z.infer<typeof transcriptSegmentGetArgsSchema>;
 export interface TranscriptAgentToolResult {
   error: boolean;
   result: string;
+  /**
+   * True on an answer that carries the content of a transcript linked to a sensitive database (issue #1999): the
+   * session composition copies it to the tool result's details so the stored result is redacted, as for the
+   * generic-operation tools (issue #1827).
+   */
+  sensitive?: true;
 }
 
 export type TranscriptAgentTool = (currentRunId: string, args: unknown) => Promise<TranscriptAgentToolResult>;
@@ -51,6 +60,15 @@ export type TranscriptAgentTool = (currentRunId: string, args: unknown) => Promi
 const TRANSCRIPT_NOT_FOUND: TranscriptAgentToolResult = {
   error: true,
   result: JSON.stringify({ error: "not_found", message: "Transcript not found" }),
+};
+
+/**
+ * The answer when the agent's project may not read the transcript because it is linked to a sensitive database
+ * (issue #1999). The message names neither the database nor the record the transcript is linked to.
+ */
+const TRANSCRIPT_FORBIDDEN: TranscriptAgentToolResult = {
+  error: true,
+  result: JSON.stringify({ error: "forbidden", message: "The agent's project may not read this transcript" }),
 };
 
 /** The answer when the call has no run of the tenant in scope to read for. */
@@ -100,22 +118,51 @@ const detailSchema = z.object({
   event: z.object({ id: z.string(), name: z.string().nullable(), date: z.string().nullable() }).nullable(),
 });
 
+/** What `readForRun` answers for a transcript the run may read. */
+interface TranscriptRead {
+  detail: z.infer<typeof detailSchema>;
+  /** True when the transcript is linked to a sensitive database, whatever access the project holds there. */
+  sensitive: boolean;
+}
+
 /**
  * Reads the transcript for the run in scope, inside one transaction: `null` when there is no run of the tenant
  * in scope, `"notFound"` when the id names no live transcript of that tenant (the same for an unknown id,
- * another tenant's and one in the Trash, since row-level security shows only the caller's rows), otherwise the
- * detail composition checked at the edge. The tenant is the one the caller's scope names; no argument
+ * another tenant's and one in the Trash, since row-level security shows only the caller's rows), `"forbidden"`
+ * when the transcript is linked to a sensitive database on which the run's project has no read access
+ * (issue #1999), otherwise the detail composition checked at the edge. The inherited check is the one `item.get` of
+ * the transcript makes, in the same transaction as the read, and the per-turn read allowance of a transcript the
+ * user attached opens it as it opens `item.get`. A run with no project holds no grant, so it is refused a
+ * transcript that is linked to a sensitive database. The tenant is the one the caller's scope names; no argument
  * chooses it.
  */
 async function readForRun(pool: Pool, runId: string, transcriptId: string) {
   if (!z.uuid().safeParse(runId).success || currentTenantScope()?.kind !== "tenant") return null;
-  return withTransaction(pool, async (client) => {
-    if (!(await getAgentRun(client, runId))) return null;
+  return withTransaction(pool, async (client): Promise<TranscriptRead | "notFound" | "forbidden" | null> => {
+    const run = await getAgentRun(client, runId);
+    if (!run) return null;
     const transcripts = await getDatabaseByModuleId(client, TRANSCRIPTS_MODULE_ID);
     const transcript = transcripts && (await getItemById(client, transcripts.id, transcriptId));
-    if (!transcript || transcript.deletedAt) return "notFound" as const;
+    if (!transcripts || !transcript || transcript.deletedAt) return "notFound";
+    const linked = (await sensitiveSourceDatabaseIds(client, transcriptId)).length > 0;
+    if (run.projectItemId === null) {
+      if (linked) return "forbidden";
+    } else {
+      try {
+        await assertAgentDatabaseAccess(client, {
+          agentProjectItemId: run.projectItemId,
+          databaseId: transcripts.id,
+          access: "read",
+          readAllowance: { agentRunId: run.id, itemId: transcriptId },
+          itemId: transcriptId,
+        });
+      } catch (err) {
+        if (err instanceof ForbiddenError) return "forbidden";
+        throw err;
+      }
+    }
     const locale = (await getTenantUserLocale(client)) ?? "cs";
-    return detailSchema.parse(await readTranscriptDetail(client, transcriptId, locale));
+    return { detail: detailSchema.parse(await readTranscriptDetail(client, transcriptId, locale)), sensitive: linked };
   });
 }
 
@@ -136,11 +183,14 @@ export function createTranscriptGetTool(pool: Pool): TranscriptAgentTool {
         args.error.issues.map((issue) => issue.path.join(".")),
       );
     }
-    const detail = await readForRun(pool, currentRunId, args.data.transcriptId);
-    if (detail === null) return RUN_NOT_FOUND;
-    if (detail === "notFound") return TRANSCRIPT_NOT_FOUND;
+    const read = await readForRun(pool, currentRunId, args.data.transcriptId);
+    if (read === null) return RUN_NOT_FOUND;
+    if (read === "notFound") return TRANSCRIPT_NOT_FOUND;
+    if (read === "forbidden") return TRANSCRIPT_FORBIDDEN;
+    const { detail } = read;
     return {
       error: false,
+      ...(read.sensitive ? { sensitive: true as const } : {}),
       result: JSON.stringify({
         transcriptId: args.data.transcriptId,
         displayName: detail.displayName,
@@ -236,9 +286,11 @@ export function createTranscriptSegmentGetTool(pool: Pool): TranscriptAgentTool 
         args.error.issues.map((issue) => issue.path.join(".")),
       );
     }
-    const detail = await readForRun(pool, currentRunId, args.data.transcriptId);
-    if (detail === null) return RUN_NOT_FOUND;
-    if (detail === "notFound") return TRANSCRIPT_NOT_FOUND;
+    const read = await readForRun(pool, currentRunId, args.data.transcriptId);
+    if (read === null) return RUN_NOT_FOUND;
+    if (read === "notFound") return TRANSCRIPT_NOT_FOUND;
+    if (read === "forbidden") return TRANSCRIPT_FORBIDDEN;
+    const { detail } = read;
     const range = readRange(args.data, detail.segments);
     if (isFailure(range)) return range;
     const context = args.data.context ?? TRANSCRIPT_SEGMENT_CONTEXT_DEFAULT;
@@ -257,6 +309,10 @@ export function createTranscriptSegmentGetTool(pool: Pool): TranscriptAgentTool 
               endsAt,
               isContext: index < from || index > to,
             }));
-    return { error: false, result: JSON.stringify({ transcriptId: args.data.transcriptId, from, to, segments }) };
+    return {
+      error: false,
+      ...(read.sensitive ? { sensitive: true as const } : {}),
+      result: JSON.stringify({ transcriptId: args.data.transcriptId, from, to, segments }),
+    };
   };
 }

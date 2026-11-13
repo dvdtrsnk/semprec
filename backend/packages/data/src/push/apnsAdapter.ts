@@ -231,6 +231,7 @@ export async function sendApnsNotification(
       ...(payload.interruptionLevel === undefined ? {} : { "interruption-level": payload.interruptionLevel }),
       ...(collapseKey === null ? {} : { "thread-id": collapseKey }),
       ...(payload.apns?.category === undefined ? {} : { category: payload.apns.category }),
+      ...(payload.badge === undefined ? {} : { badge: payload.badge }),
     },
     link_href: payload.linkHref,
     notification_id: payload.notificationId,
@@ -311,4 +312,33 @@ export async function sendApnsBackgroundPush(
 
   const body = JSON.stringify({ aps: { "content-available": 1 }, ...data });
   return sendApnsRequest(target, body, { "apns-push-type": "background", "apns-priority": "5" }, config);
+}
+
+/** The collapse id of every badge-only push: a newer one replaces an older one APNs still holds for the device. */
+const APNS_BADGE_COLLAPSE_ID = "badge";
+
+/**
+ * A badge-only push (issue #1891): `aps` carries only `badge`, with no alert and no sound, so the app icon
+ * changes without anything showing and the app is not woken. APNs requires the push type `alert` for a payload
+ * that sets a badge, so the request carries `apns-push-type: alert`, `apns-priority: 5` (a low priority push
+ * that does not wake the app) and `apns-collapse-id: badge`. A `badge` of `0` clears the badge. A `badge` that is
+ * not a non-negative integer is rejected with a `ValidationError` before any request. The request, the provider
+ * token and the result mapping are `sendApnsNotification`'s; the adapter only sends, and finding a user's
+ * registrations and revoking a dead one stay with the caller.
+ */
+export async function sendApnsBadgeUpdate(
+  target: ApnsTarget,
+  badge: number,
+  config?: ApnsConfig,
+): Promise<PushSendResult> {
+  if (!Number.isInteger(badge) || badge < 0) {
+    throw new ValidationError("A badge must be a non-negative integer");
+  }
+
+  return sendApnsRequest(
+    target,
+    JSON.stringify({ aps: { badge } }),
+    { "apns-push-type": "alert", "apns-priority": "5", "apns-collapse-id": APNS_BADGE_COLLAPSE_ID },
+    config,
+  );
 }

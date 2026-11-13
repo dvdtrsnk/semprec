@@ -4,6 +4,9 @@ import type { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { runInTenant } from "@semprec/shared";
+import { setAgentDatabaseGrant } from "../../agentGrants/agentDatabaseGrantsAdminStore.js";
+import type { AgentDatabaseAccess } from "../../agentGrants/agentDatabaseGrantsStore.js";
+import { allowItemsForTurn } from "../../agentGrants/agentRunReadAllowancesStore.js";
 import { createAgentRun } from "../../agentRuns/agentRunsStore.js";
 import { createUser } from "../../auth/usersStore.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
@@ -13,7 +16,13 @@ import { writeComputed } from "../../chokePoint/itemsStore.js";
 import { createRelationWithClient } from "../../chokePoint/relationOps.js";
 import { withTransaction } from "../../db/pool.js";
 import { seedSystem } from "../../seed/seedSystem.js";
-import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
+import {
+  createRuntimeRolePool,
+  createTestProjectItem,
+  createTestTenant,
+  getTestPool,
+  resetDatabase,
+} from "../../testSupport/testDb.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcriptionJob.js";
 import {
   createTranscriptGetTool,
@@ -589,6 +598,131 @@ describe("transcript read tools for Semp (issue #1832)", () => {
       expect(failure(await createTranscriptSegmentGetTool(runtime)(f.runId, range))).toMatchObject({
         error: "run_not_found",
       });
+    });
+  });
+
+  describe("a transcript linked to a sensitive record (issue #1999)", () => {
+    const FORBIDDEN_ANSWER = { error: "forbidden", message: "The agent's project may not read this transcript" };
+
+    /** A linked and an unlinked transcript, and runs of projects with the given decision on Health records. */
+    async function linkedSetup() {
+      const f = await setup(tenant);
+      const health = f.db("healthRecords");
+      // A fixture the API cannot produce: the schemas of the system databases are locked, and Transcripts has no
+      // relation to Health records yet. The superuser pool unlocks them so the relation is created as a user would.
+      await admin.query("UPDATE databases SET schema_locked = false WHERE id = ANY($1::uuid[])", [
+        [f.db("transcripts"), health],
+      ]);
+      return runInTenant(tenant, async () => {
+        const property = (
+          await f.cp.createRelationProperty({
+            sourceDatabaseId: f.db("transcripts"),
+            key: "diagnoses",
+            name: "Diagnoses",
+            targetDatabaseId: health,
+          })
+        ).property;
+        const linked = await f.transcript({ name: "Doctor visit" });
+        const free = await f.transcript({ name: "Team meeting" });
+        const record = await f.cp.createItem({ databaseId: health, properties: { name: "Private diagnosis" } });
+        await f.cp.createRelation({
+          relationPropertyId: property.id,
+          callerItemId: linked,
+          targetItemId: record.id,
+        });
+        /** A run of a fresh project; `access` is its decision on Health records, none stored when omitted. */
+        const runOf = async (access?: AgentDatabaseAccess) => {
+          const projectItemId = await createTestProjectItem(runtime);
+          if (access !== undefined) {
+            await withTransaction(runtime, (client) =>
+              setAgentDatabaseGrant(client, { projectItemId, databaseId: health, access }),
+            );
+          }
+          const run = await createAgentRun(runtime, { projectItemId, triggeredBy: "user", task: "Doctor visit" });
+          return run.id;
+        };
+        return {
+          linked,
+          free,
+          runOf,
+          record,
+          unlinkRecord: () =>
+            f.cp.deleteRelation({ relationPropertyId: property.id, callerItemId: linked, targetItemId: record.id }),
+        };
+      });
+    }
+
+    const calls = (transcriptId: string) =>
+      [
+        ["transcript.get", (runId: string) => get(tenant, runId, { transcriptId })],
+        [
+          "transcript.segment.get",
+          (runId: string) => segmentGet(tenant, runId, { transcriptId, fromIndex: 0, toIndex: 3 }),
+        ],
+      ] as const;
+
+    it("refuses both tools to a project without the access, whatever the transcript says, and marks nothing", async () => {
+      const f = await linkedSetup();
+      const runId = await runInTenant(tenant, () => f.runOf());
+      for (const [name, call] of calls(f.linked)) {
+        const result = await runInTenant(tenant, () => call(runId));
+        expect(failure(result), name).toMatchObject(FORBIDDEN_ANSWER);
+        expect(result.result, name).not.toContain("Doctor visit");
+        expect(result.result, name).not.toContain("Sentence number");
+        expect(result, name).not.toHaveProperty("sensitive");
+      }
+      const closed = await runInTenant(tenant, () => f.runOf("none"));
+      expect(failure(await get(tenant, closed, { transcriptId: f.linked }))).toMatchObject(FORBIDDEN_ANSWER);
+    });
+
+    it("reads a linked transcript with a read grant on the record's database and marks the answer sensitive", async () => {
+      const f = await linkedSetup();
+      const runId = await runInTenant(tenant, () => f.runOf("read"));
+      const detail = await get(tenant, runId, { transcriptId: f.linked });
+      expect(getResultSchema.parse(ok(detail))).toMatchObject({ displayName: "Doctor visit", segmentCount: 150 });
+      expect(detail.sensitive).toBe(true);
+      const segments = await segmentGet(tenant, runId, { transcriptId: f.linked, fromIndex: 0, toIndex: 3 });
+      expect(segmentResultSchema.parse(ok(segments)).segments.length).toBeGreaterThan(0);
+      expect(segments.sensitive).toBe(true);
+    });
+
+    it("reads a transcript that is not linked without any grant and marks nothing, and reads the linked one again once the link is gone", async () => {
+      const f = await linkedSetup();
+      const runId = await runInTenant(tenant, () => f.runOf());
+      for (const [name, call] of calls(f.free)) {
+        const result = await runInTenant(tenant, () => call(runId));
+        expect(result.error, name).toBe(false);
+        expect(result, name).not.toHaveProperty("sensitive");
+      }
+      await runInTenant(tenant, () => f.unlinkRecord());
+      for (const [name, call] of calls(f.linked)) {
+        const result = await runInTenant(tenant, () => call(runId));
+        expect(result.error, name).toBe(false);
+        expect(result, name).not.toHaveProperty("sensitive");
+      }
+    });
+
+    it("opens a linked transcript to the run that holds a read allowance for it, as item.get does", async () => {
+      const f = await linkedSetup();
+      const runId = await runInTenant(tenant, () => f.runOf());
+      await runInTenant(tenant, async () => {
+        await withTransaction(runtime, (client) => allowItemsForTurn(client, runId, [f.linked]));
+        const attached = await createTranscriptGetTool(runtime)(runId, { transcriptId: f.linked });
+        expect(attached.error).toBe(false);
+        expect(attached.sensitive).toBe(true);
+      });
+    });
+
+    it("refuses a linked transcript to a run with no project and reads an unlinked one", async () => {
+      const f = await linkedSetup();
+      const run = await runInTenant(tenant, () =>
+        createAgentRun(runtime, { projectItemId: null, triggeredBy: "user", task: "No project" }),
+      );
+      expect(failure(await get(tenant, run.id, { transcriptId: f.linked }))).toMatchObject(FORBIDDEN_ANSWER);
+      expect(
+        failure(await segmentGet(tenant, run.id, { transcriptId: f.linked, fromIndex: 0, toIndex: 3 })),
+      ).toMatchObject(FORBIDDEN_ANSWER);
+      expect((await get(tenant, run.id, { transcriptId: f.free })).error).toBe(false);
     });
   });
 

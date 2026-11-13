@@ -9,7 +9,13 @@ import {
   resetDatabase,
   withTenantTransaction,
 } from "../../testSupport/testDb.js";
-import { setInvalidationHook, type InvalidationEvent } from "../../realtimeHook.js";
+import {
+  notifyInvalidation,
+  setInvalidationHook,
+  setInvalidationPublisher,
+  type InvalidationEvent,
+} from "../../realtimeHook.js";
+import { publishSempStatusInvalidationAndWait } from "../../sempStatus/sempStatusInvalidation.js";
 import { raiseProblem, resolveProblem, type RaiseProblemInput } from "../sempProblemsStore.js";
 
 let admin: Pool;
@@ -57,6 +63,8 @@ describe("sempStatus invalidations (issue #1868)", () => {
   });
   afterEach(() => {
     setInvalidationHook(() => {});
+    // The publisher a process that wires nothing has.
+    setInvalidationPublisher(async (event) => notifyInvalidation(event));
   });
 
   it("announces a raised problem once the transaction committed, with no field but the scope", async () => {
@@ -180,5 +188,26 @@ describe("sempStatus invalidations (issue #1868)", () => {
     ).rejects.toThrow("Unknown problem resolution kind");
 
     expect(events).toEqual([]);
+  });
+
+  describe("the awaited announcement", () => {
+    it("hands the event to the fire-and-forget hook when no process installed a publisher", async () => {
+      await publishSempStatusInvalidationAndWait();
+
+      expect(events).toEqual([{ scope: "sempStatus" }]);
+    });
+
+    it("resolves once the installed publisher has sent the event and rejects with its failure", async () => {
+      const sent: InvalidationEvent[] = [];
+      setInvalidationPublisher(async (event) => {
+        sent.push(event);
+      });
+      await publishSempStatusInvalidationAndWait();
+      expect(sent).toEqual([{ scope: "sempStatus" }]);
+
+      setInvalidationPublisher(() => Promise.reject(new RangeError("notify failed")));
+      await expect(publishSempStatusInvalidationAndWait()).rejects.toThrow(RangeError);
+      expect(events).toEqual([]);
+    });
   });
 });

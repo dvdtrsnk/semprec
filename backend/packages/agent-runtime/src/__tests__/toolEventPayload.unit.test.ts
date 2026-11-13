@@ -98,6 +98,25 @@ describe("parseToolEventPayload result details (issue #1527)", () => {
     });
   });
 
+  it("reads the errorCode of a failed generic operation and the failureKind of a failed MCP call (issues #1860, #1444)", () => {
+    const code = { ...result, result: { details: { error: true, errorCode: "version_conflict" } } };
+    const kind = { ...result, result: { details: { error: true, failureKind: "timeout" } } };
+    expect(parseToolEventPayload("tool_result", code)).toEqual({ ...code, details: { errorCode: "version_conflict" } });
+    expect(parseToolEventPayload("tool_result", kind)).toEqual({ ...kind, details: { failureKind: "timeout" } });
+  });
+
+  it("ignores an errorCode or failureKind that is not a string", () => {
+    const stored = { ...result, result: { details: { error: true, errorCode: 5, failureKind: { kind: "x" } } } };
+    expect(parseToolEventPayload("tool_result", stored)).toEqual(stored);
+  });
+
+  it("reads the createdItemId of a created item and ignores one that is not a string (issue #1885)", () => {
+    const created = { ...result, result: { details: { error: false, createdItemId: "item-1" } } };
+    const odd = { ...result, result: { details: { error: false, createdItemId: 7 } } };
+    expect(parseToolEventPayload("tool_result", created)).toEqual({ ...created, details: { createdItemId: "item-1" } });
+    expect(parseToolEventPayload("tool_result", odd)).toEqual(odd);
+  });
+
   it("has no details for a result without them", () => {
     expect(parseToolEventPayload("tool_result", { ...result, result: { details: { error: false } } })).toEqual({
       ...result,

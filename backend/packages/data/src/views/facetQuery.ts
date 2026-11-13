@@ -7,6 +7,7 @@ import type { AreaFilterTemplate } from "@semprec/module-registry";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import { requireSingleRow } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
+import { closedDatabaseRefusal } from "./closedDatabaseRefusal.js";
 import {
   createCatalogResolver,
   resolveProperty,
@@ -50,6 +51,13 @@ export interface DatabaseFacetsOptions {
   locale?: string;
   /** The clock relative dates are evaluated at; defaults to the current time. */
   now?: Date;
+  /**
+   * The Projects item of an agent's run (issue #2000): a filter, a relation facet or a path facet that reaches a
+   * sensitive database this project may not read, through a relation property or a rollup, is refused with a
+   * `ForbiddenError`. Set by the application layer from the run credential, never read from a request. This does not
+   * decide the access to the faceted database itself.
+   */
+  agentProjectItemId?: string;
 }
 
 /** One choice of a facet. `null` is the choice of the items without a value. */
@@ -186,6 +194,8 @@ interface FacetScope {
   filter: FilterNode | undefined;
   /** The `extra.open` filter. */
   open: FilterNode | undefined;
+  /** The sensitive databases the agent's project may not read (issue #2000); `undefined` for a person. */
+  closedDatabaseIds: ReadonlySet<string> | undefined;
 }
 
 interface FacetStatement {
@@ -209,8 +219,14 @@ function startStatement(scope: FacetScope): FacetStatement {
     "items.deleted_at IS NULL",
     "EXISTS (SELECT 1 FROM databases faceted WHERE faceted.id = $1 AND faceted.archived_at IS NULL)",
   ];
-  if (scope.filter) conditions.push(compileFilterNode(scope.filter, scope.filterProperties, params, scope.context));
-  const openSql = scope.open ? compileFilterNode(scope.open, scope.filterProperties, params, scope.context) : "false";
+  if (scope.filter) {
+    conditions.push(
+      compileFilterNode(scope.filter, scope.filterProperties, params, scope.context, scope.closedDatabaseIds),
+    );
+  }
+  const openSql = scope.open
+    ? compileFilterNode(scope.open, scope.filterProperties, params, scope.context, scope.closedDatabaseIds)
+    : "false";
   return {
     params,
     bind: (value) => {
@@ -341,6 +357,11 @@ function relationHop(property: FilterProperty | undefined): RelationHop | undefi
     targetColumn: property.relationSide === "a" ? "item_b" : "item_a",
     targetDatabaseId: property.targetDatabaseId,
   };
+}
+
+/** Refuses a facet over a relation into a sensitive database the agent's project may not read (issue #2000). */
+function assertHopNotClosed(key: string, hop: RelationHop, closedDatabaseIds: ReadonlySet<string> | undefined): void {
+  if (closedDatabaseIds?.has(hop.targetDatabaseId)) throw closedDatabaseRefusal(key, hop.targetDatabaseId);
 }
 
 /**
@@ -479,7 +500,13 @@ async function countMatches(client: PoolClient, scope: FacetScope, conditions: F
     `(${statement.bind("all")}::text, true)`,
     `(${statement.bind("open")}::text, ${statement.openSql})`,
     ...conditions.map((condition, index) => {
-      const matches = compileFilterNode(condition, scope.filterProperties, statement.params, scope.context);
+      const matches = compileFilterNode(
+        condition,
+        scope.filterProperties,
+        statement.params,
+        scope.context,
+        scope.closedDatabaseIds,
+      );
       return `(${statement.bind(String(index))}::text, ${matches})`;
     }),
   ];
@@ -579,6 +606,7 @@ export async function computeDatabaseFacets(
   input: Omit<DatabaseFacetsInput, "databaseId">,
   metadata: FacetMetadata,
   options: DatabaseFacetsOptions = {},
+  closedDatabaseIds?: ReadonlySet<string>,
 ): Promise<DatabaseFacet[]> {
   const properties = await listPropertiesByDatabase(client, database.id);
   const filterProperties = await buildFilterProperties(client, properties);
@@ -621,6 +649,7 @@ export async function computeDatabaseFacets(
       context,
       filter: filter === undefined ? undefined : excludeFacetConditions(filter, facet),
       open,
+      closedDatabaseIds,
     };
     const answer = (counts: { all: number; open: number }, values: DatabaseFacetValue[]): DatabaseFacet => ({
       ...(facet.kind === "property" ? { property: facet.key } : { path: facet.path }),
@@ -632,6 +661,9 @@ export async function computeDatabaseFacets(
 
     if (facet.kind === "path") {
       const first = relationHop(filterProperties.get(facet.path[0]));
+      // Either hop can reach a closed database: it would list its records (issue #2000). The first is checked before
+      // the properties of its database are read for the second.
+      if (first) assertHopNotClosed(facet.path[0], first, closedDatabaseIds);
       const second = first
         ? relationHop(
             (await buildFilterProperties(client, await listPropertiesByDatabase(client, first.targetDatabaseId))).get(
@@ -642,6 +674,7 @@ export async function computeDatabaseFacets(
       if (!first || !second) {
         throw new ValidationError("A path facet requires a resolvable two-relation path", { field: "facets" });
       }
+      assertHopNotClosed(facet.path[1], second, closedDatabaseIds);
       const counted = await countRelationTargets(client, scope, [first, second], everyArea);
       facets.push(answer(counted, relationValues(counted)));
       continue;
@@ -677,6 +710,7 @@ export async function computeDatabaseFacets(
             field: "facets",
           });
         }
+        assertHopNotClosed(property.key, hop, closedDatabaseIds);
         const counted = await countRelationTargets(client, scope, [hop], everyArea);
         facets.push(answer(counted, relationValues(counted)));
         break;

@@ -41,6 +41,7 @@ import * as taskRecurrenceStore from "../tasks/taskRecurrenceStore.js";
 import { deleteKeptDate } from "../projects/projectKeptDateStore.js";
 import type { WriterIdentity } from "./writerKind.js";
 import { assertWriterDatabaseAccess } from "../agentGrants/agentDatabaseAccess.js";
+import { hideClosedRollupValuesForWriter } from "../agentGrants/closedSensitiveAggregationAccess.js";
 import { assertWriterCascadeAccess, collectItemSubtree } from "./itemSubtreeAccess.js";
 import { deleteAgentDatabaseGrantsForProject } from "../agentGrants/agentDatabaseGrantsStore.js";
 
@@ -101,7 +102,7 @@ export async function itemDeleteWithClient(
   if (options.deletedAtExact !== undefined && !EXACT_TRASH_EPOCH_RE.test(options.deletedAtExact)) {
     throw new Error("deletedAtExact must be UTC text with six fraction digits (YYYY-MM-DDTHH:MI:SS.ffffffZ)");
   }
-  await assertWriterDatabaseAccess(client, options.writer, databaseId, "write");
+  await assertWriterDatabaseAccess(client, options.writer, databaseId, "write", itemId);
   const rootDatabase = await assertDatabaseNotArchived(client, databaseId);
   // The owning module's locks come before the first lock on the trashed row: see
   // docs/adr/2026-11-12-deleting-a-calendar-takes-the-default-mark-lock-and-its-events-into-its-epoch.md.
@@ -216,7 +217,7 @@ export async function restoreItemWithClient(
   /** Passed to every restore hook; `system` when absent. */
   writer?: WriterIdentity,
 ): Promise<ItemRow | null> {
-  await assertWriterDatabaseAccess(client, writer, databaseId, "write");
+  await assertWriterDatabaseAccess(client, writer, databaseId, "write", itemId);
   const rootDatabase = await assertDatabaseNotArchived(client, databaseId);
   // The owning module's locks come before the first lock on the restored row, as on the delete side.
   if (rootDatabase.ownerModuleId !== null) {
@@ -375,6 +376,15 @@ export async function deleteItemDependents(client: PoolClient, row: ItemRow): Pr
   return { blobStorageKeys };
 }
 
+/** The root item a delete or a restore returns, with the rollups an agent writer may not read hidden (issue #2000). */
+async function returnedToWriter(
+  client: PoolClient,
+  writer: WriterIdentity | undefined,
+  item: ItemRow | null,
+): Promise<ItemRow | null> {
+  return item === null ? null : (await hideClosedRollupValuesForWriter(client, writer, [item]))[0]!;
+}
+
 export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAffinity">) {
   const { pool, queueAffinity } = deps;
   return {
@@ -390,8 +400,12 @@ export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
       actingUserId?: string,
       writer?: WriterIdentity,
     ): Promise<ItemRow | null> {
-      return withTransaction(pool, (client) =>
-        itemDeleteWithClient(client, databaseId, itemId, { queueAffinity, actingUserId, writer }),
+      return withTransaction(pool, async (client) =>
+        returnedToWriter(
+          client,
+          writer,
+          await itemDeleteWithClient(client, databaseId, itemId, { queueAffinity, actingUserId, writer }),
+        ),
       );
     },
 
@@ -402,8 +416,12 @@ export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
       actingUserId?: string,
       writer?: WriterIdentity,
     ): Promise<ItemRow | null> {
-      return withTransaction(pool, (client) =>
-        restoreItemWithClient(client, databaseId, itemId, queueAffinity, actingUserId, writer),
+      return withTransaction(pool, async (client) =>
+        returnedToWriter(
+          client,
+          writer,
+          await restoreItemWithClient(client, databaseId, itemId, queueAffinity, actingUserId, writer),
+        ),
       );
     },
 

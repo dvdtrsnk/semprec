@@ -123,6 +123,72 @@ it("retains native call events for a module tool without inventing generic or MC
   }
 });
 
+it("writes the sensitive mark of a module tool answer into the tool result details and no mark for an unmarked answer (issue #1999)", async () => {
+  const pool = new Pool();
+  const faux = fauxProvider();
+  const registry = new ModuleRegistry(() => new Set());
+  vi.spyOn(registry, "getAgentToolDefinitions").mockResolvedValue(
+    [
+      ["fixture.marked", { error: false, result: "linked", sensitive: true }],
+      ["fixture.plain", { error: false, result: "open" }],
+    ].map(([name, answer]) => ({
+      moduleId: "fixture",
+      name: name as string,
+      argumentSchema: { type: "object", properties: {} },
+      handler: () => async () => answer,
+      parseArguments: (value: unknown) => ({ success: true as const, data: value }),
+    })),
+  );
+  let tools: AgentTool[] = [];
+  vi.spyOn(piSession, "createPiAgentSessionFactory").mockImplementation((options) => {
+    tools = options.tools;
+    return () => ({ async *messages() {} });
+  });
+  const run: AgentRunRow = {
+    id: "run-1",
+    projectItemId: "project-1",
+    parentRunId: null,
+    heartbeatId: null,
+    heartbeatOccurrenceId: null,
+    retryOfRunId: null,
+    attempt: 1,
+    threadId: null,
+    mcpClientName: null,
+    triggeredBy: "user",
+    unit: "invocation",
+    task: "run",
+    status: "running",
+    result: null,
+    errorCode: null,
+    errorDetail: null,
+    startedAt: "2026-10-27T00:00:00Z",
+    finishedAt: null,
+    actorUserId: "user-1",
+  };
+  fixtures.operations = [];
+  fixtures.grants = [];
+  try {
+    await createAgentSessionFactoryForRun(
+      pool,
+      registry,
+      {
+        model: faux.getModel(),
+        streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+        isBudgetRefusal: () => false,
+      },
+      run,
+    );
+    const marked = tools.find((candidate) => candidate.name === "fixture_marked");
+    const plain = tools.find((candidate) => candidate.name === "fixture_plain");
+    if (!marked || !plain) throw new Error("Module tools missing");
+    expect((await marked.execute("call-1", {})).details).toEqual({ error: false, sensitive: true });
+    expect((await plain.execute("call-2", {})).details).toEqual({ error: false });
+  } finally {
+    fixtures.operations = ["item.patch"];
+    await pool.end();
+  }
+});
+
 it("keeps the earlier generic tool when a module name collides in a composed session", async () => {
   const pool = new Pool();
   const faux = fauxProvider();
@@ -841,6 +907,17 @@ describe("agent-only approval reason (issue #1420)", () => {
         approvalRequestId: "req-1",
         changes: [{ key: "due", before: "a", after: "b" }],
       });
+    } finally {
+      fixtures.structured = {};
+    }
+  });
+
+  it("writes the choke point code of a failed generic operation into the tool result details as errorCode", async () => {
+    fixtures.structured = { error: true, errorCode: "version_conflict" };
+    try {
+      const { results } = await runCalls({ itemId: "item-1" });
+      const details = (JSON.parse(results[0]!) as { result: { details: unknown } }).result.details;
+      expect(details).toEqual({ error: true, errorCode: "version_conflict" });
     } finally {
       fixtures.structured = {};
     }

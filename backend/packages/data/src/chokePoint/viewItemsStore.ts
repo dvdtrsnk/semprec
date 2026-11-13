@@ -3,6 +3,7 @@ import { requireSingleRow } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
 import type { ViewItemRow } from "../types.js";
 import { visibleDatabaseIds } from "./itemsStore.js";
+import { inheritedSensitivityDeniedSql } from "../agentGrants/agentDatabaseAccess.js";
 
 /** The raw `view_items` row shape this module reads back from Postgres. */
 type ViewItemDbRow = { view_id: string; item_id: string; position: number };
@@ -20,47 +21,77 @@ async function readableDatabaseIds(client: PoolClient, excluded: ReadonlySet<str
   return excluded === undefined || excluded.size === 0 ? databaseIds : databaseIds.filter((id) => !excluded.has(id));
 }
 
+/** What a curated view's reads leave out: the members an agent's project may not read (issues #1810 and #1999). */
+interface ViewMemberExclusions {
+  /** The members whose item (live or trashed) lies in one of these databases. */
+  excludeDatabaseIds?: ReadonlySet<string>;
+  /**
+   * The Projects item of an agent's run: the members that are linked to a sensitive database it may not read, when the
+   * member belongs to a database that inherits sensitivity (`inheritedSensitivityDeniedSql`).
+   */
+  excludeInheritedSensitiveFor?: string;
+}
+
+function hasExclusions(exclusions: ViewMemberExclusions): boolean {
+  return (
+    (exclusions.excludeDatabaseIds !== undefined && exclusions.excludeDatabaseIds.size > 0) ||
+    exclusions.excludeInheritedSensitiveFor !== undefined
+  );
+}
+
+/** The condition that drops the members `excludeInheritedSensitiveFor` names, for the member item aliased `i`; `params` is extended. */
+function inheritedMemberCondition(exclusions: ViewMemberExclusions, params: unknown[]): string[] {
+  if (exclusions.excludeInheritedSensitiveFor === undefined) return [];
+  return [
+    `NOT ${inheritedSensitivityDeniedSql(params, { itemId: "i.id", databaseId: "i.database_id" }, exclusions.excludeInheritedSensitiveFor)}`,
+  ];
+}
+
 /**
  * The members of a view in position order. `excludeDatabaseIds`, when given and not empty, keeps only the members
- * whose item (live or trashed) lies in another database, so the members an agent may not read are not in the list.
+ * whose item (live or trashed) lies in another database, and `excludeInheritedSensitiveFor` drops the linked items
+ * of a database that inherits sensitivity, so the members an agent may not read are not in the list.
  */
 export async function listViewItems(
   client: PoolClient,
   viewId: string,
-  options: { excludeDatabaseIds?: ReadonlySet<string> } = {},
+  options: ViewMemberExclusions = {},
 ): Promise<ViewItemRow[]> {
-  if (options.excludeDatabaseIds === undefined || options.excludeDatabaseIds.size === 0) {
+  if (!hasExclusions(options)) {
     const { rows } = await client.query<ViewItemDbRow>(
       `SELECT view_id, item_id, position FROM view_items WHERE view_id = $1 ORDER BY position ASC`,
       [viewId],
     );
     return rows.map(mapViewItemRow);
   }
+  const params: unknown[] = [viewId, await readableDatabaseIds(client, options.excludeDatabaseIds)];
+  const conditions = ["m.view_id = $1", ...inheritedMemberCondition(options, params)];
   const { rows } = await client.query<ViewItemDbRow>(
     `SELECT m.view_id, m.item_id, m.position FROM view_items m
      JOIN items i ON i.id = m.item_id AND i.database_id = ANY($2::uuid[])
-     WHERE m.view_id = $1
+     WHERE ${conditions.join(" AND ")}
      ORDER BY m.position ASC`,
-    [viewId, await readableDatabaseIds(client, options.excludeDatabaseIds)],
+    params,
   );
   return rows.map(mapViewItemRow);
 }
 
 /**
  * The number of live (non-trashed) members of a curated view, counted over the same join `listLiveViewItemsAfter` pages,
- * without the members in `excludeDatabaseIds`.
+ * without the members the exclusions name.
  */
 export async function countLiveViewItems(
   client: PoolClient,
   viewId: string,
-  options: { excludeDatabaseIds?: ReadonlySet<string> } = {},
+  options: ViewMemberExclusions = {},
 ): Promise<number> {
-  const databaseIds = await readableDatabaseIds(client, options.excludeDatabaseIds);
+  const params: unknown[] = [viewId, await readableDatabaseIds(client, options.excludeDatabaseIds)];
+  const conditions = ["m.view_id = $1", "i.deleted_at IS NULL", ...inheritedMemberCondition(options, params)];
   const { rows } = await client.query<{ count: string }>(
     `SELECT count(*)::text AS count FROM view_items m
      JOIN items i ON i.id = m.item_id AND i.database_id = ANY($2::uuid[])
-     WHERE m.view_id = $1 AND i.deleted_at IS NULL`,
-    [viewId, databaseIds],
+     WHERE ${conditions.join(" AND ")}`,
+    params,
   );
   return Number(requireSingleRow(rows, "view items count").count);
 }
@@ -70,14 +101,14 @@ export async function countLiveViewItems(
  * page a curated view's default listing, where a page must fill with `limit` live items
  * rather than come back short whenever memberships happen to point at trashed items. The
  * join also binds the caller's visible database ids (`visibleDatabaseIds`), so the planner
- * prunes `items` to those partitions instead of scanning every tenant's partition. `excludeDatabaseIds` drops the
- * members of those databases from the join, so a page fills with readable members and its end is the end of the
- * readable ones (issue #1810).
+ * prunes `items` to those partitions instead of scanning every tenant's partition. The exclusions drop the
+ * members of those databases, and the linked items of a database that inherits sensitivity, from the join, so a page
+ * fills with readable members and its end is the end of the readable ones (issues #1810 and #1999).
  */
 export async function listLiveViewItemsAfter(
   client: PoolClient,
   viewId: string,
-  input: { afterPosition: number | null; limit: number; excludeDatabaseIds?: ReadonlySet<string> },
+  input: { afterPosition: number | null; limit: number } & ViewMemberExclusions,
 ): Promise<ViewItemRow[]> {
   const databaseIds = await readableDatabaseIds(client, input.excludeDatabaseIds);
   const conditions = ["m.view_id = $1", "i.deleted_at IS NULL"];
@@ -86,6 +117,7 @@ export async function listLiveViewItemsAfter(
     params.push(input.afterPosition);
     conditions.push(`m.position > $${params.length}`);
   }
+  conditions.push(...inheritedMemberCondition(input, params));
   const { rows } = await client.query<ViewItemDbRow>(
     `SELECT m.view_id, m.item_id, m.position FROM view_items m
      JOIN items i ON i.id = m.item_id AND i.database_id = ANY($3::uuid[])

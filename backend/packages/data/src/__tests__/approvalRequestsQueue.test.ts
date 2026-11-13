@@ -19,10 +19,12 @@ import { ValidationError } from "../errors.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { AGENT_RUN_ROOT_MAX_HOPS, createAgentRun, type AgentRunRow } from "../agentRuns/agentRunsStore.js";
 import {
+  claimApprovalRequestExecution,
   countPendingApprovalRequests,
   createPendingApprovalRequest,
   decideApprovalRequest,
   getApprovalRequest,
+  markApprovalRequestExecutionSucceeded,
   parseApprovalRequestListCursor,
   terminalizeApprovalRequestAsConflict,
   type ApprovalDescription,
@@ -30,6 +32,7 @@ import {
   type ListApprovalRequestsPageInput,
 } from "../mcp/approvalRequestsStore.js";
 import {
+  attachLiveStepApprovals,
   getApprovalRequestSourceKind,
   listApprovalRequestsQueue,
   listApprovalRequestsQueuePage,
@@ -39,12 +42,13 @@ import {
 import { upsertMcpToolRegistration } from "../mcp/mcpToolRegistrationsStore.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import { withTransaction } from "../db/pool.js";
+import { withTransaction, type Queryable } from "../db/pool.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
 import { CORE_AGENT_RUN_ACTION_ID } from "../scheduler/actions.js";
 import { createSempChatThread, sendSempMessage } from "../sempThreads/sempThreadsStore.js";
+import type { SempReplyStep } from "../semp/sempReplySteps.js";
 
 /** The locale the reads of this file are made in; an item thread's title is written in it. */
 const LOCALE = "en";
@@ -1459,6 +1463,207 @@ describe("listApprovalRequestsQueue (issue #132)", () => {
         expect(thrown).toBeInstanceOf(ValidationError);
         expect(thrown).toMatchObject({ details: { field: "cursor" } });
       });
+    });
+  });
+
+  describe("attachLiveStepApprovals (issue #1887)", () => {
+    /** A pending request on a run of `ownerUserId`; its arguments and the later result hold values that must never leak. */
+    async function pendingRequestOf(ownerUserId: string, client: Queryable = pool) {
+      const run = await createAgentRun(client, { triggeredBy: "user", task: "test", userId: ownerUserId });
+      return createPendingApprovalRequest(client, {
+        agentRunId: run.id,
+        toolName: "send_email",
+        riskClass: "outbound",
+        payload: {
+          mcpToolRegistrationId: randomUUID(),
+          mcpServerItemId: randomUUID(),
+          args: { to: "argument-value@example.com" },
+        },
+        resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+      });
+    }
+
+    /** The stored step of a call that is waiting for `approvalRequestId`, as the projector writes it. */
+    function waitingStep(approvalRequestId: string | undefined): SempReplyStep {
+      return {
+        kind: "tool",
+        toolCallId: randomUUID(),
+        toolName: "send_email",
+        label: { key: "agentStep.title.namedTool", params: { toolName: "send_email" } },
+        detail: { key: "agentStep.summary.approvalRequested", params: {} },
+        status: approvalRequestId === undefined ? "ok" : "wait",
+        startedAt: "2026-11-01T10:00:00.000Z",
+        durationMs: 12,
+        ...(approvalRequestId === undefined ? {} : { approvalRequestId }),
+      };
+    }
+
+    async function approvalsOf(requestIds: Array<string | undefined>, userId = ownerId) {
+      const steps = requestIds.map(waitingStep);
+      const [message] = await attachLiveStepApprovals(pool, [{ id: randomUUID(), steps }], userId);
+      return { steps, attached: message?.steps ?? [] };
+    }
+
+    it("returns approved and succeeded for a request that was approved and executed", async () => {
+      const request = await pendingRequestOf(ownerId);
+      await decideApprovalRequest(pool, request.id, "approved", ownerId);
+      await claimApprovalRequestExecution(pool, request.id);
+      await markApprovalRequestExecutionSucceeded(pool, request.id, { sentTo: "result-value@example.com" });
+
+      const { attached } = await approvalsOf([request.id]);
+
+      expect(attached[0]?.approval).toEqual({ status: "approved", executionStatus: "succeeded", conflictReason: null });
+    });
+
+    it("returns not_approved while the request is pending and rejected after the rejection", async () => {
+      const request = await pendingRequestOf(ownerId);
+
+      expect((await approvalsOf([request.id])).attached[0]?.approval).toEqual({
+        status: "pending",
+        executionStatus: "not_approved",
+        conflictReason: null,
+      });
+
+      await decideApprovalRequest(pool, request.id, "rejected", ownerId);
+
+      expect((await approvalsOf([request.id])).attached[0]?.approval).toEqual({
+        status: "rejected",
+        executionStatus: "not_approved",
+        conflictReason: null,
+      });
+    });
+
+    it("returns queued for an approved request that has not been executed yet", async () => {
+      const request = await pendingRequestOf(ownerId);
+      await decideApprovalRequest(pool, request.id, "approved", ownerId);
+
+      expect((await approvalsOf([request.id])).attached[0]?.approval).toEqual({
+        status: "approved",
+        executionStatus: "queued",
+        conflictReason: null,
+      });
+    });
+
+    it("returns the conflictReason key of a conflicted request and none of its details", async () => {
+      const request = await pendingRequestOf(ownerId);
+      await decideApprovalRequest(pool, request.id, "approved", ownerId);
+      await withTransaction(pool, (client) =>
+        terminalizeApprovalRequestAsConflict(client, request.id, { currentResource: { name: "resource-value" } }),
+      );
+
+      const { attached } = await approvalsOf([request.id]);
+
+      expect(attached[0]?.approval).toEqual({
+        status: "approved",
+        executionStatus: "conflict",
+        conflictReason: { key: "approval.conflict.changed" },
+      });
+      expect(JSON.stringify(attached)).not.toContain("resource-value");
+    });
+
+    it("reads the requests of a page with one approval request lookup, not one per step", async () => {
+      const requests = await Promise.all([1, 2, 3, 4, 5].map(() => pendingRequestOf(ownerId)));
+      const messages = [
+        { id: randomUUID(), steps: requests.slice(0, 3).map((request) => waitingStep(request.id)) },
+        { id: randomUUID(), steps: requests.slice(3).map((request) => waitingStep(request.id)) },
+      ];
+
+      await withTransaction(pool, async (client) => {
+        const query = vi.spyOn(client, "query");
+        try {
+          const attached = await attachLiveStepApprovals(client, messages, ownerId);
+
+          expect(attached.flatMap((message) => message.steps ?? []).map((step) => step.approval?.status)).toEqual([
+            "pending",
+            "pending",
+            "pending",
+            "pending",
+            "pending",
+          ]);
+          const statements = query.mock.calls
+            .map(([sql]) => sql)
+            .filter((sql): sql is string => typeof sql === "string");
+          expect(statements).toHaveLength(1);
+          expect(statements[0]).toContain("FROM approval_requests");
+        } finally {
+          query.mockRestore();
+        }
+      });
+    });
+
+    it("does not query at all for a page whose steps hold no approval request", async () => {
+      await withTransaction(pool, async (client) => {
+        const query = vi.spyOn(client, "query");
+        try {
+          await attachLiveStepApprovals(
+            client,
+            [{ id: randomUUID(), steps: [waitingStep(undefined)] }, { id: randomUUID() }],
+            ownerId,
+          );
+
+          expect(query).not.toHaveBeenCalled();
+        } finally {
+          query.mockRestore();
+        }
+      });
+    });
+
+    it("gives a missing request and a request of another user the same null, and still reads the caller's own", async () => {
+      // The other user lives in a tenant of its own (one user per tenant). This pool bypasses row-level
+      // security, so only the owner condition of the query keeps the foreign request out.
+      const foreignTenant = await createTestTenant(pool);
+      const otherUserId = (
+        await createRawUser(pool, {
+          email: `${randomUUID()}@example.com`,
+          passwordHash: "unused",
+          tenantId: foreignTenant,
+        })
+      ).id;
+      const own = await pendingRequestOf(ownerId);
+      const foreign = await withTenantTransaction(pool, foreignTenant, (client) =>
+        pendingRequestOf(otherUserId, client),
+      );
+
+      const { attached } = await approvalsOf([own.id, foreign.id, randomUUID()]);
+
+      expect(attached[0]?.approval).toMatchObject({ status: "pending" });
+      expect(attached[1]).toHaveProperty("approval", null);
+      expect(attached[2]).toHaveProperty("approval", null);
+      expect(attached[1]?.approval).toEqual(attached[2]?.approval);
+      // The same request is readable for its owner, so the null above comes from the owner condition.
+      expect((await approvalsOf([foreign.id], otherUserId)).attached[0]?.approval).toMatchObject({ status: "pending" });
+    });
+
+    it("returns only the three fields and neither the payload, the arguments nor the execution result", async () => {
+      const request = await pendingRequestOf(ownerId);
+      await decideApprovalRequest(pool, request.id, "approved", ownerId);
+      await claimApprovalRequestExecution(pool, request.id);
+      await markApprovalRequestExecutionSucceeded(pool, request.id, { sentTo: "result-value@example.com" });
+
+      const { attached } = await approvalsOf([request.id]);
+
+      expect(Object.keys(attached[0]?.approval ?? {}).sort()).toEqual(["conflictReason", "executionStatus", "status"]);
+      const json = JSON.stringify(attached);
+      expect(json).not.toContain("argument-value");
+      expect(json).not.toContain("result-value");
+      expect(json).not.toContain("payload");
+    });
+
+    it("leaves a step without an approval request and a message without steps as they are, and the input unchanged", async () => {
+      const request = await pendingRequestOf(ownerId);
+      const plain = waitingStep(undefined);
+      const waiting = waitingStep(request.id);
+      const stored = structuredClone([plain, waiting]);
+      const messages = [{ id: randomUUID(), steps: [plain, waiting] }, { id: randomUUID() }];
+
+      const attached = await attachLiveStepApprovals(pool, messages, ownerId);
+
+      expect(attached[0]?.steps?.[0]).toEqual(plain);
+      expect(attached[0]?.steps?.[0]).not.toHaveProperty("approval");
+      expect(attached[0]?.steps?.[1]).toMatchObject({ ...waiting, approval: { status: "pending" } });
+      expect(attached[1]).toEqual({ id: messages[1]?.id });
+      expect(attached[1]).not.toHaveProperty("steps");
+      expect(messages[0]?.steps).toEqual(stored);
     });
   });
 });

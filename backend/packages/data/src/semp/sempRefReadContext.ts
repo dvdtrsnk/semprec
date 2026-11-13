@@ -12,6 +12,7 @@ import { getBlock, listBlocks } from "../docs/blocks.js";
 import { readRefDocumentStates } from "../docs/docsStore.js";
 import { getAgentRun } from "../agentRuns/agentRunsStore.js";
 import { listUnreadableDatabaseIds } from "../agentGrants/agentDatabaseAccess.js";
+import { itemIdsLinkedToDatabases } from "../agentGrants/inheritedSensitivity.js";
 import { getTaskRecurrenceBySeriesId, publicTaskRecurrenceTemplate } from "../tasks/taskRecurrenceStore.js";
 import { getApprovalRequest } from "../mcp/approvalRequestsStore.js";
 import { getBlob } from "../blobs/blobsStore.js";
@@ -48,8 +49,9 @@ async function itemTitle(client: PoolClient, item: ItemRow): Promise<string> {
 
 /**
  * The names of the items an item relates to through the given relation keys. A target in a database of
- * `unreadableDatabaseIds` (the databases the reading agent's project may not read, issue #1849) contributes its id
- * under `hidden` as `{ id, hidden: true }` and no name.
+ * `unreadableDatabaseIds` (the databases the reading agent's project may not read, issue #1849), or a Files,
+ * Transcripts or Inbox item linked to one of them (issue #1999), contributes its id under `hidden` as
+ * `{ id, hidden: true }` and no name.
  */
 async function relatedNames(
   client: PoolClient,
@@ -71,10 +73,17 @@ async function relatedNames(
       client,
       rows.slice(0, MAX_RELATION_TARGETS).map((edge) => (edge.item_a === item.id ? edge.item_b : edge.item_a)),
     );
-    const readable = targets.filter((target) => !unreadableDatabaseIds.has(target.databaseId));
-    const hidden = targets
-      .filter((target) => unreadableDatabaseIds.has(target.databaseId))
-      .map((target): HiddenRelationTarget => ({ id: target.id, hidden: true }));
+    // A Files, Transcripts or Inbox target linked to a sensitive database the project may not read is as hidden as an
+    // item of that database (issue #1999); with nothing unreadable the lookup does not query.
+    const linkedToUnreadable = await itemIdsLinkedToDatabases(
+      client,
+      targets.map((target) => target.id),
+      unreadableDatabaseIds,
+    );
+    const isHidden = (target: ItemRow) =>
+      unreadableDatabaseIds.has(target.databaseId) || linkedToUnreadable.has(target.id);
+    const readable = targets.filter((target) => !isHidden(target));
+    const hidden = targets.filter(isHidden).map((target): HiddenRelationTarget => ({ id: target.id, hidden: true }));
     result[property.key] = {
       names: await Promise.all(readable.map((target) => itemTitle(client, target))),
       truncated: rows.length > MAX_RELATION_TARGETS,

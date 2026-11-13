@@ -202,7 +202,10 @@ async function createModuleTools(
               };
             }
             const result = await definition.invoke(params);
-            return { content: [{ type: "text", text: result.result }], details: { error: result.error } };
+            return {
+              content: [{ type: "text", text: result.result }],
+              details: { error: result.error, ...(result.sensitive === true ? { sensitive: true } : {}) },
+            };
           } catch (err) {
             logger.warn(
               { ...describeModuleToolFailure(err), toolName: definition.name, runId },
@@ -243,7 +246,9 @@ async function createGenericOperationTools(
         details: {
           error: result.error,
           ...(result.approvalRequestId !== undefined ? { approvalRequestId: result.approvalRequestId } : {}),
+          ...(result.errorCode !== undefined ? { errorCode: result.errorCode } : {}),
           ...(result.changes !== undefined ? { changes: result.changes } : {}),
+          ...(result.createdItemId !== undefined ? { createdItemId: result.createdItemId } : {}),
           ...(result.sensitive === true ? { sensitive: true } : {}),
         },
       };

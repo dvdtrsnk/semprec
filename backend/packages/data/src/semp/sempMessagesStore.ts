@@ -6,6 +6,7 @@ import { currentTenantScope } from "@semprec/shared";
 import { publishSempThreadInvalidation } from "../realtimeHook.js";
 import { enqueueSempMessage } from "./sempMessageQueue.js";
 import { sempMessageSearchVectorSql } from "./sempMessageSearch.js";
+import type { SempReplySummary } from "./sempReplySummary.js";
 
 // A fixed SQL fragment; no caller input is interpolated.
 const MESSAGE_TOKEN = `jsonb_build_object('id', id, 'role', role, 'text', text, 'status', status,
@@ -80,15 +81,26 @@ export async function startSempMessageTurn(
   requireAffectedRows(result, "starting Semp message turn");
 }
 
+/**
+ * Stores the final status of a running assistant message. `summary` (issues #1860 and #1885) is the steps,
+ * duration, token totals and changed items of the turn and is written by the same statement as the status, so a
+ * message never has a final status without the summary the caller built for it; a caller that has none leaves the
+ * four columns NULL.
+ * Returns false when the message is no longer `running`, in which case nothing is written.
+ */
 export async function finishSempMessageTurn(
   client: PoolClient,
   messageId: string,
-  outcome: { status: "done"; text: string | null; lastEventId: string } | { status: "error"; interrupted?: boolean },
+  outcome:
+    | { status: "done"; text: string | null; lastEventId: string; summary?: SempReplySummary }
+    | { status: "error"; interrupted?: boolean; summary?: SempReplySummary },
 ): Promise<boolean> {
   requireManagedTransaction(client);
+  const summary = outcome.summary;
   const result = await client.query(
     `UPDATE semp_messages SET status = $2, text = $3::text, search_vector = ${sempMessageSearchVectorSql("$3::text")},
-       event_to_id = $4::bigint, error_code = $5, updated_at = now()
+       event_to_id = $4::bigint, error_code = $5,
+       steps = $6::jsonb, duration_ms = $7::integer, tokens = $8::jsonb, changes = $9::jsonb, updated_at = now()
      WHERE id = $1 AND status = 'running'`,
     [
       messageId,
@@ -96,6 +108,10 @@ export async function finishSempMessageTurn(
       outcome.status === "done" ? outcome.text : null,
       outcome.status === "done" ? outcome.lastEventId : null,
       outcome.status === "error" && outcome.interrupted ? "interrupted" : null,
+      summary ? JSON.stringify(summary.steps) : null,
+      summary?.durationMs ?? null,
+      summary ? JSON.stringify(summary.tokens) : null,
+      summary ? JSON.stringify(summary.changes) : null,
     ],
   );
   return result.rowCount === 1;

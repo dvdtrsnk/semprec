@@ -10,6 +10,7 @@ import {
   hashPassword,
   reserveGatewayCall,
   seedSystem,
+  setInvalidationHook,
   withTransaction,
 } from "@semprec/data";
 import {
@@ -373,6 +374,33 @@ describe("gateway", () => {
 
       const { rows } = await pool.query("SELECT * FROM ai_gateway_calls");
       expect(rows).toHaveLength(1); // only the seeded row above, nothing from the rejected call
+    });
+
+    it("announces nothing for a refusal of a call that ran outside any tenant scope", async () => {
+      const announced: unknown[] = [];
+      setInvalidationHook((event) => announced.push(event));
+      try {
+        await setTenantAiBudget(pool, getTenantZeroId(), { dailyCapUsd: 1, monthlyCapUsd: null });
+        await pool.query(
+          `INSERT INTO ai_gateway_calls (provider, model, input_tokens, output_tokens, cost_usd) VALUES ('anthropic', 'claude-sonnet-5', 10, 10, 1)`,
+        );
+
+        await expect(
+          complete(
+            pool,
+            { provider: "anthropic", model: "claude-sonnet-5", estimatedCostUsd: 0.01, globalCaps: GLOBAL_CAPS },
+            async () => ({ inputTokens: 1, outputTokens: 1, costUsd: 0.01 }),
+          ),
+        ).rejects.toThrow(BudgetExceededError);
+      } finally {
+        setInvalidationHook(() => {});
+      }
+
+      expect(announced).toEqual([]);
+      const { rows } = await pool.query<{ n: string }>(
+        "SELECT count(*) AS n FROM graphile_worker.jobs WHERE task_identifier = 'aiBudgetReset'",
+      );
+      expect(Number(rows[0]?.n)).toBe(0);
     });
 
     it("rejects an audio call before its provider is invoked", async () => {

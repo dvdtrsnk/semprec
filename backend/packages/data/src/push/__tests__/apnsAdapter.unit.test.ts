@@ -9,6 +9,7 @@ import {
   apnsCollapseKey,
   getApnsConfigFromEnv,
   sendApnsBackgroundPush,
+  sendApnsBadgeUpdate,
   sendApnsNotification,
   type ApnsConfig,
 } from "../apnsAdapter.js";
@@ -741,5 +742,116 @@ describe("sendApnsBackgroundPush headers (issue #1829)", () => {
       expect(requests[0]!.headers).not.toHaveProperty("apns-collapse-id");
       expect(requests[0]!.headers).not.toHaveProperty("apns-expiration");
     });
+  });
+});
+
+describe("sendApnsNotification badge (issue #1891)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Sends through the owned peer and returns the `aps` object the adapter put on the wire. */
+  async function sendAndReadAps(payload: NotificationPushPayload): Promise<unknown> {
+    return withApnsPeer({ status: 200 }, async (requests) => {
+      await sendApnsNotification(apnsTarget, payload, apnsTestConfig);
+      expect(requests).toHaveLength(1);
+      const wire: unknown = JSON.parse(requests[0]!.body);
+      return typeof wire === "object" && wire !== null && "aps" in wire ? wire.aps : undefined;
+    });
+  }
+
+  const base = { notificationId: "notif-b", ...NO_IDENTITY_SOURCE, title: "Title", body: null, linkHref: null };
+
+  it("sends aps.badge beside the alert when the payload carries a badge", async () => {
+    expect(await sendAndReadAps({ ...base, badge: 3 })).toEqual({ alert: { title: "Title" }, badge: 3 });
+  });
+
+  it("sends aps.badge 0, which clears the badge, instead of leaving it out", async () => {
+    expect(await sendAndReadAps({ ...base, badge: 0 })).toEqual({ alert: { title: "Title" }, badge: 0 });
+  });
+
+  it("leaves aps.badge off the wire when the payload carries none", async () => {
+    expect(await sendAndReadAps(base)).toEqual({ alert: { title: "Title" } });
+  });
+});
+
+describe("sendApnsBadgeUpdate (issue #1891)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Sends through the owned peer and returns the result with the exact body and headers the adapter put on the wire. */
+  async function sendBadgeAndRead(badge: number, answer?: FakeApnsAnswer) {
+    return withApnsPeer(answer ?? { status: 200 }, async (requests) => {
+      const result = await sendApnsBadgeUpdate(apnsTarget, badge, apnsTestConfig);
+      expect(requests).toHaveLength(1);
+      const request = requests[0]!;
+      return { result, body: request.body, headers: request.headers };
+    });
+  }
+
+  it("sends a payload of only aps.badge, with no alert and no sound", async () => {
+    const { result, body } = await sendBadgeAndRead(3);
+
+    expect(result).toEqual({ outcome: "delivered" });
+    expect(body).toBe('{"aps":{"badge":3}}');
+    expect(body).not.toMatch(/alert|sound|content-available/);
+  });
+
+  it("sends badge 0, which clears the badge", async () => {
+    const { body } = await sendBadgeAndRead(0);
+
+    expect(body).toBe('{"aps":{"badge":0}}');
+  });
+
+  it("sends the alert push type at priority 5 with the collapse id badge, so it does not wake the app", async () => {
+    const { headers } = await sendBadgeAndRead(2);
+
+    expect(headers["apns-push-type"]).toBe("alert");
+    expect(headers["apns-priority"]).toBe("5");
+    expect(headers["apns-collapse-id"]).toBe("badge");
+    expect(headers["apns-topic"]).toBe("com.example.app");
+  });
+
+  it.each([-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    "rejects the badge %s with a ValidationError, before any request",
+    async (badge) => {
+      const connectSpy = vi.spyOn(http2, "connect").mockImplementation(() => {
+        throw new Error("Unexpected connection");
+      });
+
+      await expect(sendApnsBadgeUpdate(apnsTarget, badge, apnsTestConfig)).rejects.toBeInstanceOf(ValidationError);
+      expect(connectSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it("maps a 410 answer to permanent-failure", async () => {
+    const { result } = await sendBadgeAndRead(1, { status: 410, reason: "Unregistered" });
+
+    expect(result).toEqual({ outcome: "permanent-failure", error: "Unregistered" });
+  });
+
+  it("maps a BadDeviceToken answer to permanent-failure", async () => {
+    const { result } = await sendBadgeAndRead(1, { status: 400, reason: "BadDeviceToken" });
+
+    expect(result).toEqual({ outcome: "permanent-failure", error: "BadDeviceToken" });
+  });
+
+  it("maps any other failed answer to transient-failure", async () => {
+    const { result } = await sendBadgeAndRead(1, { status: 503, reason: "ServiceUnavailable" });
+
+    expect(result).toEqual({ outcome: "transient-failure", error: "ServiceUnavailable" });
+  });
+
+  it("resolves not-configured naming the missing variable when APNS_* is unset, without a request", async () => {
+    for (const key of ENV_KEYS) delete process.env[key];
+    const connectSpy = vi.spyOn(http2, "connect").mockImplementation(() => {
+      throw new Error("Unexpected connection");
+    });
+
+    const result = await sendApnsBadgeUpdate(apnsTarget, 1);
+
+    expect(result).toEqual({ outcome: "not-configured", reason: expect.stringMatching(/APNS_TEAM_ID/) });
+    expect(connectSpy).not.toHaveBeenCalled();
   });
 });

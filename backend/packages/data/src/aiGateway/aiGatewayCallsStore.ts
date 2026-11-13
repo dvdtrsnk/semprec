@@ -253,6 +253,24 @@ export async function failGatewayCall(pool: Pool, id: string): Promise<void> {
   requireAffectedRows(result, `failing reserved ai_gateway_calls row ${id}`);
 }
 
+/**
+ * The tokens the settled gateway calls attributed to one Semp message used (issue #1860). A `reserved` call has
+ * only an estimate and a `failed` one used nothing, so neither counts; a call without a token concept (audio)
+ * has NULL columns and adds nothing. A message with no settled call has `{ input: 0, output: 0 }`.
+ */
+export async function sumSettledSempMessageTokens(
+  client: Pool | PoolClient,
+  sempMessageId: string,
+): Promise<{ input: number; output: number }> {
+  const { rows } = await client.query<{ input: string; output: string }>(
+    `SELECT COALESCE(sum(input_tokens), 0) AS input, COALESCE(sum(output_tokens), 0) AS output
+     FROM ai_gateway_calls WHERE semp_message_id = $1::uuid AND status = 'settled'`,
+    [sempMessageId],
+  );
+  const row = requireSingleRow(rows, "Semp message token sums");
+  return { input: Number(row.input), output: Number(row.output) };
+}
+
 export interface GatewaySpend {
   spentToday: number;
   spentMonth: number;

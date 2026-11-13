@@ -9,6 +9,8 @@ import { isOnItemEventRule, parseHeartbeatRule, type HeartbeatRuleKindRegistry }
 import { NotFoundError, ValidationError } from "../errors.js";
 import { guardInboxThreadSend } from "../inbox/inboxThreadSendGuard.js";
 import { resolveSempHistoryContexts } from "../semp/sempRefHistory.js";
+import type { SempReplyStep } from "../semp/sempReplySteps.js";
+import { parseStoredSempReplySteps } from "../semp/sempStoredSteps.js";
 import { sempMessageSearchVectorSql } from "../semp/sempMessageSearch.js";
 
 interface ThreadRow {
@@ -38,6 +40,7 @@ interface MessageRow {
   agent_run_id: string | null;
   event_from_id: string | null;
   status: string | null;
+  steps: unknown;
   created_at: string;
   run_started_at: Date | null;
   run_finished_at: Date | null;
@@ -312,6 +315,14 @@ export async function getSempThread(
   return kind === "tick" ? { ...detail, ...(await readTickThreadHeader(client, row, moduleRuleKinds)) } : detail;
 }
 
+/** A message of the thread history: with the stored `steps` of an assistant reply that has a finished-turn summary (issue #1887). */
+export type SempThreadHistoryMessage = SempThreadMessage & { steps?: SempReplyStep[] };
+
+function stepsOf(row: MessageRow): { steps?: SempReplyStep[] } {
+  const steps = parseStoredSempReplySteps(row.steps);
+  return steps === undefined ? {} : { steps };
+}
+
 export async function listSempThreadMessages(
   client: PoolClient,
   threadId: string,
@@ -320,7 +331,7 @@ export async function listSempThreadMessages(
 ) {
   const { rows } = await client.query<MessageRow>(
     `SELECT m.id, m.role, m.text, m.system_key, m.system_params, m.context, m.reply_to_message_id, m.agent_run_id,
-            m.event_from_id, m.status, to_char(m.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at,
+            m.event_from_id, m.status, m.steps, to_char(m.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at,
             r.started_at AS run_started_at, r.finished_at AS run_finished_at, r.status AS run_status
        FROM semp_messages m LEFT JOIN agent_runs r ON r.tenant_id = m.tenant_id AND r.id = m.agent_run_id
        WHERE m.thread_id = $1
@@ -336,7 +347,7 @@ export async function listSempThreadMessages(
   );
   const last = page.at(-1);
   return {
-    rows: page.map((row, index): SempThreadMessage => ({
+    rows: page.map((row, index): SempThreadHistoryMessage => ({
       id: row.id,
       role: assertKnownValue(["user", "assistant", "system"] as const, row.role, "message role"),
       text: row.text,
@@ -346,6 +357,7 @@ export async function listSempThreadMessages(
       agentRunId: row.agent_run_id,
       eventFromId: row.event_from_id,
       status: row.status,
+      ...stepsOf(row),
       createdAt: row.created_at,
       run:
         row.run_started_at === null

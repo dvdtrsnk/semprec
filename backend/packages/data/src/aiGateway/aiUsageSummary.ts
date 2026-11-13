@@ -49,7 +49,7 @@ export async function getAiUsageSummary(client: Queryable): Promise<AiUsageSumma
     dailyCapUsd: budget?.dailyCapUsd ?? null,
     monthlyCapUsd: budget?.monthlyCapUsd ?? null,
     exhausted,
-    resetsAt: exhausted === null ? null : await resetInstant(client, timezone, exhausted),
+    resetsAt: exhausted === null ? null : (await getAiWindowResetInstant(client, timezone, exhausted)).toISOString(),
   };
 }
 
@@ -58,7 +58,7 @@ export async function getAiUsageSummary(client: Queryable): Promise<AiUsageSumma
  * reached, whatever the spend. No budget row means no window is reported as exhausted: the caps are
  * absent, not reached.
  */
-function findExhaustedWindow(budget: TenantAiBudget | null, spend: GatewaySpend): AiUsageExhaustedWindow | null {
+export function findExhaustedWindow(budget: TenantAiBudget | null, spend: GatewaySpend): AiUsageExhaustedWindow | null {
   if (budget === null) return null;
   if (budget.monthlyCapUsd !== null && spend.spentMonth >= budget.monthlyCapUsd) return "monthly";
   if (budget.dailyCapUsd !== null && spend.spentToday >= budget.dailyCapUsd) return "daily";
@@ -71,12 +71,16 @@ function findExhaustedWindow(budget: TenantAiBudget | null, spend: GatewaySpend)
  * `+ interval` move it to the next day or month boundary there, and the second `AT TIME ZONE`
  * converts that local wall-clock midnight back into an instant.
  */
-async function resetInstant(client: Queryable, timezone: string, exhausted: AiUsageExhaustedWindow): Promise<string> {
+export async function getAiWindowResetInstant(
+  client: Queryable,
+  timezone: string,
+  window: AiUsageExhaustedWindow,
+): Promise<Date> {
   const { rows } = await client.query<{ reset_at: Date }>(
-    exhausted === "monthly"
+    window === "monthly"
       ? `SELECT (date_trunc('month', now() AT TIME ZONE $1) + interval '1 month') AT TIME ZONE $1 AS reset_at`
       : `SELECT (date_trunc('day', now() AT TIME ZONE $1) + interval '1 day') AT TIME ZONE $1 AS reset_at`,
     [timezone],
   );
-  return requireSingleRow(rows, "AI usage reset instant").reset_at.toISOString();
+  return requireSingleRow(rows, "AI usage reset instant").reset_at;
 }

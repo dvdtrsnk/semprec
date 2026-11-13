@@ -23,6 +23,7 @@ import { handleItemSearchPageTextTask } from "./search/pageTextJob.js";
 import { handlePageTitleMirrorTask } from "./docs/pageTitleMirrorJob.js";
 import { sweepOrphanedPages } from "./docs/pageOrphanSweep.js";
 import { handleTaskHostEventEndedTask } from "./tasks/taskHostEventState.js";
+import { handleAiBudgetResetTask } from "./aiGateway/aiBudgetResetJob.js";
 import { handlePropertyTypeMigrationTask } from "./migrationJob/propertyTypeMigration.js";
 import { handleDocCompactionSweepTask } from "./docs/docPersistence.js";
 import { handleDocHistoryCleanupTask } from "./docs/docHistory.js";
@@ -55,6 +56,7 @@ import {
   type GenericOperationApprovalReplay,
 } from "./mcp/approvalRequestExecution.js";
 import { handleNotificationFanoutTask } from "./notifications/notificationFanoutJob.js";
+import { handlePushBadgeRefreshTask } from "./push/pushBadgeRefreshJob.js";
 import { handlePushDismissTask } from "./push/pushDismissJob.js";
 import type { PushSenders } from "./push/pushSenders.js";
 import { handleBlobsUnreferencedSweepTask } from "./blobs/unreferencedBlobSweep.js";
@@ -271,6 +273,10 @@ export function createCoreTaskList(
     [CORE_TASK_NAMES.PUSH_DISMISS]: async (payload) => {
       await handlePushDismissTask(pool, payload);
     },
+    // Issue #1891: the badge-only push that refreshes the app icon after a count or a badge switch changed.
+    [CORE_TASK_NAMES.PUSH_BADGE_REFRESH]: async (payload) => {
+      await handlePushBadgeRefreshTask(pool, payload);
+    },
     [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP]: async () => {
       await handleItemTrashPurgeSweepTask(pool, mailBlobStorage, filesBlobStorage);
     },
@@ -301,6 +307,10 @@ export function createCoreTaskList(
     // Issue #1782: recomputes a task's host state once the last Event it sits in has ended.
     [CORE_TASK_NAMES.TASK_HOST_EVENT_ENDED]: async (payload) => {
       await handleTaskHostEventEndedTask(pool, payload);
+    },
+    // Issue gh-2024: announces the Semp status at the instant a tenant's exhausted AI budget window resets.
+    [CORE_TASK_NAMES.AI_BUDGET_RESET]: async (payload) => {
+      await handleAiBudgetResetTask(pool, payload);
     },
     [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: async (_payload, taskHelpers) => {
       await handleObservabilityCheckSystemTask(pool, { job: { id: taskHelpers.job.id } });

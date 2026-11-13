@@ -5,6 +5,7 @@ import { AGENT_RUN_ROOT_MAX_HOPS } from "../agentRuns/agentRunsStore.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { assertKnownValue, assertShape } from "../dbRowValidation.js";
 import { ValidationError } from "../errors.js";
+import { enqueueBadgeRefresh } from "../push/badgeRefreshEnqueue.js";
 import { INBOX_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import type { ApprovalOutcomeKind } from "./approvalConflictReason.js";
 import { isMcpItemId, parseMcpInvokeFailure, type McpInvokeFailure } from "./mcpFailure.js";
@@ -375,6 +376,14 @@ export async function insertPendingApprovalRequest(
       WHERE id = (SELECT thread_id FROM agent_runs WHERE id = $1)`,
     [input.agentRunId],
   );
+  // The pending count of the run's actor grew, so their badge changes (issue #1891).
+  const actor = await client.query<{ actor_user_id: string }>("SELECT actor_user_id FROM agent_runs WHERE id = $1", [
+    input.agentRunId,
+  ]);
+  await enqueueBadgeRefresh(
+    client,
+    requireSingleRow(actor.rows, "agent_runs actor lookup for a new approval request").actor_user_id,
+  );
   return { request: created, inserted: true };
 }
 
@@ -403,6 +412,20 @@ export interface ApprovalRequestStateView {
   executionResult: unknown;
 }
 
+type ApprovalRequestStateRow = Pick<
+  ApprovalRequestRow,
+  "id" | "status" | "execution_status" | "execution_result_jsonb"
+>;
+
+function rowToApprovalRequestState(row: ApprovalRequestStateRow): ApprovalRequestStateView {
+  return {
+    id: row.id,
+    status: assertKnownValue(APPROVAL_REQUEST_STATUSES, row.status, "status"),
+    executionStatus: assertKnownValue(APPROVAL_REQUEST_EXECUTION_STATUSES, row.execution_status, "execution_status"),
+    executionResult: row.execution_result_jsonb,
+  };
+}
+
 /**
  * The state of every request in `ids` that the caller's tenant scope can read, in one query (issue #1862).
  * An id that matches no visible row is absent from the result; `ids` must be uuids, which the caller checks.
@@ -412,17 +435,32 @@ export async function listApprovalRequestStatesByIds(
   ids: readonly string[],
 ): Promise<ApprovalRequestStateView[]> {
   if (ids.length === 0) return [];
-  const { rows } = await client.query<
-    Pick<ApprovalRequestRow, "id" | "status" | "execution_status" | "execution_result_jsonb">
-  >(`SELECT id, status, execution_status, execution_result_jsonb FROM approval_requests WHERE id = ANY($1::uuid[])`, [
-    ids,
-  ]);
-  return rows.map((row) => ({
-    id: row.id,
-    status: assertKnownValue(APPROVAL_REQUEST_STATUSES, row.status, "status"),
-    executionStatus: assertKnownValue(APPROVAL_REQUEST_EXECUTION_STATUSES, row.execution_status, "execution_status"),
-    executionResult: row.execution_result_jsonb,
-  }));
+  const { rows } = await client.query<ApprovalRequestStateRow>(
+    `SELECT id, status, execution_status, execution_result_jsonb FROM approval_requests WHERE id = ANY($1::uuid[])`,
+    [ids],
+  );
+  return rows.map(rowToApprovalRequestState);
+}
+
+/**
+ * As `listApprovalRequestStatesByIds`, but only the requests whose run is owned by `ownerUserId` (issue #1887),
+ * the ownership rule of `getApprovalRequestForOwner`. A request of another user and an unknown id are both absent
+ * from the result, so the caller cannot tell them apart.
+ */
+export async function listApprovalRequestStatesByIdsForOwner(
+  client: Queryable,
+  ids: readonly string[],
+  ownerUserId: string,
+): Promise<ApprovalRequestStateView[]> {
+  if (ids.length === 0) return [];
+  const { rows } = await client.query<ApprovalRequestStateRow>(
+    `SELECT ar.id, ar.status, ar.execution_status, ar.execution_result_jsonb
+       FROM approval_requests ar
+       JOIN agent_runs r ON r.id = ar.agent_run_id
+      WHERE ar.id = ANY($1::uuid[]) AND r.actor_user_id = $2`,
+    [ids, ownerUserId],
+  );
+  return rows.map(rowToApprovalRequestState);
 }
 
 /**
