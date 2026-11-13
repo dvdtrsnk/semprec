@@ -5,7 +5,7 @@ import { withTransaction } from "../db/pool.js";
 import { seedSleepModuleInTransaction } from "../seed/seedSleepModule.js";
 import { lockTenantSeedInTransaction } from "../seed/seedSystem.js";
 import { SLEEP_SETTINGS_MODULE_ID } from "../seed/sleepModuleKeys.js";
-import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { AREAS_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 
 /**
  * Populated-upgrade cutover for issue #1779: gives a tenant that was seeded before the sleep module its Sleep
@@ -18,8 +18,9 @@ import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
  * transaction that holds that lock, so of two cutovers of one tenant the second waits and then finds the
  * database the first created. A tenant that has the `sleepSettings` database is left as it is, which makes a
  * second run write nothing: the step checks existence and does not repair or alter a sleep database. A tenant
- * without a Projects database has not been seeded yet and is skipped: `seedSystem` creates the sleep module
- * together with the rest.
+ * without a Projects or an Areas database has not been seeded yet and is skipped: `seedSystem` creates the sleep
+ * module together with the rest. The seed gives `sleepSettings` its `area` relation to the Areas database
+ * (issue gh-1833), which is why the Areas database is looked up here.
  *
  * The Sleep project has no agent guidance seed text, so this step writes no `project_agent_guidance` row.
  *
@@ -30,8 +31,9 @@ export async function runSleepModuleCutoverMigration(pool: Pool): Promise<void> 
     await lockTenantSeedInTransaction(client, "runSleepModuleCutoverMigration");
     if (await getDatabaseByModuleId(client, SLEEP_SETTINGS_MODULE_ID)) return;
     const projects = await getDatabaseByModuleId(client, PROJECTS_MODULE_ID);
-    if (!projects) return;
+    const areas = await getDatabaseByModuleId(client, AREAS_MODULE_ID);
+    if (!projects || !areas) return;
     // `table` is a built-in view type, so an empty registry knows it.
-    await seedSleepModuleInTransaction(client, projects.id, createViewTypeRegistry());
+    await seedSleepModuleInTransaction(client, projects.id, areas.id, createViewTypeRegistry());
   });
 }

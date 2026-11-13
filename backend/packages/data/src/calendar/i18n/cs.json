@@ -33,5 +33,9 @@
   "calendar.holiday.freedomAndDemocracy": "Den boje za svobodu a demokracii",
   "calendar.holiday.christmasEve": "Štědrý den",
   "calendar.holiday.christmasDay": "1. svátek vánoční",
-  "calendar.holiday.boxingDay": "2. svátek vánoční"
+  "calendar.holiday.boxingDay": "2. svátek vánoční",
+  "calendar.invitation.request.subject": "Pozvánka: {title}",
+  "calendar.invitation.request.text": "Jste pozváni na událost „{title}“. Odpovědět můžete v přiložené pozvánce do kalendáře.",
+  "calendar.invitation.cancel.subject": "Zrušeno: {title}",
+  "calendar.invitation.cancel.text": "Událost „{title}“ byla zrušena."
 }

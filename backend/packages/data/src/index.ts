@@ -67,8 +67,11 @@ export { itemDeleteWithClient } from "./chokePoint/itemTrash.js";
 export { SYSTEM_WRITER, type WriterIdentity, type WriterKind } from "./chokePoint/writerKind.js";
 export {
   assertAgentDatabaseAccess,
+  readerOfWriter,
   listUnreadableDatabaseIds,
   type AssertAgentDatabaseAccessInput,
+  type DatabaseReader,
+  type ExternalClientReader,
   type RequiredAgentDatabaseAccess,
 } from "./agentGrants/agentDatabaseAccess.js";
 export type { AgentDatabaseAccess } from "./agentGrants/agentDatabaseGrantsStore.js";
@@ -190,6 +193,8 @@ export {
   buildAgentRunStepPage,
   isAgentRunStepReadSettled,
 } from "./agentRuns/agentRunStepPages.js";
+export { projectAgentRunStepPage } from "./agentRuns/agentRunStepProjection.js";
+export { stepSummary, stepTitle } from "./agentRuns/agentStepCatalog.js";
 export {
   AGENT_RUN_EVENTS_RETENTION_DAYS,
   handleAgentRunEventsRetentionTask,
@@ -257,6 +262,7 @@ export {
   type EventRecommendationContext,
   type TranscriptEventCandidate,
 } from "./transcription/transcriptEventMatch.js";
+export { resolveTranscriptDisplayName, resolveTranscriptSuggestedName } from "./transcription/transcriptDisplayName.js";
 export {
   proposeSpeakerMappings,
   readSpeakerSuggestionContext,
@@ -624,6 +630,7 @@ export {
   type SleepPlan,
 } from "./sleep/resolveSleepNights.js";
 export { createCalendarTimelineRouteHandler } from "./calendar/timelineRouteHandler.js";
+export { createCalendarAgendaRouteHandler } from "./calendar/agendaRouteHandler.js";
 export { createCalendarCancellationImpactRouteHandler } from "./calendar/cancellationImpactRouteHandler.js";
 export { createListEventPeopleRouteHandler } from "./calendar/eventParticipantsRouteHandlers.js";
 export { duplicateCalendarItem } from "./calendar/duplicateCalendarItem.js";
@@ -631,6 +638,13 @@ export { convertEventDateToWallClock } from "./calendar/eventDateMigration.js";
 export { createDuplicateCalendarItemRouteHandler } from "./calendar/duplicateCalendarItemRouteHandler.js";
 export { createAreaOverviewRouteHandler } from "./areas/areaOverviewRouteHandler.js";
 export { createEventInCalendar } from "./calendar/defaultCalendarCreateHook.js";
+export {
+  enqueueEventInvitation,
+  setEventInvitationDelivery,
+  type EnqueueEventInvitationInput,
+  type EventInvitationDelivery,
+  type EventInvitationSnapshot,
+} from "./calendar/eventInvitationJob.js";
 export {
   eventRecurrenceOccursOn,
   parseEventRecurrenceRule,
@@ -741,6 +755,7 @@ export {
   parseApprovalRequestListCursor,
   terminalizeApprovalRequestAsConflict,
   markApprovalRequestExecutionSucceeded,
+  recordApprovalRequestOutcome,
 } from "./mcp/approvalRequestsStore.js";
 export type {
   ApprovalRequestQueueEntry,
@@ -880,6 +895,7 @@ export {
   type SempThreadKind,
 } from "./semp/sempThreadsListStore.js";
 export { enqueueSempMessage } from "./semp/sempMessageQueue.js";
+export { reindexSempMessageSearch, type SempMessageSearchReindexOptions } from "./semp/sempMessageSearch.js";
 export { validateSempMessageRefs } from "./semp/sempMessageRefs.js";
 export { readSempRefContext, type SempRefContext, type SempRefReadOptions } from "./semp/sempRefReadContext.js";
 export { listSleepNightReadItemIds } from "./semp/sempSleepNightContext.js";

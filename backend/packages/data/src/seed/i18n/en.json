@@ -293,5 +293,7 @@
   "editor.task.followupTask.label": "Follow-up task",
   "editor.task.followDate.label": "Follow-up date",
   "editor.file.followupTask.label": "Follow-up task",
-  "editor.file.followDate.label": "Follow-up date"
+  "editor.file.followDate.label": "Follow-up date",
+  "agentTool.transcript.get.label": "Load meeting transcript",
+  "agentTool.transcript.segment.get.label": "Load a stretch of a meeting transcript"
 }

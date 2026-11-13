@@ -13,6 +13,7 @@
   "property.sleepSettings.alarmSound.option.birds": "Ptáci",
   "property.sleepSettings.alarmSound.option.piano": "Klavír",
   "property.sleepSettings.alarmSound.option.vibrateOnly": "Pouze vibrace",
+  "property.sleepSettings.area.name": "Oblast",
   "property.sleepSettings.systemActive.name": "Systémově aktivní",
 
   "database.sleepPlans.name": "Plány spánku",

@@ -9,7 +9,7 @@ import { listAllDatabases } from "../chokePoint/databasesStore.js";
 import { listPropertiesByDatabases } from "../chokePoint/propertiesStore.js";
 import { getRelationDefinitionsByPropertyIds } from "../chokePoint/relationsStore.js";
 import { getCalendarClock } from "../calendarTime.js";
-import { listUnreadableDatabaseIds } from "../agentGrants/agentDatabaseAccess.js";
+import { listUnreadableDatabaseIds, type DatabaseReader } from "../agentGrants/agentDatabaseAccess.js";
 import { createCollectionMetadataResolver } from "./collectionMetadata.js";
 import type { SortSpec } from "../views/sortSpec.js";
 import {
@@ -116,6 +116,11 @@ export interface GenerateSchemaProjectionOptions {
    * read are left out. Absent for a person, who sees every database.
    */
   agentProjectItemId?: string;
+  /**
+   * The projection is made for an external AI client on `/mcp` (issue #1998): the sensitive databases are left out.
+   * Ignored when `agentProjectItemId` is set, which decides by the project's access.
+   */
+  externalClient?: true;
 }
 
 type DatabaseViewHints = Pick<
@@ -182,10 +187,9 @@ export async function generateSchemaProjection(
     (await moduleRegistry.getDatabases()).map((descriptor) => [descriptor.key, descriptor]),
   );
 
-  const unreadableDatabaseIds =
-    options.agentProjectItemId === undefined
-      ? undefined
-      : await listUnreadableDatabaseIds(client, options.agentProjectItemId);
+  const reader: DatabaseReader | undefined =
+    options.agentProjectItemId ?? (options.externalClient === true ? { externalClient: true } : undefined);
+  const unreadableDatabaseIds = reader === undefined ? undefined : await listUnreadableDatabaseIds(client, reader);
   const databaseRows = (await listAllDatabases(client)).filter((db) => !unreadableDatabaseIds?.has(db.id));
   // One batch query for every database's properties (issue #147 review: the naive per-database
   // loop was an N+1 that grows unboundedly with the number of databases in a deployment).

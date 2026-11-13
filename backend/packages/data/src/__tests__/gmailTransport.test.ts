@@ -12,7 +12,11 @@ import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { GMAIL_SEND_PURPOSE } from "../mail/gmailTransport.js";
 import { createMailTransportFactory } from "../mail/mailTransport.js";
-import { MailReauthorizationRequiredError, MailRecipientRejectedError } from "../mail/providerTypes.js";
+import {
+  MailReauthorizationRequiredError,
+  MailRecipientRejectedError,
+  MailTransportUnavailableError,
+} from "../mail/providerTypes.js";
 import { getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
 
 // A fake Google answers the token endpoint and the send endpoint through the `fetchImpl` seam. The stored
@@ -337,8 +341,12 @@ describe("Gmail API mail transport (issue #1637)", () => {
   });
 
   it("refuses a gmail_api mailbox when no Gmail OAuth client is configured, before reading anything", async () => {
-    await expect(createMailTransportFactory(pool).forMailbox(mailboxId, "gmail_api")).rejects.toThrow(
-      /No Gmail OAuth client is configured for this composition root/,
-    );
+    const error = await createMailTransportFactory(pool)
+      .forMailbox(mailboxId, "gmail_api")
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(MailTransportUnavailableError);
+    expect(error).toMatchObject({
+      message: expect.stringMatching(/No Gmail OAuth client is configured for this composition root/),
+    });
   });
 });

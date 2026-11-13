@@ -77,8 +77,8 @@ async function newUserDatabase(name: string): Promise<DatabaseRow> {
 }
 
 const human = (): AuthenticatedActor => ({ userId, restSession: true });
-/** `/mcp` on a human session: no run credential, so no project. */
-const mcpHumanSession = (): AuthenticatedActor => ({ userId });
+/** An actor with no run credential and no external-client marker (the `/mcp` human token carries it, issue #1998): no project. */
+const unmarkedActor = (): AuthenticatedActor => ({ userId });
 
 describe("agent access to databases through the generic operation gateway (issue #1810)", () => {
   beforeAll(async () => {
@@ -218,9 +218,9 @@ describe("agent access to databases through the generic operation gateway (issue
     });
   });
 
-  it("does not run the per-project check for an /mcp call on a human session, which carries no project", async () => {
+  it("does not run the per-project check for an actor that carries no project and no external-client marker", async () => {
     await inTenantZero(async () => {
-      const actor = mcpHumanSession();
+      const actor = unmarkedActor();
       const record = await newRecord("Read over /mcp");
       expect((await gateway().invoke("item.get", actor, ALL_CAPABILITIES, { itemId: record.id })).id).toBe(record.id);
       const created = await gateway().invoke("item.create", actor, ALL_CAPABILITIES, {

@@ -1,7 +1,9 @@
 import { z } from "zod";
 import type { Queryable } from "../db/pool.js";
 import { ITEM_AUTOMATION_ERROR_CODES, ITEM_AUTOMATION_STATUSES } from "../library/itemAutomationStore.js";
+import { DEFAULT_TIMEZONE } from "../systemSettings.js";
 import { parseStoredMeetingNotes, renderMeetingNotes } from "./meetingNotesRendering.js";
+import { resolveTranscriptDisplayName, resolveTranscriptSuggestedName } from "./transcriptDisplayName.js";
 import type { TranscriptSpeaker } from "./transcriptionSpeakerEdges.js";
 
 export const TRANSCRIPT_PAIRINGS = ["processing", "event", "awaitingEvent", "none"] as const;
@@ -35,6 +37,8 @@ const rowSchema = z.object({
   questions: z.array(z.object({ proposalId: z.uuid(), speaker: z.string() })),
   speakerKeys: z.array(z.string()).nullable(),
   meetingNotes: z.unknown(),
+  /** The tenant's `timezone` setting, `null` while it holds none; the time of "Recording D. M. HH:MM" is read in it. */
+  timezone: z.string().nullable(),
   mappedSpeakers: z
     .array(z.object({ speaker: z.string(), personId: z.uuid(), name: z.string().nullable() }))
     .nullable(),
@@ -50,7 +54,8 @@ const rowSchema = z.object({
 
 /**
  * `GET /api/transcripts` (issue #1636) as one SQL statement over `items`, `item_relations`,
- * `item_automation` and the Processing proposals database. Every relation endpoint counts only when
+ * `item_automation`, the Processing proposals database and the System settings database (the tenant's
+ * `timezone` setting, issue #1830). Every relation endpoint counts only when
  * it is a live item of the expected database, so an unknown, foreign or trashed filter target
  * yields an empty list.
  *
@@ -62,8 +67,15 @@ const rowSchema = z.object({
  * neither status, so it pairs nothing. The open questions are the transcript's speaker cards in those
  * statuses: a `relation` envelope on `speakers` (its metadata names the speaker) or a `speaker`
  * context; the speaker keys of the segments, in first-appearance order, are read only for a
- * transcript that has such a card or stored `meetingNotes`, to number the questions and to name the
- * speakers of the short summary. `segments` itself is never returned.
+ * transcript that has such a card or stored `meetingNotes`, to number the questions and to render the
+ * stored notes, whose speaker tokens are named from the mapped speakers: the rendered notes supply the
+ * `shortSummary` and the generated title behind `suggestedName`. `segments` itself is never returned.
+ *
+ * Names (issue #1830): `displayName` is `resolveTranscriptDisplayName` (the user's `name`, else the live
+ * linked Event's name, else "Recording D. M. HH:MM" read in the tenant `timezone` setting, the default zone
+ * while it holds none) and `suggestedName` is `resolveTranscriptSuggestedName` (the rendered generated
+ * title, only while there is no user-entered `name` and no live Event). Both are resolved per row, after
+ * the statement, from the facts it returned.
  *
  * Order: by recording `date`, descending by default (`asc` on request), then id in the same
  * direction; an undated transcript sorts after every dated one in both directions. The keyset
@@ -91,7 +103,8 @@ WITH schema_ids AS (
          (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = 'events') AS events,
          (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = 'people') AS people,
          (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = 'projects') AS projects,
-         (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = 'processingProposals') AS proposals
+         (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = 'processingProposals') AS proposals,
+         (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = 'systemSettings') AS settings
 ), transcript_relation AS (
   SELECT p.key, rd.id, rd.property_id_a = p.id AS transcript_is_a
   FROM properties p JOIN relation_definitions rd ON rd.tenant_id = p.tenant_id AND p.id IN (rd.property_id_a, rd.property_id_b)
@@ -166,6 +179,8 @@ SELECT jsonb_build_object(
   'proposalId', CASE WHEN p.pairing = 'awaitingEvent' THEN p.awaiting_id END,
   'questions', COALESCE(questions.value, '[]'::jsonb),
   'meetingNotes', p.computed->'meetingNotes',
+  'timezone', (SELECT CASE WHEN jsonb_typeof(s.properties->'timezone') = 'string' THEN s.properties->>'timezone' END
+               FROM items s WHERE s.tenant_id = app_tenant_default() AND s.database_id = (SELECT settings FROM schema_ids) LIMIT 1),
   'mappedSpeakers', CASE WHEN p.computed ? 'meetingNotes' THEN (
     SELECT COALESCE(jsonb_agg(jsonb_build_object('speaker', l.metadata->>'speaker', 'personId', l.target_id,
       'name', CASE WHEN jsonb_typeof(l.target_properties->'name') = 'string' THEN l.target_properties->>'name' END)
@@ -221,18 +236,26 @@ ORDER BY p.sort_at IS NULL, p.sort_at ${direction}, p.id ${direction}
             (left.ordinal ?? Number.MAX_SAFE_INTEGER) - (right.ordinal ?? Number.MAX_SAFE_INTEGER) ||
             (left.proposalId < right.proposalId ? -1 : left.proposalId > right.proposalId ? 1 : 0),
         );
+      const notes = await renderNotes(parsed, keys, input.locale);
+      const nameFacts = { name: parsed.name, eventName: parsed.event?.name };
       return {
         cursor: { at: parsed.sortAt, id: parsed.id },
         transcript: {
           id: parsed.id,
-          displayName: parsed.name,
+          // Issue #1830: the user's name, else the live Event's name, else "Recording D. M. HH:MM".
+          displayName: await resolveTranscriptDisplayName(
+            { ...nameFacts, date: parsed.date },
+            parsed.timezone ?? DEFAULT_TIMEZONE,
+            input.locale,
+          ),
+          suggestedName: resolveTranscriptSuggestedName({ ...nameFacts, generatedTitle: notes?.title }),
           date: parsed.date,
           durationSeconds: parsed.durationSeconds,
           status: parsed.status,
           pairing: parsed.pairing,
           event: parsed.event,
           proposalId: parsed.proposalId,
-          shortSummary: await renderShortSummary(parsed, keys, input.locale),
+          shortSummary: notes?.shortSummary ?? null,
           openQuestions: { count: questions.length, first: questions[0] ?? null },
           automation: parsed.automation,
         },
@@ -242,17 +265,16 @@ ORDER BY p.sort_at IS NULL, p.sort_at ${direction}, p.id ${direction}
 }
 
 /**
- * Issue #1695: the stored notes' short summary rendered with `renderMeetingNotes`, from the speaker
- * keys and the mapped speakers the same statement returned, so it costs no further query; `null`
- * without notes.
+ * Issue #1695: the stored notes' title and short summary rendered with `renderMeetingNotes`, from the speaker
+ * keys and the mapped speakers the same statement returned, so it costs no further query; `null` without notes.
  */
-async function renderShortSummary(
+async function renderNotes(
   row: z.infer<typeof rowSchema>,
   speakerKeys: string[],
   locale: string,
-): Promise<string | null> {
-  const notes = parseStoredMeetingNotes(row.meetingNotes ?? undefined);
-  if (!notes) return null;
+): Promise<{ title: string; shortSummary: string } | null> {
+  const stored = parseStoredMeetingNotes(row.meetingNotes ?? undefined);
+  if (!stored) return null;
   const mapped = new Map((row.mappedSpeakers ?? []).map((entry) => [entry.speaker, entry]));
   const speakers: TranscriptSpeaker[] = speakerKeys.map((speaker, index) => {
     const person = mapped.get(speaker);
@@ -262,5 +284,6 @@ async function renderShortSummary(
       person: person ? { id: person.personId, name: person.name && person.name.length > 0 ? person.name : null } : null,
     };
   });
-  return (await renderMeetingNotes(notes, speakers, locale)).shortSummary;
+  const rendered = await renderMeetingNotes(stored, speakers, locale);
+  return { title: rendered.title, shortSummary: rendered.shortSummary };
 }

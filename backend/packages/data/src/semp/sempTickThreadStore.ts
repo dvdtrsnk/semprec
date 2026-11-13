@@ -4,6 +4,7 @@ import { finishAgentRun, finishAgentRunWithErrorNotification } from "../agentRun
 import { publishSempThreadInvalidation } from "../realtimeHook.js";
 import { requireSingleRow } from "../db/pool.js";
 import { allocateSempMessageTimestamp } from "./sempMessageOrder.js";
+import { sempMessageSearchVectorSql } from "./sempMessageSearch.js";
 
 export interface TickThreadRef {
   id: string;
@@ -50,8 +51,8 @@ export async function finishTickRunWithMessage(
   if (!closed) return false;
   const createdAt = await allocateSempMessageTimestamp(client, thread.id);
   await client.query(
-    `INSERT INTO semp_messages (thread_id, role, text, agent_run_id, event_from_id, event_to_id, status, created_at)
-     SELECT $1, 'assistant', $2, $3, MIN(e.id), MAX(e.id), $4, $5::timestamptz
+    `INSERT INTO semp_messages (thread_id, role, text, search_vector, agent_run_id, event_from_id, event_to_id, status, created_at)
+     SELECT $1, 'assistant', $2::text, ${sempMessageSearchVectorSql("$2::text")}, $3, MIN(e.id), MAX(e.id), $4, $5::timestamptz
      FROM (SELECT 1) AS one
      LEFT JOIN agent_run_events e ON e.agent_run_id = $3`,
     [thread.id, outcome.status === "done" ? outcome.result : null, agentRunId, outcome.status, createdAt],

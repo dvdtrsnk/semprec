@@ -82,14 +82,15 @@ describe("recording intake", () => {
       );
       // Future intake fields have no production writer yet; this scoped fixture creates that stored shape.
       const updated = await runtime.query(
-        "UPDATE recording_requests SET language = $2, num_speakers_exact = $3, project_item_id = $4 WHERE tenant_id = app_tenant_default() AND file_item_id = $1",
-        [uploaded.result.item.id, "cs", 2, "bdb16414-01ad-4ac4-8453-25e4ba9c86d5"],
+        "UPDATE recording_requests SET name = $5, language = $2, num_speakers_exact = $3, project_item_id = $4 WHERE tenant_id = app_tenant_default() AND file_item_id = $1",
+        [uploaded.result.item.id, "cs", 2, "bdb16414-01ad-4ac4-8453-25e4ba9c86d5", "Pricing call"],
       );
       expect(updated.rowCount).toBe(1);
       expect(await withTransaction(runtime, (client) => readRecordingRequest(client, uploaded.result.item.id))).toEqual(
         {
           eventId: null,
           recordedAt: null,
+          name: "Pricing call",
           language: "cs",
           numSpeakersExact: 2,
           numSpeakersMin: null,
@@ -150,6 +151,7 @@ describe("recording intake", () => {
       expect(await withTransaction(runtime, (client) => readRecordingRequest(client, first.result.item.id))).toEqual({
         eventId: event.id,
         recordedAt: "2026-01-01T10:00:00.000000Z",
+        name: null,
         language: null,
         numSpeakersExact: null,
         numSpeakersMin: null,
@@ -353,6 +355,7 @@ describe("recording intake", () => {
       expect(await withTransaction(runtime, (client) => readRecordingRequest(client, first.result.item.id))).toEqual({
         eventId: firstEvent.id,
         recordedAt: null,
+        name: null,
         language: null,
         numSpeakersExact: null,
         numSpeakersMin: null,

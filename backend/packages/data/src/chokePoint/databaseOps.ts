@@ -19,7 +19,12 @@ import { findDependenciesBySourceDatabase } from "../rollup/dependencies.js";
 import { enqueueRollupBackfill } from "../rollup/recompute.js";
 import * as databasesStore from "./databasesStore.js";
 import { requireRollupCoordinationTransaction } from "./databaseRowLocks.js";
-import { assertAgentDatabaseAccess, listUnreadableDatabaseIds } from "../agentGrants/agentDatabaseAccess.js";
+import {
+  assertReaderDatabaseAccess,
+  listUnreadableDatabaseIds,
+  type DatabaseReader,
+} from "../agentGrants/agentDatabaseAccess.js";
+import { assertReaderItemPathAccess } from "./readerObjectAccess.js";
 
 /** Archive and restore change which items the rollups over this database count; recount each in the same transaction via its idempotent full job. */
 async function enqueueDependentRollupRecomputes(client: PoolClient, sourceDatabaseId: string): Promise<void> {
@@ -126,8 +131,19 @@ export function createDatabaseOps(deps: Pick<ChokePointDeps, "pool" | "computedK
       });
     },
 
-    async createDatabase(input: databasesStore.CreateDatabaseInput, actingUserId?: string): Promise<DatabaseRow> {
+    /**
+     * An external client (a `reader`, issue #1998) is refused `forbidden` when the database would be nested under an
+     * item of a sensitive database (`parentItemId`), checked in this transaction before the database is created.
+     */
+    async createDatabase(
+      input: databasesStore.CreateDatabaseInput,
+      actingUserId?: string,
+      reader?: DatabaseReader,
+    ): Promise<DatabaseRow> {
       return withTransaction(pool, async (client) => {
+        if (reader !== undefined && input.parentItemId) {
+          await assertReaderItemPathAccess(client, reader, input.parentItemId, "write");
+        }
         const database = await databasesStore.createDatabase(client, input);
         runAfterCommit(client, () =>
           notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }),
@@ -135,11 +151,17 @@ export function createDatabaseOps(deps: Pick<ChokePointDeps, "pool" | "computedK
         return database;
       });
     },
-    async archiveDatabase(id: string, actingUserId?: string): Promise<DatabaseRow> {
-      return withTransaction(pool, (client) => databaseArchiveWithClient(client, id, actingUserId));
-    },
-    async restoreDatabase(id: string, actingUserId?: string): Promise<DatabaseRow> {
+    /** An external client (a `reader`, issue #1998) needs `write` access to the database, checked first in this transaction. */
+    async archiveDatabase(id: string, actingUserId?: string, reader?: DatabaseReader): Promise<DatabaseRow> {
       return withTransaction(pool, async (client) => {
+        if (reader !== undefined) await assertReaderDatabaseAccess(client, reader, id, "write");
+        return databaseArchiveWithClient(client, id, actingUserId);
+      });
+    },
+    /** As `archiveDatabase`, an external client (a `reader`) needs `write` access to the database. */
+    async restoreDatabase(id: string, actingUserId?: string, reader?: DatabaseReader): Promise<DatabaseRow> {
+      return withTransaction(pool, async (client) => {
+        if (reader !== undefined) await assertReaderDatabaseAccess(client, reader, id, "write");
         await requireRollupCoordinationTransaction(client);
         const database = await databasesStore.restoreDatabase(client, id);
         await enqueueDependentRollupRecomputes(client, database.id);
@@ -152,14 +174,17 @@ export function createDatabaseOps(deps: Pick<ChokePointDeps, "pool" | "computedK
     /**
      * Patches a database in one transaction and publishes one schema invalidation after the commit.
      * `resolver` decides whether `patch.overviewHidden` is accepted (issue #2002); see `databasesStore.patchDatabase`.
+     * An external client (a `reader`, issue #1998) needs `write` access to the database, checked first in this transaction.
      */
     async patchDatabase(
       id: string,
       patch: databasesStore.DatabasePatch,
       actingUserId?: string,
       resolver?: Pick<CollectionMetadataResolver, "overviewHideable">,
+      reader?: DatabaseReader,
     ): Promise<DatabaseRow> {
       return withTransaction(pool, async (client) => {
+        if (reader !== undefined) await assertReaderDatabaseAccess(client, reader, id, "write");
         const database = await databasesStore.patchDatabase(client, id, patch, resolver);
         runAfterCommit(client, () =>
           notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }),
@@ -176,24 +201,26 @@ export function createDatabaseOps(deps: Pick<ChokePointDeps, "pool" | "computedK
         return database;
       });
     },
-    /** An agent (`agentProjectItemId`, issue #1810) is refused with `forbidden` for a database its project may not read. */
-    async getDatabase(id: string, agentProjectItemId?: string): Promise<DatabaseRow | null> {
+    /**
+     * An agent (a `reader` that is its project, issue #1810) is refused with `forbidden` for a database its project may
+     * not read, and an external client (issue #1998) for a sensitive one.
+     */
+    async getDatabase(id: string, reader?: DatabaseReader): Promise<DatabaseRow | null> {
       return withTransaction(pool, async (client) => {
-        if (agentProjectItemId !== undefined) {
-          await assertAgentDatabaseAccess(client, { agentProjectItemId, databaseId: id, access: "read" });
-        }
+        if (reader !== undefined) await assertReaderDatabaseAccess(client, reader, id, "read");
         return databasesStore.getDatabase(client, id);
       });
     },
     /**
      * Every non-archived database system-wide (issue #240's `GET /api/databases`) — see `databasesStore.listAllDatabases` for why this includes the ten system databases.
-     * For an agent (`agentProjectItemId`, issue #1810) the databases its project may not read are left out.
+     * For an agent (a `reader` that is its project, issue #1810) the databases its project may not read are left out;
+     * for an external client (issue #1998) the sensitive ones.
      */
-    async listDatabases(agentProjectItemId?: string): Promise<DatabaseRow[]> {
+    async listDatabases(reader?: DatabaseReader): Promise<DatabaseRow[]> {
       return withTransaction(pool, async (client) => {
         const databases = await databasesStore.listAllDatabases(client);
-        if (agentProjectItemId === undefined) return databases;
-        const unreadable = await listUnreadableDatabaseIds(client, agentProjectItemId);
+        if (reader === undefined) return databases;
+        const unreadable = await listUnreadableDatabaseIds(client, reader);
         return databases.filter((database) => !unreadable.has(database.id));
       });
     },

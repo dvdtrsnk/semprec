@@ -1,5 +1,13 @@
-import { parseToolEventPayload, type McpToolEventIdentity, type ToolUseEventPayload } from "@semprec/shared";
+import {
+  parseToolEventPayload,
+  type McpToolEventIdentity,
+  type ToolResultChange,
+  type ToolUseEventPayload,
+} from "@semprec/shared";
+import { approvalConflictReason } from "../mcp/approvalConflictReason.js";
+import type { ApprovalRequestStateView } from "../mcp/approvalRequestsStore.js";
 import type { AgentRunEventKind, AgentRunEventRow } from "./agentRunEventsStore.js";
+import { stepKindTitle, stepSummary, stepTitle, type AgentStepTool } from "./agentStepCatalog.js";
 
 /** The `limit` of `GET /api/agent-runs/:id/steps` when the request names none (issue #1821). */
 export const AGENT_RUN_STEP_DEFAULT_LIMIT = 100;
@@ -50,15 +58,34 @@ export function agentRunStepPageRowLimit(stepLimit: number): number {
   return stepLimit * 2 + PAGE_ROW_MARGIN;
 }
 
-export type AgentRunStepKind = "start" | "plan" | "tool" | "answer" | "end" | "error";
-export type AgentRunStepState = "running" | "ok" | "error";
+export type AgentRunStepKind = "start" | "plan" | "tool" | "approval" | "answer" | "end" | "error";
+/** What the events alone say about a step; `running` is a call without a result. */
+type AgentRunDraftState = "running" | "ok" | "error";
+/** `waitingApproval` is an approval step whose request is still pending (issue #1862); the events never say so. */
+export type AgentRunStepState = AgentRunDraftState | "waitingApproval";
 
-/** One step of a run as `GET /api/agent-runs/:id/steps` returns it (issue #1821); arguments, results and thinking are never part of it. */
-export interface AgentRunStep {
+/** Where the approval request of an approval step stands, read from the request when the steps are read (issue #1862). */
+export type AgentRunApprovalState = "pending" | "executing" | "executed" | "failed" | "conflict" | "rejected";
+
+/** The longest a value of a step's `change` is: a longer string is cut and marked with an ellipsis. */
+export const AGENT_RUN_STEP_VALUE_MAX_LENGTH = 200;
+
+/** The text the stored result of a content-bearing call on a sensitive database is replaced with (issue #1827). */
+const REDACTED_RESULT_MARKER = "[redacted: sensitive]";
+
+/** The first property a call changed; `from` and `to` are `null` when the call did not report that value. */
+export interface AgentRunStepChange {
+  property: string;
+  from: unknown;
+  to: unknown;
+}
+
+/** The part of a step the events alone decide (issues #1821, #1847). */
+interface AgentRunStepCore {
   /** The id of the step's first event. */
   stepId: string;
+  /** `approval` is a tool step whose call created an approval request. */
   kind: AgentRunStepKind;
-  state: AgentRunStepState;
   /** When the step's first event was stored. */
   at: string;
   /** The milliseconds between a tool call and its result; `null` for every other step and for a tool call without a result. */
@@ -69,16 +96,60 @@ export interface AgentRunStep {
   operation: NonNullable<ToolUseEventPayload["operation"]> | null;
   /** The MCP tool a tool step called; `null` for a generic operation, for a tool stored without identity and for any other step. */
   mcp: McpToolEventIdentity | null;
+  /** The id of the approval request the call created; `null` unless `kind` is `approval`. */
+  approvalRequestId: string | null;
+}
+
+/**
+ * One step of a run as `GET /api/agent-runs/:id/steps` returns it (issues #1821 and #1847). Tool arguments,
+ * tool results, the model's text, raw error text and thinking are never part of it.
+ */
+export interface AgentRunStep extends AgentRunStepCore {
+  state: AgentRunStepState;
+  /** The localized title: the tool and its target database ("Changing a task"), or what a non-tool step is. */
+  title: string;
+  /** The display name of the item the call worked on; `null` when the call named none or it cannot be read. */
+  targetName: string | null;
+  /** The first property an `item.patch` changed; `null` for any other step and for a redacted result. */
+  change: AgentRunStepChange | null;
+  /** The localized outcome of the step, composed from structured fields only; `null` while a call runs and for steps with none. */
+  summary: string | null;
+  /** Only on an approval step whose request could be read. */
+  approvalState?: AgentRunApprovalState;
+  /** The `approval.conflict.*` key that says why an approved request was not carried out; only when `approvalState` is `conflict`. */
+  conflictReason?: string;
+}
+
+/**
+ * What the events say about a step beyond its core, kept for the projection and never returned as it is.
+ * Ids that the model wrote into a call's arguments are kept only for a generic operation, whose argument
+ * names are the platform's own.
+ */
+export interface AgentRunStepFacts {
+  /** The model-facing name of the called tool; `null` for a step that is not a tool step. */
+  toolName: string | null;
+  targetDatabaseId: string | null;
+  targetItemId: string | null;
+  /** The first `details.changes` entry, its values bounded; `null` for none and for a redacted result. */
+  change: AgentRunStepChange | null;
+  /** How many entries `details.changes` holds; 0 for a redacted result. */
+  changeCount: number;
+}
+
+/** A step as the grouping builds it: the core of the returned step and the facts its projection needs. */
+export interface AgentRunStepDraft extends AgentRunStepCore {
+  state: AgentRunDraftState;
+  facts: AgentRunStepFacts;
 }
 
 export interface AgentRunStepPage {
-  steps: AgentRunStep[];
+  steps: AgentRunStepDraft[];
   nextCursor: string | null;
 }
 
 /** A step with the bookkeeping the page selection needs and the response does not carry. */
 interface PendingStep {
-  step: AgentRunStep;
+  step: AgentRunStepDraft;
   /** The id of the step's last event; equal to `step.stepId` for a step of one event. */
   lastEventId: string;
   /** False for a tool call whose result has not been seen. */
@@ -89,7 +160,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function closedStep(event: AgentRunEventRow, kind: AgentRunStepKind, state: AgentRunStepState): PendingStep {
+function noFacts(): AgentRunStepFacts {
+  return { toolName: null, targetDatabaseId: null, targetItemId: null, change: null, changeCount: 0 };
+}
+
+function closedStep(event: AgentRunEventRow, kind: AgentRunStepKind, state: AgentRunDraftState): PendingStep {
   return {
     step: {
       stepId: event.id,
@@ -100,6 +175,8 @@ function closedStep(event: AgentRunEventRow, kind: AgentRunStepKind, state: Agen
       toolCallId: null,
       operation: null,
       mcp: null,
+      approvalRequestId: null,
+      facts: noFacts(),
     },
     lastEventId: event.id,
     closed: true,
@@ -152,6 +229,67 @@ function laterId(a: string, b: string): string {
   return BigInt(a) >= BigInt(b) ? a : b;
 }
 
+/** A string longer than `AGENT_RUN_STEP_VALUE_MAX_LENGTH` is cut and marked; JSON longer than that becomes such a string. */
+function boundValue(value: unknown): unknown {
+  const text =
+    typeof value === "string" ? value : typeof value === "object" && value !== null ? JSON.stringify(value) : null;
+  if (text === null || text.length <= AGENT_RUN_STEP_VALUE_MAX_LENGTH) return value;
+  return `${text.slice(0, AGENT_RUN_STEP_VALUE_MAX_LENGTH)}\u2026`;
+}
+
+/** Whether the stored result is the marker of a result redacted as sensitive (issue #1827), as a text or as the content of a result. */
+function isRedactedResult(result: unknown): boolean {
+  if (result === REDACTED_RESULT_MARKER) return true;
+  if (!isRecord(result)) return false;
+  const content = result.content;
+  if (content === REDACTED_RESULT_MARKER) return true;
+  return Array.isArray(content) && content.some((block) => isRecord(block) && block.text === REDACTED_RESULT_MARKER);
+}
+
+/** The first of `changes` as a step's `change`, its values bounded; `null` for no entry. */
+function firstChange(changes: readonly ToolResultChange[]): AgentRunStepChange | null {
+  const first = changes[0];
+  if (first === undefined) return null;
+  return {
+    property: first.key,
+    from: first.before === undefined ? null : boundValue(first.before),
+    to: first.after === undefined ? null : boundValue(first.after),
+  };
+}
+
+/** The ids a tool event names, kept only for a generic operation (see `AgentRunStepFacts`). */
+function targetIds(event: {
+  operation?: unknown;
+  targetDatabaseId?: string;
+  targetItemId?: string;
+}): Pick<AgentRunStepFacts, "targetDatabaseId" | "targetItemId"> {
+  if (event.operation === undefined) return { targetDatabaseId: null, targetItemId: null };
+  return { targetDatabaseId: event.targetDatabaseId ?? null, targetItemId: event.targetItemId ?? null };
+}
+
+/**
+ * What the typed parse of a stored `tool_result` adds to the step it closes (or, for a result whose call
+ * is gone, to the step it makes): the approval request, the changes and, for a call stored without
+ * target ids, the ones of the result. A result that does not parse adds nothing.
+ */
+function applyResultFacts(step: AgentRunStepDraft, payload: unknown): void {
+  const result = parseToolEventPayload("tool_result", payload);
+  if (!result) return;
+  const ids = targetIds(result);
+  step.facts.targetDatabaseId ??= ids.targetDatabaseId;
+  step.facts.targetItemId ??= ids.targetItemId;
+  const approvalRequestId = result.details?.approvalRequestId;
+  if (approvalRequestId !== undefined) {
+    step.kind = "approval";
+    step.approvalRequestId = approvalRequestId;
+  }
+  const changes = result.details?.changes;
+  if (changes !== undefined && !isRedactedResult(result.result)) {
+    step.facts.change = firstChange(changes);
+    step.facts.changeCount = changes.length;
+  }
+}
+
 /** Groups the events, which must be in id order, into steps in the order of their first event. */
 function groupSteps(events: readonly AgentRunEventRow[]): PendingStep[] {
   const steps: PendingStep[] = [];
@@ -181,6 +319,8 @@ function groupSteps(events: readonly AgentRunEventRow[]): PendingStep[] {
             toolCallId: use.toolCallId,
             operation: use.operation ?? null,
             mcp: use.mcp ?? null,
+            approvalRequestId: null,
+            facts: { ...noFacts(), toolName: use.name, ...targetIds(use) },
           },
           lastEventId: event.id,
           closed: false,
@@ -198,6 +338,7 @@ function groupSteps(events: readonly AgentRunEventRow[]): PendingStep[] {
           openTools.delete(toolCallId);
           open.step.state = state;
           open.step.durationMs = Date.parse(event.at) - Date.parse(open.step.at);
+          applyResultFacts(open.step, event.payload);
           open.lastEventId = event.id;
           open.closed = true;
           break;
@@ -208,6 +349,8 @@ function groupSteps(events: readonly AgentRunEventRow[]): PendingStep[] {
         orphan.step.toolCallId = toolCallId;
         orphan.step.operation = result?.operation ?? null;
         orphan.step.mcp = result?.mcp ?? null;
+        orphan.step.facts.toolName = result?.name ?? null;
+        applyResultFacts(orphan.step, event.payload);
         steps.push(orphan);
         break;
       }
@@ -316,4 +459,147 @@ export function buildAgentRunStepPage(input: {
     chosen === steps.length &&
     (runSettled || (last !== undefined && (last.step.kind === "end" || last.step.kind === "error")));
   return { steps: pageSteps, nextCursor: reachedEnd ? null : cursor };
+}
+
+/** The longest a step's `targetName` is: a longer name is cut and marked with an ellipsis. */
+export const AGENT_RUN_STEP_TARGET_NAME_MAX_LENGTH = 200;
+
+/**
+ * What one page's steps point at, read in one batch (`loadAgentRunStepTargets`): the items by id with
+ * the database they are in and their display name, and the module id of each database.
+ */
+export interface AgentRunStepTargets {
+  items: ReadonlyMap<string, { databaseId: string; name: string | null }>;
+  /** The `owner_module_id` of a database; `null` for a database no module owns. */
+  databaseModuleIds: ReadonlyMap<string, string | null>;
+}
+
+/** The tool and approval steps of a whole run, for the summary of its `end` step. */
+export interface AgentRunToolStepCounts {
+  toolCount: number;
+  approvalCount: number;
+}
+
+function stepTool(step: AgentRunStepDraft): AgentStepTool {
+  if (step.operation !== null) return { kind: "operation", operation: step.operation };
+  if (step.mcp !== null) return { kind: "mcp", toolName: step.mcp.toolName };
+  return step.facts.toolName === null ? { kind: "unknown" } : { kind: "named", toolName: step.facts.toolName };
+}
+
+function boundName(name: string): string {
+  return name.length <= AGENT_RUN_STEP_TARGET_NAME_MAX_LENGTH
+    ? name
+    : `${name.slice(0, AGENT_RUN_STEP_TARGET_NAME_MAX_LENGTH)}\u2026`;
+}
+
+async function projectToolStep(
+  step: AgentRunStepDraft,
+  locale: string,
+  targets: AgentRunStepTargets,
+): Promise<Pick<AgentRunStep, "title" | "targetName" | "summary">> {
+  const { facts } = step;
+  const item = facts.targetItemId === null ? undefined : targets.items.get(facts.targetItemId);
+  const databaseId = facts.targetDatabaseId ?? item?.databaseId ?? null;
+  const moduleId = databaseId === null ? null : (targets.databaseModuleIds.get(databaseId) ?? null);
+  return {
+    title: await stepTitle(locale, stepTool(step), moduleId),
+    targetName: item?.name == null ? null : boundName(item.name),
+    summary: await stepSummary(locale, {
+      kind: "tool",
+      state: step.state,
+      operation: step.operation,
+      approval: step.kind === "approval",
+      changeCount: facts.changeCount,
+    }),
+  };
+}
+
+/** The reason key of a request whose MCP tool call failed on execution (issue #1437): that outcome is `failed`, not a conflict. */
+const APPROVAL_CALL_FAILED_KEY = "approval.outcome.failed";
+
+/** The reason of a conflict that no `execution_result_jsonb` discriminator explains, and of a request from before the execution protocol. */
+const APPROVAL_CONFLICT_OTHER_KEY = "approval.conflict.other";
+
+/**
+ * Where an approval step stands, from its request (issue #1862); `null` for a state no row can have (an
+ * `approved` request whose execution is not `queued`, `succeeded` or terminal). The decision comes first:
+ * a `pending` request is `pending` and a `rejected` one `rejected` whatever its execution status, so a
+ * request the cutover to the execution protocol rejected and marked `legacy_terminal` reads `rejected`.
+ * An approved one reads its execution: `queued` is `executing`, `succeeded` `executed`, a `conflict` whose
+ * reason is the failed MCP call (`approvalConflictReason`) `failed` and any other `conflict`, like
+ * `legacy_terminal`, `conflict` with that reason's key. Only the discriminators of the stored result are
+ * read; its text never is.
+ */
+export function approvalStepState(
+  request: Pick<ApprovalRequestStateView, "status" | "executionStatus" | "executionResult">,
+): { approvalState: AgentRunApprovalState; conflictReason?: string } | null {
+  if (request.status === "pending") return { approvalState: "pending" };
+  if (request.status === "rejected") return { approvalState: "rejected" };
+  switch (request.executionStatus) {
+    case "queued":
+      return { approvalState: "executing" };
+    case "succeeded":
+      return { approvalState: "executed" };
+    case "conflict": {
+      // `approvalConflictReason` answers `null` only for a request that is not in `conflict`, which this is.
+      const key = approvalConflictReason("conflict", request.executionResult)?.key ?? APPROVAL_CONFLICT_OTHER_KEY;
+      return key === APPROVAL_CALL_FAILED_KEY
+        ? { approvalState: "failed" }
+        : { approvalState: "conflict", conflictReason: key };
+    }
+    case "legacy_terminal":
+      return { approvalState: "conflict", conflictReason: APPROVAL_CONFLICT_OTHER_KEY };
+    case "not_approved":
+      return null;
+  }
+}
+
+/** The step state an approval state gives: waiting while pending, an error for a failure or a conflict, ok otherwise. */
+function stepStateOfApproval(approvalState: AgentRunApprovalState): AgentRunStepState {
+  if (approvalState === "pending") return "waitingApproval";
+  return approvalState === "failed" || approvalState === "conflict" ? "error" : "ok";
+}
+
+/**
+ * The steps of a page as the route returns them (issues #1847 and #1862): each draft with its localized
+ * title and summary, its target's name and its first change. `targets` is what the page's calls point at,
+ * `counts` the tool and approval steps of the whole run, read only when the page holds the `end` step, and
+ * `approvals` the requests of the page's approval steps by id. An approval step whose request is in
+ * `approvals` and has a state (`approvalStepState`) carries `approvalState`, the `conflictReason` of a
+ * conflict, and the step `state` that follows from it; one whose request is missing keeps the state of its
+ * call and has no `approvalState`. A call whose item or database cannot be read keeps its title with the
+ * generic noun and has no `targetName`. The only values it takes from a result are the structured fields
+ * of its `details` (the approval request id and the changes); no argument, result content, model text or
+ * error text reaches it.
+ */
+export async function projectAgentRunSteps(input: {
+  steps: readonly AgentRunStepDraft[];
+  locale: string;
+  targets: AgentRunStepTargets;
+  counts: AgentRunToolStepCounts | null;
+  approvals: ReadonlyMap<string, ApprovalRequestStateView>;
+}): Promise<AgentRunStep[]> {
+  const { locale, targets, counts, approvals } = input;
+  return Promise.all(
+    input.steps.map(async (draft): Promise<AgentRunStep> => {
+      const { facts, ...core } = draft;
+      if (draft.kind === "tool" || draft.kind === "approval") {
+        const request = draft.approvalRequestId === null ? undefined : approvals.get(draft.approvalRequestId);
+        const derived = request === undefined ? null : approvalStepState(request);
+        return {
+          ...core,
+          ...(await projectToolStep(draft, locale, targets)),
+          change: facts.change,
+          ...(derived === null ? {} : { ...derived, state: stepStateOfApproval(derived.approvalState) }),
+        };
+      }
+      return {
+        ...core,
+        title: await stepKindTitle(locale, draft.kind),
+        targetName: null,
+        change: null,
+        summary: draft.kind === "end" && counts !== null ? await stepSummary(locale, { kind: "end", ...counts }) : null,
+      };
+    }),
+  );
 }

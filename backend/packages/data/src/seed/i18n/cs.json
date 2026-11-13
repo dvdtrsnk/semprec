@@ -293,5 +293,7 @@
   "editor.task.followupTask.label": "Navazující úkol",
   "editor.task.followDate.label": "Datum navazujícího úkolu",
   "editor.file.followupTask.label": "Navazující úkol",
-  "editor.file.followDate.label": "Datum navazujícího úkolu"
+  "editor.file.followDate.label": "Datum navazujícího úkolu",
+  "agentTool.transcript.get.label": "Načtení přepisu schůzky",
+  "agentTool.transcript.segment.get.label": "Načtení úseku přepisu schůzky"
 }

@@ -56,6 +56,8 @@ import { runPeopleBirthdayCutoverMigration } from "../calendar/peopleBirthdayCut
 import { runSensitiveDatabasesCutoverMigration } from "../seed/sensitiveDatabasesCutoverMigration.js";
 import { runTasksTodayViewCutoverMigration } from "../tasks/todayViewCutoverMigration.js";
 import { runEventsRecurrenceCutoverMigration } from "../calendar/eventsRecurrenceCutoverMigration.js";
+import { runTranscriptNameBackfillCutoverMigration } from "../transcription/transcriptNameBackfillCutoverMigration.js";
+import { runSleepSettingsAreaCutoverMigration } from "../sleep/sleepSettingsAreaCutoverMigration.js";
 
 /**
  * Runs the data-driven post-migration cutovers — the ones that read and write tenant rows — once
@@ -145,6 +147,14 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     // Issue gh-1817: the Events `recurrence` property. It needs no other step's result and stands after the
     // entry of issue #1808, a blocker of that issue, before the area-note cutover that stays last.
     await runEventsRecurrenceCutoverMigration(pool);
+    // Issue gh-1830: clears the filename the create step used to copy into `Transcripts.name`. It needs no other
+    // step's result and stands after the entry of issue gh-1817, a blocker of that issue, before the area-note
+    // cutover that stays last.
+    await runTranscriptNameBackfillCutoverMigration(pool);
+    // Issue gh-1833: the `sleepSettings.area` relation. It needs the sleep databases of the module cutover of #1779
+    // and the Areas database, and stands after the steps above (the entry of issue gh-1830, a blocker of that issue,
+    // among them), before the area-note cutover that stays last.
+    await runSleepSettingsAreaCutoverMigration(pool);
     // Last: it converts each area in its own transaction and reports failed areas only after every area ran.
     await runAreaNoteCutoverMigration(pool);
   });

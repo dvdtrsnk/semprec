@@ -22,7 +22,7 @@ import { getDerivedValuesForItems } from "../derived/derivedValueReads.js";
 import { runAutomationBatchReader } from "./hooks.js";
 import type { ItemAutomationReadPort } from "@semprec/shared";
 import { getItemsByIds } from "./itemsStore.js";
-import { listUnreadableDatabaseIds } from "../agentGrants/agentDatabaseAccess.js";
+import { listUnreadableDatabaseIds, type DatabaseReader } from "../agentGrants/agentDatabaseAccess.js";
 
 export function createChokePoint(
   pool: Pool,
@@ -34,19 +34,18 @@ export function createChokePoint(
 
   /**
    * The live relation edges of one item from its own side (issue #1404), in one transaction; `null` when the item is not
-   * found. An agent (`agentProjectItemId`, issue #1810) needs `read` access to the item's database and sees an edge to a
-   * database it may not read as a `HiddenItemRelationEntry`; a read without an agent returns every edge in full.
+   * found. An agent (a `reader` that is its project, issue #1810) or an external client (issue #1998) needs `read`
+   * access to the item's database and sees an edge to a database it may not read as a `HiddenItemRelationEntry`; a
+   * read without a reader returns every edge in full.
    */
   function listItemRelations(itemId: string, relationPropertyId?: string): Promise<VisibleItemRelationEntry[] | null>;
   function listItemRelations(
     itemId: string,
     relationPropertyId: string | undefined,
-    agentProjectItemId: string | undefined,
+    reader: DatabaseReader | undefined,
   ): Promise<ItemRelationEntry[] | null>;
-  function listItemRelations(itemId: string, relationPropertyId?: string, agentProjectItemId?: string) {
-    return withTransaction(pool, (client) =>
-      listItemRelationsWithClient(client, itemId, relationPropertyId, agentProjectItemId),
-    );
+  function listItemRelations(itemId: string, relationPropertyId?: string, reader?: DatabaseReader) {
+    return withTransaction(pool, (client) => listItemRelationsWithClient(client, itemId, relationPropertyId, reader));
   }
 
   return mergeOps(
@@ -63,14 +62,15 @@ export function createChokePoint(
     createViewQueryOps(deps),
     {
       /**
-       * The value links of a set of items for `include=links` (issue #1403), in one transaction. An agent
-       * (`agentProjectItemId`, issue #1849) gets no source item from a database its project may not read.
+       * The value links of a set of items for `include=links` (issue #1403), in one transaction. An agent (a `reader`
+       * that is its project, issue #1849) gets no source item from a database its project may not read; an external
+       * client (issue #1998) none from a sensitive database.
        */
       async getValueLinksForItems(
         itemIds: string[],
         includeDerived = false,
         preloadedDerived?: Parameters<typeof getValueLinksForItems>[3],
-        agentProjectItemId?: string,
+        reader?: DatabaseReader,
       ) {
         return withTransaction(pool, async (client) =>
           getValueLinksForItems(
@@ -78,7 +78,7 @@ export function createChokePoint(
             itemIds,
             includeDerived,
             preloadedDerived,
-            agentProjectItemId === undefined ? undefined : await listUnreadableDatabaseIds(client, agentProjectItemId),
+            reader === undefined ? undefined : await listUnreadableDatabaseIds(client, reader),
           ),
         );
       },

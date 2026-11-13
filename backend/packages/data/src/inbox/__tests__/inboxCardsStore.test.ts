@@ -28,8 +28,15 @@ import { createInboxItemWithClient } from "../inboxStore.js";
 import { createInboxTypeWithClient } from "../inboxTypesStore.js";
 import { createSemprecTickAction, type ComputeSemprecProposalFn } from "../inboxTickAction.js";
 import { confirmProposalWithClient, rejectProposalWithClient } from "../proposalActions.js";
-import { createInboxCardsRouteHandler } from "../inboxRouteHandlers.js";
-import { INBOX_CARDS_LIMIT, listInboxCards, type InboxCard, type InboxCardList } from "../inboxCardsStore.js";
+import { createInboxCardsCountRouteHandler, createInboxCardsRouteHandler } from "../inboxRouteHandlers.js";
+import {
+  INBOX_CARDS_LIMIT,
+  countOpenInboxCards,
+  listInboxCards,
+  type InboxCard,
+  type InboxCardList,
+} from "../inboxCardsStore.js";
+import type { ProposalStep } from "../proposalEnvelope.js";
 
 // Each test seeds the system databases and a handful of cards; the bulk tests create hundreds of rows.
 const BULK_TEST_TIMEOUT_MS = 120_000;
@@ -52,6 +59,11 @@ async function databaseIdFor(moduleId: string): Promise<string> {
 /** Lists the stack of `pool` in tenant zero for `userId`; the read runs in one managed transaction, as the route does. */
 function listCards(pool: Pool, userId: string, locale = "en"): Promise<InboxCardList> {
   return inTenantZero(() => withTransaction(pool, (client) => listInboxCards(client, { ownerUserId: userId, locale })));
+}
+
+/** The number of open Inbox cards of `userId` read through `pool` in tenant zero, in one managed transaction, as the route does. */
+function countCards(pool: Pool, userId: string): Promise<number> {
+  return inTenantZero(() => withTransaction(pool, (client) => countOpenInboxCards(client, { ownerUserId: userId })));
 }
 
 function cardIds(list: InboxCardList): string[] {
@@ -809,6 +821,257 @@ describe("listInboxCards (issue #1807)", () => {
     });
   });
 
+  describe("what the update steps change (issue #2028)", () => {
+    let workId: string;
+    let financeId: string;
+    let accountingId: string;
+
+    async function createItem(moduleId: string, properties: Record<string, unknown>): Promise<string> {
+      const databaseId = await databaseIdFor(moduleId);
+      return inTenantZero(() =>
+        withTransaction(
+          adminPool,
+          async (client) => (await createItemWithClient(client, { databaseId, properties })).id,
+        ),
+      );
+    }
+
+    /** A proposed card that holds a multi-step envelope with `operations`, the first of which is the primary step. */
+    async function stepsCard(operations: ProposalStep[]): Promise<string> {
+      const proposal = {
+        entityKind: "database",
+        target: await databaseIdFor("projects"),
+        properties: {},
+        operations,
+      };
+      return inTenantZero(() =>
+        withTransaction(
+          adminPool,
+          async (client) =>
+            (
+              await createItemWithClient(
+                client,
+                { databaseId: proposalsId, properties: { kind: "inbox", status: "proposed", proposal } },
+                { allowedSystemKeys: ["kind", "status", "proposal"] },
+              )
+            ).id,
+        ),
+      );
+    }
+
+    function moveToFinance(extra: Partial<ProposalStep> = {}): ProposalStep {
+      return {
+        ref: "move",
+        op: "update",
+        itemId: accountingId,
+        role: "primary",
+        before: { relations: { area: [workId] } },
+        after: { relations: { area: [financeId] } },
+        ...extra,
+      };
+    }
+
+    beforeEach(async () => {
+      workId = await createItem("areas", { name: "Work" });
+      financeId = await createItem("areas", { name: "Finance" });
+      accountingId = await createItem("projects", { name: "Accounting", status: "inProgress" });
+    });
+
+    it("carries the move of a project from area Work to area Finance on the card GET /api/inbox/cards returns", async () => {
+      const cardId = await stepsCard([moveToFinance()]);
+
+      const answer = await inTenantZero(() =>
+        createInboxCardsRouteHandler(adminPool)({ identity: { user: { id: ownerId, locale: "en" } } }),
+      );
+
+      if (!("body" in answer)) throw new Error("expected a raw JSON body");
+      expect(answer.status).toBe(200);
+      const { cards } = answer.body as { cards: Array<{ cardId: string; changes?: unknown }> };
+      expect(cards.find((card) => card.cardId === cardId)?.changes).toEqual([
+        {
+          ref: "move",
+          itemId: accountingId,
+          itemLabel: "Accounting",
+          field: "area",
+          fieldLabel: "Area",
+          from: { value: [workId], labels: ["Work"] },
+          to: { value: [financeId], labels: ["Finance"] },
+        },
+      ]);
+    });
+
+    it("carries the canonical keys and the option labels of a status change in the locale of the reader", async () => {
+      const cardId = await stepsCard([
+        {
+          ref: "done",
+          op: "update",
+          itemId: accountingId,
+          role: "primary",
+          before: { properties: { status: "inProgress" } },
+          after: { properties: { status: "done" } },
+        },
+      ]);
+
+      const english = cardOf(await listCards(adminPool, ownerId, "en"), cardId).changes;
+      const czech = cardOf(await listCards(adminPool, ownerId, "cs"), cardId).changes;
+
+      expect(english).toMatchObject([
+        { field: "status", fieldLabel: "Status", from: { value: "inProgress", labels: ["In progress"] } },
+      ]);
+      expect(english?.[0]?.to).toEqual({ value: "done", labels: ["Done"] });
+      expect(czech).toMatchObject([
+        { field: "status", fieldLabel: "Stav", from: { value: "inProgress", labels: ["Probíhá"] } },
+      ]);
+      expect(czech?.[0]?.to).toEqual({ value: "done", labels: ["Hotovo"] });
+    });
+
+    it("labels a target that is another step of the same proposal with the title that step would create", async () => {
+      const cardId = await stepsCard([
+        moveToFinance({ after: { relations: { area: [{ ref: "newArea" }] } } }),
+        { ref: "newArea", op: "create", databaseKey: "areas", role: "secondary", properties: { name: "Travel" } },
+      ]);
+
+      const changes = cardOf(await listCards(adminPool, ownerId), cardId).changes;
+
+      expect(changes).toMatchObject([
+        { field: "area", from: { labels: ["Work"] }, to: { value: [{ ref: "newArea" }], labels: ["Travel"] } },
+      ]);
+    });
+
+    it("still lists every card when a stored update step names a relation target that is not an id", async () => {
+      const bad = await stepsCard([moveToFinance({ before: { relations: { area: ["Work"] } } })]);
+      const good = await stepsCard([moveToFinance()]);
+
+      const list = await listCards(adminPool, ownerId);
+
+      expect(cardOf(list, bad).changes).toMatchObject([{ field: "area", from: { value: ["Work"], labels: ["Work"] } }]);
+      expect(cardOf(list, good).changes).toMatchObject([{ from: { labels: ["Work"] }, to: { labels: ["Finance"] } }]);
+    });
+
+    it("leaves a disabled update step out, and a card whose only update step is disabled carries no changes", async () => {
+      const disabledOnly = await stepsCard([
+        { ref: "area", op: "create", databaseKey: "areas", role: "primary", properties: { name: "Travel" } },
+        moveToFinance({ role: "secondary", enabled: false }),
+      ]);
+      const mixed = await stepsCard([
+        moveToFinance({ ref: "enabledMove" }),
+        moveToFinance({
+          ref: "disabledMove",
+          role: "secondary",
+          enabled: false,
+          before: { properties: { status: "inProgress" } },
+          after: { properties: { status: "done" } },
+        }),
+      ]);
+
+      const list = await listCards(adminPool, ownerId);
+
+      expect(cardOf(list, disabledOnly)).not.toHaveProperty("changes");
+      expect(cardOf(list, mixed).changes?.map((change) => change.ref)).toEqual(["enabledMove"]);
+    });
+
+    it("leaves out an optional update step that no active step refers to", async () => {
+      const cardId = await stepsCard([
+        { ref: "area", op: "create", databaseKey: "areas", role: "primary", properties: { name: "Travel" } },
+        moveToFinance({ role: "secondary", optional: true }),
+      ]);
+
+      expect(cardOf(await listCards(adminPool, ownerId), cardId)).not.toHaveProperty("changes");
+    });
+
+    it("carries no changes on a card without update steps, nor on an approval or a card with no envelope", async () => {
+      const single = await proposedCard("Buy milk");
+      const creating = await stepsCard([
+        { ref: "area", op: "create", databaseKey: "areas", role: "primary", properties: { name: "Travel" } },
+      ]);
+      const updating = await stepsCard([moveToFinance()]);
+      const approval = await approvalFrom("heartbeat");
+      await bareProposedCards(1);
+
+      const list = await listCards(adminPool, ownerId);
+
+      expect(list.cards).toHaveLength(5);
+      for (const card of list.cards) {
+        if (card.cardId === updating) expect(card.changes).toHaveLength(1);
+        else expect(card).not.toHaveProperty("changes");
+      }
+      expect([single.cardId, creating, approval].every((id) => cardOf(list, id))).toBe(true);
+    });
+
+    it("names no item of another tenant when a stored step points at one, on the runtime role", async () => {
+      const dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+      try {
+        const cardId = await stepsCard([moveToFinance()]);
+        const otherTenantId = await createTestTenant(adminPool);
+        await provisionTenant(dataPool, otherTenantId);
+        const otherProposalsId = await runInTenant(otherTenantId, async () => {
+          const { rows } = await withTransaction(dataPool, (client) =>
+            client.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'processingProposals'"),
+          );
+          return rows[0]?.id ?? "";
+        });
+        const otherProjectsId = await runInTenant(otherTenantId, async () => {
+          const { rows } = await withTransaction(dataPool, (client) =>
+            client.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'projects'"),
+          );
+          return rows[0]?.id ?? "";
+        });
+        // The second tenant's card names the first tenant's project and areas, the ids a stolen envelope would hold.
+        const foreignCard = await runInTenant(otherTenantId, () =>
+          withTransaction(
+            dataPool,
+            async (client) =>
+              (
+                await createItemWithClient(
+                  client,
+                  {
+                    databaseId: otherProposalsId,
+                    properties: {
+                      kind: "inbox",
+                      status: "proposed",
+                      proposal: {
+                        entityKind: "database",
+                        target: otherProjectsId,
+                        properties: {},
+                        operations: [moveToFinance()],
+                      },
+                    },
+                  },
+                  { allowedSystemKeys: ["kind", "status", "proposal"] },
+                )
+              ).id,
+          ),
+        );
+
+        const asFirstTenant = await inTenantZero(() =>
+          withTransaction(dataPool, (client) => listInboxCards(client, { ownerUserId: ownerId, locale: "en" })),
+        );
+        const asSecondTenant = await runInTenant(otherTenantId, () =>
+          withTransaction(dataPool, (client) => listInboxCards(client, { ownerUserId: ownerId, locale: "en" })),
+        );
+
+        expect(cardOf(asFirstTenant, cardId).changes?.[0]).toMatchObject({
+          itemLabel: "Accounting",
+          from: { labels: ["Work"] },
+        });
+        expect(asSecondTenant.cards.map((card) => card.cardId)).toEqual([foreignCard]);
+        expect(cardOf(asSecondTenant, foreignCard).changes).toEqual([
+          {
+            ref: "move",
+            itemId: accountingId,
+            itemLabel: accountingId,
+            field: "area",
+            fieldLabel: "area",
+            from: { value: [workId], labels: [workId] },
+            to: { value: [financeId], labels: [financeId] },
+          },
+        ]);
+      } finally {
+        await dataPool.end();
+      }
+    });
+  });
+
   describe("the limit", () => {
     it(
       "returns 200 cards and the full total for more than 200 open cards",
@@ -918,6 +1181,210 @@ describe("listInboxCards (issue #1807)", () => {
     expect(trashedOnce).toBe(true);
     expect(trashedWasCandidate).toBe(true);
     expect(cardIds(list)).toEqual([kept.cardId]);
+  });
+
+  describe("countOpenInboxCards (issue #1823)", () => {
+    it("equals the total of the list for cards of every state and kind and for approvals", async () => {
+      await transcriptCard("Standup", "2026-08-28T08:00:00.000Z");
+      const clarification = await proposedCard("Unclear capture");
+      await setCardStatus(clarification.cardId, "needsClarification");
+      const invalid = await proposedCard("Deleted capture");
+      await invalidateBySourceDeletion(invalid.itemId);
+      await proposedCard("Buy milk");
+      await approvalFrom("heartbeat");
+      await approvalFrom("mcp");
+
+      const list = await listCards(adminPool, ownerId);
+
+      expect(await countCards(adminPool, ownerId)).toBe(6);
+      expect(list.total).toBe(6);
+    });
+
+    it("is 0 for a tenant without cards", async () => {
+      expect(await countCards(adminPool, ownerId)).toBe(0);
+    });
+
+    it(
+      "equals the total of the list also when more than 200 cards are open",
+      async () => {
+        await approvalFrom("heartbeat");
+        await approvalFrom("mcp");
+        const proposalCount = INBOX_CARDS_LIMIT + 5;
+        await bareProposedCards(proposalCount);
+
+        const list = await listCards(adminPool, ownerId);
+
+        expect(list.cards).toHaveLength(INBOX_CARDS_LIMIT);
+        expect(await countCards(adminPool, ownerId)).toBe(2 + proposalCount);
+        expect(await countCards(adminPool, ownerId)).toBe(list.total);
+      },
+      BULK_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "equals the total of the list when the approvals alone pass the limit",
+      async () => {
+        const approvalCount = INBOX_CARDS_LIMIT + 1;
+        for (let n = 0; n < approvalCount; n += 1) await approvalFrom("heartbeat");
+        await proposedCard("A card below the approvals");
+
+        const list = await listCards(adminPool, ownerId);
+
+        expect(await countCards(adminPool, ownerId)).toBe(approvalCount + 1);
+        expect(await countCards(adminPool, ownerId)).toBe(list.total);
+      },
+      BULK_TEST_TIMEOUT_MS,
+    );
+
+    it("is lower by one after a card is confirmed", async () => {
+      const confirmed = await proposedCard("Confirmed one");
+      await proposedCard("Still open");
+      expect(await countCards(adminPool, ownerId)).toBe(2);
+
+      await inTenantZero(() =>
+        withTransaction(adminPool, (client) =>
+          confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, confirmed.cardId),
+        ),
+      );
+
+      expect(await countCards(adminPool, ownerId)).toBe(1);
+      expect(await countCards(adminPool, ownerId)).toBe((await listCards(adminPool, ownerId)).total);
+    });
+
+    it("does not count a rejected card, a deleted card, the approvals of chat or an approval already decided", async () => {
+      await proposedCard("Still open");
+      const rejected = await proposedCard("Rejected one");
+      const deleted = await proposedCard("Deleted card");
+      await inTenantZero(() =>
+        withTransaction(adminPool, async (client) => {
+          await rejectProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, rejected.cardId);
+          await itemsStore.softDeleteItem(client, proposalsId, deleted.cardId);
+        }),
+      );
+      await approvalFrom("heartbeat");
+      await approvalFrom("user");
+      await approvalFrom("user", { delegated: true });
+      const decided = await approvalFrom("heartbeat");
+      await inTenantZero(() =>
+        withTransaction(adminPool, (client) => decideApprovalRequest(client, decided, "rejected", ownerId)),
+      );
+
+      expect(await countCards(adminPool, ownerId)).toBe(2);
+      expect(cardIds(await listCards(adminPool, ownerId))).toHaveLength(2);
+    });
+
+    it("does not count computing and computeFailed cards that the list returns", async () => {
+      const proposed = await proposedCard("Proposed");
+      const computing = await proposedCard("Computing");
+      const failed = await proposedCard("Failed");
+      await setCardStatus(computing.cardId, "computing");
+      await setCardStatus(failed.cardId, "computeFailed");
+
+      const list = await listCards(adminPool, ownerId);
+
+      expect(cardIds(list).sort()).toEqual([proposed.cardId, computing.cardId, failed.cardId].sort());
+      expect(await countCards(adminPool, ownerId)).toBe(1);
+      expect(list.total).toBe(1);
+    });
+
+    it("is 0 for a stack that holds only cards being computed", async () => {
+      const computing = await proposedCard("Computing");
+      await setCardStatus(computing.cardId, "computing");
+
+      expect(await countCards(adminPool, ownerId)).toBe(0);
+    });
+
+    it("counts the approvals of the user only", async () => {
+      await approvalFrom("heartbeat");
+      const other = (await createTenantZeroUser(adminPool)).id;
+
+      expect(await countCards(adminPool, ownerId)).toBe(1);
+      expect(await countCards(adminPool, other)).toBe(0);
+    });
+
+    it("counts only the approvals when the Inbox database is not there", async () => {
+      await approvalFrom("heartbeat");
+      await proposedCard("Buy milk");
+      await adminPool.query("UPDATE databases SET owner_module_id = NULL WHERE owner_module_id = 'inbox'");
+
+      expect(await countCards(adminPool, ownerId)).toBe(1);
+      expect(await countCards(adminPool, ownerId)).toBe((await listCards(adminPool, ownerId)).total);
+    });
+
+    it("counts only the approvals when the Processing proposals database is not there", async () => {
+      await approvalFrom("heartbeat");
+      await proposedCard("Buy milk");
+      await adminPool.query(
+        "UPDATE databases SET owner_module_id = NULL WHERE owner_module_id = 'processingProposals'",
+      );
+
+      expect(await countCards(adminPool, ownerId)).toBe(1);
+      expect(await countCards(adminPool, ownerId)).toBe((await listCards(adminPool, ownerId)).total);
+    });
+
+    describe("the route handler", () => {
+      it("answers 200 with the total of the session's user, equal to the total of the list", async () => {
+        await proposedCard("Buy milk");
+        await approvalFrom("heartbeat");
+        const computing = await proposedCard("Computing");
+        await setCardStatus(computing.cardId, "computing");
+
+        const answer = await inTenantZero(() =>
+          createInboxCardsCountRouteHandler(adminPool)({ identity: { user: { id: ownerId } } }),
+        );
+
+        expect(answer).toEqual({ status: 200, body: { total: 2 } });
+        expect((await listCards(adminPool, ownerId)).total).toBe(2);
+      });
+
+      it("counts the cards of the tenant but not the approvals of another actor", async () => {
+        await approvalFrom("heartbeat");
+        const other = (await createTenantZeroUser(adminPool)).id;
+        await proposedCard("Buy milk");
+
+        const answer = await inTenantZero(() =>
+          createInboxCardsCountRouteHandler(adminPool)({ identity: { user: { id: other } } }),
+        );
+
+        // A proposals card belongs to the tenant and an approval to the actor of its run, so only the card is counted.
+        expect(answer).toEqual({ status: 200, body: { total: 1 } });
+      });
+    });
+
+    describe("tenant isolation", () => {
+      let dataPool: Pool;
+
+      beforeAll(async () => {
+        dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+      });
+
+      afterAll(async () => {
+        await dataPool?.end();
+      });
+
+      it(
+        "gives a second tenant its own count and never the first tenant's, on the runtime role",
+        async () => {
+          await proposedCard("First tenant capture");
+          await transcriptCard("First tenant transcript", "2026-08-28T08:00:00.000Z");
+          await approvalFrom("heartbeat");
+          const otherTenantId = await createTestTenant(adminPool);
+          await provisionTenant(dataPool, otherTenantId);
+
+          const asFirstTenant = await inTenantZero(() =>
+            withTransaction(dataPool, (client) => countOpenInboxCards(client, { ownerUserId: ownerId })),
+          );
+          // The first tenant's user id is passed on purpose: only the tenant scope can keep its rows out.
+          const asSecondTenant = await runInTenant(otherTenantId, () =>
+            withTransaction(dataPool, (client) => countOpenInboxCards(client, { ownerUserId: ownerId })),
+          );
+
+          expect(asFirstTenant).toBe(3);
+          expect(asSecondTenant).toBe(0);
+        },
+        BULK_TEST_TIMEOUT_MS,
+      );
+    });
   });
 
   describe("tenant isolation", () => {

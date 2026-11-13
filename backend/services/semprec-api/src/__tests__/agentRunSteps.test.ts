@@ -3,21 +3,33 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
+  buildAgentRunStepPage,
   createAgentRun,
+  createChokePoint,
+  createPendingApprovalRequest,
   createUser,
+  createViewTypeRegistry,
   finishAgentRun,
+  getDatabaseByModuleId,
   handleAgentRunEventsRetentionTask,
   hashPassword,
   insertAgentRunEvent,
   listAgentRunEventsAfter,
+  listAgentRunEventsForStepPage,
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   login,
+  markApprovalRequestExecutionSucceeded,
+  projectAgentRunStepPage,
+  recordApprovalRequestOutcome,
+  seedSystem,
+  terminalizeApprovalRequestAsConflict,
+  updateUserLocale,
   withTransaction,
   type AgentRunEventKind,
   type AgentRunRow,
@@ -29,8 +41,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 const stepSchema = z.strictObject({
   stepId: z.string(),
-  kind: z.enum(["start", "plan", "tool", "answer", "end", "error"]),
-  state: z.enum(["running", "ok", "error"]),
+  kind: z.enum(["start", "plan", "tool", "approval", "answer", "end", "error"]),
+  state: z.enum(["running", "ok", "error", "waitingApproval"]),
   at: z.string(),
   durationMs: z.number().nullable(),
   toolCallId: z.string().nullable(),
@@ -43,6 +55,13 @@ const stepSchema = z.strictObject({
       toolName: z.string(),
     })
     .nullable(),
+  approvalRequestId: z.string().nullable(),
+  title: z.string(),
+  targetName: z.string().nullable(),
+  change: z.strictObject({ property: z.string(), from: z.unknown(), to: z.unknown() }).nullable(),
+  summary: z.string().nullable(),
+  approvalState: z.enum(["pending", "executing", "executed", "failed", "conflict", "rejected"]).optional(),
+  conflictReason: z.string().optional(),
 });
 
 const pageSchema = z.strictObject({
@@ -432,6 +451,497 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
 
       expect(steps.map((s) => s.stepId)).not.toContain(foreign.id);
       expect(steps).toHaveLength(1);
+    });
+  });
+
+  describe("title, target, change and summary (issue #1847)", () => {
+    const SECRET = "tok-1847-never-returned";
+
+    /** A tenant with the system databases seeded, so it has a Tasks database, and a user of the given locale. */
+    async function seededSession(locale: "cs" | "en" = "en"): Promise<Session> {
+      const session = await tenantSession();
+      await runInTenant(session.tenant, () => seedSystem(pool, createViewTypeRegistry()));
+      // A new user reads Czech, so English is set as explicitly as Czech.
+      await updateUserLocale(admin, session.userId, locale);
+      return session;
+    }
+
+    /** The Tasks database of the tenant and a task of it with the given name, written through the choke point. */
+    function createTask(session: Session, name: string): Promise<{ databaseId: string; itemId: string }> {
+      return runInTenant(session.tenant, async () => {
+        const tasks = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "tasks"));
+        if (!tasks) throw new Error("The Tasks database is missing");
+        const task = await createChokePoint(pool).createItem({ databaseId: tasks.id, properties: { name } });
+        return { databaseId: tasks.id, itemId: task.id };
+      });
+    }
+
+    const patchIdentity = (task: { databaseId: string; itemId: string }) => ({
+      operation: "item.patch",
+      targetDatabaseId: task.databaseId,
+      targetItemId: task.itemId,
+    });
+
+    /** A finished item.patch call whose result reports changes, as the runtime stores it (issue #1527). */
+    async function writePatchCall(session: Session, runId: string, task: { databaseId: string; itemId: string }) {
+      await addStatus(session, runId, "running");
+      await addToolUse(session, runId, "patch-1", { ...patchIdentity(task), name: "item_patch" });
+      await addToolResult(session, runId, "patch-1", {
+        ...patchIdentity(task),
+        name: "item_patch",
+        result: {
+          content: [{ type: "text", text: `Patched ${SECRET}` }],
+          details: { error: false, changes: [{ key: "status", before: "todo", after: "done" }] },
+        },
+      });
+    }
+
+    it("returns an item.patch on a task with its title, the task's name and the change, in English", async () => {
+      const owner = await seededSession();
+      const task = await createTask(owner, "Buy milk");
+      const run = await createRun(owner);
+      await writePatchCall(owner, run.id, task);
+
+      const step = (await readPage(owner, run.id)).steps.find((s) => s.kind === "tool");
+
+      expect(step).toMatchObject({
+        operation: "item.patch",
+        title: "Changing a task",
+        targetName: "Buy milk",
+        change: { property: "status", from: "todo", to: "done" },
+        summary: "1 property changed",
+        approvalRequestId: null,
+      });
+    });
+
+    it("returns the same step in Czech for a user whose locale is cs", async () => {
+      const owner = await seededSession("cs");
+      const task = await createTask(owner, "Koupit mléko");
+      const run = await createRun(owner);
+      await writePatchCall(owner, run.id, task);
+
+      const step = (await readPage(owner, run.id)).steps.find((s) => s.kind === "tool");
+
+      expect(step).toMatchObject({
+        title: "Změna úkolu",
+        targetName: "Koupit mléko",
+        change: { property: "status", from: "todo", to: "done" },
+        summary: "Změněna 1 vlastnost",
+      });
+    });
+
+    it("titles database.query and item.create over the task database in both locales", async () => {
+      for (const [locale, titles] of [
+        ["en", ["Searching tasks", "Creating a task"]],
+        ["cs", ["Vyhledávání úkolů", "Vytvoření úkolu"]],
+      ] as const) {
+        const owner = await seededSession(locale);
+        const task = await createTask(owner, "Any");
+        const run = await createRun(owner);
+        for (const [callId, operation] of [
+          ["q", "database.query"],
+          ["n", "item.create"],
+        ] as const) {
+          await addToolUse(owner, run.id, callId, { operation, targetDatabaseId: task.databaseId });
+          await addToolResult(owner, run.id, callId, { operation, targetDatabaseId: task.databaseId });
+        }
+
+        const steps = (await readPage(owner, run.id)).steps;
+
+        expect(
+          steps.map((s) => [s.title, s.targetName]),
+          locale,
+        ).toEqual([
+          [titles[0], null],
+          [titles[1], null],
+        ]);
+      }
+    });
+
+    it("names an MCP tool in the title and shows neither its arguments nor its output", async () => {
+      const owner = await seededSession();
+      const run = await createRun(owner);
+      const mcp = {
+        toolRegistrationId: randomUUID(),
+        serverItemId: randomUUID(),
+        serverName: "Weather",
+        toolName: "forecast",
+      };
+      await addToolUse(owner, run.id, "m1", { mcp, arguments: { city: SECRET } });
+      await addToolResult(owner, run.id, "m1", {
+        mcp,
+        result: { content: [{ type: "text", text: `sunny ${SECRET}` }], details: { error: false } },
+      });
+
+      const answer = await getSteps(owner, run.id);
+      const step = pageSchema.parse(JSON.parse(answer.text)).steps[0];
+
+      expect(step).toMatchObject({ title: "Using forecast", mcp: { serverName: "Weather" }, targetName: null });
+      expect(answer.text).not.toContain(SECRET);
+      expect(answer.text).not.toContain("sunny");
+    });
+
+    it("marks a call that created an approval request as an approval step with its request id and no argument", async () => {
+      const owner = await seededSession();
+      const task = await createTask(owner, "Old task");
+      const run = await createRun(owner);
+      const requestId = randomUUID();
+      const identity = { operation: "item.delete", targetDatabaseId: task.databaseId, targetItemId: task.itemId };
+      await addToolUse(owner, run.id, "d1", { ...identity, arguments: { itemId: task.itemId, reason: SECRET } });
+      await addToolResult(owner, run.id, "d1", {
+        ...identity,
+        result: {
+          content: [{ type: "text", text: `Approval request ${requestId} ${SECRET}` }],
+          details: { error: false, approvalRequestId: requestId },
+        },
+      });
+
+      const answer = await getSteps(owner, run.id);
+      const step = pageSchema.parse(JSON.parse(answer.text)).steps[0];
+
+      expect(step).toMatchObject({
+        kind: "approval",
+        state: "ok",
+        approvalRequestId: requestId,
+        title: "Deleting a task",
+        targetName: "Old task",
+        summary: "Approval requested",
+      });
+      expect(answer.text).not.toContain(SECRET);
+      expect(answer.text).not.toContain("reason");
+    });
+
+    it("returns no raw error text of a failed call", async () => {
+      const owner = await seededSession();
+      const task = await createTask(owner, "Task");
+      const run = await createRun(owner);
+      await addToolUse(owner, run.id, "f1", patchIdentity(task));
+      await addToolResult(owner, run.id, "f1", {
+        ...patchIdentity(task),
+        isError: true,
+        result: { content: [{ type: "text", text: `validation_failed: ${SECRET}` }], details: { error: true } },
+      });
+
+      const answer = await getSteps(owner, run.id);
+      const step = pageSchema.parse(JSON.parse(answer.text)).steps[0];
+
+      expect(step).toMatchObject({ state: "error", summary: "Failed", change: null });
+      expect(answer.text).not.toContain(SECRET);
+      expect(answer.text).not.toContain("validation_failed");
+    });
+
+    it("returns a call interrupted by a restart, closed with an ordinary error result, as an error step", async () => {
+      const owner = await seededSession();
+      const run = await createRun(owner);
+      await addStatus(owner, run.id, "running");
+      await addToolUse(owner, run.id, "i1", { operation: "item.get" });
+      // The shape the startup repair of issue #1374 writes for a call without a result.
+      await addToolResult(owner, run.id, "i1", {
+        operation: "item.get",
+        isError: true,
+        result: { content: [{ type: "text", text: "interrupted_by_restart" }], details: { error: true } },
+      });
+
+      const answer = await getSteps(owner, run.id);
+      const tool = pageSchema.parse(JSON.parse(answer.text)).steps.find((s) => s.kind === "tool");
+
+      expect(tool).toMatchObject({ state: "error", summary: "Failed", operation: "item.get" });
+      expect(answer.text).not.toContain("interrupted_by_restart");
+    });
+
+    it("returns no model text and no thinking for the plan and answer steps, with a title for each", async () => {
+      const owner = await seededSession();
+      const run = await createRun(owner);
+      await writeFinishedRun(owner, run.id);
+
+      const answer = await getSteps(owner, run.id);
+      const steps = pageSchema.parse(JSON.parse(answer.text)).steps;
+
+      expect(steps.map((s) => [s.kind, s.title])).toEqual([
+        ["start", "Run started"],
+        ["plan", "Planning"],
+        ["tool", "Reading an item"],
+        ["tool", "Using forecast"],
+        ["answer", "Answering"],
+        ["end", "Run finished"],
+      ]);
+      expect(answer.text).not.toContain("private reasoning");
+      expect(answer.text).not.toContain("Let me look");
+    });
+
+    it("summarises the end step with the tool and approval counts of the whole run, whichever page holds it", async () => {
+      const owner = await seededSession();
+      const run = await createRun(owner);
+      await addStatus(owner, run.id, "running");
+      await addToolUse(owner, run.id, "t1", { operation: "item.get" });
+      await addToolResult(owner, run.id, "t1", { operation: "item.get" });
+      await addToolUse(owner, run.id, "t2", { operation: "item.delete" });
+      await addToolResult(owner, run.id, "t2", {
+        operation: "item.delete",
+        result: { content: [], details: { error: false, approvalRequestId: randomUUID() } },
+      });
+      await finish(owner, run.id);
+
+      const first = await readPage(owner, run.id, queryOf(null, 2));
+      const last = await readPage(owner, run.id, queryOf(first.nextCursor, 100));
+
+      expect(first.steps.every((s) => s.kind !== "end")).toBe(true);
+      expect(last.steps.find((s) => s.kind === "end")?.summary).toBe("2 tools, 1 approval");
+    });
+
+    it("answers with no target name for an item of another tenant and an id that is no uuid", async () => {
+      const owner = await seededSession();
+      const other = await seededSession();
+      const foreign = await createTask(other, "Foreign task name");
+      const run = await createRun(owner);
+      await addToolUse(owner, run.id, "x1", patchIdentity(foreign));
+      await addToolResult(owner, run.id, "x1", patchIdentity(foreign));
+      const garbage = { operation: "item.get", targetItemId: "not-a-uuid", targetDatabaseId: "also-not" };
+      await addToolUse(owner, run.id, "x2", garbage);
+      await addToolResult(owner, run.id, "x2", garbage);
+
+      const answer = await getSteps(owner, run.id);
+      const steps = pageSchema.parse(JSON.parse(answer.text)).steps;
+
+      expect(answer.status).toBe(200);
+      expect(steps.map((s) => [s.title, s.targetName])).toEqual([
+        ["Changing an item", null],
+        ["Reading an item", null],
+      ]);
+      expect(answer.text).not.toContain("Foreign task name");
+    });
+
+    it("looks the targets of a page up in the same number of queries for 3 steps as for 30", async () => {
+      const owner = await seededSession();
+      const task = await createTask(owner, "Counted");
+      const queriesFor = async (calls: number): Promise<number> => {
+        const run = await createRun(owner);
+        await addStatus(owner, run.id, "running");
+        for (let i = 0; i < calls; i++) {
+          await addToolUse(owner, run.id, `c${i}`, patchIdentity(task));
+          await addToolResult(owner, run.id, `c${i}`, patchIdentity(task));
+        }
+        return runInTenant(owner.tenant, () =>
+          withTransaction(pool, async (client) => {
+            const { events, hasMore } = await listAgentRunEventsForStepPage(client, run.id, "0", 100);
+            const page = buildAgentRunStepPage({ events, hasMore, after: "0", limit: 100, runSettled: false });
+            let queries = 0;
+            const counting: PoolClient = new Proxy(client, {
+              get(target, property) {
+                if (property === "query") queries += 1;
+                return Reflect.get(target, property);
+              },
+            });
+            const projected = await projectAgentRunStepPage(counting, page, { agentRunId: run.id, locale: "en" });
+            expect(projected.steps.filter((s) => s.targetName === "Counted")).toHaveLength(calls);
+            return queries;
+          }),
+        );
+      };
+
+      const few = await queriesFor(3);
+      const many = await queriesFor(30);
+
+      expect(few).toBeGreaterThan(0);
+      expect(many).toBe(few);
+    });
+  });
+
+  describe("approval state (issue #1862)", () => {
+    const SECRET = "execution-text-1862-never-returned";
+
+    /** A run with one approval step whose call created `requestId`, as the runtime stores the result (issue #1527). */
+    async function runWithApprovalStep(session: Session, requestId: string): Promise<string> {
+      const run = await createRun(session);
+      await addStatus(session, run.id, "running");
+      await addToolUse(session, run.id, "ask", { operation: "item.delete" });
+      await addToolResult(session, run.id, "ask", {
+        operation: "item.delete",
+        result: {
+          content: [{ type: "text", text: "awaiting a decision" }],
+          details: { error: false, approvalRequestId: requestId },
+        },
+      });
+      return run.id;
+    }
+
+    function createRequest(session: Session, agentRunId: string): Promise<string> {
+      return runInTenant(session.tenant, async () => {
+        const request = await createPendingApprovalRequest(pool, {
+          agentRunId,
+          toolName: "probe",
+          riskClass: "unclassified",
+          payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: { secret: SECRET } },
+          resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+        });
+        return request.id;
+      });
+    }
+
+    async function decide(session: Session, requestId: string, decision: "approved" | "rejected"): Promise<void> {
+      const res = await fetch(`${baseUrl}/api/approval-requests/${requestId}`, {
+        method: "PATCH",
+        headers: { ...session.headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ decision }),
+      });
+      expect(res.status).toBe(200);
+    }
+
+    /** A session with a run whose approval step points at a real, still pending request of the same run. */
+    async function pendingApproval(): Promise<{ session: Session; runId: string; requestId: string }> {
+      const session = await tenantSession();
+      const run = await createRun(session);
+      const requestId = await createRequest(session, run.id);
+      await addStatus(session, run.id, "running");
+      await addToolUse(session, run.id, "ask", { operation: "item.delete" });
+      await addToolResult(session, run.id, "ask", {
+        operation: "item.delete",
+        result: { content: [], details: { error: false, approvalRequestId: requestId } },
+      });
+      return { session, runId: run.id, requestId };
+    }
+
+    async function approvalStep(session: Session, runId: string) {
+      const answer = await getSteps(session, runId);
+      expect(answer.status, answer.text).toBe(200);
+      expect(answer.text).not.toContain(SECRET);
+      const step = pageSchema.parse(JSON.parse(answer.text)).steps.find((s) => s.kind === "approval");
+      if (!step) throw new Error("The run has no approval step");
+      return step;
+    }
+
+    it("shows a pending request as pending and the step as waiting for approval", async () => {
+      const { session, runId, requestId } = await pendingApproval();
+
+      const step = await approvalStep(session, runId);
+
+      expect(step).toMatchObject({ approvalRequestId: requestId, approvalState: "pending", state: "waitingApproval" });
+      expect("conflictReason" in step).toBe(false);
+    });
+
+    it("reads the same step as pending, executing and executed as its request moves on, with no event written to the run", async () => {
+      const { session, runId, requestId } = await pendingApproval();
+      const eventsBefore = await runInTenant(session.tenant, () => listAgentRunEventsAfter(pool, runId, "0"));
+
+      const pending = await approvalStep(session, runId);
+      await decide(session, requestId, "approved");
+      const executing = await approvalStep(session, runId);
+      await runInTenant(session.tenant, () =>
+        withTransaction(pool, (client) => markApprovalRequestExecutionSucceeded(client, requestId, { done: SECRET })),
+      );
+      const executed = await approvalStep(session, runId);
+
+      expect([pending, executing, executed].map((s) => [s.stepId, s.approvalState, s.state])).toEqual([
+        [pending.stepId, "pending", "waitingApproval"],
+        [pending.stepId, "executing", "ok"],
+        [pending.stepId, "executed", "ok"],
+      ]);
+      const eventsAfter = await runInTenant(session.tenant, () => listAgentRunEventsAfter(pool, runId, "0"));
+      expect(eventsAfter).toEqual(eventsBefore);
+    });
+
+    it("shows a rejected request as rejected", async () => {
+      const { session, runId, requestId } = await pendingApproval();
+      await decide(session, requestId, "rejected");
+
+      expect(await approvalStep(session, runId)).toMatchObject({ approvalState: "rejected", state: "ok" });
+    });
+
+    it.each([
+      ["the data changed before execution", {}, "approval.conflict.changed"],
+      ["the source was deleted", { reason: "not_found" }, "approval.conflict.deleted"],
+      ["the database was archived", { reason: "database_archived" }, "approval.conflict.archived"],
+    ])(
+      "shows an approved request that ended in a conflict (%s) as a conflict with its reason",
+      async (_name, details, key) => {
+        const { session, runId, requestId } = await pendingApproval();
+        await decide(session, requestId, "approved");
+        await runInTenant(session.tenant, () =>
+          withTransaction(pool, (client) =>
+            terminalizeApprovalRequestAsConflict(client, requestId, { ...details, leaked: SECRET }),
+          ),
+        );
+
+        expect(await approvalStep(session, runId)).toMatchObject({
+          approvalState: "conflict",
+          conflictReason: key,
+          state: "error",
+        });
+      },
+    );
+
+    it("shows a request whose MCP tool call failed on execution as failed, without a conflict reason", async () => {
+      const { session, runId, requestId } = await pendingApproval();
+      await decide(session, requestId, "approved");
+      const written = await runInTenant(session.tenant, () =>
+        recordApprovalRequestOutcome(pool, requestId, { error: true, result: SECRET, outcomeKind: "callFailed" }),
+      );
+      expect(written).toBe(true);
+
+      const step = await approvalStep(session, runId);
+
+      expect(step).toMatchObject({ approvalState: "failed", state: "error" });
+      expect("conflictReason" in step).toBe(false);
+    });
+
+    it("returns the page with no approval state for a step whose request does not exist or is no uuid", async () => {
+      const session = await tenantSession();
+      const missing = await runWithApprovalStep(session, randomUUID());
+      const garbage = await runWithApprovalStep(session, "not-a-uuid");
+
+      for (const runId of [missing, garbage]) {
+        const step = await approvalStep(session, runId);
+        expect(step.state).toBe("ok");
+        expect("approvalState" in step).toBe(false);
+      }
+    });
+
+    it("does not read a request of another tenant", async () => {
+      const owner = await tenantSession();
+      const other = await pendingApproval();
+      const runId = await runWithApprovalStep(owner, other.requestId);
+
+      const step = await approvalStep(owner, runId);
+
+      expect(step).toMatchObject({ kind: "approval", approvalRequestId: other.requestId, state: "ok" });
+      expect("approvalState" in step).toBe(false);
+    });
+
+    it("reads the requests of a page in the same number of queries for one approval step as for five", async () => {
+      const session = await tenantSession();
+      const queriesFor = async (approvals: number): Promise<number> => {
+        const run = await createRun(session);
+        await addStatus(session, run.id, "running");
+        for (let i = 0; i < approvals; i++) {
+          const requestId = await createRequest(session, run.id);
+          await addToolUse(session, run.id, `ask${i}`, { operation: "item.delete" });
+          await addToolResult(session, run.id, `ask${i}`, {
+            operation: "item.delete",
+            result: { content: [], details: { error: false, approvalRequestId: requestId } },
+          });
+        }
+        return runInTenant(session.tenant, () =>
+          withTransaction(pool, async (client) => {
+            const { events, hasMore } = await listAgentRunEventsForStepPage(client, run.id, "0", 100);
+            const page = buildAgentRunStepPage({ events, hasMore, after: "0", limit: 100, runSettled: false });
+            let queries = 0;
+            const counting: PoolClient = new Proxy(client, {
+              get(target, property) {
+                if (property === "query") queries += 1;
+                return Reflect.get(target, property);
+              },
+            });
+            const projected = await projectAgentRunStepPage(counting, page, { agentRunId: run.id, locale: "en" });
+            expect(projected.steps.filter((s) => s.approvalState === "pending")).toHaveLength(approvals);
+            return queries;
+          }),
+        );
+      };
+
+      const one = await queriesFor(1);
+      const five = await queriesFor(5);
+
+      expect(five).toBe(one);
     });
   });
 

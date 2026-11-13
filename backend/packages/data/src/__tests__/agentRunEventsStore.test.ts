@@ -16,6 +16,7 @@ import { ConflictError, NotFoundError, ValidationError } from "../errors.js";
 import {
   insertAgentRunEvent,
   insertAndNotifyAgentRunEvent,
+  countAgentRunToolSteps,
   getAgentRunEventById,
   listAgentRunEvents,
   listAgentRunEventsAfter,
@@ -549,6 +550,46 @@ describe("agentRunEventsStore", () => {
         events: [],
         hasMore: false,
       });
+    });
+  });
+
+  describe("countAgentRunToolSteps (issue #1847)", () => {
+    it("counts one tool step per tool call id and one approval step per call whose result has a request id", async () => {
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "count" });
+      const other = await createAgentRun(pool, { triggeredBy: "user", task: "another run" });
+      const use = (toolCallId: string) => ({ kind: "tool_use", toolCallId, name: "item_get", arguments: {} });
+      const result = (toolCallId: string, details: unknown) => ({
+        kind: "tool_result",
+        toolCallId,
+        name: "item_get",
+        result: { content: [], details },
+        isError: false,
+      });
+      await insertAgentRunEvent(pool, run.id, "tool_use", use("a"));
+      await insertAgentRunEvent(pool, run.id, "tool_result", result("a", { error: false }));
+      await insertAgentRunEvent(pool, run.id, "tool_use", use("b"));
+      await insertAgentRunEvent(
+        pool,
+        run.id,
+        "tool_result",
+        result("b", { error: false, approvalRequestId: randomUUID() }),
+      );
+      // A call that has no result yet is a step too; so is a result whose call is gone.
+      await insertAgentRunEvent(pool, run.id, "tool_use", use("c"));
+      await insertAgentRunEvent(pool, run.id, "tool_result", result("gone", { error: false }));
+      // A non-string request id is no approval, and a payload without a call id is no step.
+      await insertAgentRunEvent(pool, run.id, "tool_result", result("d", { error: false, approvalRequestId: 7 }));
+      await insertAgentRunEvent(pool, run.id, "tool_result", { kind: "tool_result", result: "no id" });
+      await insertAgentRunEvent(pool, run.id, "message", { kind: "message", role: "assistant", text: "not a tool" });
+      await insertAgentRunEvent(pool, other.id, "tool_use", use("other-run"));
+
+      await expect(countAgentRunToolSteps(pool, run.id)).resolves.toEqual({ toolCount: 5, approvalCount: 1 });
+    });
+
+    it("counts nothing for a run without tool events", async () => {
+      const run = await createAgentRun(pool, { triggeredBy: "user", task: "no tools" });
+
+      await expect(countAgentRunToolSteps(pool, run.id)).resolves.toEqual({ toolCount: 0, approvalCount: 0 });
     });
   });
 });

@@ -25,7 +25,12 @@ import { IMAP_SEEN_FLAG } from "./messageFlags.js";
 import { logger } from "./logger.js";
 import { createGmailMailTransport } from "./gmailTransport.js";
 import { createGraphMailTransport } from "./graphTransport.js";
-import { MailRecipientRejectedError, MailSendAuthFailedError, MailServerUnreachableError } from "./providerTypes.js";
+import {
+  MailRecipientRejectedError,
+  MailSendAuthFailedError,
+  MailServerUnreachableError,
+  MailTransportUnavailableError,
+} from "./providerTypes.js";
 import { NodemailerSmtpClient, type RawMailEnvelope } from "./smtpClient.js";
 
 /**
@@ -56,7 +61,11 @@ export interface MailTransport {
 }
 
 export interface MailTransportFactory {
-  /** The transport that sends for this mailbox. Rejects when the mailbox cannot send over its configured server. */
+  /**
+   * The transport that sends for this mailbox. Rejects with a `ValidationError` when the mailbox has no SMTP settings
+   * and with a `MailTransportUnavailableError` when the composition root has no transport for it; any other rejection
+   * is a failure of a read that may succeed on a retry.
+   */
   forMailbox(mailboxItemId: string, syncMode: SyncMode): Promise<MailTransport>;
 }
 
@@ -299,7 +308,7 @@ export function createMailTransportFactory(
       if (syncMode === "gmail_api") {
         const { gmailOAuthClient, fetchImpl } = options;
         if (!gmailOAuthClient) {
-          throw new Error("No Gmail OAuth client is configured for this composition root");
+          throw new MailTransportUnavailableError("No Gmail OAuth client is configured for this composition root");
         }
         return createGmailMailTransport({
           pool,
@@ -312,7 +321,9 @@ export function createMailTransportFactory(
       if (syncMode === "graph_api") {
         const { graphOAuthClient, fetchImpl } = options;
         if (!graphOAuthClient) {
-          throw new Error("No Microsoft Graph OAuth client is configured for this composition root");
+          throw new MailTransportUnavailableError(
+            "No Microsoft Graph OAuth client is configured for this composition root",
+          );
         }
         return createGraphMailTransport({
           pool,
@@ -325,7 +336,7 @@ export function createMailTransportFactory(
       if (syncMode !== "imap") {
         // Every SYNC_MODES value has a transport above, so only a stored value outside the union reaches this line.
         const unnamedMode: string = syncMode;
-        throw new Error(`No mail transport for sync mode ${unnamedMode} is available yet`);
+        throw new MailTransportUnavailableError(`No mail transport for sync mode ${unnamedMode} is available yet`);
       }
       const stored = await getMailServerSettings(pool, mailboxItemId);
       if (!stored?.smtp) {
@@ -336,7 +347,9 @@ export function createMailTransportFactory(
         actorType: "smtp_send",
         purpose: "smtp_send",
       });
-      if (password === null) throw new Error(`Mailbox ${mailboxItemId} has no stored credential`);
+      if (password === null) {
+        throw new MailTransportUnavailableError(`Mailbox ${mailboxItemId} has no stored credential`);
+      }
       return createSmtpMailTransport(
         mailboxItemId,
         { endpoint: stored.smtp, username: stored.username },

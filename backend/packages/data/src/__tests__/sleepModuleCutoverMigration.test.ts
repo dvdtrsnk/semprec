@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
+import { z } from "zod";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createUser } from "../auth/usersStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
@@ -18,6 +19,7 @@ import { lockTenantSeedInTransaction, seedSystem } from "../seed/seedSystem.js";
 import { SLEEP_NIGHTS_MODULE_ID, SLEEP_PLANS_MODULE_ID, SLEEP_SETTINGS_MODULE_ID } from "../seed/sleepModuleKeys.js";
 import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { runSleepModuleCutoverMigration } from "../sleep/sleepModuleCutoverMigration.js";
+import type { PropertyRow } from "../types.js";
 import { provisionTenant } from "../tenancy/provisionTenant.js";
 import {
   createRuntimeRolePool,
@@ -35,6 +37,13 @@ const SLEEP_KEYS = [SLEEP_SETTINGS_MODULE_ID, SLEEP_PLANS_MODULE_ID, SLEEP_NIGHT
 let adminPool: Pool;
 let dataPool: Pool;
 
+/** A property's config as the test compares it: a relation's database and definition ids differ per tenant, so it keeps the target's module id. */
+async function comparableConfig(client: PoolClient, row: PropertyRow): Promise<Record<string, unknown>> {
+  if (row.type !== "relation") return row.config;
+  const { targetDatabaseId } = z.object({ targetDatabaseId: z.string() }).parse(row.config);
+  const target = await databasesStore.getDatabase(client, targetDatabaseId);
+  return { targetModuleId: target?.ownerModuleId ?? null };
+}
 /** The settings item issue #1776 seeds. */
 const EXPECTED_SETTINGS = {
   enabled: true,
@@ -103,15 +112,17 @@ async function sleepDelivery(tenantId: string) {
           schemaLocked: found.schemaLocked,
           ownerModuleId: found.ownerModuleId,
           archivedAt: found.archivedAt,
-          properties: (await listPropertiesByDatabase(client, found.id)).map((property) => ({
-            key: property.key,
-            name: property.name,
-            type: property.type,
-            owner: property.owner,
-            ownerProcess: property.ownerProcess,
-            locked: property.locked,
-            config: property.config,
-          })),
+          properties: await Promise.all(
+            (await listPropertiesByDatabase(client, found.id)).map(async (property) => ({
+              key: property.key,
+              name: property.name,
+              type: property.type,
+              owner: property.owner,
+              ownerProcess: property.ownerProcess,
+              locked: property.locked,
+              config: await comparableConfig(client, property),
+            })),
+          ),
           views: (await listViewsByDatabase(client, found.id)).map((view) => ({
             type: view.type,
             name: view.name,
@@ -266,8 +277,8 @@ function rowCounts(rows: Awaited<ReturnType<typeof sleepRows>>) {
   };
 }
 
-/** What one delivery writes: three databases, their 20 properties and three views, three items and one project. */
-const DELIVERED_ROW_COUNTS = { databases: 3, properties: 20, views: 3, items: 3, projects: 1 };
+/** What one delivery writes: three databases, their 21 properties (the `area` relation among them) and three views, three items and one project. */
+const DELIVERED_ROW_COUNTS = { databases: 3, properties: 21, views: 3, items: 3, projects: 1 };
 
 /** The sleep databases of `tenantId` in the Czech schema projection, in the order of `SLEEP_KEYS` and without ids. */
 async function sleepProjection(tenantId: string) {
@@ -279,7 +290,15 @@ async function sleepProjection(tenantId: string) {
     return {
       ...database,
       databaseId: null,
-      properties: database.properties.map((property) => ({ ...property, id: null })),
+      // A relation's `targetDatabaseId` is the id of a database of that tenant.
+      properties: database.properties.map((property) => ({
+        ...property,
+        id: null,
+        config:
+          property.config.targetDatabaseId === undefined
+            ? property.config
+            : { ...property.config, targetDatabaseId: null },
+      })),
     };
   });
 }
@@ -421,6 +440,22 @@ describe("sleep module cutover for existing tenants (issue #1779)", () => {
     await expect(runInTenant(bare, () => runSleepModuleCutoverMigration(dataPool))).resolves.toBeUndefined();
 
     expect(await tenantRows(bare)).toEqual({ databases: [], properties: [], views: [], items: [] });
+  });
+
+  it("skips a tenant that has Projects but no Areas database", async () => {
+    const tenantId = await seededTenant("cs");
+    await revertToOldShape(tenantId);
+    // No production path removes the Areas database; hiding its module id is the state of a tenant seeded without it.
+    await inTenant(tenantId, async (client) => {
+      const hidden = await client.query("UPDATE databases SET owner_module_id = NULL WHERE owner_module_id = 'areas'");
+      expect(hidden.rowCount).toBe(1);
+    });
+    const before = await tenantRows(tenantId);
+
+    await expect(runInTenant(tenantId, () => runSleepModuleCutoverMigration(dataPool))).resolves.toBeUndefined();
+
+    expect(await tenantRows(tenantId)).toEqual(before);
+    expect(await sleepDelivery(tenantId)).toEqual(NO_SLEEP_MODULE);
   });
 
   it(

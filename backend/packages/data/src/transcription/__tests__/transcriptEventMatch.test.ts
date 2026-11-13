@@ -16,10 +16,12 @@ import { getSystemSettingsDatabaseId, getSystemSettingsItemId } from "../../syst
 import { setInboxCardsInvalidationHook, type InboxCardsInvalidationEvent } from "../../realtimeHook.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcriptionJob.js";
 import {
+  buildNewMeetingEnvelope,
   createTranscriptEventCard,
   listOverlappingEventIds,
   matchTranscriptToEvent,
   readEventRecommendationContext,
+  readRecommendedEventProjectId,
   type EventRecommendation,
 } from "../transcriptEventMatch.js";
 import { getCalendarClock, type CalendarClock } from "../../calendarTime.js";
@@ -62,11 +64,12 @@ describe("matchTranscriptToEvent (issue #247)", () => {
     await pool?.end();
   });
 
+  /** A transcript as the create step leaves it (issue #1830): without a `name` unless `properties` gives one. */
   async function createTranscript(properties: Record<string, unknown> = { date: RECORDING_START }): Promise<string> {
     const item = await withTransaction(pool, (client) =>
       createItemWithClient(
         client,
-        { databaseId: transcriptsId, properties: { name: "Weekly sync", ...properties } },
+        { databaseId: transcriptsId, properties },
         { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
       ),
     );
@@ -211,7 +214,7 @@ describe("matchTranscriptToEvent (issue #247)", () => {
     expect(await proposalCount()).toBe(0);
   });
 
-  it("creates one proposed transcript card with the create-Event proposal when no Event matches", async () => {
+  it("creates one proposed transcript card with the new-meeting proposal when no Event matches", async () => {
     const transcriptId = await createTranscript();
 
     expect(await match(transcriptId)).toBe("suggested");
@@ -225,7 +228,7 @@ describe("matchTranscriptToEvent (issue #247)", () => {
       proposal: {
         entityKind: "database",
         target: eventsId,
-        properties: { name: "Weekly sync", type: "meeting", date: "2024-03-01" },
+        properties: { name: "Schůzka 1. 3.", type: "meeting", date: "2024-03-01", timeFrom: "13:00", timeTo: "14:00" },
       },
       history: [
         expect.objectContaining({
@@ -677,15 +680,24 @@ describe("matchTranscriptToEvent (issue #247)", () => {
     expect(cards[0]?.properties.aiProposal).toEqual({
       entityKind: "database",
       target: eventsId,
-      properties: { name: "Weekly sync", type: "meeting", date: "2024-03-01" },
+      properties: { name: "Schůzka 1. 3.", type: "meeting", date: "2024-03-01", timeFrom: "13:00", timeTo: "14:00" },
     });
   });
 
-  // The recording starts at 23:30 UTC on 2024-03-01: already 2024-03-02 in Prague (UTC+1), still the 1st in UTC.
+  // The recording starts at 23:30 UTC on 2024-03-01 and lasts an hour: already 2024-03-02 in Prague (UTC+1), still the
+  // 1st in UTC, where it crosses local midnight.
   it.each([
-    { zone: "Europe/Prague", date: "2024-03-02" },
-    { zone: "UTC", date: "2024-03-01" },
-  ])("proposes the new Event on the recording's date in $zone: $date", async ({ zone, date }) => {
+    {
+      zone: "Europe/Prague",
+      name: "Schůzka 2. 3.",
+      span: { date: "2024-03-02", timeFrom: "00:30", timeTo: "01:30" },
+    },
+    {
+      zone: "UTC",
+      name: "Schůzka 1. 3.",
+      span: { date: "2024-03-01", timeFrom: "23:30", timeTo: "00:30", endDate: "2024-03-02" },
+    },
+  ])("proposes the new meeting on the recording's date in $zone: $span.date", async ({ zone, name, span }) => {
     await setTenantZone(zone);
     const transcriptId = await createTranscript({ date: "2024-03-01T23:30:00.000Z" });
 
@@ -695,8 +707,135 @@ describe("matchTranscriptToEvent (issue #247)", () => {
     expect(card?.properties.proposal).toEqual({
       entityKind: "database",
       target: eventsId,
-      properties: { name: "Weekly sync", type: "meeting", date },
+      properties: { name, type: "meeting", ...span },
     });
+  });
+
+  /** A user of tenant zero, whose `locale` renders the proposed meeting's name. */
+  async function createUserWithLocale(locale: string): Promise<void> {
+    await pool.query("INSERT INTO users (email, password_hash, locale, tenant_id) VALUES ($1, 'unused', $2, $3)", [
+      `${locale}@example.com`,
+      locale,
+      getTenantZeroId(),
+    ]);
+  }
+
+  /** The `properties` of the new-meeting proposal the match step wrote for a recording. */
+  async function proposedMeeting(startsAt: string, durationSeconds: number): Promise<unknown> {
+    const transcriptId = await createTranscript({ date: startsAt });
+    expect(await match(transcriptId, durationSeconds)).toBe("suggested");
+    const [card] = await cardsFor(transcriptId);
+    return z.object({ properties: z.record(z.string(), z.unknown()) }).parse(card?.properties.proposal).properties;
+  }
+
+  it("proposes the meeting of a recording of 14 Oct 13:52 lasting 47:10 from 13:52 to 14:39, named by day and month (issue #1818)", async () => {
+    // 11:52Z is 13:52 in Prague, which is on summer time (UTC+2) on 14 October 2024.
+    expect(await proposedMeeting("2024-10-14T11:52:00.000Z", 47 * 60 + 10)).toEqual({
+      name: "Schůzka 14. 10.",
+      type: "meeting",
+      date: "2024-10-14",
+      timeFrom: "13:52",
+      timeTo: "14:39",
+    });
+  });
+
+  it("renders the proposed meeting's name in the English of the tenant user's locale (issue #1818)", async () => {
+    await createUserWithLocale("en");
+
+    expect(await proposedMeeting("2024-10-04T11:52:00.000Z", 1800)).toMatchObject({ name: "Meeting 4/10" });
+  });
+
+  it("renders the proposed meeting's name in Czech for a Czech user and in English for any other locale (issue #1818)", async () => {
+    await createUserWithLocale("cs");
+    expect(await proposedMeeting("2024-10-04T11:52:00.000Z", 1800)).toMatchObject({ name: "Schůzka 4. 10." });
+
+    await pool.query("UPDATE users SET locale = 'de' WHERE tenant_id = $1", [getTenantZeroId()]);
+    expect(await proposedMeeting("2024-10-05T11:52:00.000Z", 1800)).toMatchObject({ name: "Meeting 5/10" });
+  });
+
+  it("sets endDate to the next day for a recording that crosses local midnight (issue #1818)", async () => {
+    // 21:50Z is 23:50 in Prague (UTC+2); half an hour later it is 00:20 on the 15th.
+    expect(await proposedMeeting("2024-10-14T21:50:00.000Z", 1800)).toEqual({
+      name: "Schůzka 14. 10.",
+      type: "meeting",
+      date: "2024-10-14",
+      timeFrom: "23:50",
+      timeTo: "00:20",
+      endDate: "2024-10-15",
+    });
+  });
+
+  it("sets endDate when the recording ends exactly at local midnight (issue #1818)", async () => {
+    expect(await proposedMeeting("2024-10-14T21:30:00.000Z", 1800)).toMatchObject({
+      date: "2024-10-14",
+      timeFrom: "23:30",
+      timeTo: "00:00",
+      endDate: "2024-10-15",
+    });
+  });
+
+  it("ends a recording shorter than a minute one minute after its start, so the Events rules accept the span (issue #1818)", async () => {
+    const properties = await proposedMeeting("2024-10-14T11:52:30.000Z", 20);
+
+    expect(properties).toMatchObject({ date: "2024-10-14", timeFrom: "13:52", timeTo: "13:53" });
+    expect(properties).not.toHaveProperty("endDate");
+  });
+
+  const PROPOSED_NOTES = {
+    title: "Pricing review with {SPEAKER_00}",
+    summary: "{SPEAKER_00} presents the pricing.",
+    shortSummary: "Pricing reviewed.",
+    decisions: [],
+    actionItems: [],
+  };
+
+  /** The name of the new-meeting proposal for a transcript with `properties` and, when given, stored `meetingNotes`. */
+  async function proposedName(properties: Record<string, unknown>, notes?: Record<string, unknown>): Promise<unknown> {
+    const transcriptId = await createTranscript({ date: RECORDING_START, ...properties });
+    if (notes) {
+      await withTransaction(pool, async (client) => {
+        await writeComputed(client, transcriptsId, transcriptId, "segments", [
+          { speaker: "SPEAKER_00", text: "Good morning everyone.", startsAt: 0, endsAt: 2 },
+        ]);
+        await writeComputed(client, transcriptsId, transcriptId, "meetingNotes", notes);
+      });
+    }
+    expect(await match(transcriptId)).toBe("suggested");
+    const [card] = await cardsFor(transcriptId);
+    return z.object({ properties: z.object({ name: z.unknown() }) }).parse(card?.properties.proposal).properties.name;
+  }
+
+  it("names the new meeting after the name the user gave the transcript, ahead of the generated title (issue #1830)", async () => {
+    expect(await proposedName({ name: "Pricing call" }, PROPOSED_NOTES)).toBe("Pricing call");
+  });
+
+  it("names the new meeting after the generated title with its speaker tokens replaced when the transcript has no name (issue #1830)", async () => {
+    expect(await proposedName({}, PROPOSED_NOTES)).toBe("Pricing review with Mluvčí 1");
+    await createUserWithLocale("en");
+    expect(await proposedName({}, PROPOSED_NOTES)).toBe("Pricing review with Speaker 1");
+  });
+
+  it("treats a blank transcript name as none and uses the generated title (issue #1830)", async () => {
+    expect(await proposedName({ name: "   " }, PROPOSED_NOTES)).toBe("Pricing review with Mluvčí 1");
+  });
+
+  it.each([
+    ["no notes", undefined],
+    ["a blank generated title", { ...PROPOSED_NOTES, title: "  " }],
+  ])(
+    "falls back to the day and month of the recording when there is a blank name and %s (issue #1830)",
+    async (_label, notes) => {
+      expect(await proposedName({ name: "" }, notes)).toBe("Schůzka 1. 3.");
+    },
+  );
+
+  it("proposes no project for the card of a recording without a candidate Event (issue #1818)", async () => {
+    const transcriptId = await createTranscript();
+
+    expect(await match(transcriptId)).toBe("suggested");
+
+    const [card] = await cardsFor(transcriptId);
+    expect(card?.properties.proposal).not.toHaveProperty("relations");
   });
 });
 
@@ -878,12 +1017,15 @@ describe("the Event recommendation of an ambiguous recording, through the runtim
   }
 
   /** The recording 13:00-14:00 Prague time (12:00Z, an hour long) with the computed values steps 1, 4 and 5 store. */
-  async function createRecording(computed: Record<string, unknown> = {}): Promise<string> {
+  async function createRecording(
+    computed: Record<string, unknown> = {},
+    name: string | null = "Planning call",
+  ): Promise<string> {
     const transcriptsId = await databaseId("transcripts");
     return withTransaction(dataPool, async (client) => {
       const item = await createItemWithClient(
         client,
-        { databaseId: transcriptsId, properties: { name: "Planning call", date: RECORDING_START } },
+        { databaseId: transcriptsId, properties: { ...(name === null ? {} : { name }), date: RECORDING_START } },
         { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
       );
       const values: Record<string, unknown> = {
@@ -1115,6 +1257,8 @@ describe("the Event recommendation of an ambiguous recording, through the runtim
         const [card] = await cardsOf(transcriptId);
         expect(await cardsOf(transcriptId)).toHaveLength(1);
         expect(created).toEqual({ cardId: card?.id, recommendedEventId: meetingId, reason: "It is about the sprint." });
+        // The card links the recommended Event, which already has its project (Apollo): it proposes no project of its own.
+        expect(card?.properties.proposal).not.toHaveProperty("relations");
         const proposal = { entityKind: "relation", target: meetingId, properties: { propertyKey: "event" } };
         expect(card?.properties).toMatchObject({
           kind: "transcript",
@@ -1179,7 +1323,7 @@ describe("the Event recommendation of an ambiguous recording, through the runtim
       ],
       ["gives no recommendation", (_ids: string[]) => null, null],
     ])(
-      "keeps the create-Event proposal and recommends nothing when the model %s",
+      "keeps the new-meeting proposal and recommends nothing when the model %s",
       async (_label, recommendationFor, expectedReason) => {
         await inTenant(tenant, async () => {
           const { meetingId, standupId } = await createCandidates();
@@ -1191,7 +1335,13 @@ describe("the Event recommendation of an ambiguous recording, through the runtim
           const proposal = {
             entityKind: "database",
             target: await databaseId("events"),
-            properties: { name: "Planning call", type: "meeting", date: "2024-03-01" },
+            properties: {
+              name: "Planning call",
+              type: "meeting",
+              date: "2024-03-01",
+              timeFrom: "13:00",
+              timeTo: "14:00",
+            },
           };
           expect(created).toEqual({ cardId: card?.id, recommendedEventId: null, reason: expectedReason });
           expect(card?.properties).toMatchObject({
@@ -1206,10 +1356,25 @@ describe("the Event recommendation of an ambiguous recording, through the runtim
             ],
             context: { role: "event", reason: expectedReason, recommendedEventId: null },
           });
+          // No recommended Event, so no project to propose, although a candidate has one.
+          expect(card?.properties.proposal).not.toHaveProperty("relations");
           expect(await eventEdgeCount(transcriptId)).toBe(0);
         });
       },
     );
+
+    it("names the new meeting after the generated title when the transcript has no name of its own (issue #1830)", async () => {
+      await inTenant(tenant, async () => {
+        await createCandidates();
+        const transcriptId = await createRecording({}, null);
+
+        await createCard(transcriptId, null);
+
+        expect((await cardsOf(transcriptId))[0]?.properties).toMatchObject({
+          proposal: { entityKind: "database", properties: { name: "Sprint planning" } },
+        });
+      });
+    });
 
     it("recommends the second candidate as well, so the membership test looks at every candidate", async () => {
       await inTenant(tenant, async () => {
@@ -1371,6 +1536,117 @@ describe("the Event recommendation of an ambiguous recording, through the runtim
         return Number(rows[0]?.count);
       });
       expect(foreignCards).toBe(0);
+    });
+  });
+
+  describe("the project of the recommended Event (issue #1818)", () => {
+    const resolve = (eventId: string | null) =>
+      withTransaction(dataPool, async (client) =>
+        readRecommendedEventProjectId(client, await databaseId("events"), eventId),
+      );
+
+    const build = (projectId: string | null) =>
+      withTransaction(dataPool, async (client) =>
+        buildNewMeetingEnvelope(client, {
+          eventsDatabaseId: await databaseId("events"),
+          startMs: Date.parse(RECORDING_START),
+          durationSeconds: DURATION_SECONDS,
+          clock: await getCalendarClock(client),
+          projectId,
+          name: null,
+          locale: "cs",
+        }),
+      );
+
+    async function trash(moduleId: string, itemId: string): Promise<void> {
+      await createChokePoint(dataPool).softDeleteItem(await databaseId(moduleId), itemId);
+    }
+
+    it("is the project of the Event the card recommends", async () => {
+      await inTenant(tenant, async () => {
+        const { meetingId, projectId } = await createCandidates();
+
+        expect(await resolve(meetingId)).toBe(projectId);
+      });
+    });
+
+    it("is none without a recommendation", async () => {
+      await inTenant(tenant, async () => {
+        await createCandidates();
+
+        expect(await resolve(null)).toBeNull();
+      });
+    });
+
+    it("is none for an Event without a project", async () => {
+      await inTenant(tenant, async () => {
+        const { standupId } = await createCandidates();
+
+        expect(await resolve(standupId)).toBeNull();
+      });
+    });
+
+    it("is none for an unknown id, an item of another database and an Event in the Trash", async () => {
+      await inTenant(tenant, async () => {
+        const { meetingId } = await createCandidates();
+        const taskId = await createIn("tasks", { name: "A task" });
+
+        expect(await resolve("00000000-0000-4000-8000-000000000001")).toBeNull();
+        expect(await resolve(taskId)).toBeNull();
+        await trash("events", meetingId);
+        expect(await resolve(meetingId)).toBeNull();
+      });
+    });
+
+    it("is none when the Event's project is in the Trash", async () => {
+      await inTenant(tenant, async () => {
+        const { meetingId, projectId } = await createCandidates();
+        await trash("projects", projectId);
+
+        expect(await resolve(meetingId)).toBeNull();
+      });
+    });
+
+    it("is none for the Event of another tenant", async () => {
+      const theirs = await inTenant(otherTenant, createCandidates);
+
+      await inTenant(tenant, async () => {
+        expect(await resolve(theirs.meetingId)).toBeNull();
+      });
+    });
+
+    it("is carried by the new-meeting envelope as the project relation, and is absent without a project", async () => {
+      await inTenant(tenant, async () => {
+        const { projectId } = await createCandidates();
+        const eventsDatabaseId = await databaseId("events");
+        const properties = {
+          name: "Schůzka 1. 3.",
+          type: "meeting",
+          date: "2024-03-01",
+          timeFrom: "13:00",
+          timeTo: "14:00",
+        };
+
+        expect(await build(projectId)).toEqual({
+          entityKind: "database",
+          target: eventsDatabaseId,
+          properties,
+          relations: { project: [projectId] },
+        });
+        expect(await build(null)).toEqual({ entityKind: "database", target: eventsDatabaseId, properties });
+      });
+    });
+
+    it("refuses a project that is in the Trash or belongs to another tenant, and a Projects item that is not a project", async () => {
+      const theirs = await inTenant(otherTenant, createCandidates);
+      await inTenant(tenant, async () => {
+        const { projectId } = await createCandidates();
+        const taskId = await createIn("tasks", { name: "A task" });
+        await trash("projects", projectId);
+
+        for (const invalid of [projectId, theirs.projectId, taskId, "00000000-0000-4000-8000-000000000001"])
+          await expect(build(invalid)).rejects.toThrow(ValidationError);
+      });
     });
   });
 

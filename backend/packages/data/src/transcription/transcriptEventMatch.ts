@@ -22,6 +22,8 @@ import { ConflictError, NotFoundError, ValidationError } from "../errors.js";
 import type { ItemRow } from "../types.js";
 import { renderMeetingNotes, parseStoredMeetingNotes } from "./meetingNotesRendering.js";
 import { transcriptEventCardContextSchema, type TranscriptEventCardContext } from "./transcriptEventCardContext.js";
+import { presentText } from "./transcriptDisplayName.js";
+import { renderTranscriptionLabel } from "./transcriptionLabels.js";
 import { readTranscriptEventEdges, releaseTrashedEventEdges } from "./transcriptEventEdges.js";
 import { listTranscriptSpeakers } from "./transcriptionSpeakerEdges.js";
 import {
@@ -307,25 +309,123 @@ async function readOpenMatch(
   return { eventPropertyId, eventsDatabaseId, processingProposalsDatabaseId, idempotencyKey, startMs, clock, events };
 }
 
-/** The create-Event proposal of a card that links no Event: the transcript's name and the recording's date in the tenant zone. */
-async function newEventEnvelope(
+/** The wall-clock span of a proposed meeting: the recording's start and end in the tenant zone. */
+interface MeetingSpan {
+  date: string;
+  timeFrom: string;
+  timeTo: string;
+  endDate: string | null;
+}
+
+/**
+ * The recording `[startMs, startMs + durationSeconds]` as the Events fields `date`, `timeFrom`, `timeTo`
+ * and `endDate` in the tenant zone (`clock`), minutes precision. `endDate` is set only when the end falls
+ * on another local day than the start. An end that is not later than the start on the wall clock (a
+ * recording shorter than a minute, or one that ends in the repeated hour of a DST change) is moved to one
+ * minute after the start, because the Events rules refuse a `timeTo` that is not later than `timeFrom`.
+ */
+function meetingSpan(clock: CalendarClock, startMs: number, durationSeconds: number): MeetingSpan {
+  const start = clock.instantToWallClock(new Date(startMs));
+  const recordedEnd = clock.instantToWallClock(new Date(startMs + durationSeconds * 1000));
+  const end =
+    recordedEnd.date === start.date && recordedEnd.time <= start.time
+      ? clock.instantToWallClock(new Date(startMs + 60_000))
+      : recordedEnd;
+  return {
+    date: start.date,
+    timeFrom: start.time,
+    timeTo: end.time,
+    endDate: end.date === start.date ? null : end.date,
+  };
+}
+
+/** The recording's local day and month, e.g. "14. 10." or "14/10", for the proposed meeting's name. */
+async function newMeetingName(locale: string, date: string): Promise<string> {
+  const [, month, day] = date.split("-").map(Number);
+  return renderTranscriptionLabel(locale, "transcript.newMeeting.name", { day: day ?? 0, month: month ?? 0 });
+}
+
+/**
+ * The project of the Event a card recommends, or `null` when there is no recommendation, the Event is
+ * missing, in the Trash or in another database, or has no live project. An Event has at most one project.
+ * No card creation calls it today: a card with a recommendation links the existing Event through a
+ * relation envelope (issue #1848), and a card without one has no Event to take a project from. It is the
+ * resolver for a new-meeting proposal that is built from a recommendation.
+ */
+export async function readRecommendedEventProjectId(
   client: PoolClient,
-  transcript: ItemRow,
   eventsDatabaseId: string,
-  startMs: number,
-  clock: CalendarClock,
+  recommendedEventId: string | null,
+): Promise<string | null> {
+  if (recommendedEventId === null) return null;
+  const [event] = await itemsStore.getItemsByIds(client, [recommendedEventId]);
+  if (!event || event.databaseId !== eventsDatabaseId) return null;
+  const projects = await readEventRelationTargets(client, eventsDatabaseId, "project", [event.id]);
+  return projects.get(event.id)?.[0]?.id ?? null;
+}
+
+/**
+ * The create-Event proposal of a card that links no Event (issues #1818 and #1830): a meeting named `name`
+ * when that is given, otherwise after the recording's local day and month ("Schůzka 14. 10." / "Meeting 14/10",
+ * rendered in `locale`), with the recording's wall-clock `date`, `timeFrom` and `timeTo` in the tenant zone
+ * (`YYYY-MM-DD`, `HH:mm`), `endDate` only when the recording crosses local midnight, and the `project`
+ * relation when `projectId` is set. A blank `name` counts as none; the name is never empty, and an empty one
+ * throws. Checked with `assertValidProposalEnvelope`, so a project that is not a live Projects item of the
+ * tenant throws `ValidationError` here.
+ */
+export async function buildNewMeetingEnvelope(
+  client: PoolClient,
+  input: {
+    eventsDatabaseId: string;
+    startMs: number;
+    durationSeconds: number;
+    clock: CalendarClock;
+    projectId: string | null;
+    name: string | null;
+    locale: string;
+  },
 ): Promise<ProposalEnvelope> {
+  const span = meetingSpan(input.clock, input.startMs, input.durationSeconds);
+  const name = presentText(input.name) ?? (await newMeetingName(input.locale, span.date));
+  if (presentText(name) === null) throw new Error("A proposed meeting needs a non-empty name");
   const envelope: ProposalEnvelope = {
     entityKind: "database",
-    target: eventsDatabaseId,
+    target: input.eventsDatabaseId,
     properties: {
-      name: transcript.properties.name,
+      name,
       type: "meeting",
-      date: clock.instantToWallClock(new Date(startMs)).date,
+      date: span.date,
+      timeFrom: span.timeFrom,
+      timeTo: span.timeTo,
+      ...(span.endDate === null ? {} : { endDate: span.endDate }),
     },
+    ...(input.projectId === null ? {} : { relations: { project: [input.projectId] } }),
   };
   await assertValidProposalEnvelope(client, envelope);
   return envelope;
+}
+
+/**
+ * The name and language of the meeting a card proposes for `transcript` (issue #1830): the transcript's own
+ * `name` when the user entered one, otherwise the meeting-notes title with its speaker tokens replaced, otherwise
+ * `null` (then `buildNewMeetingEnvelope` names the meeting after the recording's day and month). The locale is
+ * `users.locale` of the tenant's user, Czech without one.
+ */
+async function readProposedMeetingName(
+  client: PoolClient,
+  transcript: ItemRow,
+): Promise<{ name: string | null; locale: string }> {
+  const locale = (await getTenantUserLocale(client)) ?? "cs";
+  const named = presentText(transcript.properties.name);
+  if (named !== null) return { name: named, locale };
+  const notes = parseStoredMeetingNotes(transcript.computed[TRANSCRIPT_MEETING_NOTES_COMPUTED_KEY]);
+  if (!notes) return { name: null, locale };
+  const rendered = await renderMeetingNotes(
+    notes,
+    await listTranscriptSpeakers(client, transcript.id, transcript),
+    locale,
+  );
+  return { name: presentText(rendered.title), locale };
 }
 
 /**
@@ -392,13 +492,13 @@ async function lockTranscript(client: PoolClient, transcriptId: string): Promise
  * Exactly one candidate is linked directly, even when that Event already holds other transcripts: an
  * Event has many transcripts, and the database still allows a transcript only one Event, so an edge
  * to a trashed Event is deleted first, in this transaction (`releaseTrashedEventEdges`). With no
- * candidate it creates one `proposed` card with `sourceTranscript` pointing at the transcript and a
- * create-Event proposal whose `name` comes from the transcript and whose `date` is the recording's
- * date in the tenant zone (`YYYY-MM-DD`), and leaves an edge to a trashed Event as it is. With two or
- * more candidates it writes nothing and returns them as `ambiguous`, so the caller can ask which one
- * the recording belongs to and then call `createTranscriptEventCard` in this transaction (issue
- * #1848). The tenant zone is read and validated once, in this transaction; an invalid zone propagates
- * as a `ValidationError`.
+ * candidate it creates one `proposed` card with `sourceTranscript` pointing at the transcript and the
+ * new-meeting proposal of `buildNewMeetingEnvelope` (no project: the card recommends no Event; named after
+ * the transcript's own name, else its notes title, else the recording's day and month), and
+ * leaves an edge to a trashed Event as it is. With two or more candidates it writes nothing and returns
+ * them as `ambiguous`, so the caller can ask which one the recording belongs to and then call
+ * `createTranscriptEventCard` in this transaction (issue #1848). The tenant zone is read and validated
+ * once, in this transaction; an invalid zone propagates as a `ValidationError`.
  */
 export async function matchTranscriptToEvent(
   client: PoolClient,
@@ -421,7 +521,14 @@ export async function matchTranscriptToEvent(
   if (open.events.length > 1)
     return { outcome: "ambiguous", candidates: await toCandidates(client, open.eventsDatabaseId, open.events) };
 
-  const envelope = await newEventEnvelope(client, transcript, open.eventsDatabaseId, open.startMs, open.clock);
+  const envelope = await buildNewMeetingEnvelope(client, {
+    eventsDatabaseId: open.eventsDatabaseId,
+    startMs: open.startMs,
+    durationSeconds: input.durationSeconds,
+    clock: open.clock,
+    projectId: null,
+    ...(await readProposedMeetingName(client, transcript)),
+  });
   await createTranscriptCard(client, {
     processingProposalsDatabaseId: open.processingProposalsDatabaseId,
     idempotencyKey: open.idempotencyKey,
@@ -542,9 +649,10 @@ function readRecordingFacts(transcript: ItemRow): TranscriptEventCardContext["re
  * in the caller's transaction, right after `matchTranscriptToEvent` returned `ambiguous` for it.
  * The model never writes the Event edge: the card is for the user to confirm. A recommendation is
  * used only when its `eventId` is one of `candidates`; the card then proposes the `event` relation
- * to that Event, otherwise the create-Event proposal of a card without candidates. A `null`
- * `eventId` keeps the model's reason with `recommendedEventId` `null`; an id that is not a
- * candidate drops the whole answer, so both are `null`; a blank reason is `null`. The card is
+ * to that Event (it links the existing Event, so it proposes no project), otherwise the new-meeting
+ * proposal of `buildNewMeetingEnvelope` without a project, because there is no recommended Event to take
+ * one from. A `null` `eventId` keeps the model's reason with `recommendedEventId` `null`; an id that is
+ * not a candidate drops the whole answer, so both are `null`; a blank reason is `null`. The card is
  * created under the idempotency key of `matchTranscriptToEvent`'s own card, with the display data
  * only in `context` (`transcriptEventCardContextSchema`), and a transcript that already has that
  * card throws `ConflictError` without writing: `matchTranscriptToEvent` reports `alreadySuggested`
@@ -586,7 +694,14 @@ export async function createTranscriptEventCard(
     });
   const envelope: ProposalEnvelope =
     recommendedEventId === null
-      ? await newEventEnvelope(client, transcript, eventsDatabaseId, startMs, await getCalendarClock(client))
+      ? await buildNewMeetingEnvelope(client, {
+          eventsDatabaseId,
+          startMs,
+          durationSeconds: context.recording.durationSeconds,
+          clock: await getCalendarClock(client),
+          projectId: null,
+          ...(await readProposedMeetingName(client, transcript)),
+        })
       : {
           entityKind: "relation",
           target: recommendedEventId,

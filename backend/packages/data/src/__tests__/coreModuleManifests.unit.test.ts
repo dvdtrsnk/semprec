@@ -115,6 +115,35 @@ describe("core module manifests (module-contract issue #226)", () => {
     });
   });
 
+  it("declares the two transcript read tools of the systemDatabases module behind core.item.read, as reads that need no approval (issue #1832)", async () => {
+    const registry = new ModuleRegistry(alwaysActive);
+    await registry.loadModule(SYSTEM_DATABASES_PATH);
+
+    expect(await registry.getAgentTools(new Set())).toEqual([]);
+    expect(await registry.getAgentTools(new Set(["core.item.read"]))).toEqual([
+      { moduleId: "systemDatabases", name: "transcript.get", handlerExport: "createTranscriptGetTool" },
+      {
+        moduleId: "systemDatabases",
+        name: "transcript.segment.get",
+        handlerExport: "createTranscriptSegmentGetTool",
+      },
+    ]);
+    const tools = await registry.getAgentToolDefinitions(new Set(["core.item.read"]));
+    expect(tools.map((tool) => [tool.name, tool.riskClass, tool.requiresApproval ?? false])).toEqual([
+      ["transcript.get", "read", false],
+      ["transcript.segment.get", "read", false],
+    ]);
+    const [get, segmentGet] = tools;
+    if (!get || !segmentGet) throw new Error("Transcript tools missing");
+    const transcriptId = "00000000-0000-4000-8000-000000000000";
+    expect(get.parseArguments({ transcriptId }).success).toBe(true);
+    expect(get.parseArguments({ transcriptId, tenantId: transcriptId }).success).toBe(false);
+    expect(segmentGet.parseArguments({ transcriptId, fromIndex: 0, toIndex: 5, context: 3 }).success).toBe(true);
+    expect(segmentGet.parseArguments({ transcriptId, startsAt: 312, endsAt: 390 }).success).toBe(true);
+    expect(segmentGet.parseArguments({ transcriptId, fromIndex: 0, toIndex: 5, context: 4 }).success).toBe(false);
+    expect(segmentGet.parseArguments({ transcriptId, projectItemId: transcriptId }).success).toBe(false);
+  });
+
   it("loads all four manifests together into one registry with no id/name/database-key collisions", async () => {
     const registry = new ModuleRegistry(alwaysActive);
 

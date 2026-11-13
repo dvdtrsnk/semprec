@@ -29,6 +29,7 @@ import {
   listPendingApprovalRequests,
   claimApprovalRequestExecution,
   recordApprovalRequestOutcome,
+  listApprovalRequestStatesByIds,
 } from "../mcp/approvalRequestsStore.js";
 
 let pool: Pool;
@@ -636,6 +637,58 @@ describe("approvalRequestsStore thread activity (issue #1728)", () => {
     if (failure) throw failure.error;
     expect(outcomes).toHaveLength(2);
     expect(await activity(threadId)).toBe(future.getTime());
+  });
+});
+
+describe("listApprovalRequestStatesByIds (issue #1862)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    await seedSystem(pool, createViewTypeRegistry());
+    ownerId = await createUser();
+  });
+
+  it("returns the status, execution status and execution result of the requested ids only", async () => {
+    const pending = await createPendingRequest();
+    const approved = await createPendingRequest();
+    const notRequested = await createPendingRequest();
+    await decideApprovalRequest(pool, approved, "approved", ownerId);
+    await claimApprovalRequestExecution(pool, approved);
+    await recordApprovalRequestOutcome(pool, approved, {
+      error: true,
+      result: "The tool failed",
+      outcomeKind: "callFailed",
+    });
+
+    const states = await listApprovalRequestStatesByIds(pool, [pending, approved, randomUUID()]);
+
+    expect(states.sort((a, b) => a.id.localeCompare(b.id))).toEqual(
+      [
+        { id: pending, status: "pending", executionStatus: "not_approved", executionResult: null },
+        {
+          id: approved,
+          status: "approved",
+          executionStatus: "conflict",
+          executionResult: { text: "The tool failed", outcomeKind: "callFailed" },
+        },
+      ].sort((a, b) => a.id.localeCompare(b.id)),
+    );
+    expect(states.map((state) => state.id)).not.toContain(notRequested);
+  });
+
+  it("does not select the payload of a request", async () => {
+    const id = await createPendingRequest();
+
+    const [state] = await listApprovalRequestStatesByIds(pool, [id]);
+
+    expect(Object.keys(state ?? {}).sort()).toEqual(["executionResult", "executionStatus", "id", "status"]);
+  });
+
+  it("returns nothing for no ids and for ids no request has", async () => {
+    await createPendingRequest();
+
+    expect(await listApprovalRequestStatesByIds(pool, [])).toEqual([]);
+    expect(await listApprovalRequestStatesByIds(pool, [randomUUID()])).toEqual([]);
   });
 });
 

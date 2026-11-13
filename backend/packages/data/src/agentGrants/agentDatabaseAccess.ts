@@ -12,6 +12,21 @@ import { isItemAllowed } from "./agentRunReadAllowancesStore.js";
 /** What a read or a write needs; `write` includes `read`. */
 export type RequiredAgentDatabaseAccess = "read" | "write";
 
+/**
+ * An external AI client on `/mcp` with the user's own token (issue #1998). It has no project, so no grant can
+ * exist for it and it is decided like an agent project without a grant for a sensitive database: refused. Every
+ * other database is open to it.
+ */
+export interface ExternalClientReader {
+  externalClient: true;
+}
+
+/**
+ * Whom a database read is decided for: the Projects item of an agent's run (a string), or an external AI client
+ * (`ExternalClientReader`). A person and the system are no reader and are passed as `undefined`.
+ */
+export type DatabaseReader = string | ExternalClientReader;
+
 const ACCESS_RANK: Readonly<Record<AgentDatabaseAccess, number>> = { none: 0, read: 1, write: 2 };
 
 /**
@@ -28,6 +43,9 @@ function effectiveAccessSql(lock: "" | " FOR SHARE"): string {
       CASE WHEN d.sensitive THEN 'none' ELSE 'write' END)
     END`;
 }
+
+/** The access of an external client to the database aliased `d`: a sensitive database is `none`, any other `write`. */
+const EXTERNAL_CLIENT_ACCESS_SQL = `CASE WHEN d.sensitive THEN 'none' ELSE 'write' END`;
 
 interface EffectiveAccessRow {
   effective_access: string;
@@ -66,56 +84,98 @@ export async function assertAgentDatabaseAccess(
   client: PoolClient,
   input: AssertAgentDatabaseAccessInput,
 ): Promise<void> {
-  const { rows } = await client.query<EffectiveAccessRow>(
-    `SELECT ${effectiveAccessSql(" FOR SHARE")} AS effective_access FROM databases d WHERE d.id = $2`,
-    [input.agentProjectItemId, input.databaseId],
+  await assertReaderDatabaseAccess(
+    client,
+    input.agentProjectItemId,
+    input.databaseId,
+    input.access,
+    input.readAllowance,
   );
+}
+
+/**
+ * `assertAgentDatabaseAccess` for a `DatabaseReader`: an agent's project is decided as there, an external client
+ * (issue #1998) is refused `read` and `write` of a sensitive database and allowed every other, whatever a project
+ * stored. There is no decision row to lock for an external client, and it never has a `readAllowance`: the allowance
+ * belongs to a run.
+ */
+export async function assertReaderDatabaseAccess(
+  client: PoolClient,
+  reader: DatabaseReader,
+  databaseId: string,
+  access: RequiredAgentDatabaseAccess,
+  readAllowance?: AssertAgentDatabaseAccessInput["readAllowance"],
+): Promise<void> {
+  const { rows } =
+    typeof reader === "string"
+      ? await client.query<EffectiveAccessRow>(
+          `SELECT ${effectiveAccessSql(" FOR SHARE")} AS effective_access FROM databases d WHERE d.id = $2`,
+          [reader, databaseId],
+        )
+      : await client.query<EffectiveAccessRow>(
+          `SELECT ${EXTERNAL_CLIENT_ACCESS_SQL} AS effective_access FROM databases d WHERE d.id = $1`,
+          [databaseId],
+        );
   const row = rows[0];
   if (!row) {
-    throw new NotFoundError(`Database ${input.databaseId} not found`, {
-      resource: "database",
-      databaseId: input.databaseId,
-    });
+    throw new NotFoundError(`Database ${databaseId} not found`, { resource: "database", databaseId });
   }
-  if (ACCESS_RANK[parseAgentDatabaseAccess(row.effective_access)] < ACCESS_RANK[input.access]) {
+  if (ACCESS_RANK[parseAgentDatabaseAccess(row.effective_access)] < ACCESS_RANK[access]) {
     if (
-      input.access === "read" &&
-      input.readAllowance !== undefined &&
-      (await isItemAllowed(client, input.readAllowance.agentRunId, input.readAllowance.itemId))
+      access === "read" &&
+      typeof reader === "string" &&
+      readAllowance !== undefined &&
+      (await isItemAllowed(client, readAllowance.agentRunId, readAllowance.itemId))
     ) {
       return;
     }
-    throw new ForbiddenError(`The agent's project has no ${input.access} access to database ${input.databaseId}`, {
-      resource: "database",
-      databaseId: input.databaseId,
-      access: input.access,
-    });
+    throw new ForbiddenError(
+      typeof reader === "string"
+        ? `The agent's project has no ${access} access to database ${databaseId}`
+        : `An external client has no ${access} access to database ${databaseId}`,
+      { resource: "database", databaseId, access },
+    );
   }
 }
 
 /**
- * `assertAgentDatabaseAccess` for the writer of a choke-point write: it runs only for a writer that carries an
- * `agentProjectItemId` (an agent under a run, or an approved request replayed for one). A person, the system
- * and an `/mcp` call on a human session carry none and pass untouched.
+ * The reader a writer stands for: its project when it carries an `agentProjectItemId` (an agent under a run, or
+ * an approved request replayed for one), the external-client reader when it carries `externalClient` (an `/mcp`
+ * call on a human token, issue #1998), otherwise `undefined`: a person and the system are not checked.
  */
-export async function assertWriterDatabaseAccess(
-  client: PoolClient,
-  writer: Pick<WriterIdentity, "agentProjectItemId"> | undefined,
-  databaseId: string,
-  access: RequiredAgentDatabaseAccess,
-): Promise<void> {
-  if (writer?.agentProjectItemId === undefined) return;
-  await assertAgentDatabaseAccess(client, { agentProjectItemId: writer.agentProjectItemId, databaseId, access });
+export function readerOfWriter(
+  writer: Pick<WriterIdentity, "agentProjectItemId" | "externalClient"> | undefined,
+): DatabaseReader | undefined {
+  if (writer?.agentProjectItemId !== undefined) return writer.agentProjectItemId;
+  return writer?.externalClient === true ? { externalClient: true } : undefined;
 }
 
 /**
- * The ids of the tenant's databases the agent's project may not read (access `none`). Not locked: it only
+ * `assertReaderDatabaseAccess` for the writer of a choke-point write: it runs only for a writer `readerOfWriter`
+ * names a reader for. A person and the system pass untouched.
+ */
+export async function assertWriterDatabaseAccess(
+  client: PoolClient,
+  writer: Pick<WriterIdentity, "agentProjectItemId" | "externalClient"> | undefined,
+  databaseId: string,
+  access: RequiredAgentDatabaseAccess,
+): Promise<void> {
+  const reader = readerOfWriter(writer);
+  if (reader === undefined) return;
+  await assertReaderDatabaseAccess(client, reader, databaseId, access);
+}
+
+/**
+ * The ids of the tenant's databases the reader may not read (access `none`): for an agent's project the databases
+ * its decisions and defaults close, for an external client (issue #1998) the sensitive ones. Not locked: it only
  * filters what is listed or expanded, while the point check guards the data itself.
  */
-export async function listUnreadableDatabaseIds(client: PoolClient, agentProjectItemId: string): Promise<Set<string>> {
-  const { rows } = await client.query<DatabaseIdRow>(
-    `SELECT d.id FROM databases d WHERE ${effectiveAccessSql("")} = 'none'`,
-    [agentProjectItemId],
-  );
+export async function listUnreadableDatabaseIds(client: PoolClient, reader: DatabaseReader): Promise<Set<string>> {
+  const { rows } =
+    typeof reader === "string"
+      ? await client.query<DatabaseIdRow>(`SELECT d.id FROM databases d WHERE ${effectiveAccessSql("")} = 'none'`, [
+          reader,
+        ])
+      : await client.query<DatabaseIdRow>(`SELECT d.id FROM databases d WHERE ${EXTERNAL_CLIENT_ACCESS_SQL} = 'none'`);
   return new Set(rows.map((row) => row.id));
 }

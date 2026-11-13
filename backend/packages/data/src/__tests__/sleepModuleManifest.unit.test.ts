@@ -50,6 +50,7 @@ describe("sleep module manifest (issue #1776)", () => {
         "goalMinutes",
         "prepReminderMinutes",
         "alarmSound",
+        "area",
         "systemActive",
       ],
       sleepPlans: ["name", "wakeDays", "bedTime", "wakeTime", "alarm", "position"],
@@ -70,6 +71,8 @@ describe("sleep module manifest (issue #1776)", () => {
     expect(Object.keys(catalogs.en).sort()).toEqual([...expectedKeys].sort());
     expect(catalogs.cs["database.sleepSettings.name"]).toBe("Nastavení spánku");
     expect(catalogs.en["database.sleepSettings.name"]).toBe("Sleep settings");
+    expect(catalogs.cs["property.sleepSettings.area.name"]).toBe("Oblast");
+    expect(catalogs.en["property.sleepSettings.area.name"]).toBe("Area");
     expect(catalogs.cs["seed.sleepPlans.weekdays.name"]).toBe("Pracovní dny");
     expect(catalogs.cs["seed.sleepPlans.weekend.name"]).toBe("Víkend");
     expect(catalogs.en["seed.sleepPlans.weekdays.name"]).toBe("Weekdays");

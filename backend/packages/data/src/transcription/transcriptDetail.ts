@@ -19,6 +19,8 @@ import { transcriptSpeakerCardContextSchema } from "./transcriptSpeakerCardConte
 import { listTranscriptSpeakers, type TranscriptSpeaker } from "./transcriptionSpeakerEdges.js";
 import { parseStoredMeetingNotes, renderMeetingNotes } from "./meetingNotesRendering.js";
 import { listTranscriptActionItems } from "./transcriptActionItems.js";
+import { resolveTranscriptDisplayName, resolveTranscriptSuggestedName } from "./transcriptDisplayName.js";
+import { getSystemTimezone } from "../systemSettings.js";
 import { TRANSCRIPT_MEETING_NOTES_COMPUTED_KEY } from "./transcriptionComputedKeys.js";
 
 const segmentsSchema = z.array(
@@ -194,9 +196,16 @@ export async function readTranscriptDetail(client: PoolClient, transcriptId: str
         actionItems: await listTranscriptActionItems(client, transcript.id, locale),
       }
     : null;
+  const nameFacts = { name: properties.name, eventName: event?.name };
   return {
     id: transcript.id,
-    displayName: properties.name ?? null,
+    // Issue #1830: the user's name, else the live Event's name, else "Recording D. M. HH:MM".
+    displayName: await resolveTranscriptDisplayName(
+      { ...nameFacts, date: properties.date },
+      await getSystemTimezone(client),
+      locale,
+    ),
+    suggestedName: resolveTranscriptSuggestedName({ ...nameFacts, generatedTitle: meetingNotes?.title }),
     date: properties.date ?? null,
     durationSeconds: computed.durationSeconds ?? null,
     finalizedAt: computed.finalizedAt ?? null,

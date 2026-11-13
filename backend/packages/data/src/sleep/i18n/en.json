@@ -13,6 +13,7 @@
   "property.sleepSettings.alarmSound.option.birds": "Birds",
   "property.sleepSettings.alarmSound.option.piano": "Piano",
   "property.sleepSettings.alarmSound.option.vibrateOnly": "Vibrate only",
+  "property.sleepSettings.area.name": "Area",
   "property.sleepSettings.systemActive.name": "System active",
 
   "database.sleepPlans.name": "Sleep plans",

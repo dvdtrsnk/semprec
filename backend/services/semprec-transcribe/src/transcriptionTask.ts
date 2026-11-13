@@ -86,11 +86,6 @@ import { runEventMatch } from "./eventRecommendationStep.js";
 import { buildSpeakerSuggestionRequest, parseSpeakerSuggestionContent } from "./speakerSuggestion.js";
 import { linkTranscriptToUploadEvent } from "./uploadEventLink.js";
 
-function sourceName(properties: Record<string, unknown>): string {
-  if (typeof properties.name === "string" && properties.name.length > 0) return properties.name;
-  throw new ValidationError("Source file has no name", { field: "name" });
-}
-
 /** Source types an iOS player can play and seek as they are; any other type gets a rendition (`renderPlaybackAudio`). */
 const DIRECTLY_PLAYABLE_MIME_TYPES: ReadonlySet<string> = new Set(["audio/mp4", "audio/mpeg", "audio/wav"]);
 
@@ -287,10 +282,11 @@ type TranscriptionStepContextIds = Pick<TranscriptionStepContext, "filesDatabase
 
 /**
  * Step 0: database-only, so one transaction covers the checkpoint check, the Transcripts row and the
- * checkpoint. When the upload named an Event (`recording_requests.event_item_id`, issue #1644), the
- * same transaction writes the Transcripts `event` edge to it, provided the Event is still in this
- * tenant's Events database and not in the Trash; otherwise no edge is written and step 6 matches the
- * transcript as usual. See docs/adr/2026-11-10-transcription-create-writes-the-uploads-event.md.
+ * checkpoint. The transcript's `name` is written only from the upload's own name (`recording_requests.name`),
+ * when it set one, and never from the Files item's filename (issue #1830). When the upload named an Event
+ * (`recording_requests.event_item_id`, issue #1644), the same transaction writes the Transcripts `event` edge
+ * to it, provided the Event is still in this tenant's Events database and not in the Trash; otherwise no edge
+ * is written and step 6 matches the transcript as usual. See docs/adr/2026-11-10-transcription-create-writes-the-uploads-event.md.
  */
 async function runCreateStep({
   pool,
@@ -317,7 +313,8 @@ async function runCreateStep({
         databaseId: transcripts.id,
         idempotencyKey: `transcription:${fileItemId}`,
         properties: {
-          name: sourceName(source.properties),
+          // The user-owned `name` comes only from the upload's own name, never from the filename (issue #1830).
+          ...(recording?.name ? { name: recording.name } : {}),
           status: "processing",
           link: transcriptionSourceLink(fileItemId),
           ...(provisionalDate ? { date: provisionalDate } : {}),

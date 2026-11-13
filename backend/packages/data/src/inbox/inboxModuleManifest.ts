@@ -10,6 +10,7 @@ import { SEMPREC_TICK_ACTION_ID } from "./inboxTickAction.js";
 export { createInboxProposalGetTool, inboxProposalGetArgsSchema } from "./inboxAgentTools.js";
 export {
   createConfirmProposalRouteHandler,
+  createInboxCardsCountRouteHandler,
   createInboxCardsRouteHandler,
   createInboxTypesRouteHandler,
 } from "./inboxRouteHandlers.js";
@@ -89,6 +90,15 @@ export const manifest: ModuleManifest = {
       handlerExport: "createInboxCardsRouteHandler",
       // The Inbox stack merges two sources (cards and pending approvals) in one fixed order — not a
       // generic list-items-in-a-database query.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "countInboxCards",
+      method: "GET",
+      path: "/api/inbox/cards/count",
+      handlerExport: "createInboxCardsCountRouteHandler",
+      // The number of open Inbox cards for the header, the badge and the new-chat shortcut — not a
+      // generic count of items in a database.
       justification: "single-consumer-read",
     },
   ],

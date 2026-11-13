@@ -243,11 +243,9 @@ describe("per-database agent grants (issue #1810)", () => {
     it("refuses an item list of a sensitive database to an agent without a grant and lists it with a read grant", async () => {
       const project = await newProject();
       const record = await newHealthRecord();
-      await expect(inTenant(() => cp.listItems(health.id, { agentProjectItemId: project }))).rejects.toMatchObject(
-        FORBIDDEN,
-      );
+      await expect(inTenant(() => cp.listItems(health.id, { reader: project }))).rejects.toMatchObject(FORBIDDEN);
       await setGrant(project, health.id, "read");
-      const page = await inTenant(() => cp.listItems(health.id, { agentProjectItemId: project }));
+      const page = await inTenant(() => cp.listItems(health.id, { reader: project }));
       expect(page.items.map((item) => item.id)).toContain(record.id);
     });
 
@@ -706,9 +704,9 @@ describe("per-database agent grants (issue #1810)", () => {
       );
     });
 
-    it("does not check a person, the system or an /mcp call on a human session against project grants", async () => {
-      const mcpHumanSession: WriterIdentity = { writerKind: "agent", onBehalfOfUserId: randomUUID() };
-      for (const writer of [{ writerKind: "user" } as const, { writerKind: "system" } as const, mcpHumanSession]) {
+    it("does not check a person, the system or an agent writer without a project against project grants", async () => {
+      const unmarkedAgent: WriterIdentity = { writerKind: "agent", onBehalfOfUserId: randomUUID() };
+      for (const writer of [{ writerKind: "user" } as const, { writerKind: "system" } as const, unmarkedAgent]) {
         const created = await inTenant(() =>
           cp.createItem({ databaseId: health.id, properties: { name: "Unchecked" } }, undefined, undefined, writer),
         );

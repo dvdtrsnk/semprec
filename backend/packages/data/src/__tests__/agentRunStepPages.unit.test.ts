@@ -6,7 +6,7 @@ import {
   AGENT_RUN_STEP_SETTLE_MS,
   buildAgentRunStepPage,
   isAgentRunStepReadSettled,
-  type AgentRunStep,
+  type AgentRunStepDraft,
   type AgentRunStepPage,
 } from "../agentRuns/agentRunStepPages.js";
 
@@ -90,7 +90,10 @@ function readAll(all: AgentRunEventRow[], limit: number, runSettled = false): Ag
   throw new Error("The cursor did not reach the end of the run");
 }
 
-const kinds = (steps: AgentRunStep[]) => steps.map((s) => s.kind);
+/** A step as the route returns it before the projection adds its text: without the facts the projection reads. */
+const withoutFacts = ({ facts: _facts, ...core }: AgentRunStepDraft) => core;
+
+const kinds = (steps: AgentRunStepDraft[]) => steps.map((s) => s.kind);
 
 /** A finished run: start, plan, two sequential tool calls, answer, end. */
 function finishedRun(): AgentRunEventRow[] {
@@ -112,7 +115,7 @@ describe("buildAgentRunStepPage grouping (issue #1821)", () => {
   it("groups a finished run into start, plan, tool, tool, answer and end", () => {
     const result = page(finishedRun());
 
-    expect(result.steps).toEqual([
+    expect(result.steps.map(withoutFacts)).toEqual([
       {
         stepId: "1",
         kind: "start",
@@ -122,6 +125,7 @@ describe("buildAgentRunStepPage grouping (issue #1821)", () => {
         toolCallId: null,
         operation: null,
         mcp: null,
+        approvalRequestId: null,
       },
       {
         stepId: "3",
@@ -132,6 +136,7 @@ describe("buildAgentRunStepPage grouping (issue #1821)", () => {
         toolCallId: null,
         operation: null,
         mcp: null,
+        approvalRequestId: null,
       },
       {
         stepId: "4",
@@ -142,6 +147,7 @@ describe("buildAgentRunStepPage grouping (issue #1821)", () => {
         toolCallId: "call-1",
         operation: "item.get",
         mcp: null,
+        approvalRequestId: null,
       },
       {
         stepId: "6",
@@ -152,6 +158,7 @@ describe("buildAgentRunStepPage grouping (issue #1821)", () => {
         toolCallId: "call-2",
         operation: null,
         mcp: MCP.mcp,
+        approvalRequestId: null,
       },
       {
         stepId: "8",
@@ -162,6 +169,7 @@ describe("buildAgentRunStepPage grouping (issue #1821)", () => {
         toolCallId: null,
         operation: null,
         mcp: null,
+        approvalRequestId: null,
       },
       {
         stepId: "10",
@@ -172,6 +180,7 @@ describe("buildAgentRunStepPage grouping (issue #1821)", () => {
         toolCallId: null,
         operation: null,
         mcp: null,
+        approvalRequestId: null,
       },
     ]);
     expect(result.nextCursor).toBeNull();
@@ -316,7 +325,7 @@ describe("buildAgentRunStepPage grouping (issue #1821)", () => {
       toolResult(6, "legacy", { isError: undefined, error: true }),
     ]);
 
-    expect(steps).toEqual([
+    expect(steps.map(withoutFacts)).toEqual([
       {
         stepId: "5",
         kind: "tool",
@@ -326,6 +335,7 @@ describe("buildAgentRunStepPage grouping (issue #1821)", () => {
         toolCallId: "gone",
         operation: "item.get",
         mcp: null,
+        approvalRequestId: null,
       },
       {
         stepId: "6",
@@ -336,6 +346,7 @@ describe("buildAgentRunStepPage grouping (issue #1821)", () => {
         toolCallId: "legacy",
         operation: null,
         mcp: null,
+        approvalRequestId: null,
       },
     ]);
   });

@@ -15,7 +15,11 @@ import { logger } from "../mail/logger.js";
 import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
 import { createMailTransportFactory } from "../mail/mailTransport.js";
-import { MailReauthorizationRequiredError, MailRecipientRejectedError } from "../mail/providerTypes.js";
+import {
+  MailReauthorizationRequiredError,
+  MailRecipientRejectedError,
+  MailTransportUnavailableError,
+} from "../mail/providerTypes.js";
 import { getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
 
 // A fake Microsoft answers the token endpoint, Graph and the upload URLs through the `fetchImpl` seam. The token endpoint
@@ -768,8 +772,12 @@ describe("Graph mail transport (issue #1753)", () => {
   });
 
   it("refuses a graph_api mailbox when no Microsoft Graph OAuth client is configured, before reading anything", async () => {
-    await expect(createMailTransportFactory(pool).forMailbox(mailboxId, "graph_api")).rejects.toThrow(
-      /No Microsoft Graph OAuth client is configured for this composition root/,
-    );
+    const error = await createMailTransportFactory(pool)
+      .forMailbox(mailboxId, "graph_api")
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(MailTransportUnavailableError);
+    expect(error).toMatchObject({
+      message: expect.stringMatching(/No Microsoft Graph OAuth client is configured for this composition root/),
+    });
   });
 });

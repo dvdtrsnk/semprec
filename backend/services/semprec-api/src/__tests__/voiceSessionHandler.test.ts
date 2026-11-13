@@ -1228,8 +1228,13 @@ describe("voice session through the real gateway and registered worker", () => {
       let failed: { error: unknown } | undefined;
       let socketError: { error: Error } | undefined;
       const cleanup: unknown[] = [];
-      const sql =
-        "INSERT INTO semp_messages (thread_id, role, text, context, created_at, source) VALUES ($1, 'user', $2, $3::jsonb, $4::timestamptz, $5) RETURNING id";
+      // The statement also sets the search vector of the text (#1783); it is told by its start and its user role.
+      const isUserMessageInsert = (statement: unknown): boolean =>
+        typeof statement === "string" &&
+        statement.startsWith(
+          "INSERT INTO semp_messages (thread_id, role, text, search_vector, context, created_at, source)",
+        ) &&
+        statement.includes("VALUES ($1, 'user', $2::text,");
       const onRelease = (_error: Error | undefined, client: PoolClient) => {
         if (!active.has(client)) return;
         const descriptor = active.get(client);
@@ -1266,7 +1271,7 @@ describe("voice session through the real gateway and registered worker", () => {
               const values: unknown = args[1];
               const match =
                 !reached &&
-                args[0] === sql &&
+                isUserMessageInsert(args[0]) &&
                 scope?.kind === "tenant" &&
                 scope.tenantId === tenant &&
                 Array.isArray(values) &&

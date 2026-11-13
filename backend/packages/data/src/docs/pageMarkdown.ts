@@ -27,6 +27,7 @@ import { assertItemLinksExist } from "./assertItemLinksExist.js";
 import { loadDocWithClient, mutateDocWithClient } from "./docPersistence.js";
 import { getDocByItemId, getOrCreateDoc } from "./docsStore.js";
 import { lockLiveItem } from "./lockLiveItem.js";
+import { readerOfWriter } from "../agentGrants/agentDatabaseAccess.js";
 import { assertAgentPageAccess } from "./pageOwnerDatabase.js";
 import { planBlockDiff, type BlockDiff } from "./pageBlockDiff.js";
 import { renamePageWithClient } from "./pageOperations.js";
@@ -441,8 +442,9 @@ function realBlocks(ydoc: Y.Doc) {
  * version `input.expectedEtag`, in the caller's transaction. Nothing is written, and no document is created, when
  * anything below refuses.
  *
- * For a writer that carries an `agentProjectItemId` (an agent under a run, or an approved request replayed for one) the
- * project needs write access to the database that owns the page (`assertAgentPageAccess`), checked first.
+ * For a writer `readerOfWriter` names a reader for (an agent under a run or an approved request replayed for one: its
+ * project; an external client on `/mcp`, issue #1998) the reader needs write access to the database that owns the
+ * page (`assertAgentPageAccess`), checked first.
  *
  * The item is resolved live and its row locked (a foreign or unknown id is the one `NotFoundError`), then the
  * Markdown is parsed and checked (`prepareReplacementBlocks`, so an invalid block or item link is a `ValidationError`
@@ -477,7 +479,7 @@ export async function replacePageMarkdown(
   itemId: string,
   input: ReplacePageMarkdownInput,
 ): Promise<ReplacePageMarkdownResult> {
-  await assertAgentPageAccess(client, input.writer.agentProjectItemId, itemId, "write");
+  await assertAgentPageAccess(client, readerOfWriter(input.writer), itemId, "write");
   const host = await lockLiveItem(client, itemId);
   const blocks = await prepareReplacementBlocks(client, input.markdown);
 

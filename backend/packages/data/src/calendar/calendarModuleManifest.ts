@@ -3,6 +3,8 @@ import { CALENDAR_MODULE_ID } from "./calendarModuleId.js";
 import { CALENDARS_MODULE_ID } from "../seed/calendarsKeys.js";
 
 export { createCalendarTimelineRouteHandler } from "./timelineRouteHandler.js";
+export { createCalendarAgendaRouteHandler } from "./agendaRouteHandler.js";
+export { calendarSendEventInvitationPayloadSchema, handleCalendarSendEventInvitation } from "./eventInvitationJob.js";
 export { createCalendarCancellationImpactRouteHandler } from "./cancellationImpactRouteHandler.js";
 
 /**
@@ -16,9 +18,9 @@ export { createCalendarCancellationImpactRouteHandler } from "./cancellationImpa
  * Ownership handoff (docs/adr/2026-09-10-single-writer-ownership-model.md, issue #1757): `Events.people`
  * is a user-owned relation of the systemDatabases module, and the edges and their `role` stay the user's
  * to write. The `invitation` object in an edge's metadata is handed to this module: its one writer is the
- * calendar module's invitation code, which issues #1790, #1774 and #1950 will add and which writes with
- * the system writer kind. `eventParticipantEdgeHook.ts` refuses a write of another writer kind that would
- * add an `invitation`, or change or remove the stored one
+ * calendar module's invitation code, which writes with the system writer kind. Issue #1774 added its `sentAt`
+ * write (`eventInvitationJob.ts`); issues #1790 and #1950 will add the rest. `eventParticipantEdgeHook.ts`
+ * refuses a write of another writer kind that would add an `invitation`, or change or remove the stored one
  * (docs/adr/2026-11-11-event-participant-invitations-are-written-by-system-writers.md).
  */
 export const manifest: ModuleManifest = {
@@ -42,6 +44,16 @@ export const manifest: ModuleManifest = {
       justification: "single-consumer-read",
     },
     {
+      name: "calendarAgenda",
+      method: "GET",
+      path: "/api/calendar/agenda",
+      handlerExport: "createCalendarAgendaRouteHandler",
+      // Shaped for exactly one consumer, the calendar's list view: the entries of the timeline as one
+      // list that continues from a day in either direction, paged by a cursor, which the generic query
+      // cannot do across the Events and Tasks databases.
+      justification: "single-consumer-read",
+    },
+    {
       name: "calendarCancellationImpact",
       method: "GET",
       path: "/api/calendar/calendars/:id/cancellation-impact",
@@ -50,6 +62,15 @@ export const manifest: ModuleManifest = {
       // call counts the Events, cancellations and invited people the deletion affects, which the generic
       // reads would have to assemble from the Events of a calendar and the edges of each.
       justification: "single-consumer-read",
+    },
+  ],
+  taskNames: [
+    {
+      // Sends the iTIP REQUEST and CANCEL messages about an Event (issue #1774); `eventInvitationJob.ts` enqueues it.
+      name: "calendarSendEventInvitation",
+      payloadSchemaExport: "calendarSendEventInvitationPayloadSchema",
+      handlerExport: "handleCalendarSendEventInvitation",
+      queueAffinity: "api",
     },
   ],
 };
