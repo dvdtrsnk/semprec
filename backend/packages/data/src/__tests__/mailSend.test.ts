@@ -22,12 +22,7 @@ import {
   getMailMessageMetaByMailboxAndMessageId,
   resolveMergedThreadId,
 } from "../mail/mailMessageMetaStore.js";
-import {
-  sendDraftEmail,
-  assertEmailSendAuthorized,
-  noopMailSendAdapterFactory,
-  type SendEmailModuleIds,
-} from "../mail/send.js";
+import { sendDraftEmail, noopMailSendAdapterFactory, type SendEmailModuleIds } from "../mail/send.js";
 import { createSentCopySaver, createSmtpMailTransport, type MailTransport } from "../mail/mailTransport.js";
 import { ImapFlowMailClient } from "../mail/imapFlowClient.js";
 import { upsertMailServerSettings } from "../mail/mailServerSettingsStore.js";
@@ -202,31 +197,6 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
     },
   );
 
-  tenantIt("a user actor is always authorized to send, no manifest needed", () => {
-    expect(() => assertEmailSendAuthorized({ type: "user" })).not.toThrow();
-  });
-
-  tenantIt("an ai_agent actor without capabilities.email.send.autonomous is rejected", async () => {
-    const manifest = await withTransaction(pool, (client) => generatePermissionManifest(client, emailProjectId));
-    expect(manifest.capabilities.email.send.autonomous).toBe(false);
-    expect(() => assertEmailSendAuthorized({ type: "ai_agent", manifest })).toThrow(
-      /capabilities.email.send.autonomous/,
-    );
-  });
-
-  tenantIt("an ai_agent actor is authorized once a human grants capabilities.email.send.autonomous", async () => {
-    // No generic write path ever sets this (owner: 'system', no declared writer) — a human
-    // grants it via direct DB access, exactly as the epic's "project-level authorization
-    // decision" describes.
-    await pool.query(
-      `UPDATE items SET properties = properties || '{"emailSendAutonomous": true}'::jsonb WHERE id = $1`,
-      [emailProjectId],
-    );
-    const manifest = await withTransaction(pool, (client) => generatePermissionManifest(client, emailProjectId));
-    expect(manifest.capabilities.email.send.autonomous).toBe(true);
-    expect(() => assertEmailSendAuthorized({ type: "ai_agent", manifest })).not.toThrow();
-  });
-
   tenantIt(
     "a user send submits exactly once over SMTP, moves the draft from Drafts to Sent, and stores a generated Message-ID",
     async () => {
@@ -266,6 +236,11 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
 
       const meta = await getMailMessageMetaByItemId(pool, draft.id);
       expect(meta?.messageId).toBe(result.messageId);
+      expect(result.threadId).toBe(meta?.threadId);
+      expect(result.sentAt).toBeInstanceOf(Date);
+      // A plain Emails draft has no `mail_drafts` row, and sending it does not write one (issue gh-1896).
+      const { rows: draftRows } = await pool.query("SELECT 1 FROM mail_drafts WHERE email_item_id = $1", [draft.id]);
+      expect(draftRows).toHaveLength(0);
 
       const sentId = (
         await pool.query<{ id: string }>(
@@ -303,7 +278,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
           moduleIds,
           sendAdapters(transportFor(secondSmtp)),
         ),
-      ).rejects.toMatchObject({ name: "ConflictError" });
+      ).rejects.toMatchObject({ name: "MailSendClaimLostError", code: "version_conflict" });
       expect(secondSmtp.sent).toHaveLength(0);
     },
   );
@@ -345,7 +320,10 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
     expect(outcomes.filter((o) => o.status === "fulfilled")).toHaveLength(1);
     expect(outcomes.filter((o) => o.status === "rejected")).toHaveLength(1);
     const rejected = outcomes.find((o) => o.status === "rejected");
-    expect((rejected as PromiseRejectedResult).reason).toMatchObject({ name: "ConflictError" });
+    expect((rejected as PromiseRejectedResult).reason).toMatchObject({
+      name: "MailSendClaimLostError",
+      code: "version_conflict",
+    });
 
     // The claim (mail_message_meta insert) is what arbitrates the race, before either call
     // reaches SMTP — so at most one of the two clients should ever have sent anything.
@@ -413,101 +391,6 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       sendAdapters(transportFor(workingSmtp)),
     );
     expect(workingSmtp.sent).toHaveLength(1);
-    expect(result.itemId).toBe(draft.id);
-  });
-
-  tenantIt(
-    "an ungranted agent actor gets a 403, no SMTP call, and the draft (folder membership + missing meta) is left unchanged",
-    async () => {
-      const draftsId = await draftsFolderId();
-      const draft = await withTransaction(pool, (client) =>
-        createEmailDraft(client, {
-          emailsDatabaseId: emailsId,
-          folderRelationPropertyId,
-          draftsFolderItemId: draftsId,
-          subject: "Hello",
-          from: { address: "me@example.com" },
-          to: [{ address: "bob@example.com" }],
-          bodyText: "hi bob",
-        }),
-      );
-
-      const manifest = await withTransaction(pool, (client) => generatePermissionManifest(client, emailProjectId));
-      const smtp = recordingTransport();
-      const forMailbox = vi.fn(async () => smtp);
-
-      await expect(
-        sendDraftEmail(
-          pool,
-          {
-            mailboxItemId: mailboxId,
-            draftItemId: draft.id,
-            actor: { type: "ai_agent", manifest },
-            from: { address: "me@example.com" },
-            to: [{ address: "bob@example.com" }],
-            subject: "Hello",
-            bodyText: "hi bob",
-          },
-          moduleIds,
-          sendAdapters({ forMailbox }),
-        ),
-      ).rejects.toMatchObject({ name: "ForbiddenError", status: 403 });
-
-      expect(forMailbox).not.toHaveBeenCalled();
-      expect(smtp.sent).toHaveLength(0);
-      expect(await getMailMessageMetaByItemId(pool, draft.id)).toBeNull();
-
-      const { rows: draftRelation } = await pool.query(
-        `SELECT 1 FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1) AND (item_a = $2 OR item_b = $2) AND (item_a = $3 OR item_b = $3)`,
-        [folderRelationPropertyId, draft.id, draftsId],
-      );
-      expect(draftRelation).toHaveLength(1);
-
-      const refreshed = await chokePoint.getItem(emailsId, draft.id);
-      expect(refreshed?.properties.name).toBe("Hello");
-
-      // No approval-queue mechanism exists in this codebase for this case by design (epic #92) —
-      // nothing to assert beyond "no such row was created" since no such table exists at all.
-    },
-  );
-
-  tenantIt("a granted agent actor sends successfully, exactly like a user", async () => {
-    await pool.query(
-      `UPDATE items SET properties = properties || '{"emailSendAutonomous": true}'::jsonb WHERE id = $1`,
-      [emailProjectId],
-    );
-    const manifest = await withTransaction(pool, (client) => generatePermissionManifest(client, emailProjectId));
-
-    const draftsId = await draftsFolderId();
-    const draft = await withTransaction(pool, (client) =>
-      createEmailDraft(client, {
-        emailsDatabaseId: emailsId,
-        folderRelationPropertyId,
-        draftsFolderItemId: draftsId,
-        subject: "Hello",
-        from: { address: "me@example.com" },
-        to: [{ address: "bob@example.com" }],
-        bodyText: "hi bob",
-      }),
-    );
-
-    const smtp = recordingTransport();
-    const result = await sendDraftEmail(
-      pool,
-      {
-        mailboxItemId: mailboxId,
-        draftItemId: draft.id,
-        actor: { type: "ai_agent", manifest },
-        from: { address: "me@example.com" },
-        to: [{ address: "bob@example.com" }],
-        subject: "Hello",
-        bodyText: "hi bob",
-      },
-      moduleIds,
-      sendAdapters(transportFor(smtp)),
-    );
-
-    expect(smtp.sent).toHaveLength(1);
     expect(result.itemId).toBe(draft.id);
   });
 

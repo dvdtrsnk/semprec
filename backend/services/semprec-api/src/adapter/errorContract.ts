@@ -38,6 +38,13 @@ export const ITEM_ERROR_CODES = [
   "mail_draft_already_sent",
   "mail_draft_not_editable",
   "mail_attachment_too_large",
+  "mail_reauthorization_required",
+  "mail_recipient_rejected",
+  "mail_sent_folder_missing",
+  "retry_not_latest",
+  "regenerate_not_latest",
+  "regenerate_after_writes",
+  "regenerate_after_compaction",
 ] as const;
 
 export type ItemErrorCode = (typeof ITEM_ERROR_CODES)[number];
@@ -80,6 +87,13 @@ export const ITEM_ERROR_STATUS_BY_CODE: Readonly<Record<ItemErrorCode, number>> 
   mail_draft_already_sent: 409,
   mail_draft_not_editable: 409,
   mail_attachment_too_large: 413,
+  mail_reauthorization_required: 409,
+  mail_recipient_rejected: 422,
+  mail_sent_folder_missing: 409,
+  retry_not_latest: 409,
+  regenerate_not_latest: 409,
+  regenerate_after_writes: 409,
+  regenerate_after_compaction: 409,
 };
 
 function isItemErrorCode(code: string): code is ItemErrorCode {

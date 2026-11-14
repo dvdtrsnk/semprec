@@ -45,7 +45,7 @@ export interface InboxCardKinds {
 
 export interface InboxCardKindInput {
   /** The Processing proposals card's `kind`. */
-  kind: "inbox" | "transcript";
+  kind: "inbox" | "transcript" | "mailThread";
   /** The stored proposal status, or the compute state (`computing`, `computeFailed`) of a card being computed. */
   status: string;
   /** The stored envelope, or `null` when none was computed. */
@@ -81,6 +81,12 @@ function deriveFromEnvelope(
   envelope: ProposalEnvelope | UnknownKindProposalEnvelope,
 ): InboxCardKinds {
   if ("unknownKind" in envelope) return { cardKind: "clarify", baseKind: "page" };
+  // A thread task card (issue gh-2034) proposes a task and nothing else: any other envelope is not one it can hold.
+  if (input.kind === "mailThread") {
+    return envelope.entityKind === "database" && input.ownerModuleId === TASKS_MODULE_ID
+      ? { cardKind: "task", baseKind: "task" }
+      : { cardKind: "clarify", baseKind: "page" };
+  }
   if (input.kind === "transcript" && envelope.entityKind === "database") {
     return input.ownerModuleId === EVENTS_MODULE_ID
       ? { cardKind: "transcriptEvent", baseKind: "event" }

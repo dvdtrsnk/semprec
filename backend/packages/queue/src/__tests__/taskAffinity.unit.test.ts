@@ -89,6 +89,12 @@ describe("CORE_TASK_AFFINITY", () => {
     expect(TASK_TENANCY[CORE_TASK_NAMES.AI_BUDGET_RESET]).toBe("tenant");
   });
 
+  it("declares the tenant-scoped remindersResync task in the API set (issue gh-1879)", () => {
+    expect(CORE_TASK_NAMES.REMINDERS_RESYNC).toBe("remindersResync");
+    expect(CORE_TASK_AFFINITY[CORE_TASK_NAMES.REMINDERS_RESYNC]).toBe("api");
+    expect(TASK_TENANCY[CORE_TASK_NAMES.REMINDERS_RESYNC]).toBe("tenant");
+  });
+
   it("no longer declares the retired credentialReencryptSweep (issue #1069)", () => {
     expect(Object.values(CORE_TASK_NAMES)).not.toContain("credentialReencryptSweep");
     expect(Object.keys(CORE_TASK_AFFINITY)).not.toContain("credentialReencryptSweep");

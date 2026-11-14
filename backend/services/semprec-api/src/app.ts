@@ -1,5 +1,5 @@
 import { createRecordingsRequestListener } from "./recordingsHandler.js";
-import { createCollectionMetadataResolver, resolveModuleRuleKinds } from "@semprec/data";
+import { createCollectionMetadataResolver, createMailTransportFactory, resolveModuleRuleKinds } from "@semprec/data";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import { CAPABILITY_IDS, withTraceContext } from "@semprec/shared";
@@ -111,6 +111,23 @@ export async function createDispatcher(
     // Issue gh-1895: the limit the draft attachment route applies to a mailbox without a provider limit is the upload
     // cap of this dispatcher, whatever the caller's container carries.
     maxFileSizeBytes: options.maxFileSizeBytes,
+    // Issue gh-1896: the send route sends through the transports of the mailbox's sync mode, which this root builds
+    // from the OAuth clients the container carries, and reads attachment bytes from the storage it was given. A
+    // caller's own `send` is kept.
+    mailServerClients: {
+      ...callerDependencies.mailServerClients,
+      send: callerDependencies.mailServerClients?.send ?? {
+        transports: createMailTransportFactory(pool, {
+          ...(callerDependencies.oauth?.gmail ? { gmailOAuthClient: callerDependencies.oauth.gmail } : {}),
+          ...(callerDependencies.oauth?.msGraph ? { graphOAuthClient: callerDependencies.oauth.msGraph } : {}),
+          ...(callerDependencies.outboundHttp ? { fetchImpl: callerDependencies.outboundHttp } : {}),
+        }),
+        attachmentStorage: {
+          files: options.blobStorage,
+          mailAttachments: options.mailAttachmentStorage ?? options.blobStorage,
+        },
+      },
+    },
   });
   // The sole neutral `GenericApplicationPort` implementation (issue #219): one instance per
   // injected `Pool`, threaded into every generic resource route family below so there is no

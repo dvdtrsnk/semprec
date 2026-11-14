@@ -21,7 +21,12 @@ import { listActiveInboxTypes, type InboxTypeSummary } from "./inboxTypesStore.j
 import { countOpenInboxCards, listInboxCards } from "./inboxCardsStore.js";
 import { resolveEditorSchema, type ResolvedEditorSchema } from "./editorSchema.js";
 import type { ProposalWarning } from "./editorSchema.js";
-import { INBOX_ITEM_TYPES_MODULE_ID, PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
+import {
+  INBOX_ITEM_TYPES_MODULE_ID,
+  INBOX_MODULE_ID,
+  PROCESSING_PROPOSALS_MODULE_ID,
+} from "../seed/inboxPipelineKeys.js";
+import { changeInboxItemTypeWithClient, type ChangeInboxItemTypeInput } from "./inboxTypeChange.js";
 import { CREDENTIAL_TYPES, type CredentialType } from "../credentials/externalCredentialsStore.js";
 import {
   createCatalogResolver,
@@ -46,7 +51,7 @@ import type { ItemRow } from "../types.js";
 interface CustomRouteRequestContext {
   params: Record<string, string>;
   body: unknown;
-  /** The authenticated caller; only the confirm, revise and update-values routes read it. */
+  /** The authenticated caller; only the confirm, revise, update-values and change-type routes read it. */
   identity?: { user: { id: string } };
   /** The request, which carries the `Idempotency-Key` header the update-values route reads. */
   req?: { headers: Record<string, string | string[] | undefined> };
@@ -427,6 +432,55 @@ export function createUpdateProposalValuesRouteHandler(pool: Pool) {
     );
     const stored = storedUpdateSchema.parse(response.body);
     return { status: response.status, item: stored.item, warnings: stored.warnings };
+  };
+}
+
+/** The keys `PUT /api/inbox/items/:id/type` accepts. */
+const CHANGE_TYPE_BODY_KEYS: readonly string[] = ["typeId", "ifVersion"];
+
+/**
+ * The body of `PUT /api/inbox/items/:id/type`: a JSON object with a UUID string `typeId`, an optional `ifVersion` (as on
+ * confirm and reject) and no other key. Whether the type is an active one and whether the item has a card to hold the
+ * `ifVersion` are the questions of `changeInboxItemTypeWithClient`.
+ */
+function parseChangeTypeBody(body: unknown): Pick<ChangeInboxItemTypeInput, "typeId" | "ifVersion"> {
+  if (!isPlainObject(body)) throw new ValidationError("Request body must be a JSON object");
+  for (const key of Object.keys(body)) {
+    if (!CHANGE_TYPE_BODY_KEYS.includes(key)) throw new ValidationError(`Unknown field '${key}'`, { field: key });
+  }
+  const { typeId } = body;
+  if (typeof typeId !== "string" || !UUID_RE.test(typeId)) {
+    throw new ValidationError("'typeId' must be a UUID string", { field: "typeId" });
+  }
+  const ifVersion = parseIfVersion(body);
+  return { typeId, ...(ifVersion === undefined ? {} : { ifVersion }) };
+}
+
+/**
+ * `PUT /api/inbox/items/:id/type` (issue gh-1947): the one route that changes an Inbox item's type. The edge
+ * replacement, the clearing of the card's manual values, its `computing` status and the tick trigger commit in the one
+ * transaction opened here, which is why it is a custom route. Thin mapping only: every rule lives in
+ * `changeInboxItemTypeWithClient`. Answers `{ itemId, typeId, card }`, `card` being the card as written or `null` for an
+ * item without one.
+ */
+export function createChangeInboxItemTypeRouteHandler(pool: Pool) {
+  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+    const itemId = requireParam(ctx.params, "id");
+    if (!UUID_RE.test(itemId)) throw new ValidationError("'id' must be a UUID string", { field: "id" });
+    const input = parseChangeTypeBody(ctx.body);
+    const actingUserId = ctx.identity?.user.id;
+    const result = await withTransaction(pool, async (client) =>
+      changeInboxItemTypeWithClient(
+        client,
+        {
+          inboxDatabaseId: await resolveDatabaseIdByModuleId(client, INBOX_MODULE_ID),
+          inboxItemTypesDatabaseId: await resolveDatabaseIdByModuleId(client, INBOX_ITEM_TYPES_MODULE_ID),
+          processingProposalsDatabaseId: await resolveDatabaseIdByModuleId(client, PROCESSING_PROPOSALS_MODULE_ID),
+        },
+        { itemId, ...input, ...(actingUserId === undefined ? {} : { actingUserId }) },
+      ),
+    );
+    return { status: 200, body: result };
   };
 }
 

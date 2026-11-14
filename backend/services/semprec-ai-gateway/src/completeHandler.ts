@@ -18,8 +18,12 @@ import { readCallerTenantId, runForCallerTenant } from "./callerTenant.js";
  * a Projects item. #85's guidance-drift check always is; #183's transcript summary runs in
  * `semprec-transcribe` with no project in scope, so it sends `projectItemId: null` and its
  * `ai_gateway_calls` row carries none; #185's speaker-mapping suggestion and #1848's Event
- * recommendation (`transcript_event_match`) run in the same process, the same way; gh-1900's task
- * name for a mail thread (`mail_thread_task_name`) runs in `semprec-api` with no project in scope.
+ * recommendation (`transcript_event_match`) and gh-1940's recompute of a transcript card from a user instruction
+ * (`transcript_card_recompute`) run in the same process, the same way; gh-1900's task
+ * name for a mail thread (`mail_thread_task_name`) runs in `semprec-api` with no project in scope, and so does
+ * gh-1872's project assignment of an unlinked mail thread (`mailThreadProject`, named as that issue's feature key:
+ * unlike its neighbours it is camelCase) and gh-1941's decision whether a new mail message expects an answer
+ * (`mailAnswerExpected`), made in `semprec-agents` with no project in scope.
  * The route rejects any other operation outright rather than accepting an arbitrary string that
  * nothing yet knows how to interpret.
  */
@@ -32,8 +36,11 @@ const OPERATION_REQUIRES_PROJECT_ITEM = new Map<string, boolean>([
   ["transcript_summary", false],
   ["transcript_event_match", false],
   ["transcript_speaker_suggestion", false],
+  ["transcript_card_recompute", false],
   ["semp_thread_title", false],
   ["mail_thread_task_name", false],
+  ["mailThreadProject", false],
+  ["mailAnswerExpected", false],
 ]);
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

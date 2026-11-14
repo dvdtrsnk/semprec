@@ -8,8 +8,6 @@ import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
-import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
-import { createActionQueueAffinity } from "../scheduler/actions.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { withTransaction } from "../db/pool.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
@@ -916,10 +914,13 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
             "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
           );
           if (!identity.rows[0]) throw new Error("Missing holder identity");
-          const trashed = await itemDeleteWithClient(client, tasksId, latest, {
-            queueAffinity: createActionQueueAffinity(),
-          });
-          if (!trashed?.deletedAt) throw new Error("Latest occurrence was not trashed");
+          // Fixture SQL: the choke point trashes a whole series (issue gh-1882), so the latest occurrence is trashed
+          // on its own to hold its row lock the way a concurrent trash of that one row does.
+          const trashed = await client.query(
+            "UPDATE items SET deleted_at = now() WHERE database_id = $1 AND id = $2 AND deleted_at IS NULL",
+            [tasksId, latest],
+          );
+          if (trashed.rowCount !== 1) throw new Error("Latest occurrence was not trashed");
           signalReady(identity.rows[0]);
           await gate;
         }),
@@ -1032,11 +1033,12 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     );
     const seriesId = series.item.properties.seriesId;
     if (typeof seriesId !== "string") throw new Error("Missing series id");
-    // A pre-materialized latest occurrence is a historical fixture; then use the real trash path.
+    // A pre-materialized latest occurrence is a historical fixture; then trash it.
     const trashed = await inTenant(() =>
       createSeriesOccurrence(pool, { databaseId: tasksId, seriesId, occurrenceDate: day(0), status: "notDone" }),
     );
-    await inTenant(() => cp.softDeleteItem(tasksId, trashed));
+    // Fixture SQL: the choke point trashes a whole series (issue gh-1882), so the latest occurrence is trashed on its own.
+    await admin.query("UPDATE items SET deleted_at = now() WHERE database_id = $1 AND id = $2", [tasksId, trashed]);
     const beforeTrashed = await row(trashed);
     await run();
     expect(await row(trashed)).toEqual(beforeTrashed);

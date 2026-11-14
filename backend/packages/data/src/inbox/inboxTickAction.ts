@@ -103,6 +103,10 @@ export { SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME } from "./inboxTickKeys
  * replacement, `listRelationsForItem`'s heap order is not guaranteed to put the live one
  * first — picking `edges[0]` blindly could keep finding the deleted row, "creating" a fresh
  * proposal on every subsequent tick without bound.
+ *
+ * A sibling card of a split source (issue #1939), which carries `splitFromProposalId`, is skipped: the tick only
+ * ever sees the source's primary card, so a source edit never recomputes a sibling
+ * (`docs/adr/2026-10-25-thread-may-split-an-inbox-source.md`).
  */
 async function findExistingProposal(
   client: PoolClient,
@@ -120,7 +124,7 @@ async function findExistingProposal(
   for (const edge of edges) {
     const proposalItemId = relationsStore.otherSide(edge, sourceItemId);
     const proposal = await itemsStore.getItemById(client, config.processingProposalsDatabaseId, proposalItemId);
-    if (proposal && !proposal.deletedAt) return proposal;
+    if (proposal && !proposal.deletedAt && typeof proposal.properties.splitFromProposalId !== "string") return proposal;
   }
   return null;
 }
@@ -733,7 +737,10 @@ async function readTickSnapshot(
   if (existingProposal) {
     const status = existingProposal.properties.status;
     if (typeof status === "string" && LOCKED_PROPOSAL_STATUSES.has(status)) return null;
+    // A `computing` card was sent back for a new computation (issue gh-1947): the fingerprint of the card says what the
+    // last computation saw, not whether another one is wanted, so the gate does not apply to it.
     if (
+      status !== "computing" &&
       isFingerprintCurrent(existingProposal.properties.fingerprint, {
         v2Input,
         legacyEmoji: emoji,

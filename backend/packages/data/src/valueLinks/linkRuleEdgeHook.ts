@@ -18,6 +18,7 @@ import {
   sourceUnion,
   targetIsMany,
 } from "./linkPropagation.js";
+import { enqueueResolverRulesForEdge } from "./linkResolverTriggers.js";
 import { currentPropagationHop } from "./propagationContext.js";
 
 export async function linkRuleEdgeHook(context: RelationEdgeChangedHookContext): Promise<void> {
@@ -26,6 +27,7 @@ export async function linkRuleEdgeHook(context: RelationEdgeChangedHookContext):
   // client. `null` for an edge any other writer changed.
   const inheritedWriteHop = context.writer.writerKind === "system" ? currentPropagationHop(context.client) : null;
   const hop = inheritedWriteHop ?? 0;
+  await enqueueResolverRulesForEdge(context, hop);
   for (const rule of await loadLinkRules()) {
     const resolved = await resolveLinkRule(context.client, rule);
     if (!resolved) continue;

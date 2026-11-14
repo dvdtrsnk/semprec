@@ -1,4 +1,5 @@
 import type {
+  RelationEdgeChangedHook,
   RelationEdgeDeleteHook,
   RelationEdgeWriteHook,
   RelationEdgeWriteHookContext,
@@ -6,10 +7,13 @@ import type {
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { lockItemById, lockItemByIdNowait } from "../chokePoint/itemsStore.js";
 import { getProperty } from "../chokePoint/propertiesStore.js";
-import { listRelationsForItem, otherSide } from "../chokePoint/relationsStore.js";
+import { getRelationDefinition, listRelationsForItem, otherSide } from "../chokePoint/relationsStore.js";
 import { runValueLinkAdmissionLock } from "../chokePoint/valueLinkRelationAdmission.js";
+import { runAfterCommit } from "../db/pool.js";
 import { NotFoundError, ValidationError } from "../errors.js";
+import { notifyInvalidation } from "../realtimeHook.js";
 import { THREADS_MODULE_ID } from "../seed/emailModuleKeys.js";
+import { mailThreadIdOfItem } from "./threadLinkRules.js";
 
 const PROPOSED_CALLER = "00000000-0000-0000-0000-000000000000";
 type EndpointContext = Pick<
@@ -63,4 +67,29 @@ export const threadValueEdgeWriteHook: RelationEdgeWriteHook = async (context) =
 
 export const threadValueEdgeDeleteHook: RelationEdgeDeleteHook = async (context) => {
   await reserveThreadEndpoints(context, false);
+};
+
+/**
+ * Announces a change of a thread's company or project (issue gh-1869): each created or deleted edge of the Threads
+ * `company` or `project` relation, whoever wrote it (a user, an agent, the link engine, a thread merge), publishes
+ * the thin `mailThread` invalidation of the edge's thread after the commit. A thread item bound to no mail thread
+ * announces nothing.
+ */
+export const threadValueEdgeChangedHook: RelationEdgeChangedHook = async (context) => {
+  if (context.op === "update") return;
+  const { client } = context;
+  const definition = await getRelationDefinition(client, context.relationDefinitionId);
+  if (!definition) return;
+  const sides = [
+    { propertyId: definition.propertyIdA, itemId: context.itemA },
+    ...(definition.propertyIdB ? [{ propertyId: definition.propertyIdB, itemId: context.itemB }] : []),
+  ];
+  for (const side of sides) {
+    const property = await getProperty(client, side.propertyId);
+    if (property?.key !== "company" && property?.key !== "project") continue;
+    const threads = await getDatabaseByModuleId(client, THREADS_MODULE_ID);
+    if (property.databaseId !== threads?.id) continue;
+    const threadId = await mailThreadIdOfItem(client, side.itemId);
+    if (threadId) runAfterCommit(client, () => notifyInvalidation({ scope: "mailThread", threadId }));
+  }
 };

@@ -29,6 +29,16 @@ export interface SempThreadMessage {
   system: { key: string; params: unknown } | null;
   context: unknown;
   replyToMessageId: string | null;
+  /**
+   * Which attempt of the reply to `replyToMessageId` an assistant message is (issue gh-1926): 1 for the first, one more
+   * for each retry. A client shows the newest attempt of one `replyToMessageId`. Absent for a user or system message.
+   */
+  attempt?: number;
+  /**
+   * Whether a regeneration replaced this assistant message (issue gh-1930): the answer stays readable with its steps,
+   * is invisible to the model, and a client hides it. Absent for a user or system message.
+   */
+  replaced?: boolean;
   agentRunId: string | null;
   eventFromId: string | null;
   status: string | null;

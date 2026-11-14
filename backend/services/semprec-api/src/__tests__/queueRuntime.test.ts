@@ -346,6 +346,101 @@ describe("createApiQueueRuntime (issue #91)", () => {
     });
   });
 
+  describe("the mail module's thread project triage task (issue gh-1872)", () => {
+    const TRIAGE_TASK = "mailTriageThreadProject";
+    const NO_RUNTIME_ERROR = "No thread project triage runtime is configured for this composition root";
+
+    /** The job's `attempts` and `last_error`, from the queue's public view. */
+    async function triageJob(): Promise<{ attempts: number; last_error: string | null } | undefined> {
+      const { rows } = await pool.query<{ attempts: number; last_error: string | null }>(
+        "SELECT attempts, last_error FROM graphile_worker.jobs WHERE task_identifier = $1",
+        [TRIAGE_TASK],
+      );
+      return rows[0];
+    }
+
+    /** Runs the queued triage job once with the task list the module registry gives, outside any runtime. */
+    async function runTriageJobOutsideRuntime(registry: ModuleRegistry): Promise<void> {
+      const taskList = await mergeModuleTaskListForAffinity({}, registry, "api");
+      const handler = taskList[TRIAGE_TASK];
+      if (!handler) throw new Error("The api task list has no mailTriageThreadProject handler");
+      await runOnce({ pgPool: pool }, { [TRIAGE_TASK]: handler });
+    }
+
+    it("hosts the task with its dependencies bound while the runtime runs, and unbinds them when it stops", async () => {
+      const registry = await loadFullModuleRegistry();
+      runtime = await createApiQueueRuntime(pool, registry);
+
+      // An unknown thread ends the job before the gateway is asked; the handler only gets that far with its
+      // dependencies bound.
+      await inTenantZero(() => enqueueJob(pool, TRIAGE_TASK, { threadItemId: randomUUID() }));
+      await waitFor(async () => (await jobCountFor(pool, TRIAGE_TASK)) === 0);
+
+      await runtime.stop();
+      runtime = undefined;
+      await inTenantZero(() => enqueueJob(pool, TRIAGE_TASK, { threadItemId: randomUUID() }));
+      await runTriageJobOutsideRuntime(registry);
+      const job = await triageJob();
+      expect(job?.attempts).toBe(1);
+      expect(job?.last_error).toContain(NO_RUNTIME_ERROR);
+    });
+
+    it("leaves the dependencies unbound when the runner fails to start", async () => {
+      const registry = await loadFullModuleRegistry();
+      await expect(createApiQueueRuntime(pool, registry, { crontab: "not a crontab line\n" })).rejects.toThrow();
+
+      await inTenantZero(() => enqueueJob(pool, TRIAGE_TASK, { threadItemId: randomUUID() }));
+      await runTriageJobOutsideRuntime(registry);
+      expect((await triageJob())?.last_error).toContain(NO_RUNTIME_ERROR);
+    });
+  });
+
+  describe("the mail module's thread task people task (issue gh-1923)", () => {
+    const PEOPLE_TASK = "mailSyncThreadTaskPeople";
+    // A thread item that does not exist ends the job without a write; the handler only gets that far with its pool bound.
+    const peoplePayload = () => ({ threadItemId: randomUUID(), personId: randomUUID() });
+
+    async function peopleJob(): Promise<{ attempts: number; last_error: string | null } | undefined> {
+      const { rows } = await pool.query<{ attempts: number; last_error: string | null }>(
+        "SELECT attempts, last_error FROM graphile_worker.jobs WHERE task_identifier = $1",
+        [PEOPLE_TASK],
+      );
+      return rows[0];
+    }
+
+    async function runPeopleJobOutsideRuntime(registry: ModuleRegistry): Promise<void> {
+      const taskList = await mergeModuleTaskListForAffinity({}, registry, "api");
+      const handler = taskList[PEOPLE_TASK];
+      if (!handler) throw new Error("The api task list has no mailSyncThreadTaskPeople handler");
+      await runOnce({ pgPool: pool }, { [PEOPLE_TASK]: handler });
+    }
+
+    it("hosts the task with its pool bound while the runtime runs, and unbinds it when it stops", async () => {
+      const registry = await loadFullModuleRegistry();
+      runtime = await createApiQueueRuntime(pool, registry);
+
+      await inTenantZero(() => enqueueJob(pool, PEOPLE_TASK, peoplePayload()));
+      await waitFor(async () => (await jobCountFor(pool, PEOPLE_TASK)) === 0);
+
+      await runtime.stop();
+      runtime = undefined;
+      await inTenantZero(() => enqueueJob(pool, PEOPLE_TASK, peoplePayload()));
+      await runPeopleJobOutsideRuntime(registry);
+      const job = await peopleJob();
+      expect(job?.attempts).toBe(1);
+      expect(job?.last_error).toContain("No thread task people delivery is configured for this composition root");
+    });
+
+    it("leaves the pool unbound when the runner fails to start", async () => {
+      const registry = await loadFullModuleRegistry();
+      await expect(createApiQueueRuntime(pool, registry, { crontab: "not a crontab line\n" })).rejects.toThrow();
+
+      await inTenantZero(() => enqueueJob(pool, PEOPLE_TASK, peoplePayload()));
+      await runPeopleJobOutsideRuntime(registry);
+      expect((await peopleJob())?.last_error).toContain("No thread task people delivery is configured");
+    });
+  });
+
   it("is idempotent to install twice and to stop twice, and never closes the pool", async () => {
     const registry = await buildRegistryWith("apiFixtureModule.js", "fixture-api-queue-runtime");
     runtime = await createApiQueueRuntime(pool, registry);

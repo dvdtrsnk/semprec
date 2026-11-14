@@ -15,6 +15,7 @@ import { NotFoundError, ValidationError } from "../errors.js";
 import { LocalFsBlobStorageWriter } from "../mail/blobStorage.js";
 import {
   createEmailDraft,
+  updateEmailDraft,
   MailAttachmentTooLargeError,
   MailDraftAlreadySentError,
   MailDraftNotEditableError,
@@ -183,7 +184,7 @@ describe("the attachments of a mail draft (issue gh-1895)", () => {
   const ctx = (params: Record<string, string>, body: unknown) => ({
     params,
     body,
-    identity: { user: { id: USER_ID } },
+    identity: { user: { id: USER_ID, locale: "en" } },
   });
   const dependencies = { maxFileSizeBytes: UPLOAD_LIMIT_BYTES };
 
@@ -554,6 +555,41 @@ describe("the attachments of a mail draft (issue gh-1895)", () => {
       expect(await attachmentEdgesOf(draft.id)).toEqual([kept]);
       expect(await trashedOf([kept, removed])).toEqual([false, false]);
       expect(events).toEqual([{ scope: "mailThread", threadId: f.threadId }]);
+    });
+  });
+
+  it("records the user as the last editor of a draft whose attachment the user added or removed", async () => {
+    await runInTenant(tenant, async () => {
+      const f = await setup();
+      const lastEditedBy = async (draftId: string): Promise<string | undefined> => {
+        const { rows } = await runtime.query<{ last_edited_by: string }>(
+          "SELECT last_edited_by FROM mail_drafts WHERE tenant_id = app_tenant_default() AND email_item_id = $1",
+          [draftId],
+        );
+        return rows[0]?.last_edited_by;
+      };
+      const editAsAgent = async (draftId: string) => {
+        const version = (await readDraft(draftId)).body.updatedAt;
+        await withTransaction(runtime, (client) =>
+          updateEmailDraft(
+            client,
+            { draftItemId: draftId, ifVersion: version, body: "Text od agenta" },
+            { writer: { writerKind: "agent" } },
+          ),
+        );
+      };
+      const draft = await createDraft(f);
+      const file = await f.upload("offer.pdf", 10);
+      await editAsAgent(draft.id);
+      expect(await lastEditedBy(draft.id)).toBe("agent");
+
+      await attach(draft.id, file);
+      expect(await lastEditedBy(draft.id)).toBe("user");
+
+      await editAsAgent(draft.id);
+      expect(await lastEditedBy(draft.id)).toBe("agent");
+      await detach(draft.id, file);
+      expect(await lastEditedBy(draft.id)).toBe("user");
     });
   });
 

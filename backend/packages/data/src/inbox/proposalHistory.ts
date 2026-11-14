@@ -17,6 +17,8 @@ const PROPOSAL_HISTORY_KINDS = [
 export type ProposalHistoryKind = (typeof PROPOSAL_HISTORY_KINDS)[number];
 
 export const proposalHistoryEntrySchema = z.object({
+  /** The entry's own id, set on a user's instruction to a transcript card (issue gh-1940) so a job can name it. */
+  id: z.uuid().optional(),
   author: z.enum(["ai", "user"]),
   message: z.string(),
   at: z.string(),
@@ -25,6 +27,8 @@ export const proposalHistoryEntrySchema = z.object({
   keys: z.array(z.string()).optional(),
   threadId: z.string().optional(),
   messageId: z.string().optional(),
+  /** On a `threadRevision` entry that answers an instruction to a transcript card: the `id` of that instruction's entry. */
+  instructionEntryId: z.uuid().optional(),
   addedRelations: z
     .array(
       z.object({
@@ -49,7 +53,10 @@ export function appendHistoryEntry(
   history: unknown,
   message: string,
   author: "ai" | "user" = "ai",
-  extra?: Pick<ProposalHistoryEntry, "kind" | "keys" | "threadId" | "messageId" | "addedRelations">,
+  extra?: Pick<
+    ProposalHistoryEntry,
+    "id" | "kind" | "keys" | "threadId" | "messageId" | "instructionEntryId" | "addedRelations"
+  >,
 ): ProposalHistoryEntry[] {
   const parsed = z.array(proposalHistoryEntrySchema).safeParse(history);
   const existing = parsed.success ? parsed.data : [];

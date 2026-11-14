@@ -121,7 +121,9 @@ describe("Inbox pipeline databases (issue #101)", () => {
       "resultLabel",
       "results",
       "sourceInbox",
+      "sourceThread",
       "sourceTranscript",
+      "splitFromProposalId",
       "status",
       "typeCandidates",
       "userEditedKeys",
@@ -143,11 +145,13 @@ describe("Inbox pipeline databases (issue #101)", () => {
     }
     expect(proposalProps.find((p) => p.key === "aiVersion")).toMatchObject({ type: "number", owner: "system" });
     expect(proposalProps.find((p) => p.key === "reason")).toMatchObject({ type: "text", owner: "system" });
+    // Issue #1939: the marker of a sibling card of a split source.
+    expect(proposalProps.find((p) => p.key === "splitFromProposalId")).toMatchObject({ type: "text", owner: "system" });
     expect(proposalProps.find((p) => p.key === "recognizedTypeId")).toMatchObject({ type: "text", owner: "system" });
     expect(proposalProps.find((p) => p.key === "kind")).toMatchObject({
       type: "select",
       owner: "system",
-      config: { options: [{ key: "inbox" }, { key: "transcript" }] },
+      config: { options: [{ key: "inbox" }, { key: "transcript" }, { key: "mailThread" }] },
     });
     expect(proposalProps.find((p) => p.key === "proposal")).toMatchObject({ type: "json", owner: "system" });
     expect(proposalProps.find((p) => p.key === "history")).toMatchObject({ type: "json", owner: "system" });
@@ -155,6 +159,11 @@ describe("Inbox pipeline databases (issue #101)", () => {
     expect(proposalProps.find((p) => p.key === "sourceTranscript")).toMatchObject({
       type: "relation",
       owner: "system",
+    });
+    expect(proposalProps.find((p) => p.key === "sourceThread")).toMatchObject({
+      type: "relation",
+      owner: "system",
+      ownerProcess: "processingProposals",
     });
     expect(proposalProps.find((p) => p.key === "status")).toMatchObject({
       type: "select",

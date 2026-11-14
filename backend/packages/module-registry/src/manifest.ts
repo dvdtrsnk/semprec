@@ -230,6 +230,19 @@ export interface ModuleLinkRuleDescriptor {
 }
 
 /**
+ * A link rule whose value is computed by a module resolver instead of copied along a relation: the
+ * target property of an item takes what the resolver returns for that item. `resolverExport` names an
+ * object export of this same module file; its shape belongs to the code that runs the rule (the registry
+ * only checks that the export is an object), so the manifest stays data. `key` is unique across all
+ * modules, and `target` names the property the resolver's value is written to.
+ */
+export interface ModuleResolverLinkRuleDescriptor {
+  key: string;
+  target: ModuleLinkRuleEndpoint;
+  resolverExport: string;
+}
+
+/**
  * The controls a card editor field may declare. The server owns the editor schema so that
  * required-ness and conditions can be enforced on confirm (#1928, #1934) with the same rules the
  * client renders (`docs/adr/2026-10-25-server-driven-inbox-editor-schema.md`).
@@ -314,7 +327,7 @@ export interface ModuleManifest {
   migrations?: string[];
   dataMigrations?: ModuleDataMigrationDescriptor[];
   customRoutes?: ModuleCustomRouteDescriptor[];
-  linkRules?: ModuleLinkRuleDescriptor[];
+  linkRules?: Array<ModuleLinkRuleDescriptor | ModuleResolverLinkRuleDescriptor>;
   /**
    * Editor schemas of the cards this module declares, keyed by base kind (the kind of thing the
    * card creates). Two loaded modules may not declare the same base kind.
@@ -612,6 +625,12 @@ const moduleLinkRuleDescriptorSchema = z.strictObject({
   valueFilter: z.strictObject({ omit: moduleLinkRuleEndpointSchema }).optional(),
 });
 
+const moduleResolverLinkRuleDescriptorSchema = z.strictObject({
+  key: z.string().min(1),
+  target: moduleLinkRuleEndpointSchema,
+  resolverExport: z.string().min(1),
+});
+
 export const editorFieldValueSchema = z.union([z.string(), z.number(), z.boolean()]);
 
 export const editorConditionSchema = z.union([
@@ -685,6 +704,6 @@ export const moduleManifestSchema = z.object({
   migrations: z.array(z.string().min(1)).optional(),
   dataMigrations: z.array(moduleDataMigrationDescriptorSchema).optional(),
   customRoutes: z.array(moduleCustomRouteDescriptorSchema).optional(),
-  linkRules: z.array(moduleLinkRuleDescriptorSchema).optional(),
+  linkRules: z.array(z.union([moduleLinkRuleDescriptorSchema, moduleResolverLinkRuleDescriptorSchema])).optional(),
   editorSchemas: z.record(z.string().min(1), editorSchemaDescriptorSchema).optional(),
 });

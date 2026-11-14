@@ -28,6 +28,7 @@ export {
   type InboundFrame,
   type OutboundFrame,
   type AgentDeltaChunk,
+  type MailDraftBodyDelta,
   type BinaryFrame,
 } from "./protocolV1.js";
 

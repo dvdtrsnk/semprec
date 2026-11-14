@@ -5,6 +5,7 @@ import {
   createPool,
   LocalFsBlobStorageWriter,
   loadFullModuleRegistry,
+  readMaxFileSizeBytes,
   resolveBlobStorageDir,
   NodemailerInviteMailer,
   NodemailerPasswordResetMailer,
@@ -139,10 +140,8 @@ const inviteMailer: InviteMailer | undefined = smtp
 
 // Issue #158: `POST /api/files`'s hard streamed-upload cap, and where `LocalFsBlobStorageWriter`
 // keeps uploaded bytes on disk — resolved like `MAIL_ATTACHMENTS_DIR` (worker.ts): required outside tests.
-const maxFileSizeMb = Number(process.env.MAX_FILE_SIZE_MB ?? "100");
-if (!Number.isFinite(maxFileSizeMb) || maxFileSizeMb <= 0) {
-  throw new Error(`MAX_FILE_SIZE_MB is not a valid positive number: ${process.env.MAX_FILE_SIZE_MB}`);
-}
+// The agent forward of mail reads the same limit through the same reader (`readMaxFileSizeBytes`).
+const maxFileSizeBytes = readMaxFileSizeBytes();
 const blobStorage = new LocalFsBlobStorageWriter(resolveBlobStorageDir("FILES_STORAGE_DIR"));
 const mailAttachmentStorage = new LocalFsBlobStorageWriter(resolveBlobStorageDir("MAIL_ATTACHMENTS_DIR"));
 const speechGatewayToken = process.env.AI_GATEWAY_INTERNAL_TOKEN;
@@ -175,7 +174,7 @@ const dispatch = await createDispatcher(pool, {
   blobStorage,
   mailAttachmentStorage,
   speechGateway: { port: Number(process.env.AI_GATEWAY_PORT ?? "3002"), token: speechGatewayToken },
-  maxFileSizeBytes: maxFileSizeMb * 1024 * 1024,
+  maxFileSizeBytes,
   trustProxy,
   customRouteDependencies,
 });

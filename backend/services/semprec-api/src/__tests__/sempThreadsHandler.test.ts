@@ -1199,9 +1199,18 @@ describe("durable Semp thread history", () => {
     const originalJob = stored.job[0];
     if (!originalJob) throw new Error("Missing queued Semp job");
     expect(duplicate.rows).toEqual([{ id: originalJob.id, revision: originalJob.revision + 1 }]);
-    const firstRunRef = { kind: "agentRun", agentRunId: request.agentRunId, messageId: randomUUID() };
+    // An answer of the run needs an assistant message the run produced; the queued one of the first message is it.
+    await runInTenant(tenant, () =>
+      withTransaction(pool, async (client) => {
+        expect(await claimSempMessage(client, first.threadId, first.assistantMessageId)).toBe(true);
+        const started = await insertAgentRunEvent(client, request.agentRunId, "turn_start", { kind: "turn_start" });
+        await startSempMessageTurn(client, first.assistantMessageId, request.agentRunId, started.id);
+      }),
+    );
+    const firstRunRef = { kind: "agentRun", agentRunId: request.agentRunId, messageId: first.assistantMessageId };
     const approvalRef = { kind: "approvalRequest", approvalRequestId: request.id };
-    const context = [firstRunRef, approvalRef, { ...firstRunRef, messageId: randomUUID() }];
+    // The same answer posted twice is one ref; the identity of a run ref includes `messageId` (issue gh-1936).
+    const context = [firstRunRef, approvalRef, { ...firstRunRef }];
     const withContext = await fetch(`${baseUrl}/api/semp/threads`, {
       method: "POST",
       headers,
@@ -1239,6 +1248,138 @@ describe("durable Semp thread history", () => {
       });
       expect(await counts()).toEqual(beforeRefusals);
     }
+  });
+
+  it("accepts an agent run ref that names an answer of the run, returns it unchanged in history, and refuses every other message and a messageId on any other kind with the same error (issue gh-1936)", async () => {
+    const tenant = await createTestTenant(admin);
+    const foreignTenant = await createTestTenant(admin);
+    const email = `${randomUUID()}@example.test`;
+    await createUser(admin, { tenantId: tenant, email, passwordHash: await hashPassword("thread-test-password") });
+    await createUser(admin, {
+      tenantId: foreignTenant,
+      email: `${randomUUID()}@example.test`,
+      passwordHash: await hashPassword("thread-test-password"),
+    });
+    const session = await login(admin, { email, password: "thread-test-password", platform: "ios", ip: "127.0.0.1" });
+    const headers = { authorization: `Bearer ${session.token}`, "content-type": "application/json" };
+    /** A chat thread with a run and one answered question: the run produced the assistant message. */
+    const chatWithAnswer = (tenantId: string) =>
+      runInTenant(tenantId, () =>
+        withTransaction(pool, async (client) => {
+          const threadId = await createSempChatThread(client);
+          const run = await createAgentRun(client, { triggeredBy: "user", unit: "session", task: "answer", threadId });
+          const turn = await sendSempMessage(client, { threadId, text: "Question", context: [], hasContext: false });
+          expect(await claimSempMessage(client, threadId, turn.assistantMessageId)).toBe(true);
+          const started = await insertAgentRunEvent(client, run.id, "turn_start", { kind: "turn_start" });
+          await startSempMessageTurn(client, turn.assistantMessageId, run.id, started.id);
+          const ended = await insertAgentRunEvent(client, run.id, "turn_end", { kind: "turn_end" });
+          expect(
+            await finishSempMessageTurn(client, turn.assistantMessageId, {
+              status: "done",
+              text: "Answer",
+              lastEventId: ended.id,
+            }),
+          ).toBe(true);
+          return { threadId, runId: run.id, userMessageId: turn.messageId, answerId: turn.assistantMessageId };
+        }),
+      );
+    const own = await chatWithAnswer(tenant);
+    const other = await chatWithAnswer(tenant);
+    const foreign = await chatWithAnswer(foreignTenant);
+    const post = (ref: unknown) =>
+      fetch(`${baseUrl}/api/semp/threads/${own.threadId}/messages`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ text: "question", context: [ref] }),
+      });
+    const answerRef = { kind: "agentRun", agentRunId: own.runId, messageId: own.answerId };
+
+    const accepted = await post(answerRef);
+    expect(accepted.status).toBe(202);
+    const sent = z.object({ messageId: z.string().uuid() }).parse(await accepted.json());
+    const stored = await runInTenant(tenant, () =>
+      pool.query<{ context: unknown }>("SELECT context FROM semp_messages WHERE id = $1", [sent.messageId]),
+    );
+    expect(stored.rows).toEqual([{ context: [answerRef] }]);
+    const history = await fetch(`${baseUrl}/api/semp/threads/${own.threadId}/messages`, { headers });
+    expect(history.status).toBe(200);
+    expect(await history.json()).toMatchObject({
+      rows: expect.arrayContaining([
+        expect.objectContaining({ id: sent.messageId, context: [expect.objectContaining(answerRef)] }),
+      ]),
+    });
+
+    // An answer next to the whole run it belongs to are two refs: neither is dropped as a duplicate of the other.
+    const wholeRunRef = { kind: "agentRun", agentRunId: own.runId };
+    const both = await fetch(`${baseUrl}/api/semp/threads/${own.threadId}/messages`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ text: "question", context: [answerRef, wholeRunRef, { ...answerRef }] }),
+    });
+    expect(both.status).toBe(202);
+    const bothSent = z.object({ messageId: z.string().uuid() }).parse(await both.json());
+    const bothStored = await runInTenant(tenant, () =>
+      pool.query<{ context: unknown }>("SELECT context FROM semp_messages WHERE id = $1", [bothSent.messageId]),
+    );
+    expect(bothStored.rows).toEqual([{ context: [answerRef, wholeRunRef] }]);
+
+    const snapshot = () =>
+      runInTenant(tenant, async () => ({
+        messages: (await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM semp_messages")).rows,
+        jobs: (
+          await pool.query<{ count: number }>(
+            "SELECT count(*)::int AS count FROM graphile_worker.jobs WHERE queue_name = $1",
+            [`semp-chat:${tenant}`],
+          )
+        ).rows,
+      }));
+    const before = await snapshot();
+    const ref = (agentRunId: string, messageId: string) => ({ kind: "agentRun", agentRunId, messageId });
+    const unknownTarget = await post({ kind: "agentRun", agentRunId: randomUUID() });
+    expect(unknownTarget.status).toBe(400);
+    const unknownTargetBody: unknown = await unknownTarget.json();
+    expect(unknownTargetBody).toMatchObject({ error: { code: "validation_failed", details: { field: "context[0]" } } });
+    for (const [name, refused] of [
+      ["a message of another run", ref(own.runId, other.answerId)],
+      ["a user message", ref(own.runId, own.userMessageId)],
+      ["an unknown message id", ref(own.runId, randomUUID())],
+      ["a message of another tenant", ref(own.runId, foreign.answerId)],
+    ] as const) {
+      const response = await post(refused);
+      expect(response.status, name).toBe(400);
+      expect(await response.json(), name).toEqual(unknownTargetBody);
+      expect(await snapshot(), name).toEqual(before);
+    }
+    // A messageId belongs to the agentRun kind alone: every other kind is refused with it, on both message routes.
+    const stray = randomUUID();
+    for (const refused of [
+      { kind: "item", itemId: stray, databaseId: stray, messageId: own.answerId },
+      { kind: "block", itemId: stray, blockId: stray, messageId: own.answerId },
+      { kind: "transcriptSegment", itemId: stray, startsAt: 0, endsAt: 1, messageId: own.answerId },
+      { kind: "mailAttachment", attachmentId: stray, messageId: own.answerId },
+      { kind: "mailThread", threadId: stray, messageId: own.answerId },
+      { kind: "approvalRequest", approvalRequestId: stray, messageId: own.answerId },
+      { kind: "taskOccurrence", seriesId: stray, occurrenceDate: "2026-11-16", messageId: own.answerId },
+      { kind: "taskTrace", itemId: stray, databaseId: stray, traceDay: "2026-11-02", messageId: own.answerId },
+      { kind: "sleepNight", night: "2026-11-01", messageId: own.answerId },
+    ]) {
+      for (const path of ["/api/semp/threads", `/api/semp/threads/${own.threadId}/messages`]) {
+        const response = await fetch(`${baseUrl}${path}`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ text: "question", context: [refused] }),
+        });
+        expect(response.status, refused.kind).toBe(400);
+        expect(await response.json(), refused.kind).toMatchObject({
+          error: { code: "validation_failed", details: { field: "context[0]" } },
+        });
+        expect(await snapshot(), refused.kind).toEqual(before);
+      }
+    }
+    // A malformed messageId on an agentRun ref is refused before any lookup.
+    const malformed = await post({ kind: "agentRun", agentRunId: own.runId, messageId: "not-a-uuid" });
+    expect(malformed.status).toBe(400);
+    expect(await snapshot()).toEqual(before);
   });
 
   it("reuses an item thread and refuses a current reserved or decided proposal without effects", async () => {

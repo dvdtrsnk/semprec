@@ -6,6 +6,7 @@ import { runInTenant } from "@semprec/shared";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import { computeDeleteImpact, type DeleteImpact } from "../deleteImpact.js";
 import { insertValueLink } from "../../chokePoint/valueLinksStore.js";
+import { createRelationWithClient } from "../../chokePoint/relationOps.js";
 import { withTransaction } from "../../db/pool.js";
 import { createSubpageWithClient } from "../../docs/pageOperations.js";
 import { ForbiddenError } from "../../errors.js";
@@ -17,6 +18,8 @@ import {
 } from "../../manifest/collectionMetadata.js";
 import { loadFullModuleRegistry } from "../../manifest/fullModuleRegistry.js";
 import { seedSystem } from "../../seed/seedSystem.js";
+import { TASKS_MODULE_ID } from "../../seed/tenDatabaseKeys.js";
+import { createSeriesOccurrence, startTaskSeries } from "../../testSupport/taskSeriesFixtures.js";
 import {
   createRuntimeRolePool,
   createTestProjectItem,
@@ -430,6 +433,144 @@ describe("computeDeleteImpact (issue #1856)", () => {
       await expect(impact(healthRecord.id, { externalClient: true })).rejects.toBeInstanceOf(ForbiddenError);
       expect(await impactOrNull(note.id)).not.toBeNull();
       expect(await impactOrNull(healthRecord.id)).not.toBeNull();
+    });
+  });
+
+  describe("the counts of a task (issue gh-1882)", () => {
+    const NO_MODULE_IMPACT = { seriesInstanceCount: 0, attachmentCount: 0, hostEventCount: 0 };
+
+    /** A task with a series of three stored instances; returns the instance ids, the named one first. */
+    async function seriesOfThree(): Promise<{ seriesId: string; ids: string[] }> {
+      const task = await make("tasks", { date: "2026-10-12" });
+      const seriesId = await inTenant(() =>
+        startTaskSeries(pool, {
+          databaseId: task.databaseId,
+          itemId: task.id,
+          mode: "fixed",
+          rule: { kind: "weekdays", days: ["mon"] },
+        }),
+      );
+      const ids = [task.id];
+      for (const occurrenceDate of ["2026-10-19", "2026-10-26"]) {
+        ids.push(
+          await inTenant(() =>
+            createSeriesOccurrence(pool, { databaseId: task.databaseId, seriesId, occurrenceDate, status: "notDone" }),
+          ),
+        );
+      }
+      return { seriesId, ids };
+    }
+
+    /** Writes an edge of `Tasks.hostEvents`, whose only writer is the Tasks process. */
+    async function putInEvent(task: ItemRow, event: ItemRow): Promise<void> {
+      await inTenant(async () => {
+        const property = (await cp.listProperties(task.databaseId)).find((candidate) => candidate.key === "hostEvents");
+        if (!property) throw new Error("Missing Tasks.hostEvents");
+        await withTransaction(pool, (client) =>
+          createRelationWithClient(
+            client,
+            {
+              relationPropertyId: property.id,
+              callerItemId: task.id,
+              targetItemId: event.id,
+              metadata: { addedAt: "2026-10-15T10:00:00.000Z" },
+            },
+            { ownerProcess: TASKS_MODULE_ID },
+          ),
+        );
+      });
+    }
+
+    it("counts the live instances of the series with the task itself, its attachments and the Events it sits in", async () => {
+      const { ids } = await seriesOfThree();
+      const task = { id: ids[0]!, databaseId: database("tasks").id };
+      for (const file of [await make("files"), await make("files")]) await link(task, "files", file);
+      await putInEvent({ ...(await make("tasks")), ...task }, await make("events", { date: "2026-10-16" }));
+
+      expect(await impact(task.id)).toMatchObject({ seriesInstanceCount: 3, attachmentCount: 2, hostEventCount: 1 });
+      // Any instance of the series gives the series' count, and the counts of attachments and Events are its own.
+      expect(await impact(ids[2]!)).toMatchObject({ seriesInstanceCount: 3, attachmentCount: 0, hostEventCount: 0 });
+    });
+
+    it("counts a task without a series as no instance, and an item of another module as nothing", async () => {
+      const task = await make("tasks");
+      const file = await make("files");
+      await link(task, "files", file);
+
+      expect(await impact(task.id)).toMatchObject({ seriesInstanceCount: 0, attachmentCount: 1, hostEventCount: 0 });
+      expect(await impact((await make("projects")).id)).toMatchObject(NO_MODULE_IMPACT);
+      expect(await impact(file.id)).toMatchObject(NO_MODULE_IMPACT);
+    });
+
+    it("counts a task of a user-created database as nothing", async () => {
+      const notes = await inTenant(() => cp.createDatabase({ name: "Notes" }));
+      await inTenant(() => cp.createProperty({ databaseId: notes.id, key: "seriesId", name: "Series", type: "text" }));
+      const note = await inTenant(() => cp.createItem({ databaseId: notes.id, properties: { seriesId: "x" } }));
+
+      expect(await impact(note.id)).toMatchObject(NO_MODULE_IMPACT);
+    });
+
+    it("leaves an instance, an attachment and an Event in the Trash out of the counts", async () => {
+      const { ids } = await seriesOfThree();
+      const task = { id: ids[0]!, databaseId: database("tasks").id };
+      const file = await make("files");
+      const trashedFile = await make("files");
+      const event = await make("events", { date: "2026-10-16" });
+      const trashedEvent = await make("events", { date: "2026-10-17" });
+      await link(task, "files", file);
+      await link(task, "files", trashedFile);
+      await putInEvent({ ...(await make("tasks")), ...task }, event);
+      await putInEvent({ ...(await make("tasks")), ...task }, trashedEvent);
+      await inTenant(() => cp.softDeleteItem(trashedFile.databaseId, trashedFile.id));
+      await inTenant(() => cp.softDeleteItem(trashedEvent.databaseId, trashedEvent.id));
+      // Fixture SQL: the choke point trashes a series as a whole, so one instance is trashed on its own to read the count.
+      await admin.query("UPDATE items SET deleted_at = now() WHERE id = $1", [ids[2]]);
+
+      expect(await impact(task.id)).toMatchObject({ seriesInstanceCount: 2, attachmentCount: 1, hostEventCount: 1 });
+    });
+
+    it("gives a reader the counts of a person, because Files and Events are open to every reader", async () => {
+      const task = await make("tasks");
+      await link(task, "files", await make("files"));
+      await putInEvent(task, await make("events", { date: "2026-10-16" }));
+      const agentProject = await inTenant(() => createTestProjectItem(pool));
+
+      expect(await impact(task.id, agentProject)).toMatchObject({
+        seriesInstanceCount: 0,
+        attachmentCount: 1,
+        hostEventCount: 1,
+      });
+      expect(await impact(task.id)).toEqual(await impact(task.id, agentProject));
+    });
+
+    it("leaves an attachment out of an agent's count when the file is linked to a record the agent's project may not read", async () => {
+      const task = await make("tasks");
+      await link(task, "files", await make("files"));
+      const sensitiveFile = await make("files");
+      await link(task, "files", sensitiveFile);
+      await link(sensitiveFile, "healthRecords", await make("healthRecords"));
+      const agentProject = await inTenant(() => createTestProjectItem(pool));
+      const grantOnRecords = (access: "none" | "read") =>
+        inTenant(() =>
+          withTransaction(pool, (client) =>
+            setAgentDatabaseGrant(client, {
+              projectItemId: agentProject,
+              databaseId: database("healthRecords").id,
+              access,
+            }),
+          ),
+        );
+
+      // A person is told of both files; the agent is not told of the one it could neither list nor read.
+      expect(await impact(task.id)).toMatchObject({ attachmentCount: 2 });
+      expect(await impact(task.id, agentProject)).toMatchObject({ attachmentCount: 1 });
+      // Once the project may read the records, the file is one it sees.
+      await grantOnRecords("read");
+      expect(await impact(task.id, agentProject)).toMatchObject({ attachmentCount: 2 });
+      await grantOnRecords("none");
+      expect(await impact(task.id, agentProject)).toMatchObject({ attachmentCount: 1 });
+      // An external client is held to the access to the file's own database, as the point check holds it.
+      expect(await impact(task.id, { externalClient: true })).toMatchObject({ attachmentCount: 2 });
     });
   });
 

@@ -1,6 +1,7 @@
 {
   "approval.recurrence.end": "ukončení",
   "approval.changesSeries": "Změnit opakování úkolu {taskName} z {fromRule} na {toRule}",
+  "approval.emailSend": "Odeslat e-mail ze schránky „{mailboxName}“. Příjemců: {recipientCount}.",
   "approval.breaksLink": "Nastavit {propertyName} u „{itemName}“ ({databaseKey}) na „{newValueName}“. Tím se ukončí propojení s „{sourceItemName}“ ({sourceDatabaseKey}) a položka je přestane sledovat.",
   "approval.heartbeatCreate": "Vytvořit automatizaci „{heartbeatName}“ v projektu „{projectName}“ s plánem {rule}. Úkol: {task}",
   "approval.heartbeatUpdate": "Změnit automatizaci „{heartbeatName}“ v projektu „{projectName}“ ({changes}).",

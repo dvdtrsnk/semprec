@@ -223,17 +223,20 @@ function playedReply(
 }
 
 /**
- * A queued assistant message of the thread that answers `replyTo` (`null` for none), inserted by SQL because no
- * production write makes a second attempt at a reply before the retry of issue #1926, and none makes a reply that
- * answers no message; the insert has the shape `insertSempUserTurn` gives the first assistant message. Its
- * `created_at` is later than every message stored before it.
+ * A queued assistant message of the thread that answers `replyTo` (`null` for none), inserted by SQL because the
+ * retry of issue #1926 also needs a failed reply to retry and enqueues a turn, and no production write makes a reply
+ * that answers no message; the insert has the shape `insertSempUserTurn` gives the first assistant message. Its
+ * `attempt` is one above that of the latest attempt at the same reply, as the retry numbers it, and its `created_at`
+ * is later than every message stored before it.
  */
 export async function queueAssistantMessage(setup: ReplySetup, run: ChatRun, replyTo: string | null): Promise<string> {
   return runInTenant(setup.tenant, () =>
     withTransaction(setup.pool, async (client) => {
       const inserted = await client.query<{ id: string }>(
-        `INSERT INTO semp_messages (thread_id, role, reply_to_message_id, status, created_at)
-         VALUES ($1, 'assistant', $2, 'queued', clock_timestamp()) RETURNING id`,
+        `INSERT INTO semp_messages (thread_id, role, reply_to_message_id, status, attempt, created_at)
+         VALUES ($1, 'assistant', $2, 'queued',
+           (SELECT COALESCE(max(attempt), 0) + 1 FROM semp_messages WHERE role = 'assistant' AND reply_to_message_id = $2),
+           clock_timestamp()) RETURNING id`,
         [run.threadId, replyTo],
       );
       const id = inserted.rows[0]?.id;

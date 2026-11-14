@@ -5,7 +5,8 @@ import { manifestPath } from "../testSupport/moduleManifestPath.js";
 import { TEN_DATABASE_MODULE_IDS } from "../seed/tenDatabaseKeys.js";
 import { BUILTIN_VIEW_TYPES } from "../chokePoint/viewTypeRegistry.js";
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "../seed/libraryModuleKeys.js";
-import { CALENDARS_MODULE_ID } from "../seed/calendarsKeys.js";
+import { CALENDARS_MODULE_ID, SUBSCRIBED_EVENTS_MODULE_ID } from "../seed/calendarsKeys.js";
+import { INVITATIONS_MODULE_ID } from "../seed/invitationsKeys.js";
 import { RECIPES_MODULE_ID } from "../seed/recipesModuleKeys.js";
 import { SLEEP_NIGHTS_MODULE_ID, SLEEP_PLANS_MODULE_ID, SLEEP_SETTINGS_MODULE_ID } from "../seed/sleepModuleKeys.js";
 import { PAGES_MODULE_ID } from "../seed/pagesModuleKey.js";
@@ -118,6 +119,8 @@ describe("all module manifests loaded together (module-contract issue #115)", ()
         INBOX_MODULE_ID,
         PROCESSING_PROPOSALS_MODULE_ID,
         CALENDARS_MODULE_ID,
+        INVITATIONS_MODULE_ID,
+        SUBSCRIBED_EVENTS_MODULE_ID,
         RECIPES_MODULE_ID,
         SLEEP_SETTINGS_MODULE_ID,
         SLEEP_PLANS_MODULE_ID,

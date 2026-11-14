@@ -33,6 +33,13 @@ export interface RaiseProblemInput {
   since?: Date;
   /** Identifies the job or run reporting; a repeat within this problem episode adds no occurrence. */
   occurrenceKey?: string;
+  /**
+   * Whether a merge moves the stored source to `sourceId`. Only a merge that counts a new occurrence moves it, so
+   * a replay of an occurrence that was already counted cannot move it back. Default `false`: the source stays the
+   * one the first raise stored. A producer whose later reports name a newer source object (a retried attempt that
+   * replaces the failed one) sets it, so the problem always points at the object its actions have to act on.
+   */
+  followLatestSource?: boolean;
 }
 
 export interface RaiseProblemResult {
@@ -66,7 +73,8 @@ export async function lockProblemKey(client: PoolClient, dedupeKey: string): Pro
  * the active problem for `(tenant, dedupeKey)` or merges into it. A merge increases
  * `occurrence_count` and sets `last_seen_at`, unless `occurrenceKey` was already recorded for
  * this episode. A `critical` raise escalates a stored
- * `warning`; an equal or lower severity never changes the stored one.
+ * `warning`; an equal or lower severity never changes the stored one. A merge keeps the stored source unless
+ * the caller sets `followLatestSource` and the merge counts a new occurrence.
  *
  * A new or escalated problem also writes its `semp_problem` notification in the same transaction
  * (issue #1466): one notification per problem and per severity rise, which the fanout job pushes
@@ -122,6 +130,7 @@ export async function raiseProblem(client: PoolClient, input: RaiseProblemInput)
        occurrence_count = semp_problems.occurrence_count + CASE WHEN $12::boolean THEN 1 ELSE 0 END,
        last_seen_at = CASE WHEN $12::boolean THEN now() ELSE semp_problems.last_seen_at END,
        last_occurrence_key = COALESCE(EXCLUDED.last_occurrence_key, semp_problems.last_occurrence_key),
+       source_id = CASE WHEN $12::boolean AND $13::boolean THEN EXCLUDED.source_id ELSE semp_problems.source_id END,
        severity = CASE WHEN EXCLUDED.severity = 'critical' THEN 'critical' ELSE semp_problems.severity END
      RETURNING id, (xmax = 0) AS inserted, (SELECT severity FROM prior) AS prior_severity, severity`,
     [
@@ -137,6 +146,7 @@ export async function raiseProblem(client: PoolClient, input: RaiseProblemInput)
       input.occurrenceKey ?? null,
       PROJECTS_MODULE_ID,
       countOccurrence,
+      input.followLatestSource ?? false,
     ],
   );
   const row = rows[0];

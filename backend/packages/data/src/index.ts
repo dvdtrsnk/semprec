@@ -261,12 +261,9 @@ export {
   validateTranscriptSegmentRef,
   validateTranscriptSegmentRefs,
 } from "./transcription/transcriptSegmentRef.js";
-export {
-  proposeSpeakerMappings,
-  readSpeakerSuggestionContext,
-  type SpeakerMappingSuggestion,
-  type SpeakerSuggestionContext,
-} from "./transcription/transcriptSpeakerSuggestion.js";
+export * from "./transcription/transcriptSpeakerSuggestion.js";
+export * from "./transcription/transcriptCardRecompute.js";
+export * from "./transcription/transcriptCardRecomputeStore.js";
 export {
   ensureItemAutomation,
   getItemAutomation,
@@ -400,7 +397,7 @@ export {
   type UpdateMailDraftInput,
 } from "./mail/mailDraftsStore.js";
 export { resolveMergedThreadId } from "./mail/mailMessageMetaStore.js";
-export { manifest as mailModuleManifest } from "./mail/mailModuleManifest.js";
+export { manifest as mailModuleManifest, setThreadProjectTriageRuntime } from "./mail/mailModuleManifest.js";
 export { getMailboxRemovalImpact, type MailboxRemovalImpact } from "./mail/mailboxRemovalImpact.js";
 export { removeMailbox, type RemoveMailboxOptions } from "./mail/mailboxRemoval.js";
 export {
@@ -507,8 +504,7 @@ export { loadBlobMetadataForItems, type BlobMetadata, type ItemBlobMetadata } fr
 export { detectFileType, type DetectedFile, type DetectedFileType } from "./blobs/fileTypeDetection.js";
 export { recomputePersonLastContact } from "./people/lastContact.js";
 export { findFileItemByBlobId } from "./chokePoint/itemsStore.js";
-export type { BlobStorageWriter, WriteStreamOptions } from "./mail/blobStorage.js";
-export { LocalFsBlobStorageWriter, MaxBytesExceededError, resolveBlobStorageDir } from "./mail/blobStorage.js";
+export * from "./mail/blobStorage.js";
 export { extractAttachmentText, isTextExtractableContentType } from "./mail/attachmentTextExtraction.js";
 
 export * from "./tasks/taskRecurrenceRule.js";
@@ -540,7 +536,7 @@ export {
   createTaskHostEventsClearRouteHandler,
 } from "./tasks/taskHostEventRouteHandlers.js";
 export { createTasksDayRolloverAction, TASKS_DAY_ROLLOVER_ACTION_ID } from "./tasks/tasksDayRolloverAction.js";
-export * from "./calendar/nextOccurrenceRefreshAction.js";
+export * from "./calendar/calendarHeartbeatActions.js";
 export { firstOccurrenceAfter, latestOccurrenceOnOrBefore } from "./tasks/nextDueDate.js";
 export {
   createTaskRecurrence,
@@ -641,6 +637,7 @@ export { convertEventDateToWallClock } from "./calendar/eventDateMigration.js";
 export { createDuplicateCalendarItemRouteHandler } from "./calendar/duplicateCalendarItemRouteHandler.js";
 export { createAreaOverviewRouteHandler } from "./areas/areaOverviewRouteHandler.js";
 export { createEventInCalendar } from "./calendar/defaultCalendarCreateHook.js";
+export { setThreadTaskPeopleDelivery, type ThreadTaskPeopleDelivery } from "./mail/threadTaskPeople.js";
 export {
   enqueueEventInvitation,
   setEventInvitationDelivery,
@@ -779,12 +776,8 @@ export type {
   McpInvokeFailure,
   McpFailureKind,
 } from "./mcp/mcpToolExecution.js";
-export type { McpServerConnectionState } from "./mcp/mcpServerConnectionStateStore.js";
-export {
-  recordMcpConnectionSuccess,
-  recordMcpConnectionFailure,
-  getMcpConnectionStates,
-} from "./mcp/mcpServerConnectionStateStore.js";
+// The module exports exactly these four names (the state type and the three functions); publicSurface.test.ts pins them.
+export * from "./mcp/mcpServerConnectionStateStore.js";
 export { executeMcpInvocation, MCP_FAILURE_KINDS } from "./mcp/mcpToolExecution.js";
 export type { GenericOperationApprovalReplay } from "./mcp/approvalRequestExecution.js";
 // `approvalRequestsStore.ts`'s `decideApprovalRequest` is deliberately NOT exported here — see
@@ -850,6 +843,7 @@ export {
 } from "./semp/sempProblemsStore.js";
 export { SEMP_PROBLEMS_RETENTION_DAYS, handleSempProblemsPruneTask } from "./semp/sempProblemsPrune.js";
 export { createGuidanceProblemWriter } from "./semp/guidanceProblemWriter.js";
+export { raiseAgentReplyProblem, resolveAgentReplyProblem } from "./semp/agentReplyProblems.js";
 export {
   getDownloadableTenantExport,
   listTenantExports,
@@ -918,7 +912,9 @@ export {
   getSempMessageFrontier,
   getSempMessageToken,
   getSempVoiceDelivery,
+  regenerateSempReply,
   repairInterruptedSempMessages,
+  retrySempReply,
   startSempMessageTurn,
 } from "./semp/sempMessagesStore.js";
 export { enqueueSempThreadTitleIfFirst, handleSempThreadTitle } from "./semp/sempThreadTitle.js";
@@ -941,6 +937,7 @@ export { createMailFolderListRouteHandler } from "./mail/mailFolderList.js";
 
 export { THREADS_MODULE_ID } from "./seed/emailModuleKeys.js";
 export { runThreadsDatabaseCutoverMigration } from "./mail/threadsDatabaseCutoverMigration.js";
+export { runThreadTaskProposalCutoverMigration } from "./mail/threadTaskProposalCutoverMigration.js";
 export { readRecordingRequest, recordRecordingIntake } from "./transcription/recordingIntake.js";
 
 export { createLibraryMetadataFetcher } from "./library/libraryMetadataFetcher.js";

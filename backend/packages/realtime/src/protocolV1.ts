@@ -82,7 +82,8 @@ export function parseInboundFrame(raw: string): InboundFrame | null {
  * riding the socket. `notification` is the one deliberate exception and carries the complete row:
  * a notification's `title` is pre-rendered text with no second enforcement layer to fall back on.
  * `agent:event` carries the durable row resolved from its thin notification reference, while an
- * `agent:delta` is an intentionally ephemeral typing update. `doc:ack` goes only to the socket that
+ * `agent:delta` is an intentionally ephemeral typing update; its `delta` is `MailDraftBodyDelta` when the run is
+ * writing a mail draft. `doc:ack` goes only to the socket that
  * sent a doc update carrying a client update id, after the update is durable.
  */
 export type OutboundFrame =
@@ -120,6 +121,17 @@ export type OutboundFrame =
   | { type: "agent:event"; agentRunId: string; event: AgentRunEventRow }
   | { type: "agent:delta"; agentRunId: string; delta: unknown; chunk?: AgentDeltaChunk }
   | { type: "doc:ack"; docId: string; clientUpdateId: string };
+
+/**
+ * The `delta` of an `agent:delta` frame while a run writes the body of a mail draft with `mail.draft.update` (issue
+ * gh-1948): the draft and the text that is about to be stored in it. The frame is ephemeral; the durable change is the
+ * draft update and its item invalidation, and the indicator ends with the run.
+ */
+export interface MailDraftBodyDelta {
+  kind: "mailDraftBody";
+  draftId: string;
+  body: string;
+}
 
 /** A large ephemeral delta is transported as pieces of its base64-encoded JSON value. */
 export interface AgentDeltaChunk {

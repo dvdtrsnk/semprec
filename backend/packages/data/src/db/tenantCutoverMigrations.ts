@@ -6,6 +6,8 @@ import { runRatingFilterPresetsCutoverMigration } from "../seed/ratingFilterPres
 import { runSelectOptionOrderCutoverMigration } from "../seed/selectOptionOrderCutoverMigration.js";
 import { runThreadsDatabaseCutoverMigration } from "../mail/threadsDatabaseCutoverMigration.js";
 import { runThreadTasksCutoverMigration } from "../mail/threadTasksCutoverMigration.js";
+import { runThreadAttachmentsCutoverMigration } from "../mail/threadAttachmentsCutoverMigration.js";
+import { runThreadTaskProposalCutoverMigration } from "../mail/threadTaskProposalCutoverMigration.js";
 import { runProjectsPinnedOrderCutoverMigration } from "../seed/projectsPinnedOrderCutoverMigration.js";
 import { runAreasPropertiesCutoverMigration } from "../seed/areasPropertiesCutoverMigration.js";
 import { runLibraryHeartbeatConfigCutoverMigration } from "../library/libraryHeartbeatConfigCutoverMigration.js";
@@ -27,10 +29,13 @@ import { runTranscriptionTriggerEventsCutoverMigration } from "../transcription/
 import { runEventsCalendarPropertiesCutoverMigration } from "../calendar/eventsCalendarPropertiesCutoverMigration.js";
 import { runEventsIcalIdentityCutoverMigration } from "../calendar/eventsIcalIdentityCutoverMigration.js";
 import { runCalendarsCutoverMigration } from "../calendar/calendarsCutoverMigration.js";
+import { runInvitationIngestHeartbeatCutoverMigration } from "../calendar/invitationIngestHeartbeatCutoverMigration.js";
+import { runInvitationsDatabaseCutoverMigration } from "../calendar/invitationsDatabaseCutoverMigration.js";
 import { runNextOccurrenceDateCutoverMigration } from "../calendar/nextOccurrenceDateCutoverMigration.js";
 import { runPeopleEventsInverseCutoverMigration } from "../calendar/peopleEventsInverseCutoverMigration.js";
 import { runProjectAgentGuidanceCutoverMigration } from "../projectAgentGuidance/projectAgentGuidanceCutoverMigration.js";
 import { runProcessingProposalsCardStateCutoverMigration } from "../inbox/processingProposalsCardStateCutoverMigration.js";
+import { runProcessingProposalsSplitCutoverMigration } from "../inbox/processingProposalsSplitCutoverMigration.js";
 import { runMailboxAddressesOwnerCutoverMigration } from "../mail/mailboxAddressesOwnerCutoverMigration.js";
 import { runEmailsSenderPeopleCardinalityCutoverMigration } from "../mail/emailsSenderPeopleCardinalityCutoverMigration.js";
 import { runMailDraftsAndSentReadBackfill } from "../mail/mailDraftsAndSentReadBackfill.js";
@@ -49,6 +54,8 @@ import { runPeopleRelationshipOptionsCutoverMigration } from "../seed/peopleRela
 import { runHealthRecordTagsCutoverMigration } from "../seed/healthRecordTagsCutoverMigration.js";
 import { runHealthRecordTasksCutoverMigration } from "../seed/healthRecordTasksCutoverMigration.js";
 import { runNewEmailSenderFilterCutoverMigration } from "../mail/newEmailSenderFilterCutoverMigration.js";
+import { runNewEmailDraftCutoverMigration } from "../mail/newEmailDraftCutoverMigration.js";
+import { runEmailGuidanceCutoverMigration } from "../mail/emailGuidanceCutoverMigration.js";
 import { runAreaNoteCutoverMigration } from "../docs/areaNoteCutoverMigration.js";
 import { runRecipesModuleCutoverMigration } from "../recipes/recipesModuleCutoverMigration.js";
 import { runMeetingNotesBackfillCutoverMigration } from "../transcription/meetingNotesBackfillCutoverMigration.js";
@@ -61,6 +68,9 @@ import { runEventsRecurrenceCutoverMigration } from "../calendar/eventsRecurrenc
 import { runTranscriptNameBackfillCutoverMigration } from "../transcription/transcriptNameBackfillCutoverMigration.js";
 import { runSleepSettingsAreaCutoverMigration } from "../sleep/sleepSettingsAreaCutoverMigration.js";
 import { runEventsOccurrenceCutoverMigration } from "../calendar/eventsOccurrenceCutoverMigration.js";
+import { runCalendarSubscriptionUrlCutoverMigration } from "../calendar/calendarSubscriptionUrlCutoverMigration.js";
+import { runSempProblemsBackfillCutoverMigration } from "../semp/sempProblemsBackfillCutoverMigration.js";
+import { runSubscribedEventsCutoverMigration } from "../calendar/subscribedEventsCutoverMigration.js";
 
 /**
  * Runs the data-driven post-migration cutovers — the ones that read and write tenant rows — once
@@ -168,6 +178,48 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     // Issue gh-1883: the weekly Journal cleanup heartbeat on the Semprec project. It needs no other step's result and
     // stands after the entries of the sources it declares as blockers, before the area-note cutover that stays last.
     await runJournalWeeklyCleanupCutoverMigration(pool);
+    // Issue gh-1898: the `Threads.attachments` relation. It needs the Threads database of the cutover of #1573 and the
+    // Files database, and stands after the entries of the sources it declares as blockers, before the area-note
+    // cutover that stays last.
+    await runThreadAttachmentsCutoverMigration(pool);
+    // Issue gh-2034: the `mailThread` card kind and the Processing proposals `sourceThread` relation. It needs the
+    // Threads database of the thread cutover above and stands after the Threads tasks cutover of #1612, before the
+    // area-note cutover that stays last.
+    await runThreadTaskProposalCutoverMigration(pool);
+    // Issue gh-1901: the invitations database of the calendar module. It needs the Calendars database of the cutover
+    // of #1600 above and the Events, Emails and Mailboxes databases the seed created, and stands after the entries of
+    // the sources it declares as blockers, before the area-note cutover that stays last.
+    await runInvitationsDatabaseCutoverMigration(pool);
+    // Issue gh-1939: the `splitFromProposalId` property of Processing proposals. It needs no other step's result and
+    // stands after the entries of the sources it declares as blockers and before the entry of gh-1941, which named it as
+    // a shared-file ordering blocker, and before the area-note cutover that stays last.
+    await runProcessingProposalsSplitCutoverMigration(pool);
+    // Issue gh-1941: the `runProject` and `answerExpectedFilter` keys of the `newEmail` heartbeat. It needs the sender
+    // filter step of gh-1552 above, whose heartbeat it extends, and stands after the entry of gh-2034, before the
+    // area-note cutover that stays last. The source declares #1939 as a shared-file ordering blocker; when that source
+    // lands later, its entry goes before this one.
+    await runNewEmailDraftCutoverMigration(pool);
+    // Issue gh-1941: the Email project's guidance that names the real mail tools. It needs the guidance rows of the
+    // cutover of #1449 above and stands after the heartbeat step of this issue, before the area-note cutover that stays
+    // last.
+    await runEmailGuidanceCutoverMigration(pool);
+    // Issue gh-1925: the Calendars `subscriptionUrl` property. It needs the Calendars database of the step of #1600 and
+    // stands after the steps above, before the area-note cutover that stays last.
+    await runCalendarSubscriptionUrlCutoverMigration(pool);
+    // Issue gh-1929: the `calendar.ingestInvitation` heartbeat on the Emails database. It needs the invitations database
+    // of the step above and the Emails database, and stands after the entries of the sources it declares as blockers,
+    // before the area-note cutover that stays last.
+    await runInvitationIngestHeartbeatCutoverMigration(pool);
+    // Issue gh-1958: raises the Semp problems of the failures that exist at deploy, under the keys of the producers
+    // (#1911, #1465, #1506, #1945) it reads: mailboxes, guidance drift findings, heartbeats, library automation and
+    // transcriptions. It needs no other step's result. None of its declared blockers (#1506, #1945, #1950) has a
+    // cutover entry above yet; the entry of #1950 must be inserted above this call when it lands. Stands before the
+    // area-note cutover that stays last.
+    await runSempProblemsBackfillCutoverMigration(pool);
+    // Issue gh-1962: the `subscribedEvents` database and its `calendar` relation. It needs the Calendars database of the
+    // calendars cutover (#1600) above and stands after the entries of the sources it declares as blockers (#1958 above), before the
+    // area-note cutover that stays last.
+    await runSubscribedEventsCutoverMigration(pool);
     // Last: it converts each area in its own transaction and reports failed areas only after every area ran.
     await runAreaNoteCutoverMigration(pool);
   });

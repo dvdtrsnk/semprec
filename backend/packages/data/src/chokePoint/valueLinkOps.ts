@@ -16,6 +16,8 @@ import { updateItemWithClient } from "./itemWrites.js";
 import { createRelationWithClient, deleteRelationWithClient } from "./relationOps.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
 import { loadLinkRules, readOmittedItemIds, resolveValueFilter } from "../valueLinks/linkRuleCatalog.js";
+import { loadResolverLinkRules } from "../valueLinks/linkResolver.js";
+import { relinkResolverLink } from "../valueLinks/linkPropagation.js";
 import { withPropagationHop } from "../valueLinks/propagationContext.js";
 import { assertWriterDatabaseAccess } from "../agentGrants/agentDatabaseAccess.js";
 
@@ -86,6 +88,17 @@ async function withoutOmittedValues(client: PoolClient, ruleKey: string, values:
   return values.filter((value) => !omitted.includes(value));
 }
 
+/**
+ * Relinks a link of a resolver rule through its resolver and returns `true`. A link of a rule that is not a
+ * resolver rule returns `false` and is left to the caller. A resolver with no value for the item is a conflict.
+ */
+async function relinkedByResolver(client: PoolClient, link: valueLinksStore.ValueLinkRow): Promise<boolean> {
+  const rule = (await loadResolverLinkRules()).find((entry) => entry.key === link.ruleKey);
+  if (!rule) return false;
+  if (!(await relinkResolverLink(client, rule, link))) conflict();
+  return true;
+}
+
 function announce(
   client: PoolClient,
   item: { id: string; databaseId: string; updatedAt: string },
@@ -144,6 +157,8 @@ export async function changeValueLinkWithClient(
           writerKind: identity.writerKind,
         })
       ).length > 0;
+  } else if (await relinkedByResolver(client, link)) {
+    changed = true;
   } else {
     const property = await propertiesStore.getPropertyByKey(client, item.databaseId, input.propertyKey);
     if (!property) conflict();

@@ -69,6 +69,22 @@ describe("sempMessageRefSchema", () => {
     expect(sempMessageRefSchema.safeParse({ kind: "agentRun", agentRunId: id() }).success).toBe(true);
   });
 
+  it("rejects a messageId on every kind other than agentRun, stored with a label or not (issue gh-1936)", () => {
+    for (const [kind, value] of Object.entries(valid)) {
+      if (kind === "agentRun") continue;
+      expect(sempMessageRefSchema.safeParse({ ...value, messageId: id() }).success, kind).toBe(false);
+      expect(labeledSempMessageRefSchema.safeParse({ ...value, label: "L", messageId: id() }).success, kind).toBe(
+        false,
+      );
+    }
+  });
+
+  it("keeps the messageId of an agent run ref as given, with or without a stored label (issue gh-1936)", () => {
+    const ref = { kind: "agentRun", agentRunId: id(), messageId: id() };
+    expect(sempMessageRefSchema.parse(ref)).toEqual(ref);
+    expect(labeledSempMessageRefSchema.parse({ ...ref, label: "Run" })).toEqual({ ...ref, label: "Run" });
+  });
+
   it("rejects a non-UUID messageId on an agent run ref", () => {
     expect(sempMessageRefSchema.safeParse({ kind: "agentRun", agentRunId: id(), messageId: "x" }).success).toBe(false);
   });
@@ -235,10 +251,14 @@ describe("messageRefKey", () => {
     expect(seg(1, 2)).not.toBe(seg(0, 2));
   });
 
-  it("ignores messageId of an agent run ref", () => {
+  it("includes the messageId of an agent run ref, so each answer and the whole run are distinct refs (issue gh-1936)", () => {
     const agentRunId = id();
     const key = (messageId?: string) => messageRefKey(parse({ kind: "agentRun", agentRunId, messageId }));
-    expect(key(id())).toBe(key(id()));
-    expect(key(id())).toBe(key());
+    const answer = id();
+    expect(key(answer)).toBe(key(answer));
+    expect(key()).toBe(key());
+    expect(key(answer)).not.toBe(key(id()));
+    expect(key(answer)).not.toBe(key());
+    expect(key()).not.toBe(messageRefKey(parse({ kind: "agentRun", agentRunId: id() })));
   });
 });

@@ -9,6 +9,7 @@ const segments = [
 describe("buildSpeakerSuggestionRequest", () => {
   it("asks about the unmapped speakers with the participants and the transcript, unattributed to a project", () => {
     const request = buildSpeakerSuggestionRequest(segments, {
+      eventId: null,
       unmappedSpeakers: ["SPEAKER_01"],
       locale: "cs",
       candidates: [{ id: "person-1", name: "Alice", title: null, invitationStatus: null }],

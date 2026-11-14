@@ -161,7 +161,7 @@ describe("the mail draft routes (issue gh-1867)", () => {
   const ctx = (params: Record<string, string>, body: unknown) => ({
     params,
     body,
-    identity: { user: { id: USER_ID } },
+    identity: { user: { id: USER_ID, locale: "en" } },
   });
 
   function createDraft(body: unknown, inTenant = tenant) {

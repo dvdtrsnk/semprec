@@ -20,3 +20,12 @@ export function agentHeartbeatProblemKey(heartbeatId: string): string {
 export function agentRunProblemKey(firstRunId: string): string {
   return `agents:run:${firstRunId}`;
 }
+
+/**
+ * The one problem of a Semp reply that failed or came out incomplete (issue #1931), keyed by the message the
+ * reply answers (`semp_messages.reply_to_message_id`), so every attempt of that reply, the manual retries of
+ * issue #1926 included, merges into it.
+ */
+export function agentReplyProblemKey(replyToMessageId: string): string {
+  return `agents:reply:${replyToMessageId}`;
+}

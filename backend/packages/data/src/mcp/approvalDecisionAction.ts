@@ -3,6 +3,8 @@ import { enqueueJob, CORE_TASK_NAMES } from "@semprec/queue";
 import {
   decideApprovalRequest,
   getApprovalRequestForOwner,
+  isMailSendApprovalRequestPayload,
+  supersedePendingMailSendApprovalRequests,
   type ApprovalRequest,
   type ApprovalRequestDecision,
 } from "./approvalRequestsStore.js";
@@ -14,6 +16,25 @@ import { publishApprovalRequestChange } from "./approvalRequestRealtime.js";
 export interface DecideAndEnqueueResult {
   outcome: "decided" | "unchanged";
   request: ApprovalRequest;
+}
+
+/**
+ * A decided mail send request closes the other pending requests of its draft as superseded (issue gh-1913,
+ * `supersedePendingMailSendApprovalRequests`), whichever way it was decided: each one is told to its thread as
+ * rejected, loses its notification and is announced to its owner. Any other kind of request closes nothing.
+ */
+async function closeSupersededMailSendRequests(client: PoolClient, decided: ApprovalRequest): Promise<void> {
+  if (!isMailSendApprovalRequestPayload(decided.payload)) return;
+  for (const { request, ownerUserId } of await supersedePendingMailSendApprovalRequests(
+    client,
+    decided.payload.draftId,
+    decided.id,
+  )) {
+    await postApprovalOutcomeMessage(client, request, "rejected");
+    await resolveNotificationsBySource(client, { sourceTable: "approval_requests", sourceId: request.id });
+    await publishApprovalRequestChange(client, request);
+    await enqueueBadgeRefresh(client, ownerUserId);
+  }
 }
 
 export interface DecideApprovalRequestInput {
@@ -38,7 +59,8 @@ export interface DecideApprovalRequestInput {
  * - `decided`: this call made the transition (and enqueued, on approval), and resolved the
  *   request's notifications in the same transaction, and announced the change to its owner through
  *   `publishApprovalRequestChange` once the transaction commits, and enqueued the debounced badge refresh of
- *   the owner (issue #1891);
+ *   the owner (issue #1891); a decided mail send request also closes the other pending requests of its draft as
+ *   superseded (issue gh-1913);
  * - `unchanged`: the caller owns the request's run but it is no longer pending — whoever recorded
  *   that decision (the owner, or a system path such as a migration that left `decided_by` NULL) —
  *   so the update matched nothing, the current state is returned and nothing is announced;
@@ -64,6 +86,7 @@ export async function decideAndEnqueueApprovalRequest(
     );
   }
   if (request.status === "rejected") await postApprovalOutcomeMessage(client, request, "rejected");
+  await closeSupersededMailSendRequests(client, request);
 
   await resolveNotificationsBySource(client, { sourceTable: "approval_requests", sourceId: request.id });
   await publishApprovalRequestChange(client, request);

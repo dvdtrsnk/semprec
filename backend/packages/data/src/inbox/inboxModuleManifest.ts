@@ -10,10 +10,13 @@ import { SEMPREC_TICK_ACTION_ID } from "./inboxTickAction.js";
 export {
   createInboxProposalGetTool,
   createInboxProposalReviseTool,
+  createInboxProposalSplitTool,
   inboxProposalGetArgsSchema,
   inboxProposalReviseArgsSchema,
+  inboxProposalSplitArgsSchema,
 } from "./inboxAgentTools.js";
 export {
+  createChangeInboxItemTypeRouteHandler,
   createConfirmProposalRouteHandler,
   createInboxCardsCountRouteHandler,
   createInboxCardsRouteHandler,
@@ -46,8 +49,22 @@ export {
  * `docs/adr/2026-09-23-processing-proposals-card-creation-owned-per-kind.md`): each card `kind`
  * has exactly one producer process that creates its cards — `inbox` by `semprec.tick`,
  * `transcript` by `semprec-transcribe`, from its match step (`transcription/transcriptEventMatch.ts`)
- * and its speaker suggestion step (`transcription/transcriptSpeakerSuggestion.ts`).
- * Everything after creation (confirm/reject/revise) stays with this module's proposal actions.
+ * and its speaker suggestion step (`transcription/transcriptSpeakerSuggestion.ts`). `mailThread` cards (source
+ * relation `sourceThread`, issue gh-2034) have no producer process yet: issue #2035 decides it
+ * (`docs/adr/2026-11-14-a-mail-thread-card-proposes-one-task-of-a-thread-and-is-confirmed-as-a-user-write.md`).
+ * Everything after creation (confirm/reject/revise) stays with this module's proposal actions, with two additions.
+ * First (`docs/adr/2026-11-14-transcript-cards-are-recomputed-by-their-producer-on-instruction.md`): when a user's
+ * instruction is recorded on a `transcript` card, `semprec-transcribe` also rewrites that card's `aiProposal`,
+ * `aiVersion`, `proposal` and `history` (and the `userOverrides`, `userEditedKeys` and `status` that follow) in its
+ * `transcriptCardRecompute` task, under the card's row lock, and never a card that is `confirmed`, `rejected` or of
+ * another kind. Second
+ * (`docs/adr/2026-11-14-speaker-suggestions-are-asked-again-when-the-event-or-its-participants-change.md`): when a
+ * transcript's Event or the Event's participants change, `semprec-transcribe` refreshes, in its
+ * `transcriptSpeakerSuggestion` task and in the pipeline's speaker step (`refreshClarificationCard` of
+ * `proposeSpeakerMappings`), the `context`, `proposal`, `aiProposal`, `aiVersion`, `status` and `history` of a speaker
+ * card that is still `needsClarification` and has no user entry in its history, under the card's `NOWAIT` row lock; a
+ * card of any other status, or one the user touched, is never rewritten. The production sites above are unchanged:
+ * the recompute task creates no card, and the suggestion task creates the cards of the speaker suggestion step.
  */
 export const manifest: ModuleManifest = {
   id: "inboxPipeline",
@@ -73,6 +90,13 @@ export const manifest: ModuleManifest = {
       name: "inbox.proposal.revise",
       handlerExport: "createInboxProposalReviseTool",
       argumentSchemaExport: "inboxProposalReviseArgsSchema",
+      approval: "none",
+      riskClass: "write",
+    },
+    {
+      name: "inbox.proposal.split",
+      handlerExport: "createInboxProposalSplitTool",
+      argumentSchemaExport: "inboxProposalSplitArgsSchema",
       approval: "none",
       riskClass: "write",
     },
@@ -117,6 +141,15 @@ export const manifest: ModuleManifest = {
       // The proposal's lock, the merge into its user overrides and the history entry commit in one
       // transaction, which a generic item update cannot express (it refuses the system-owned
       // `proposal`, `status` and `history` of a Processing proposal).
+      justification: "transactional-semantics",
+    },
+    {
+      name: "changeInboxItemType",
+      method: "PUT",
+      path: "/api/inbox/items/:id/type",
+      handlerExport: "createChangeInboxItemTypeRouteHandler",
+      // The replacement of the `type` edge, the clearing of the card's manual values, its `computing` status and the
+      // trigger of the tick commit in one transaction, which no generic edge write can express.
       justification: "transactional-semantics",
     },
     {

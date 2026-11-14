@@ -40,7 +40,7 @@ import {
 const MATCHABLE_EVENT_TYPES = ["standup", "meeting"];
 
 /** The Transcripts relation to the Event a recording belongs to. */
-const TRANSCRIPT_EVENT_PROPERTY_KEY = "event";
+export const TRANSCRIPT_EVENT_PROPERTY_KEY = "event";
 
 /** A transcript's `date`: the recording's start as a UTC instant with a time of day. */
 const DATE_WITH_TIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;

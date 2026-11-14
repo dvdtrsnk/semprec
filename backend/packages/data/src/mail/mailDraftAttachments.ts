@@ -24,6 +24,7 @@ import {
   type MailDraftWriteContext,
 } from "./draft.js";
 import { listAttachmentOwners, listDraftAttachments } from "./mailDraftAttachmentFiles.js";
+import { updateMailDraft } from "./mailDraftsStore.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { resolveMailModuleIds } from "./mailModuleIds.js";
 
@@ -87,7 +88,8 @@ async function attachmentsPropertyId(client: PoolClient, emailsDatabaseId: strin
  * itself. The draft, then its row, then the file are locked, in the order `discardEmailDraft` takes them, so two
  * attaches of one file to two drafts do not both take it.
  *
- * After the commit it announces the change on the draft's thread, when it has one.
+ * An attach that adds a file records the writer as the draft's last editor, as an update does. After the commit it
+ * announces the change on the draft's thread, when it has one.
  */
 export async function attachFileToDraft(
   client: PoolClient,
@@ -143,6 +145,7 @@ export async function attachFileToDraft(
     context.writer,
     context.actingUserId,
   );
+  await updateMailDraft(client, input.draftItemId, { lastEditedBy: context.writer.writerKind });
   await announceDraftThreadChanged(client, draft.threadId);
   return readEmailDraft(client, input.draftItemId);
 }
@@ -151,8 +154,8 @@ export async function attachFileToDraft(
  * Removes the attachment edge between the unsent draft `input.draftItemId` and the Files item `input.fileItemId` in
  * the caller's transaction and tenant, and returns the draft's view. The Files item itself stays. The refusals are
  * those of `lockUnsentDraft` and a 404 for a file that is not attached to the draft, which is the answer for an
- * unknown id, another tenant's item and a file of another email alike. After the commit it announces the change
- * on the draft's thread, when it has one.
+ * unknown id, another tenant's item and a file of another email alike. It records the writer as the draft's last
+ * editor, as an update does. After the commit it announces the change on the draft's thread, when it has one.
  */
 export async function detachFileFromDraft(
   client: PoolClient,
@@ -173,6 +176,7 @@ export async function detachFileFromDraft(
     context.actingUserId,
   );
   if (removed === null) throw new NotFoundError("Attachment not found");
+  await updateMailDraft(client, input.draftItemId, { lastEditedBy: context.writer.writerKind });
   await announceDraftThreadChanged(client, draft.threadId);
   return readEmailDraft(client, input.draftItemId);
 }

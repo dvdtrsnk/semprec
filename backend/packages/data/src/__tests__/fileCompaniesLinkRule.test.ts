@@ -74,11 +74,24 @@ async function valueLinkRows(fileId: string): Promise<ValueLinkRow[]> {
   });
 }
 
-/** Runs every queued value-link propagation job through the registered worker task. */
+/**
+ * Runs every queued value-link propagation job through the registered worker task. A tenant's jobs share one lane
+ * and one `runOnce` runs one of them, so it repeats until none is left: the Companies.projects edges this file writes
+ * also queue the jobs of the Threads project rule (issue gh-1869).
+ */
 async function runPropagation(): Promise<void> {
   const handler = createCoreTaskList(pool, createActionRegistry())[CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE];
   if (!handler) throw new Error("Propagation handler missing");
-  await runOnce({ pgPool: pool, taskList: { [CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE]: handler } });
+  for (let round = 0; round < 20; round++) {
+    const pending = await admin.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM graphile_worker._private_jobs j
+       JOIN graphile_worker._private_tasks t ON t.id = j.task_id WHERE t.identifier = $1`,
+      [CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE],
+    );
+    if (pending.rows[0]?.n === 0) return;
+    await runOnce({ pgPool: pool, taskList: { [CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE]: handler } });
+  }
+  throw new Error("Propagation jobs are still queued");
 }
 
 const sorted = (values: string[]): string[] => [...values].sort();

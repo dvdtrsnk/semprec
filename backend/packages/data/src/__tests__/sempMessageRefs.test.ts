@@ -82,6 +82,43 @@ describe("Semp reference observation", () => {
     );
   });
 
+  it("checks the refs that name an answer of a run with one statement of their own, and the whole-run statement sees only the refs without messageId", async () => {
+    const tenant = await createTestTenant(admin);
+    await runInTenant(tenant, () => seedSystem(runtime));
+    const statementsOf = async (refs: SempMessageRef[]): Promise<string[]> => {
+      const queries: string[] = [];
+      await runInTenant(tenant, () =>
+        withTransaction(runtime, async (client) => {
+          /* eslint-disable @typescript-eslint/unbound-method */
+          client.query = new Proxy(client.query, {
+            apply(target, receiver, args: unknown[]) {
+              if (typeof args[0] === "string" && args[0].startsWith("SELECT")) queries.push(args[0]);
+              return Reflect.apply(target, receiver, args);
+            },
+          });
+          /* eslint-enable @typescript-eslint/unbound-method */
+          await expect(validateSempMessageRefs(client, refs)).rejects.toMatchObject({ code: "validation_failed" });
+        }),
+      );
+      return queries;
+    };
+    const count = (queries: string[], fragment: string) => queries.filter((sql) => sql.includes(fragment)).length;
+    const wholeRun: SempMessageRef = { kind: "agentRun", agentRunId: randomUUID() };
+    const answer = (): SempMessageRef => ({ kind: "agentRun", agentRunId: randomUUID(), messageId: randomUUID() });
+
+    const mixed = await statementsOf([wholeRun, answer(), answer()]);
+    expect(count(mixed, "JOIN agent_runs t")).toBe(1);
+    expect(count(mixed, "JOIN semp_messages m")).toBe(1);
+    expect(mixed).toHaveLength(2);
+    const answersOnly = await statementsOf([answer(), answer()]);
+    expect(count(answersOnly, "JOIN agent_runs t")).toBe(0);
+    expect(count(answersOnly, "JOIN semp_messages m")).toBe(1);
+    expect(answersOnly).toHaveLength(1);
+    const wholeOnly = await statementsOf([wholeRun]);
+    expect(count(wholeOnly, "JOIN semp_messages m")).toBe(0);
+    expect(wholeOnly).toHaveLength(1);
+  });
+
   it("accepts a sleep night ref without any statement, keeps the first of equal nights and still refuses a missing neighbour by its own index", async () => {
     const tenant = await createTestTenant(admin);
     await runInTenant(tenant, () => seedSystem(runtime));

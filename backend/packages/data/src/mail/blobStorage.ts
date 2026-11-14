@@ -71,6 +71,24 @@ export function resolveBlobStorageDir(envVarName: "FILES_STORAGE_DIR" | "MAIL_AT
   throw new Error(`${envVarName} is not set`);
 }
 
+/** The upload limit in megabytes when `MAX_FILE_SIZE_MB` is not set. */
+export const DEFAULT_MAX_FILE_SIZE_MB = 100;
+
+/**
+ * The upload limit of the deployment, `MAX_FILE_SIZE_MB` of `env`, in bytes (a megabyte is 1024 * 1024 bytes), or
+ * `DEFAULT_MAX_FILE_SIZE_MB` when it is absent. It is read here, in one place, for every entry point that enforces it:
+ * `POST /api/files` and the mail draft routes through the composition root of `semprec-api` (`serve.ts`) and the agent
+ * forward of `mailAgentTools.ts`, so that one operation has one limit whoever starts it. A value that is not a positive
+ * finite number is a deployment error and throws, so a process never runs with an unreadable limit.
+ */
+export function readMaxFileSizeBytes(env: Readonly<Record<string, string | undefined>> = process.env): number {
+  const megabytes = Number(env.MAX_FILE_SIZE_MB ?? String(DEFAULT_MAX_FILE_SIZE_MB));
+  if (!Number.isFinite(megabytes) || megabytes <= 0) {
+    throw new Error(`MAX_FILE_SIZE_MB is not a valid positive number: ${env.MAX_FILE_SIZE_MB}`);
+  }
+  return megabytes * 1024 * 1024;
+}
+
 /**
  * Local-filesystem default, adequate for a single self-hosted server before object storage
  * (issue #40) is provisioned — the same "adequate for one deployment, not over-engineered"

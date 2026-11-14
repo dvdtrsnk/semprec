@@ -408,6 +408,53 @@ describe("POST /internal/complete", () => {
     expect(rows).toEqual([]);
   });
 
+  it("dispatches transcript_card_recompute with a null projectItemId, records an unattributed audit row and the usage report counts it", async () => {
+    const provider = new FakeProvider();
+    startServer(provider);
+    await listen();
+
+    const res = await post("/internal/complete", {
+      ...VALID_BODY,
+      operation: "transcript_card_recompute",
+      projectItemId: null,
+    });
+
+    expect(res.status).toBe(200);
+    expect(provider.calls).toHaveLength(1);
+    const { rows } = await pool.query<{ project_item_id: string | null; operation: string }>(
+      "SELECT project_item_id, operation FROM ai_gateway_calls",
+    );
+    expect(rows).toEqual([{ project_item_id: null, operation: "transcript_card_recompute" }]);
+    const report = await runInTenant(getTenantZeroId(), () =>
+      getAiUsageReport(pool, {
+        from: new Date(Date.now() - 24 * 3600 * 1000).toISOString(),
+        to: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+      }),
+    );
+    expect(report.byOperation.map((entry) => ({ operation: entry.operation, callCount: entry.callCount }))).toEqual([
+      { operation: "transcript_card_recompute", callCount: 1 },
+    ]);
+  });
+
+  it("rejects transcript_card_recompute with a project item id with 400 validation_failed and no side effects", async () => {
+    const provider = new FakeProvider();
+    startServer(provider);
+    await listen();
+
+    const res = await post("/internal/complete", {
+      ...VALID_BODY,
+      operation: "transcript_card_recompute",
+      projectItemId: "11111111-1111-1111-1111-111111111111",
+    });
+
+    expect(res.status).toBe(400);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ code: "validation_failed", details: { field: "projectItemId" } });
+    expect(provider.calls).toHaveLength(0);
+    const { rows } = await pool.query<{ operation: string }>("SELECT operation FROM ai_gateway_calls");
+    expect(rows).toEqual([]);
+  });
+
   it("dispatches mail_thread_task_name with a null projectItemId and records an unattributed audit row", async () => {
     const provider = new FakeProvider();
     startServer(provider);
@@ -435,6 +482,82 @@ describe("POST /internal/complete", () => {
     const res = await post("/internal/complete", {
       ...VALID_BODY,
       operation: "mail_thread_task_name",
+      projectItemId: "11111111-1111-1111-1111-111111111111",
+    });
+
+    expect(res.status).toBe(400);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ code: "validation_failed", details: { field: "projectItemId" } });
+    expect(provider.calls).toHaveLength(0);
+    const { rows } = await pool.query<{ operation: string }>("SELECT operation FROM ai_gateway_calls");
+    expect(rows).toEqual([]);
+  });
+
+  it("dispatches mailThreadProject with a null projectItemId and records the usage under that feature key", async () => {
+    const provider = new FakeProvider();
+    startServer(provider);
+    await listen();
+
+    const res = await post("/internal/complete", {
+      ...VALID_BODY,
+      operation: "mailThreadProject",
+      projectItemId: null,
+    });
+
+    expect(res.status).toBe(200);
+    expect(provider.calls).toHaveLength(1);
+    const { rows } = await pool.query<{ project_item_id: string | null; operation: string }>(
+      "SELECT project_item_id, operation FROM ai_gateway_calls",
+    );
+    expect(rows).toEqual([{ project_item_id: null, operation: "mailThreadProject" }]);
+  });
+
+  it("rejects mailThreadProject with a project item id with 400 validation_failed and no side effects", async () => {
+    const provider = new FakeProvider();
+    startServer(provider);
+    await listen();
+
+    const res = await post("/internal/complete", {
+      ...VALID_BODY,
+      operation: "mailThreadProject",
+      projectItemId: "11111111-1111-1111-1111-111111111111",
+    });
+
+    expect(res.status).toBe(400);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ code: "validation_failed", details: { field: "projectItemId" } });
+    expect(provider.calls).toHaveLength(0);
+    const { rows } = await pool.query<{ operation: string }>("SELECT operation FROM ai_gateway_calls");
+    expect(rows).toEqual([]);
+  });
+
+  it("dispatches mailAnswerExpected with a null projectItemId and records the usage under that feature key", async () => {
+    const provider = new FakeProvider();
+    startServer(provider);
+    await listen();
+
+    const res = await post("/internal/complete", {
+      ...VALID_BODY,
+      operation: "mailAnswerExpected",
+      projectItemId: null,
+    });
+
+    expect(res.status).toBe(200);
+    expect(provider.calls).toHaveLength(1);
+    const { rows } = await pool.query<{ project_item_id: string | null; operation: string }>(
+      "SELECT project_item_id, operation FROM ai_gateway_calls",
+    );
+    expect(rows).toEqual([{ project_item_id: null, operation: "mailAnswerExpected" }]);
+  });
+
+  it("rejects mailAnswerExpected with a project item id with 400 validation_failed and no side effects", async () => {
+    const provider = new FakeProvider();
+    startServer(provider);
+    await listen();
+
+    const res = await post("/internal/complete", {
+      ...VALID_BODY,
+      operation: "mailAnswerExpected",
       projectItemId: "11111111-1111-1111-1111-111111111111",
     });
 

@@ -8,6 +8,7 @@ import { Pool } from "pg";
 import {
   createRuntimeRolePool,
   createTestTenant,
+  getTenantZeroId,
   getTestPool,
   resetDatabase,
   runTenantCutoverMigrations,
@@ -488,11 +489,14 @@ describe("createSchemaRequestListener (issue #147)", () => {
     const database = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "projects"));
     if (!database) throw new Error("Projects missing");
     const cp = createChokePoint(pool);
-    const item = await cp.createItem({
-      databaseId: database.id,
-      properties: { name: "Project", status: "inProgress", date: "2042-11-30" },
+    // In a tenant scope, as a request is: a Projects status update queues value-link propagation (issue gh-1869).
+    await runInTenant(getTenantZeroId(), async () => {
+      const item = await cp.createItem({
+        databaseId: database.id,
+        properties: { name: "Project", status: "inProgress", date: "2042-11-30" },
+      });
+      await cp.updateItem({ databaseId: database.id, itemId: item.id, propertiesPatch: { status: "longTerm" } });
     });
-    await cp.updateItem({ databaseId: database.id, itemId: item.id, propertiesPatch: { status: "longTerm" } });
     const response = await fetch(`${baseUrl}/api/schema`, { headers: await authHeader() });
     expect(response.status).toBe(200);
     const body: unknown = await response.json();

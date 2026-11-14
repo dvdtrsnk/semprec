@@ -426,6 +426,9 @@ importers:
       '@semprec/agent-runtime':
         specifier: workspace:*
         version: link:../../packages/agent-runtime
+      '@semprec/ai-gateway-client':
+        specifier: workspace:*
+        version: link:../../packages/ai-gateway-client
       '@semprec/block-model':
         specifier: workspace:*
         version: link:../../../shared/block-model

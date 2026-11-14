@@ -16,12 +16,14 @@ import { itemIdsLinkedToDatabases } from "../agentGrants/inheritedSensitivity.js
 import { getTaskRecurrenceBySeriesId, publicTaskRecurrenceTemplate } from "../tasks/taskRecurrenceStore.js";
 import { getApprovalRequest } from "../mcp/approvalRequestsStore.js";
 import { getBlob } from "../blobs/blobsStore.js";
+import { readMailDraftRefDetails } from "../mail/mailDraftRefExpansion.js";
 import { resolveMailThreadRefTargets } from "../mail/mailThreadRef.js";
 import { loadBlobMetadataForItems } from "../blobs/blobMetadata.js";
 import { listTranscriptSpeakers } from "../transcription/transcriptionSpeakerEdges.js";
 import { expandTranscriptSegmentRef } from "../transcription/transcriptSegmentRef.js";
 import type { BlobRow, ItemRow } from "../types.js";
 import { readSleepNightContext } from "./sempSleepNightContext.js";
+import { readRunAnswerContext } from "./sempRunAnswerRef.js";
 
 /** Ephemeral tenant-scoped data; never persist this projection in a run or event. */
 export interface SempRefContext {
@@ -238,6 +240,9 @@ export interface SempRefReadOptions {
  *
  * A `sleepNight` ref is read in a REPEATABLE READ transaction (the caller opens it; any other level throws an `Error`)
  * and throws a `ForbiddenError` when neither a grant of `reader` nor `options.attachedThisTurn` allows it.
+ *
+ * An `agentRun` ref without `messageId` is read as the whole run; one with it is read as that answer alone (issue
+ * gh-1936) and is `null` unless the message is an assistant message the run produced in its thread.
  */
 export async function readSempRefContext(
   client: PoolClient,
@@ -260,6 +265,8 @@ export async function readSempRefContext(
   if (ref.kind === "agentRun") {
     const run = await getAgentRun(client, ref.agentRunId);
     if (!run) return null;
+    // A ref that names an answer (issue gh-1936) is read as that answer only, not as the run's whole session.
+    if (ref.messageId !== undefined) return readRunAnswerContext(client, run, ref.messageId);
     const { rows } = await client.query<{ kind: string; payload: string; truncated: boolean }>(
       `SELECT kind, left(payload::text, 8000) AS payload, length(payload::text) > 8000 AS truncated
        FROM agent_run_events WHERE agent_run_id = $1 AND kind IN ('tool_use', 'tool_result') ORDER BY id LIMIT 101`,
@@ -353,6 +360,11 @@ export async function readSempRefContext(
       details: { properties: item.properties, summary: item.computed.summary ?? null, segments, speakers },
       blob: null,
     };
+  }
+  // An Emails item that is an open or sent draft is handed over as the draft with the way to change it (issue gh-1948).
+  if (ref.kind === "item" && database.ownerModuleId === "emails") {
+    const draft = await readMailDraftRefDetails(client, item);
+    if (draft) return { label, state, details: draft, blob: null };
   }
   return {
     label,

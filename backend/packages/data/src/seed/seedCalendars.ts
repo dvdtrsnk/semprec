@@ -14,6 +14,7 @@ import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
 import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
 import { CALENDARS_MODULE_ID } from "./calendarsKeys.js";
+import { seedSubscribedEventsInTransaction } from "./seedSubscribedEvents.js";
 
 /** The `kind` options of a calendar; a row without a `kind` is `own`. */
 const CALENDAR_KINDS = ["own", "system", "subscription"] as const;
@@ -62,6 +63,8 @@ const CALENDAR_PROPERTIES: readonly PropSpec[] = [
     config: { options: CALENDAR_KINDS.map((key) => ({ key })) },
   },
   { key: "systemKey", type: "text", owner: "system", ownerProcess: CALENDAR_MODULE_ID },
+  // The feed address of a subscription calendar (issue gh-1925); judged by `calendar/calendarSubscriptionUrlTransform.ts`.
+  { key: "subscriptionUrl", type: "url", owner: "user" },
 ];
 
 async function insertUserRelationProperty(client: PoolClient, databaseId: string, key: string): Promise<string> {
@@ -126,7 +129,8 @@ export interface CalendarsSeedResult {
  * module catalog in the tenant user's language (`cs` while the tenant has no user), and the daily
  * `calendar.refreshNextOccurrence` heartbeat of the module's system project (issue gh-1905; a populated tenant
  * that already has the calendars database gets it from `calendar/nextOccurrenceDateCutoverMigration.ts`). The schema
- * is locked once complete.
+ * is locked once complete. The `subscribedEvents` system database (issue gh-1962) is created last, after the
+ * calendars, by `seedSubscribedEventsInTransaction`.
  *
  * Not idempotent on its own: `seedSystem` calls it once for a new tenant and
  * `calendar/calendarsCutoverMigration.ts` calls it only for a tenant without a calendars database.
@@ -185,6 +189,7 @@ export async function seedCalendarsInTransaction(
     if (row.isDefault) defaultCalendarId = item.id;
   }
   if (defaultCalendarId === undefined) throw new Error("The calendar seed declares no default calendar");
+  await seedSubscribedEventsInTransaction(client, calendars);
   await createHeartbeat(client, {
     projectItemId: project.id,
     ...NEXT_OCCURRENCE_REFRESH_HEARTBEAT,

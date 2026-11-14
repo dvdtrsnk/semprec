@@ -42,6 +42,7 @@ import {
   createHeartbeat,
   createItemWithClient,
   createPendingApprovalRequest,
+  createRelationWithClient,
   createTaskHostEventPutRouteHandler,
   createUser,
   decideAndEnqueueApprovalRequest,
@@ -68,6 +69,8 @@ import {
   sendSempMessage,
   setEventInvitationDelivery,
   setInvalidationHook,
+  setThreadProjectTriageRuntime,
+  setThreadTaskPeopleDelivery,
   startSempMessageTurn,
   SYSTEM_WRITER,
   upsertApnsSubscription,
@@ -83,6 +86,7 @@ import {
 import {
   createRuntimeRolePool,
   createTestTenant,
+  createThreadTask,
   ensureFolderItem,
   ensureMailAccountSyncState,
   getTenantZeroId,
@@ -105,7 +109,7 @@ interface RecordedBackgroundPush {
 
 const backgroundPushes = vi.hoisted(() => ({ sent: [] as RecordedBackgroundPush[] }));
 
-// Passthrough spy on the APNs background send the `sleep.resync` task calls by default: a call still reaches the
+// Passthrough spy on the APNs background send the `sleep.resync` and `remindersResync` tasks call by default: a call still reaches the
 // real adapter, which answers `not-configured` without a network request while no APNs configuration is set, so
 // the job's own wiring runs and the case observes which registration each run sent to. The path is the module
 // the task imports (`packages/data/src/push/apnsAdapter.ts`), given as a string because this package may not
@@ -819,6 +823,95 @@ const invitationTransports: MailTransportFactory = {
   },
 };
 
+/** The task each seeded person of the thread task people case is to be added to, by person id. */
+const threadTaskPeopleTasks = new Map<string, string>();
+
+/** The queue name of the mail module's thread task people task (`mailModuleManifest.ts`, issue gh-1923). */
+const MAIL_SYNC_THREAD_TASK_PEOPLE_TASK = "mailSyncThreadTaskPeople";
+
+/**
+ * A mail thread with one message and a task made from it, in `tenant`, and a person who is then linked to the message
+ * as its sender, which is the change the task's people have not followed yet. Returns the thread's Threads item, the
+ * person and the task.
+ */
+async function seedThreadTaskWithNewPerson(
+  tenant: Tenant,
+): Promise<{ threadItemId: string; personId: string; taskId: string }> {
+  const mailboxItemId = await createMailbox(tenant);
+  const peopleDatabaseId = await requireModuleDatabaseId(tenant, "people");
+  return inTenant(tenant, () =>
+    withTransaction(pool, async (client) => {
+      const ids = await resolveMailModuleIds(client);
+      const propertyId = async (databaseId: string, key: string): Promise<string> => {
+        const property = (await chokePoint.listProperties(databaseId)).find((entry) => entry.key === key);
+        if (!property) throw new Error(`expected the ${key} property to be seeded`);
+        return property.id;
+      };
+      const folderItemId = await ensureFolderItem(client, {
+        foldersDatabaseId: ids.foldersDatabaseId,
+        mailboxItemId,
+        mailboxRelationPropertyId: await propertyId(ids.foldersDatabaseId, "mailbox"),
+        providerId: "INBOX",
+        name: "Inbox",
+        behavior: "folder",
+        specialPurpose: "inbox",
+      });
+      const ingested = await ingestEmailMessage(client, {
+        emailsDatabaseId: ids.emailsDatabaseId,
+        filesDatabaseId: ids.filesDatabaseId,
+        folderRelationPropertyId: await propertyId(ids.emailsDatabaseId, "folder"),
+        attachmentsRelationPropertyId: await propertyId(ids.emailsDatabaseId, "attachments"),
+        folderItemId,
+        mailboxItemId,
+        messageId: `<${randomUUID()}@example.test>`,
+        envelope: { from: { address: "sender@example.test" } },
+        attachments: [],
+        storage: new LocalFsBlobStorageWriter(join(blobRoot, "mail")),
+        storageKeyPrefix: mailboxItemId,
+      });
+      const thread = await client.query<{ item_id: string }>(
+        `SELECT t.item_id FROM mail_message_meta m JOIN mail_threads t ON t.id = m.thread_id WHERE m.item_id = $1`,
+        [ingested.itemId],
+      );
+      const threadItemId = thread.rows[0]?.item_id;
+      if (!threadItemId) throw new Error("expected the ingested message to have a thread item");
+      const task = await createThreadTask(
+        client,
+        { threadItemId, name: `Task ${randomUUID()}` },
+        { writer: { writerKind: "user" } },
+      );
+      const person = await createItemWithClient(client, {
+        databaseId: peopleDatabaseId,
+        properties: { name: "Joined later" },
+      });
+      await createRelationWithClient(
+        client,
+        {
+          relationPropertyId: await propertyId(ids.emailsDatabaseId, "senderPeople"),
+          callerItemId: ingested.itemId,
+          targetItemId: person.id,
+        },
+        { ownerProcess: "emails" },
+      );
+      return { threadItemId, personId: person.id, taskId: task.id };
+    }),
+  );
+}
+
+/** The ids of the tasks that have `personId` among their people, in `tenant`. */
+async function tasksWithPerson(tenant: Tenant, personId: string): Promise<string[]> {
+  const found = await rows<{ task_id: string }>(
+    tenant,
+    `SELECT r.item_a AS task_id FROM item_relations r
+     JOIN relation_definitions d ON d.id = r.relation_definition_id
+     JOIN properties p ON p.id = d.property_id_a AND p.key = 'people'
+     JOIN databases db ON db.id = p.database_id AND db.owner_module_id = 'tasks'
+     WHERE r.item_b = $1`,
+    [personId],
+  );
+  return found.map((row) => row.task_id);
+}
+
 /** The queue name of the sleep module's resync task (`sleepModuleManifest.ts`, issue gh-1838). */
 const SLEEP_RESYNC_TASK = "sleep.resync";
 
@@ -849,7 +942,7 @@ async function activeApnsTokens(tenant: Tenant): Promise<string[]> {
   return found.map((row) => row.device_token);
 }
 
-/** The silent pushes sent since the last `seed` of the `sleep.resync` case. */
+/** The silent pushes sent since the last `seed` of the `sleep.resync` or the `remindersResync` case. */
 function sleepResyncSends(): RecordedBackgroundPush[] {
   return [...backgroundPushes.sent];
 }
@@ -918,6 +1011,104 @@ async function invitationSentAt(tenant: Tenant, eventId: string, personId: strin
   );
   if (found.length !== 1) throw new Error("expected exactly one edge between the Event and the person");
   return found[0]?.sent_at ?? null;
+}
+
+/** The queue name of the mail module's thread project task (`mailModuleManifest.ts`, issue gh-1872). */
+const MAIL_TRIAGE_THREAD_PROJECT_TASK = "mailTriageThreadProject";
+
+/** One question the triage gateway was asked, with the tenant scope the job asked it in and the project ids it offered. */
+interface TriageQuestion {
+  tenantId: string | null;
+  offeredProjectIds: string[];
+}
+
+const triageQuestions: TriageQuestion[] = [];
+
+/** The project the triage case seeded, by the id of the thread it belongs to. */
+const triageProjects = new Map<string, string>();
+
+/** The name of the project the gateway chooses: the one the latest seed made, since earlier cases leave projects behind. */
+let triageProjectName = "";
+
+const offeredProjects = z.array(z.object({ id: z.uuid(), name: z.string() }));
+
+/** A gateway that records what the job offered and chooses the offered project named `triageProjectName`. */
+const triageGateway: AiGatewayClientPort = {
+  async complete(input) {
+    const scope = currentTenantScope();
+    const message = input.messages[0];
+    const text = typeof message?.content === "string" ? message.content : "";
+    const offered = offeredProjects.parse(
+      JSON.parse(text.slice(text.indexOf("Candidate projects: ") + "Candidate projects: ".length)),
+    );
+    triageQuestions.push({
+      tenantId: scope?.kind === "tenant" ? scope.tenantId : null,
+      offeredProjectIds: offered.map((project) => project.id),
+    });
+    const chosen = offered.find((project) => project.name === triageProjectName);
+    return {
+      content: { projectId: chosen?.id ?? null, confidence: 0.95 },
+      usage: { inputTokens: 1, outputTokens: 1 },
+    };
+  },
+};
+
+/** A thread of `tenant` with one inbound message and no project, and one active project the gateway will choose. */
+async function seedTriageThread(tenant: Tenant): Promise<{ threadItemId: string }> {
+  const mailboxItemId = await createMailbox(tenant);
+  const projectsDatabaseId = await requireModuleDatabaseId(tenant, "projects");
+  triageProjectName = `Isolation project ${randomUUID()}`;
+  const projectId = (
+    await inTenant(tenant, () =>
+      chokePoint.createItem({
+        databaseId: projectsDatabaseId,
+        properties: { name: triageProjectName, status: "inProgress" },
+      }),
+    )
+  ).id;
+  const threadItemId = await inTenant(tenant, () =>
+    withTransaction(pool, async (client) => {
+      const ids = await resolveMailModuleIds(client);
+      const propertyId = async (databaseId: string, key: string): Promise<string> => {
+        const property = (await chokePoint.listProperties(databaseId)).find((entry) => entry.key === key);
+        if (!property) throw new Error(`expected the ${key} property to be seeded`);
+        return property.id;
+      };
+      const folderItemId = await ensureFolderItem(client, {
+        foldersDatabaseId: ids.foldersDatabaseId,
+        mailboxItemId,
+        mailboxRelationPropertyId: await propertyId(ids.foldersDatabaseId, "mailbox"),
+        providerId: "INBOX",
+        name: "Inbox",
+        behavior: "folder",
+        specialPurpose: "inbox",
+      });
+      const ingested = await ingestEmailMessage(client, {
+        emailsDatabaseId: ids.emailsDatabaseId,
+        filesDatabaseId: ids.filesDatabaseId,
+        folderRelationPropertyId: await propertyId(ids.emailsDatabaseId, "folder"),
+        attachmentsRelationPropertyId: await propertyId(ids.emailsDatabaseId, "attachments"),
+        folderItemId,
+        mailboxItemId,
+        messageId: `<${randomUUID()}@example.test>`,
+        subject: "Question about the isolation project",
+        envelope: { from: { address: "sender@example.test" } },
+        bodyText: "Please advise.",
+        attachments: [],
+        storage: new LocalFsBlobStorageWriter(join(blobRoot, "mail")),
+        storageKeyPrefix: mailboxItemId,
+      });
+      const { rows: threads } = await client.query<{ item_id: string }>(
+        "SELECT t.item_id FROM mail_message_meta m JOIN mail_threads t ON t.id = m.thread_id WHERE m.item_id = $1",
+        [ingested.itemId],
+      );
+      const row = threads[0];
+      if (!row) throw new Error("expected the ingested message to have a thread item");
+      return row.item_id;
+    }),
+  );
+  triageProjects.set(threadItemId, projectId);
+  return { threadItemId };
 }
 
 let journalDaysSeeded = 0;
@@ -1512,6 +1703,38 @@ const cases: Record<string, TaskCase> = {
       expect(sleepResyncSends()).toEqual([{ deviceToken: tokens[0], data: { kind: "sleepResync" } }]);
     },
   },
+  [CORE_TASK_NAMES.REMINDERS_RESYNC]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      // As for `sleep.resync`: the real APNs adapter behind the spy answers `not-configured` without a network request,
+      // and every tenant has an active iOS registration of its own, so a job that pushed for a tenant other than its
+      // own would have a registration to send to; the spy shows which one each run sent to.
+      useUnconfiguredApns();
+      for (const other of [tenantA, tenantB]) await seedIosRegistration(other);
+      backgroundPushes.sent.length = 0;
+      return { tenantId: tenant.tenantId };
+    },
+    async expectDone(tenant) {
+      // Exactly one silent push, to the one registration of this tenant's user and to none of another tenant's.
+      const tokens = await activeApnsTokens(tenant);
+      expect(tokens).toHaveLength(1);
+      expect(sleepResyncSends()).toEqual([{ deviceToken: tokens[0], data: { kind: "remindersResync" } }]);
+    },
+  },
+  [MAIL_SYNC_THREAD_TASK_PEOPLE_TASK]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      const { threadItemId, personId, taskId } = await seedThreadTaskWithNewPerson(tenant);
+      // The task has not got the person yet: the job is what adds them.
+      expect(await tasksWithPerson(tenant, personId)).toEqual([]);
+      threadTaskPeopleTasks.set(personId, taskId);
+      return { threadItemId, personId };
+    },
+    async expectDone(tenant, payload) {
+      const personId = requirePayloadString(payload, "personId");
+      expect(await tasksWithPerson(tenant, personId)).toEqual([threadTaskPeopleTasks.get(personId)]);
+    },
+  },
   [CORE_TASK_NAMES.TENANT_EXPORT]: {
     tenancy: "tenant",
     async seed(tenant) {
@@ -2067,6 +2290,41 @@ const cases: Record<string, TaskCase> = {
       invitationSends.length = 0;
     },
   },
+  [MAIL_TRIAGE_THREAD_PROJECT_TASK]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      triageQuestions.length = 0;
+      return seedTriageThread(tenant);
+    },
+    async expectDone(tenant, payload) {
+      const threadItemId = requirePayloadString(payload, "threadItemId");
+      const projectId = triageProjects.get(threadItemId);
+      // The thread of the tenant holds the project of that tenant as its own value, written by Semp.
+      expect(
+        await rows(
+          tenant,
+          `SELECT CASE WHEN r.item_a = $1 THEN r.item_b ELSE r.item_a END AS project_id
+             FROM item_relations r JOIN relation_definitions d ON d.id = r.relation_definition_id
+             JOIN properties p ON p.id IN (d.property_id_a, d.property_id_b) AND p.key = 'project'
+             JOIN databases db ON db.id = p.database_id AND db.owner_module_id = 'threads'
+            WHERE r.item_a = $1 OR r.item_b = $1`,
+          [threadItemId],
+        ),
+      ).toEqual([{ project_id: projectId }]);
+      expect(await rows(tenant, "SELECT 1 FROM value_links WHERE item_id = $1", [threadItemId])).toEqual([]);
+      // The gateway was asked once, in this tenant's scope, and every project it was offered is a row of this tenant.
+      expect(triageQuestions).toHaveLength(1);
+      const [question] = triageQuestions;
+      expect(question?.tenantId).toBe(tenant.tenantId);
+      expect(question?.offeredProjectIds).toContain(projectId);
+      expect(
+        await rows(tenant, "SELECT id FROM items WHERE id = ANY($1::uuid[]) ORDER BY id", [
+          question?.offeredProjectIds,
+        ]),
+      ).toHaveLength(question?.offeredProjectIds.length ?? -1);
+      triageQuestions.length = 0;
+    },
+  },
 };
 
 function isTenantCase(c: TaskCase): c is TenantTaskCase {
@@ -2151,6 +2409,10 @@ describe("background task isolation across two tenants: api runtime (issue #1056
     );
     // The calendar's invitation task reads its pool and transports from the binding `createApiQueueRuntime` sets.
     setEventInvitationDelivery({ pool, transports: invitationTransports });
+    // The mail module's thread project task reads its pool and gateway from the binding `createApiQueueRuntime` sets.
+    setThreadProjectTriageRuntime({ pool, gateway: triageGateway });
+    // The mail module's thread task people task reads its pool from the same kind of binding.
+    setThreadTaskPeopleDelivery({ pool });
     taskList = await mergeModuleTaskListForAffinity(coreTaskList, moduleRegistry, "api");
     assertTaskListMatchesAffinity(taskList, (await resolveTaskAffinitySets(moduleRegistry)).api, "api");
 
@@ -2166,6 +2428,8 @@ describe("background task isolation across two tenants: api runtime (issue #1056
 
   afterAll(async () => {
     setEventInvitationDelivery(null);
+    setThreadProjectTriageRuntime(null);
+    setThreadTaskPeopleDelivery(null);
     await pool?.end();
     await adminPool?.end();
     if (blobRoot !== undefined) await rm(blobRoot, { recursive: true, force: true });
@@ -2367,6 +2631,14 @@ describe("background task isolation across two tenants: api runtime (issue #1056
         if (name === CALENDAR_SEND_EVENT_INVITATION_TASK) {
           // The Event and the mailbox are A's: B's job reads neither, so it sends no message, for A's ids or random ones.
           expect(invitationSends).toEqual([]);
+          expect(foreign).toEqual({
+            outcome: { attempts: null, lastError: null },
+            effects: { rowCountDeltas: {}, changedTables: [], notificationKinds: [], queuedJobs: [] },
+          });
+        }
+        if (name === MAIL_TRIAGE_THREAD_PROJECT_TASK) {
+          // The thread is A's: B's job finds no such Threads item, so it asks the gateway nothing, for A's id or a random one.
+          expect(triageQuestions).toEqual([]);
           expect(foreign).toEqual({
             outcome: { attempts: null, lastError: null },
             effects: { rowCountDeltas: {}, changedTables: [], notificationKinds: [], queuedJobs: [] },

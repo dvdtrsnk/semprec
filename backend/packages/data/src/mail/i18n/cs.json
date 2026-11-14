@@ -52,10 +52,22 @@
   "property.threads.project.name": "Projekt",
   "property.threads.company.name": "Firma",
   "property.threads.tasks.name": "Úkoly",
+  "property.threads.attachments.name": "Přílohy",
   "mail.folder.inbox": "Doručená pošta",
   "mail.folder.sent": "Odeslané",
   "mail.folder.drafts": "Koncepty",
   "mail.folder.archive": "Archiv",
   "mail.folder.junk": "Nevyžádaná pošta",
-  "mail.folder.trash": "Koš"
+  "mail.folder.trash": "Koš",
+  "mail.draft.replyHeader": "Dne {date} napsal(a) {name}:",
+  "mail.draft.forwardHeader": "---------- Přeposlaná zpráva ----------",
+  "mail.draft.forward.from": "Od",
+  "mail.draft.forward.date": "Datum",
+  "mail.draft.forward.subject": "Předmět",
+  "mail.draft.forward.to": "Komu",
+  "mail.draft.forward.cc": "Kopie",
+  "agentTool.mail.thread.get.label": "Zobrazit e-mailové vlákno",
+  "agentTool.mail.draft.create.label": "Vytvořit koncept e-mailu",
+  "agentTool.mail.draft.update.label": "Upravit koncept e-mailu",
+  "agentTool.mail.draft.send.label": "Odeslat koncept e-mailu"
 }

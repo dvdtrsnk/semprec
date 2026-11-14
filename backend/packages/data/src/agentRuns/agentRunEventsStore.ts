@@ -338,6 +338,15 @@ function validateSempEventScope(scope: { threadId: string; sempMessageId: string
 }
 
 /**
+ * The runs and event ranges of the assistant messages of the thread `$1` that a regeneration replaced (issue gh-1930).
+ * A fixed SQL fragment, used only by the thread form of `listSessionAgentRunEventsFromLastCompaction`; a replaced
+ * message always has its run and range, which `regenerateSempReply` requires before it sets `replaced_by_message_id`.
+ */
+const REPLACED_REPLY_RANGES = `SELECT agent_run_id, event_from_id, event_to_id FROM semp_messages
+         WHERE thread_id = $1 AND role = 'assistant' AND replaced_by_message_id IS NOT NULL
+           AND agent_run_id IS NOT NULL AND event_from_id IS NOT NULL AND event_to_id IS NOT NULL`;
+
+/**
  * Reconstruction source for `@semprec/agent-runtime`'s `walkStoredEntries` (#119): every event of
  * one dormant conversation's `unit='session'` runs, bounded to the tail after the latest
  * `compaction` checkpoint. Event ids are a global monotonic `bigserial` and one conversation is
@@ -347,6 +356,13 @@ function validateSempEventScope(scope: { threadId: string; sempMessageId: string
  * the caller's walk still resets on it; with no checkpoint, `COALESCE(..., 0)` returns every
  * event of every session run. Uses `agent_runs_session_wake_idx` (migration 0017) and
  * `agent_run_events_run_idx` (migration 0015).
+ *
+ * For a thread (issue gh-1930) the events of every assistant message that a regeneration replaced
+ * (`semp_messages.replaced_by_message_id` set) are left out: those with the message's `agent_run_id` and an id from its
+ * `event_from_id` through its `event_to_id`, the whole turn or none of it. They are left out of the bounded read before
+ * its limits are applied, so a replaced answer counts toward no limit. A retried failed attempt has no replacement and
+ * stays. The `compaction` rows that the walk resets on are not in such a range (a regeneration is refused once a
+ * checkpoint follows the reply) and are read as before.
  */
 export async function listSessionAgentRunEventsFromLastCompaction(
   client: Pool | PoolClient,
@@ -384,10 +400,13 @@ export async function listSessionAgentRunEventsFromLastCompaction(
          SELECT id, wake_seq FROM agent_runs WHERE ${sessionRunsWhere}
        ), latest_compaction AS (
          SELECT max(e.id) AS id FROM agent_run_events e JOIN session_runs r ON r.id = e.agent_run_id WHERE e.kind = 'compaction'
+       ), replaced AS MATERIALIZED (
+         ${REPLACED_REPLY_RANGES}
        ), candidates AS MATERIALIZED (
          SELECT e.id, e.agent_run_id, e.kind, e.at, r.wake_seq, octet_length(e.payload::text) AS bytes
          FROM agent_run_events e JOIN session_runs r ON r.id = e.agent_run_id
          WHERE e.id >= COALESCE((SELECT id FROM latest_compaction), 0)
+           AND NOT EXISTS (SELECT 1 FROM replaced x WHERE x.agent_run_id = e.agent_run_id AND e.id BETWEEN x.event_from_id AND x.event_to_id)
          ORDER BY r.wake_seq, e.id LIMIT $2
        ), budget AS (
          SELECT count(*) > $3 OR COALESCE(sum(bytes), 0) > $4 AS overflow FROM candidates
@@ -413,10 +432,15 @@ export async function listSessionAgentRunEventsFromLastCompaction(
      ),
      latest_compaction AS (
        SELECT max(e.id) AS id FROM agent_run_events e JOIN session_runs r ON r.id = e.agent_run_id WHERE e.kind = 'compaction'
-     )
+     )${isThread ? `, replaced AS (${REPLACED_REPLY_RANGES})` : ""}
      SELECT e.id, e.agent_run_id, e.kind, e.payload, e.at
      FROM agent_run_events e JOIN session_runs r ON r.id = e.agent_run_id
-     WHERE e.id >= COALESCE((SELECT id FROM latest_compaction), 0)
+     WHERE e.id >= COALESCE((SELECT id FROM latest_compaction), 0)${
+       isThread
+         ? `
+       AND NOT EXISTS (SELECT 1 FROM replaced x WHERE x.agent_run_id = e.agent_run_id AND e.id BETWEEN x.event_from_id AND x.event_to_id)`
+         : ""
+     }
      ORDER BY r.wake_seq ASC, e.id ASC`,
     params,
   );

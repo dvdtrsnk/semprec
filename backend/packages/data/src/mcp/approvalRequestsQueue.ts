@@ -10,6 +10,7 @@ import { approvalConflictReason, type ApprovalConflictReason } from "./approvalC
 import { getMcpToolRegistrationsByIds } from "./mcpToolRegistrationsStore.js";
 import {
   isGenericOperationApprovalRequestPayload,
+  isMailSendApprovalRequestPayload,
   isMcpInvokeApprovalRequestPayload,
   listApprovalRequestsPage,
   listApprovalRequestStatesByIdsForOwner,
@@ -21,6 +22,7 @@ import {
   type ApprovalRequestSourceKind,
   type ApprovalRequestStateView,
   type ListApprovalRequestsPageInput,
+  MAIL_DRAFT_SEND_TOOL_NAME,
 } from "./approvalRequestsStore.js";
 
 /**
@@ -33,7 +35,8 @@ import {
  * A discriminated union, not all-optional fields: `mcpToolRegistrationId`/`mcpServerItemId` are
  * only ever present together (an MCP-invoke-originated request), `operationName` only for a
  * generic-operation-originated request (issue #220), `toolName` only for a module-agent-tool
- * request (issue #1791) — the three payload shapes never mix on the same entry, and the `kind` tag
+ * request (issue #1791), which an agent's mail send request (issue gh-1913) is too, with the tool
+ * `mail.draft.send` and the names of its payload — the three kinds never mix on the same entry, and the `kind` tag
  * lets a client narrow to the right one instead of every field reading `string | undefined`
  * regardless of the entry's actual origin.
  */
@@ -134,6 +137,9 @@ function safeSummaryOf(payload: ApprovalRequest["payload"], names: ResolvedMcpNa
       operationName: payload.operationName,
       argKeys: canonicalInput && typeof canonicalInput === "object" ? Object.keys(canonicalInput) : [],
     };
+  }
+  if (isMailSendApprovalRequestPayload(payload)) {
+    return { kind: "moduleTool", toolName: MAIL_DRAFT_SEND_TOOL_NAME, argKeys: Object.keys(payload) };
   }
   if (!isMcpInvokeApprovalRequestPayload(payload)) {
     return { kind: "moduleTool", toolName: payload.moduleToolName, argKeys: Object.keys(payload.args) };

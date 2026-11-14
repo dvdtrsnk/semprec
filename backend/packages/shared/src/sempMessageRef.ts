@@ -161,9 +161,11 @@ export const SEMP_MESSAGE_REF_KINDS = [
 /**
  * Dedup identity of a ref: the kind plus its id fields, the block id for
  * blocks, the range for segments and the night for a sleep night. `messageId`
- * of an agent run ref is not part of the identity. A mail thread is keyed by the
- * id as given, so a merged-away thread id and the id of the thread that absorbed
- * it are two refs.
+ * of an agent run ref is part of the identity (issue gh-1936): it selects one
+ * answer of a chat run, so a whole-run ref and each answer ref of the run are
+ * distinct refs, and only the same answer posted twice is a duplicate. A mail
+ * thread is keyed by the id as given, so a merged-away thread id and the id of
+ * the thread that absorbed it are two refs.
  */
 export function messageRefKey(ref: SempMessageRef): string {
   switch (ref.kind) {
@@ -178,7 +180,7 @@ export function messageRefKey(ref: SempMessageRef): string {
     case "mailThread":
       return `mailThread:${ref.threadId}`;
     case "agentRun":
-      return `agentRun:${ref.agentRunId}`;
+      return `agentRun:${ref.agentRunId}:${ref.messageId ?? ""}`;
     case "approvalRequest":
       return `approvalRequest:${ref.approvalRequestId}`;
     case "taskOccurrence":

@@ -234,6 +234,47 @@ describe("value links store (issue #1403)", () => {
     }
   });
 
+  it("moves only the links of one rule when a rule key is given, and leaves the links of other rules on the source item (issue gh-1898)", async () => {
+    const adminPool = pool;
+    const runtimePool = await createRuntimeRolePool(adminPool, "semprec_data");
+    try {
+      const tenantA = await createTestTenant(adminPool);
+      const [from, to] = [randomUUID(), randomUUID()];
+      const insert = (ruleKey: string) =>
+        withTenantTransaction(runtimePool, tenantA, (client) =>
+          insertValueLink(client, {
+            itemId: randomUUID(),
+            propertyKey: "projects",
+            ruleKey,
+            sources: [{ kind: "item", sourceItemId: from, sourcePropertyKey: "project" }],
+          }),
+        );
+      const ofRule = await insert("ruleOne");
+      const ofOtherRule = await insert("ruleTwo");
+      const sourceItemOf = (linkId: string) =>
+        withTenantTransaction(runtimePool, tenantA, async (client) =>
+          (await listValueLinkSourcesByLinkIds(client, [linkId])).map((row) =>
+            row.kind === "item" ? row.sourceItemId : row.domain,
+          ),
+        );
+
+      const count = await withTenantTransaction(runtimePool, tenantA, (client) =>
+        moveValueLinkItemSources(client, from, to, { ruleKey: "ruleOne" }),
+      );
+
+      expect(count).toBe(1);
+      expect(await sourceItemOf(ofRule.link.id)).toEqual([to]);
+      expect(await sourceItemOf(ofOtherRule.link.id)).toEqual([from]);
+      expect(
+        await withTenantTransaction(runtimePool, tenantA, (client) =>
+          moveValueLinkItemSources(client, from, to, { ruleKey: "ruleOne" }),
+        ),
+      ).toBe(0);
+    } finally {
+      await runtimePool.end();
+    }
+  });
+
   it("lists the links of any state that name an item as a source, once each, and not those of another tenant (issue #1856)", async () => {
     const adminPool = pool;
     const runtimePool = await createRuntimeRolePool(adminPool, "semprec_data");

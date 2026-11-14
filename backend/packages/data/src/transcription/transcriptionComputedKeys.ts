@@ -31,7 +31,13 @@ export const TRANSCRIPT_SUMMARY_BY_INSTRUCTION_COMPUTED_KEY = "summaryByInstruct
  * array is never rewritten or reordered.
  */
 export const TRANSCRIPT_MEETING_NOTES_COMPUTED_KEY = "meetingNotes";
-/** Step 7 stores `{ proposedSpeakers }` on the source Files item once its one speaker-suggestion call has been turned into cards: the keys that got a card. */
+/**
+ * Step 7 and the `transcriptSpeakerSuggestion` task (issue gh-1942) store `{ proposedSpeakers, eventId, candidateIds }` on
+ * the source Files item once a speaker-suggestion call has been turned into cards: the keys that got a card (this run's
+ * and earlier runs'), and what the call was asked for, the Event the transcript was linked to (`null` without one) and the
+ * sorted ids of the candidate people. The call is made again when the Event or the candidates differ; a checkpoint
+ * written before the binding existed has no `eventId` and `candidateIds`, and counts as different.
+ */
 export const TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY = "suggestSpeakers";
 /**
  * Step 6 (issue #1848) stores `{ recommendedEventId, reason }` on the source Files item once its one

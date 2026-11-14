@@ -41,6 +41,8 @@ interface MessageRow {
   context: unknown;
   changes: unknown;
   reply_to_message_id: string | null;
+  attempt: number;
+  replaced_by_message_id: string | null;
   agent_run_id: string | null;
   event_from_id: string | null;
   status: string | null;
@@ -364,7 +366,7 @@ export async function listSempThreadMessages(
   before: { createdAt: string; id: string } | null,
 ) {
   const { rows } = await client.query<MessageRow>(
-    `SELECT m.id, m.role, m.text, m.system_key, m.system_params, m.context, m.changes, m.reply_to_message_id, m.agent_run_id,
+    `SELECT m.id, m.role, m.text, m.system_key, m.system_params, m.context, m.changes, m.reply_to_message_id, m.attempt, m.replaced_by_message_id, m.agent_run_id,
             m.event_from_id, m.status, m.steps, m.error_code, m.error_params, to_char(m.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at,
             r.started_at AS run_started_at, r.finished_at AS run_finished_at, r.status AS run_status,
             (SELECT u.locale FROM users u WHERE u.tenant_id = (SELECT app_tenant_default())) AS user_locale
@@ -391,13 +393,15 @@ export async function listSempThreadMessages(
   return {
     rows: page.map((row, index): SempThreadHistoryMessage => {
       const steps = stepsOfRows[index];
+      const role = assertKnownValue(["user", "assistant", "system"] as const, row.role, "message role");
       return {
         id: row.id,
-        role: assertKnownValue(["user", "assistant", "system"] as const, row.role, "message role"),
+        role,
         text: row.text,
         system: row.system_key === null ? null : { key: row.system_key, params: row.system_params },
         context: contexts[index],
         replyToMessageId: row.reply_to_message_id,
+        ...(role === "assistant" ? { attempt: row.attempt, replaced: row.replaced_by_message_id !== null } : {}),
         agentRunId: row.agent_run_id,
         eventFromId: row.event_from_id,
         status: row.status,

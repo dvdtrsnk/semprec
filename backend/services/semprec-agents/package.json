@@ -12,6 +12,7 @@
     "@earendil-works/pi-agent-core": "0.85.1",
     "@earendil-works/pi-ai": "0.85.1",
     "@semprec/agent-runtime": "workspace:*",
+    "@semprec/ai-gateway-client": "workspace:*",
     "@semprec/block-model": "workspace:*",
     "@semprec/data": "workspace:*",
     "@semprec/module-registry": "workspace:*",

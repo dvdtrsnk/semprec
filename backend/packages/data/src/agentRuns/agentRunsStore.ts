@@ -7,6 +7,7 @@ import { NotFoundError } from "../errors.js";
 import { AGENT_RUN_ERROR_CODES, type AgentRunErrorCode } from "./agentRunErrorCodes.js";
 import { publishAgentRunInvalidation } from "./agentRunInvalidation.js";
 import { raiseAgentHeartbeatProblem, raiseAgentRunProblem } from "../semp/agentProblems.js";
+import { SEMP_THREAD_KINDS, type SempThreadKind } from "../semp/sempThreadsListStore.js";
 
 export { AGENT_RUN_ERROR_CODES, type AgentRunErrorCode };
 
@@ -543,39 +544,177 @@ export async function listAgentRunsByHeartbeat(
   return rows.map(mapRow);
 }
 
+/** The status of an assistant message of a Semp thread (`semp_messages.status`, set on every assistant message). */
+type SempReplyStatus = "queued" | "running" | "done" | "error";
+
+const SEMP_REPLY_STATUSES: readonly SempReplyStatus[] = ["queued", "running", "done", "error"];
+
 /**
- * The most recent runs of a project that the user `actorUserId` started or that started on the user's behalf
- * (issue gh-1909), newest first by `started_at`, then by `id`, at most `limit` rows. A run of another actor is
- * not returned, and neither is a run with `triggered_by = 'supervisor'` (a delegated sub-run).
+ * One answer of a chat conversation as the project run list reads it (issue gh-1932): the latest attempt of one
+ * assistant message of a `session` run that the user started, with what its row shows.
+ */
+export interface ProjectAgentRunAnswer {
+  /** The assistant message: the latest attempt of the answer. */
+  messageId: string;
+  /** The first event of the message's turn, or `created_at` of the message when retention removed that event. */
+  startedAt: string;
+  /** `semp_messages.duration_ms`: set when the turn ended, `null` while it runs and for a turn stored without one. */
+  durationMs: number | null;
+  status: SempReplyStatus;
+  /** The code a failed reply stored; `null` for a reply that did not fail and for a failure stored without one. */
+  errorCode: AgentRunErrorCode | null;
+  /** `semp_messages.steps` as the driver returns it; the reader of the column (`replyOutcomeOfStoredSteps`) checks it. */
+  steps: unknown;
+  /** `semp_messages.attempt` of the message: 1 for an answer that was never retried. */
+  attempt: number;
+  /** The text of the user message the answer replies to; `null` when it replies to no user message or to one without text. */
+  userText: string | null;
+  /** The `system_key` of the system message the answer replies to; `null` when it replies to no system message. */
+  systemKey: string | null;
+  /** The kind of the Semp thread the message belongs to. */
+  threadKind: SempThreadKind;
+}
+
+/**
+ * One row of the project run list: a run of `listProjectAgentRuns`, with `answer` set on the row of one answer of a
+ * chat conversation (issue gh-1932) and `null` on every other row. The run's own fields stay those of the run, so
+ * several rows of one chat run share them and differ in `answer`.
+ */
+export type ProjectAgentRunListEntry = AgentRunRow & { answer: ProjectAgentRunAnswer | null };
+
+type ProjectAgentRunListDbRow = AgentRunDbRow & {
+  answer_message_id: string | null;
+  answer_started_at: Date | null;
+  answer_duration_ms: number | null;
+  answer_status: string | null;
+  answer_error_code: string | null;
+  answer_steps: unknown;
+  answer_attempt: number | null;
+  answer_user_text: string | null;
+  answer_system_key: string | null;
+  answer_thread_kind: string | null;
+};
+
+/** `AGENT_RUN_ROW_COLUMNS` with each column read from the table alias `alias`. */
+function runColumnsOf(alias: string): string {
+  return AGENT_RUN_ROW_COLUMNS.split(", ")
+    .map((column) => `${alias}.${column}`)
+    .join(", ");
+}
+
+/** The `ProjectAgentRunAnswer` of a joined row; `null` for a row of a run that stands for itself. */
+function mapAnswer(row: ProjectAgentRunListDbRow): ProjectAgentRunAnswer | null {
+  if (row.answer_message_id === null) return null;
+  if (row.answer_started_at === null || row.answer_attempt === null) {
+    throw new Error("Malformed answer in database row");
+  }
+  return {
+    messageId: row.answer_message_id,
+    startedAt: row.answer_started_at.toISOString(),
+    durationMs: row.answer_duration_ms,
+    status: assertKnownValue(SEMP_REPLY_STATUSES, row.answer_status ?? "null", "Semp message status"),
+    errorCode:
+      row.answer_error_code === null
+        ? null
+        : assertKnownValue(AGENT_RUN_ERROR_CODES, row.answer_error_code, "Semp message error_code"),
+    steps: row.answer_steps,
+    attempt: row.answer_attempt,
+    userText: row.answer_user_text,
+    systemKey: row.answer_system_key,
+    threadKind: assertKnownValue(SEMP_THREAD_KINDS, row.answer_thread_kind ?? "null", "thread kind"),
+  };
+}
+
+/**
+ * The most recent rows of a project's run list for the user `actorUserId` (issues gh-1909, gh-1914 and gh-1932),
+ * newest first by the row's start time, then by the run's `id`, then by the message's id, at most `limit` rows.
+ * A run of another actor is not returned, and neither is a run with `triggered_by = 'supervisor'` (a delegated
+ * sub-run).
  *
- * A heartbeat occurrence that was attempted several times is one row (issue gh-1914): the run with the highest
- * `attempt`, ties by the later `started_at`, then the greater `id` (the `(attempt, started_at)` order of
- * `getLatestRunOfOccurrence`, which has no `id` key, extended by `id` as the last key so that the pick is
- * deterministic), so a row stands at the start time of its latest attempt. A run without `heartbeat_occurrence_id` is always a
- * row. The earlier attempts are dropped by a per-row probe of `agent_runs_occurrence_idx` inside the scan, before
- * `LIMIT` applies, so the limit counts rows after the collapse and the scan of
- * `agent_runs_tenant_project_started_idx` stops once it has found `limit` of them; no step sorts or groups the
- * project's history. An unknown project id, and the id of a project of another tenant that row-level security
- * hides, return no rows; the probe sees only the caller's tenant, so an occurrence id of another tenant never
- * collapses with this one's.
+ * A row stands for one run, except in two cases. A heartbeat occurrence that was attempted several times is one
+ * row (issue gh-1914): the run with the highest `attempt`, ties by the later `started_at`, then the greater `id`
+ * (the `(attempt, started_at)` order of `getLatestRunOfOccurrence`, which has no `id` key, extended by `id` as the
+ * last key so that the pick is deterministic), so a row stands at the start time of its latest attempt. A run
+ * without `heartbeat_occurrence_id` is a row of its own, except a chat run that owns assistant messages (below).
+ * The earlier attempts are dropped by a per-row probe of `agent_runs_occurrence_idx` inside the scan, before
+ * `LIMIT` applies.
+ *
+ * A `session` run that the user started and that holds assistant messages (issue gh-1932) is not a row itself:
+ * each of its answers is, one per assistant message of a reply, standing at the start of the message's turn (its
+ * first event, `created_at` of the message when retention removed the event). Attempts of one answer, the
+ * assistant messages of a thread that reply to the same message, collapse into the one with the highest
+ * `attempt` among the assistant messages that started a run of the list. An assistant message that replies to
+ * no message is an answer of its own. A session run whose thread holds no assistant message of it, which every
+ * run written before messages existed is, stays one row; one whose every message a later attempt in another run
+ * replaced has no row, because the answers it held are listed under the run of their latest attempt. The row
+ * carries the answer in `answer`.
+ *
+ * `LIMIT` counts the rows after both expansions: the two kinds of rows are each cut at `limit` in their own
+ * order, merged, and cut again, so no kind can crowd the other out of the first `limit` rows. The scan of
+ * `agent_runs_tenant_project_started_idx` for the runs stops once it has found `limit` of them. The answers are
+ * sorted by their start time, which no index covers, so the answers of the project's session runs are read for
+ * that sort. An unknown project id, and the id of a project of another tenant that row-level security hides,
+ * return no rows; the probes see only the caller's tenant.
  */
 export async function listProjectAgentRuns(
   client: Pool | PoolClient,
   input: { projectItemId: string; actorUserId: string; limit: number },
-): Promise<AgentRunRow[]> {
-  const { rows } = await client.query<AgentRunDbRow>(
-    `SELECT ${AGENT_RUN_ROW_COLUMNS}
-     FROM agent_runs r
-     WHERE r.project_item_id = $1 AND r.actor_user_id = $2 AND r.triggered_by <> 'supervisor'
-       AND (r.heartbeat_occurrence_id IS NULL OR NOT EXISTS (
-         SELECT 1 FROM agent_runs later
-         WHERE later.heartbeat_occurrence_id = r.heartbeat_occurrence_id
-           AND (later.attempt, later.started_at, later.id) > (r.attempt, r.started_at, r.id)))
-     ORDER BY r.started_at DESC, r.id DESC
-     LIMIT $3`,
+): Promise<ProjectAgentRunListEntry[]> {
+  const { rows } = await client.query<ProjectAgentRunListDbRow>(
+    `WITH chat_runs AS (
+       SELECT id, thread_id FROM agent_runs
+       WHERE project_item_id = $1 AND actor_user_id = $2 AND triggered_by = 'user' AND unit = 'session'
+     ),
+     answers AS (
+       SELECT m.id AS message_id, c.id AS run_id, COALESCE(first_event.at, m.created_at) AS started_at
+       FROM chat_runs c
+       JOIN semp_messages m ON m.thread_id = c.thread_id AND m.agent_run_id = c.id AND m.role = 'assistant'
+       LEFT JOIN agent_run_events first_event ON first_event.id = m.event_from_id AND first_event.agent_run_id = c.id
+       WHERE m.reply_to_message_id IS NULL OR NOT EXISTS (
+         SELECT 1 FROM semp_messages later
+         JOIN chat_runs later_run ON later_run.id = later.agent_run_id
+         WHERE later.thread_id = m.thread_id AND later.role = 'assistant'
+           AND later.reply_to_message_id = m.reply_to_message_id AND later.attempt > m.attempt)
+     ),
+     page AS (
+       SELECT * FROM (
+         (SELECT ${runColumnsOf("r")}, NULL::uuid AS message_id, r.started_at AS row_started_at
+          FROM agent_runs r
+          WHERE r.project_item_id = $1 AND r.actor_user_id = $2 AND r.triggered_by <> 'supervisor'
+            AND (r.heartbeat_occurrence_id IS NULL OR NOT EXISTS (
+              SELECT 1 FROM agent_runs later
+              WHERE later.heartbeat_occurrence_id = r.heartbeat_occurrence_id
+                AND (later.attempt, later.started_at, later.id) > (r.attempt, r.started_at, r.id)))
+            AND NOT (r.unit = 'session' AND r.triggered_by = 'user' AND EXISTS (
+              SELECT 1 FROM semp_messages own
+              WHERE own.thread_id = r.thread_id AND own.agent_run_id = r.id AND own.role = 'assistant'))
+          ORDER BY r.started_at DESC, r.id DESC
+          LIMIT $3)
+         UNION ALL
+         (SELECT ${runColumnsOf("r")}, top.message_id, top.started_at AS row_started_at
+          FROM (SELECT message_id, run_id, started_at FROM answers
+                ORDER BY started_at DESC, run_id DESC, message_id DESC
+                LIMIT $3) top
+          JOIN agent_runs r ON r.id = top.run_id)
+       ) merged
+       ORDER BY row_started_at DESC, id DESC, message_id DESC NULLS LAST
+       LIMIT $3
+     )
+     SELECT ${runColumnsOf("p")},
+            a.id AS answer_message_id, p.row_started_at AS answer_started_at, a.duration_ms AS answer_duration_ms,
+            a.status AS answer_status, a.error_code AS answer_error_code, a.steps AS answer_steps,
+            a.attempt AS answer_attempt,
+            CASE WHEN replied.role = 'user' THEN replied.text END AS answer_user_text,
+            CASE WHEN replied.role = 'system' THEN replied.system_key END AS answer_system_key,
+            t.kind AS answer_thread_kind
+     FROM page p
+     LEFT JOIN semp_messages a ON a.id = p.message_id
+     LEFT JOIN semp_messages replied ON replied.id = a.reply_to_message_id
+     LEFT JOIN semp_threads t ON t.id = a.thread_id
+     ORDER BY p.row_started_at DESC, p.id DESC, p.message_id DESC NULLS LAST`,
     [input.projectItemId, input.actorUserId, input.limit],
   );
-  return rows.map(mapRow);
+  return rows.map((row) => ({ ...mapRow(row), answer: mapAnswer(row) }));
 }
 
 /**

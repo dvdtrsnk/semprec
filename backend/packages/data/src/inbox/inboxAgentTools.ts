@@ -11,6 +11,8 @@ import { publishInboxCardChange } from "./inboxCardsRealtime.js";
 import { lockLiveProposal, reviseProposalFromThreadWithClient } from "./proposalActions.js";
 import { parseStoredProposalEnvelope, proposalEnvelopeSchema } from "./proposalEnvelope.js";
 import { proposalHistoryEntrySchema } from "./proposalHistory.js";
+import { lockInboxSource } from "./inboxSourceGuard.js";
+import { MAX_SPLIT_CARDS, splitInboxSourceWithClient } from "./proposalSplit.js";
 import { containsNul, MAX_REVISE_MESSAGE_LENGTH } from "./reviseInputChecks.js";
 
 // The prompt context of a thread turn on an Inbox item (issue #1938) is exported here, because `index.ts` exports this
@@ -19,6 +21,7 @@ export { loadInboxCardThreadContext, renderInboxCardThreadContext } from "./thre
 
 export const inboxProposalGetArgsSchema = z.object({ proposalId: z.string().uuid() }).strict();
 const notFound = { error: true, result: "Proposal not found" } as const;
+const NOT_IN_RUNNING_REPLY = "The call is not part of a running Semp reply";
 const sourceSchema = z.object({ text: z.string().nullable().optional() }).passthrough();
 const cardSchema = z
   .object({
@@ -130,6 +133,22 @@ export const inboxProposalReviseArgsSchema = z
   })
   .strict();
 
+/**
+ * The id of the assistant message of the thread that is running this run's turn (the latest one, should more than
+ * one be running), or `null` when the call is not part of a running reply. The tools that write on behalf of a thread
+ * record it in the history of the cards they change.
+ */
+async function findRunningReplyMessageId(client: PoolClient, runId: string, threadId: string): Promise<string | null> {
+  const running = await client.query<{ id: string }>(
+    `SELECT id FROM semp_messages
+      WHERE tenant_id = app_current_tenant() AND agent_run_id = $1 AND thread_id = $2
+        AND role = 'assistant' AND status = 'running'
+      ORDER BY created_at DESC, id DESC LIMIT 1`,
+    [runId, threadId],
+  );
+  return running.rows[0]?.id ?? null;
+}
+
 /** The error result of a refusal the model can act on: the status the route would answer, its code, message and field. */
 function refusal(error: ChokePointError): { error: true; result: string } {
   const field =
@@ -190,20 +209,13 @@ export function createInboxProposalReviseTool(pool: Pool) {
         }
         const own = await findOwnThreadCard(client, runId, card.id, true);
         if (!own) return notFound;
-        const running = await client.query<{ id: string }>(
-          `SELECT id FROM semp_messages
-            WHERE tenant_id = app_current_tenant() AND agent_run_id = $1 AND thread_id = $2
-              AND role = 'assistant' AND status = 'running'
-            ORDER BY created_at DESC, id DESC LIMIT 1`,
-          [runId, own.threadId],
-        );
-        const message = running.rows[0];
-        if (!message) return { error: true, result: "The call is not part of a running Semp reply" };
+        const messageId = await findRunningReplyMessageId(client, runId, own.threadId);
+        if (!messageId) return { error: true, result: NOT_IN_RUNNING_REPLY };
         const revised = await reviseProposalFromThreadWithClient(client, config, {
           proposalId: card.id,
           subjectItemId: own.sourceId,
           threadId: own.threadId,
-          messageId: message.id,
+          messageId,
           ...(args.entityKind === undefined ? {} : { entityKind: args.entityKind }),
           ...(args.target === undefined ? {} : { target: args.target }),
           properties: args.properties,
@@ -215,6 +227,129 @@ export function createInboxProposalReviseTool(pool: Pool) {
         return {
           error: false,
           result: JSON.stringify({ proposalId: revised.id, revised: true, version: revised.updatedAt }),
+        };
+      });
+    } catch (error) {
+      if (error instanceof ChokePointError) return refusal(error);
+      throw error;
+    }
+  };
+}
+
+/**
+ * `findOwnThreadCard` for a caller that holds the card and needs the source row: the thread's source is read from an
+ * unlocked association, locked `FOR UPDATE` (waiting, as confirm does after its card), and the association is then read
+ * again with the edge `FOR SHARE`, so the edge is never held while the source is waited for. `null` when the card is
+ * not the thread's own, as for `findOwnThreadCard`, including a source or an association that went away meanwhile.
+ */
+async function provedOwnCardUnderSource(client: PoolClient, runId: string, cardId: string) {
+  const hinted = await findOwnThreadCard(client, runId, cardId, false);
+  if (!hinted) return null;
+  try {
+    await lockInboxSource(client, hinted.sourceId);
+  } catch (error) {
+    if (error instanceof NotFoundError) return null;
+    throw error;
+  }
+  const own = await findOwnThreadCard(client, runId, cardId, true);
+  return own && own.sourceId === hinted.sourceId ? own : null;
+}
+
+/**
+ * The arguments of `inbox.proposal.split`: the card to split, the version of the card the split was composed from and
+ * the cards the source becomes, the first of which revises that card and the others become siblings of it. The thread
+ * and the message the split is recorded under are never arguments: the tool reads them from the run. `ifVersion` is the
+ * `version` the card context or `inbox.proposal.get` showed, as for `inbox.proposal.revise`: the first entry replaces
+ * the card's whole envelope, so a card the user edited since is refused instead of being overwritten.
+ */
+export const inboxProposalSplitArgsSchema = z
+  .object({
+    proposalId: z.string().uuid(),
+    ifVersion: z
+      .string()
+      .min(1)
+      .describe(
+        "The `version` of the card that you composed this split from, copied from the card context or from inbox.proposal.get. A card that was changed since is refused.",
+      ),
+    cards: z
+      .array(
+        z
+          .object({
+            entityKind: proposalEnvelopeSchema.shape.entityKind,
+            target: z.string().min(1),
+            properties: z.record(z.string(), z.unknown()),
+          })
+          .strict(),
+      )
+      .min(2)
+      .max(MAX_SPLIT_CARDS)
+      .describe(
+        `Between 2 and ${MAX_SPLIT_CARDS} cards. The first entry replaces the envelope of the card proposalId, which stays the source's main card; every other entry becomes a new card of the same source. Each entry is a whole envelope.`,
+      ),
+    message: z.string().min(1).max(MAX_REVISE_MESSAGE_LENGTH).optional(),
+  })
+  .strict();
+
+/**
+ * `inbox.proposal.split` (issue #1939): the assistant of an Inbox item thread splits that thread's source into several
+ * proposal cards, through `splitInboxSourceWithClient` in one transaction. The first entry revises the thread's own
+ * card and the others become sibling cards of the same source, which the tick never recomputes. The tool never writes to
+ * a target database: every card stays a proposal and only the user's confirm creates anything.
+ *
+ * The own-card proof, the answer for any other card and the source of the thread id and the running assistant message
+ * are those of `inbox.proposal.revise` (`createInboxProposalReviseTool`), never the arguments, with one difference in
+ * the locks: the split needs the source row (it links its siblings to it), so the tool locks the card `FOR UPDATE`,
+ * reads the card's association without a lock, locks the source `FOR UPDATE` and only then takes the edge `FOR SHARE`
+ * (`provedOwnCardUnderSource`). Order and reason: `docs/adr/2026-11-14-a-source-split-locks-the-card-then-the-source-then-the-source-edge.md`;
+ * the order of `docs/adr/2026-11-13-an-item-thread-tool-proves-its-card-with-a-shared-lock-on-its-source-edge.md` is
+ * for a tool that never locks the source. A card that is
+ * `confirmed` or `rejected`, a card that is itself a sibling, an invalid envelope in any entry and a card changed
+ * since `ifVersion` give an error result and write nothing. The card changes are announced by the action after the
+ * transaction commits, and the result lists the ids of the cards and the primary card's new `version`.
+ */
+export function createInboxProposalSplitTool(pool: Pool) {
+  return async (runId: string, rawArgs: unknown): Promise<{ error: boolean; result: string }> => {
+    const parsed = inboxProposalSplitArgsSchema.safeParse(rawArgs);
+    if (!parsed.success) return { error: true, result: "Invalid arguments" };
+    const args = parsed.data;
+    if (!z.string().uuid().safeParse(runId).success || currentTenantScope()?.kind !== "tenant") return notFound;
+    if (containsNul(args.cards) || containsNul(args.message)) {
+      return refusal(new ValidationError("'cards' and 'message' must not contain NUL characters", { field: "cards" }));
+    }
+    try {
+      return await withTransaction(pool, async (client) => {
+        const database = await getDatabaseByModuleId(client, PROCESSING_PROPOSALS_MODULE_ID);
+        if (!database) return notFound;
+        const config = { processingProposalsDatabaseId: database.id };
+        let card: Awaited<ReturnType<typeof lockLiveProposal>>;
+        try {
+          card = await lockLiveProposal(client, database.id, args.proposalId);
+        } catch (error) {
+          if (error instanceof NotFoundError) return notFound;
+          throw error;
+        }
+        const own = await provedOwnCardUnderSource(client, runId, card.id);
+        if (!own) return notFound;
+        const messageId = await findRunningReplyMessageId(client, runId, own.threadId);
+        if (!messageId) return { error: true, result: NOT_IN_RUNNING_REPLY };
+        const split = await splitInboxSourceWithClient(client, config, {
+          proposalId: card.id,
+          subjectItemId: own.sourceId,
+          threadId: own.threadId,
+          messageId,
+          cards: args.cards,
+          ifVersion: args.ifVersion,
+          ...(args.message === undefined ? {} : { message: args.message }),
+          actingUserId: own.actorUserId,
+        });
+        return {
+          error: false,
+          result: JSON.stringify({
+            proposalId: split.primary.id,
+            siblingProposalIds: split.siblings.map((sibling) => sibling.id),
+            split: true,
+            version: split.primary.updatedAt,
+          }),
         };
       });
     } catch (error) {

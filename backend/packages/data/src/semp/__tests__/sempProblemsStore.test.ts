@@ -51,6 +51,7 @@ function inZero<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
 async function rowsFor(tenantId: string, dedupeKey: string) {
   const { rows } = await pool.query<{
     id: string;
+    source_id: string;
     project_item_id: string | null;
     severity: string;
     occurrence_count: number;
@@ -59,7 +60,7 @@ async function rowsFor(tenantId: string, dedupeKey: string) {
     resolved_at: Date | null;
     resolution_kind: string | null;
   }>(
-    `SELECT id, project_item_id, severity, occurrence_count, first_seen_at, last_seen_at, resolved_at, resolution_kind
+    `SELECT id, source_id, project_item_id, severity, occurrence_count, first_seen_at, last_seen_at, resolved_at, resolution_kind
        FROM semp_problems WHERE tenant_id = $1 AND dedupe_key = $2 ORDER BY first_seen_at, id`,
     [tenantId, dedupeKey],
   );
@@ -292,6 +293,41 @@ describe("semp problems store", () => {
     expect((await rowsFor(tenantZero, "mail:sync:account-1"))[0]?.occurrence_count).toBe(1);
     await inZero((client) => raiseProblem(client, input({ occurrenceKey: "job-2" })));
     expect((await rowsFor(tenantZero, "mail:sync:account-1"))[0]?.occurrence_count).toBe(2);
+  });
+
+  it("keeps the source of the first raise on a merge unless the caller follows the latest source", async () => {
+    const first = randomUUID();
+    await inZero((client) => raiseProblem(client, input({ sourceId: first, occurrenceKey: "job-1" })));
+    await inZero((client) => raiseProblem(client, input({ sourceId: randomUUID(), occurrenceKey: "job-2" })));
+
+    const rows = await rowsFor(tenantZero, "mail:sync:account-1");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ source_id: first, occurrence_count: 2 });
+  });
+
+  it("moves the source to the latest report when the caller follows it, and a replayed occurrence cannot move it back", async () => {
+    const first = randomUUID();
+    const second = randomUUID();
+    await inZero((client) =>
+      raiseProblem(client, input({ sourceId: first, occurrenceKey: "job-1", followLatestSource: true })),
+    );
+    await inZero((client) =>
+      raiseProblem(client, input({ sourceId: second, occurrenceKey: "job-2", followLatestSource: true })),
+    );
+    expect((await rowsFor(tenantZero, "mail:sync:account-1"))[0]).toMatchObject({
+      source_id: second,
+      occurrence_count: 2,
+    });
+
+    const replay = await inZero((client) =>
+      raiseProblem(client, input({ sourceId: first, occurrenceKey: "job-1", followLatestSource: true })),
+    );
+
+    expect(replay.outcome).toBe("merged");
+    expect((await rowsFor(tenantZero, "mail:sync:account-1"))[0]).toMatchObject({
+      source_id: second,
+      occurrence_count: 2,
+    });
   });
 
   it("deduplicates nonconsecutive reports while still escalating a duplicate", async () => {

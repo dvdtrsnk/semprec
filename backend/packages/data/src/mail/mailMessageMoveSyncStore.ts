@@ -140,6 +140,16 @@ export async function protectedMailMovesForPass(
   return protectedIds;
 }
 
+/**
+ * The one rule for whether a new desire keeps the source evidence of the row it replaces: while the earlier desire is
+ * still pending or a provider operation is outstanding, the evidence it recorded is what addresses the provider copy,
+ * because the local folder edge no longer does. `recordDesiredMailMessageMove` and `hasPreservedMailMoveSource` both
+ * decide through this function, so they cannot disagree.
+ */
+function keepsEarlierMoveSource(row: { status: string; operation_token: string | null }): boolean {
+  return row.status === "pending" || row.operation_token !== null;
+}
+
 /** Records a new desire without releasing an outstanding provider operation. */
 export async function recordDesiredMailMessageMove(
   client: PoolClient,
@@ -156,7 +166,7 @@ export async function recordDesiredMailMessageMove(
   );
   if (metadata.rowCount !== 1) throw new Error("Mail message is not available in this mailbox");
   const prior = previous.rows[0];
-  const preserveSource = prior !== undefined && (prior.status === "pending" || prior.operation_token !== null);
+  const preserveSource = prior !== undefined && keepsEarlierMoveSource(prior);
   const source = preserveSource ? sourceSchema.parse(prior.source_evidence) : sourceSchema.parse(input.source);
   if (!preserveSource && source.provider === "imap") {
     const match = await client.query(
@@ -205,6 +215,21 @@ export async function recordDesiredMailMessageMove(
   );
   if (!result.rows[0]) throw new Error("Mail move mailbox does not match the existing intent");
   return rowSchema.parse(result.rows[0]);
+}
+
+/**
+ * Whether a new desire for `messageItemId` keeps the source evidence an earlier desire recorded, so that the new
+ * desire needs no source of its own. It reads the row under the caller's thread guard and applies the rule of
+ * `recordDesiredMailMessageMove` (`keepsEarlierMoveSource`), which is the only place that rule is written.
+ */
+export async function hasPreservedMailMoveSource(client: PoolClient, messageItemId: string): Promise<boolean> {
+  const result = await client.query<{ status: string; operation_token: string | null }>(
+    `SELECT status, operation_token FROM mail_message_move_sync_state
+     WHERE tenant_id = app_tenant_default() AND message_item_id = $1`,
+    [messageItemId],
+  );
+  const row = result.rows[0];
+  return row !== undefined && keepsEarlierMoveSource(row);
 }
 
 export async function listPendingMoves(client: PoolClient, mailboxItemId: string): Promise<MailMessageMoveSyncRow[]> {

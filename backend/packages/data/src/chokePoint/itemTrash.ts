@@ -7,7 +7,8 @@
 // docs/adr/2026-11-07-item-delete-and-restore-domain-hooks.md,
 // docs/adr/2026-11-10-item-purge-domain-hooks.md,
 // docs/adr/2026-11-10-a-mailbox-removal-job-joins-the-mailbox-trash-epoch.md,
-// docs/adr/2026-11-12-deleting-a-calendar-takes-the-default-mark-lock-and-its-events-into-its-epoch.md
+// docs/adr/2026-11-12-deleting-a-calendar-takes-the-default-mark-lock-and-its-events-into-its-epoch.md,
+// docs/adr/2026-11-14-a-recurring-task-series-is-trashed-and-restored-as-one-cascade.md
 import type { PoolClient } from "pg";
 import { runAfterCommit, withTransaction } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
@@ -17,6 +18,7 @@ import {
   runItemDeleteHooks,
   runItemDeletePreLockHooks,
   runItemPurgeHooks,
+  runItemPurgePreLockHooks,
   runItemRestoreHooks,
   runItemRestorePreLockHooks,
 } from "./hooks.js";
@@ -42,7 +44,7 @@ import { deleteKeptDate } from "../projects/projectKeptDateStore.js";
 import type { WriterIdentity } from "./writerKind.js";
 import { assertWriterDatabaseAccess } from "../agentGrants/agentDatabaseAccess.js";
 import { hideClosedRollupValuesForWriter } from "../agentGrants/closedSensitiveAggregationAccess.js";
-import { assertWriterCascadeAccess, collectItemSubtree } from "./itemSubtreeAccess.js";
+import { assertWriterCascadeAccess, collectCascadeRows } from "./itemSubtreeAccess.js";
 import { deleteAgentDatabaseGrantsForProject } from "../agentGrants/agentDatabaseGrantsStore.js";
 
 /** The writer fields every delete and restore hook receives; `system` when the caller supplied none. */
@@ -82,6 +84,10 @@ const EXACT_TRASH_EPOCH_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
  * the caller names only. A hook there takes the lock that has to stand in front of the row, so a writer that takes
  * the module's lock first and the row second cannot wait for this call.
  *
+ * The cascade is the rows `collectCascadeRows` returns: the item, the items of its inline databases and the rows the
+ * owning module's cascade expansion adds (the other instances of a recurring task series, issue gh-1882); each of them
+ * is trashed, runs the hooks and the side effects below exactly as a row of the subtree does.
+ *
  * `options.deletedAtExact` (issue gh-2029) makes the cascade join the trash epoch of an item trashed
  * earlier: every row this call soft-deletes gets that `deleted_at` instead of this transaction's
  * `now()`. A value that is not UTC text with six fraction digits is refused before anything is written.
@@ -118,7 +124,7 @@ export async function itemDeleteWithClient(
   }
   if (before.deletedAt) return before;
 
-  const subtree = await collectItemSubtree(client, before);
+  const subtree = await collectCascadeRows(client, before);
   await assertWriterCascadeAccess(client, options.writer, databaseId, subtree);
   for (const row of subtree) await assertDatabaseNotArchived(client, row.databaseId);
 
@@ -191,8 +197,9 @@ async function lockCascadeEpochRowIds(
 
 /**
  * The exact cascade `softDeleteItem` runs, in reverse — restores `itemId` and its whole
- * subtree in one transaction, symmetric to how the delete side of it was trashed. Only
- * restores subtree rows whose `deleted_at` equals the root's own (`lockCascadeEpochRowIds`):
+ * subtree in one transaction, symmetric to how the delete side of it was trashed; the rows are those of
+ * `collectCascadeRows`, so the instances of a recurring task series come back with the instance named (issue gh-1882).
+ * Only restores rows whose `deleted_at` equals the root's own (`lockCascadeEpochRowIds`):
  * since Postgres's `now()` is fixed for the lifetime of a transaction, every row the original
  * cascade delete touched shares one identical timestamp, which tells "trashed together with the
  * root" apart from a row independently trashed (earlier or later) at a different instant —
@@ -232,7 +239,7 @@ export async function restoreItemWithClient(
   if (!before.deletedAt) return before; // not trashed: idempotent no-op, same as a repeat restore
   const cascadeEpoch = before.deletedAt;
 
-  const subtree = await collectItemSubtree(client, before);
+  const subtree = await collectCascadeRows(client, before);
   await assertWriterCascadeAccess(client, writer, databaseId, subtree);
   for (const row of subtree) await assertDatabaseNotArchived(client, row.databaseId);
   const epoch = await lockCascadeEpochRowIds(client, before, subtree);
@@ -429,7 +436,7 @@ export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
      * Permanently removes an already-eligible trashed root together with its cascade subtree —
      * the 30-day purge sweep's (`trash/purgeExpiredTrash.ts`, issue #156) only path to a hard
      * delete, so it stays a choke-point-guarded write like every other item mutation instead of a
-     * second route into the `items` table. Uses `softDeleteItem`/`restoreItem`'s subtree walk,
+     * second route into the `items` table. Uses `softDeleteItem`/`restoreItem`'s walk (`collectCascadeRows`),
      * but only descends into a branch that is itself past `cutoff`: a still-live or
      * too-recently-trashed row blocks the purge of everything nested under it, since only a
      * branch that was cascade-deleted together with the root is safe to remove with it. Re-checks
@@ -479,8 +486,21 @@ export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
           return { purgedItemIds: [], blobStorageKeys: [] };
         }
 
+        // The owning module's locks come before the first lock on a purged row, in the order a trash and a restore take
+        // them: a purge that took the root first would wait on the rows a restore of the same cascade already holds while
+        // that restore waits on the root.
+        const databaseOf = databaseLookup(client);
+        const rootDatabase = await databaseOf(root.databaseId);
+        if (rootDatabase.ownerModuleId !== null) {
+          await runItemPurgePreLockHooks(rootDatabase.ownerModuleId, {
+            client,
+            database: rootDatabase,
+            itemId: rootItemId,
+          });
+        }
+
         // A live or too-recently-trashed row stops its branch: only rows past `cutoff` are walked.
-        const subtree = await collectItemSubtree(
+        const subtree = await collectCascadeRows(
           client,
           root,
           (row) => row.deletedAt !== null && new Date(row.deletedAt) < cutoff,
@@ -491,7 +511,6 @@ export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
 
         const purgedItemIds: string[] = [];
         const blobStorageKeys: string[] = [];
-        const databaseOf = databaseLookup(client);
         for (const row of subtree) {
           // `row` is what the unlocked walk read; a write committed since then is not in it. The
           // locked read returns the row the delete below removes, and holds it until then.

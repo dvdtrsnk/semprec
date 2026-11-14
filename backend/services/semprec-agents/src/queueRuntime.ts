@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import type { AiGatewayClientPort } from "@semprec/shared";
 import {
   AGENT_TASK_NAMES,
   ensureQueueSchema,
@@ -39,6 +40,8 @@ export interface AgentsQueueRuntimeOptions {
   agentRunTask?: AgentQueueTaskHandler;
   delegatedAgentRunTask?: AgentQueueTaskHandler;
   sempMessageTask?: AgentQueueTaskHandler;
+  /** The client of `core.agentRun`'s `answerExpectedFilter` gate (issue gh-1941); `serve.ts` composes it. */
+  aiGateway?: AiGatewayClientPort;
 }
 
 /**
@@ -58,7 +61,7 @@ export async function createAgentsQueueRuntime(
   await ensureQueueSchema(pool);
   await grantQueueSchemaPrivileges(pool);
 
-  const actionRegistry = createAgentsActionRegistry(pool, options.runAgent ?? unwiredRunAgent);
+  const actionRegistry = createAgentsActionRegistry(pool, options.runAgent ?? unwiredRunAgent, options.aiGateway);
   const coreTaskList = createAgentTaskList(
     pool,
     actionRegistry,

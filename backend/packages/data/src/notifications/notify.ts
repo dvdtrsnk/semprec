@@ -19,6 +19,9 @@ function getNotificationCatalogs(): Promise<ModuleCatalogs> {
 /** Catalog key rendered for a `null` body parameter, such as the name of an item that has none (issue #1773). */
 const UNNAMED_LABEL_KEY = "notification.body.unnamed";
 
+/** The body catalog key of an item delete whose description carries the delete impact of its module (issue gh-1882). */
+export const ITEM_DELETE_IMPACT_BODY_KEY = "approval.itemDeleteImpact";
+
 /** Replaces each `{param}` placeholder in `template` with `params[param]`, leaving an unmatched placeholder untouched. */
 function interpolate(template: string, params: Readonly<Record<string, string>>): string {
   return template.replace(/\{(\w+)\}/g, (placeholder, key: string) => params[key] ?? placeholder);
@@ -132,7 +135,7 @@ export async function writeNotification(client: PoolClient, input: WriteNotifica
           resolveCatalogLabel(null, localeCatalog, catalogs.en, input.bodyKey),
           input.bodyParams ?? {},
           resolveCatalogLabel(null, localeCatalog, catalogs.en, UNNAMED_LABEL_KEY),
-          input.bodyKey === "approval.itemDelete",
+          input.bodyKey === "approval.itemDelete" || input.bodyKey === ITEM_DELETE_IMPACT_BODY_KEY,
         );
   const body =
     action === null || input.bodySuffixKey === undefined

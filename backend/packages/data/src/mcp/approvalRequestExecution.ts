@@ -2,11 +2,14 @@ import type { Pool } from "pg";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { createLogger } from "@semprec/shared";
 import { withTransaction } from "../db/pool.js";
+import { executeClaimedMailSendApproval } from "../mail/mailSendApprovalExecution.js";
+import type { MailSendAdapterFactory } from "../mail/send.js";
 import { getAgentRun } from "../agentRuns/agentRunsStore.js";
 import {
   claimApprovalRequestExecution,
   getApprovalRequest,
   isGenericOperationApprovalRequestPayload,
+  isMailSendApprovalRequestPayload,
   isModuleToolApprovalRequestPayload,
   recordApprovalRequestOutcome,
   settleStaleApprovalRequestClaim,
@@ -92,12 +95,17 @@ export interface HandleApprovalRequestExecuteInput {
  * an mcpInvoke payload; once claimed it is handed to `executeClaimedModuleToolApproval`, which
  * resolves the tool through `moduleRegistry`, compares the snapshot and runs the handler at most
  * once. Without a `moduleRegistry` the request ends in an error outcome and nothing runs.
+ *
+ * A mail send payload (issue gh-1913) follows the same claim, stale-claim and outcome-guard steps; once claimed it is
+ * handed to `executeClaimedMailSendApproval`, which sends the draft through `mailSendAdapters` if it is still the draft
+ * that was approved. Without `mailSendAdapters` the request ends in an error outcome and nothing is sent.
  */
 export async function handleApprovalRequestExecuteTask(
   pool: Pool,
   input: HandleApprovalRequestExecuteInput,
   genericOperationApprovalReplay?: GenericOperationApprovalReplay,
   moduleRegistry?: ModuleRegistry,
+  mailSendAdapters?: MailSendAdapterFactory,
 ): Promise<void> {
   const request = await withTransaction(pool, (client) => getApprovalRequest(client, input.approvalRequestId));
   if (!request) return;
@@ -159,6 +167,10 @@ export async function handleApprovalRequestExecuteTask(
   }
   if (isModuleToolApprovalRequestPayload(claimed.payload)) {
     await executeClaimedModuleToolApproval(pool, moduleRegistry, claimed, claimed.payload);
+    return;
+  }
+  if (isMailSendApprovalRequestPayload(claimed.payload)) {
+    await executeClaimedMailSendApproval(pool, mailSendAdapters, claimed, claimed.payload);
     return;
   }
   // `isGenericOperationApprovalRequestPayload(claimed.payload)` can never be true here — the

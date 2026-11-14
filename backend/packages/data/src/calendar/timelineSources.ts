@@ -6,6 +6,7 @@ import { readHolidayTimelineItems } from "./timelineHolidaySource.js";
 import { readEventTimelineItems, readTaskTimelineItems } from "./timelineRead.js";
 import { readEventOccurrenceTimelineItems } from "./timelineEventOccurrenceSource.js";
 import { readSleepTimelineItems } from "./timelineSleepSource.js";
+import { readSubscribedEventTimelineItems } from "./timelineSubscribedEventSource.js";
 import { readTaskOccurrenceTimelineItems } from "./timelineTaskOccurrenceSource.js";
 import { readTaskTraceTimelineItems } from "./timelineTaskTraceSource.js";
 
@@ -91,7 +92,11 @@ export interface CalendarTimelineItem {
   carriedFrom: string | null;
   /** The stored item's `updatedAt`, which a write passes back as `ifVersion`. */
   updatedAt: string;
-  /** `false` for a stored Event or Task; a source sets `true` on an entry that is not a stored row. */
+  /**
+   * `false` for a stored Event or Task; a source sets `true` on an entry that is not a stored row or whose row no
+   * client may edit (a subscribed event, issue gh-2005, a stored row of the `subscribedEvents` database whose `id` is
+   * an item id: docs/adr/2026-11-14-a-subscribed-event-in-the-timeline-is-a-read-only-stored-row.md).
+   */
   readOnly: boolean;
 }
 
@@ -278,4 +283,5 @@ export const CALENDAR_TIMELINE_SOURCES: readonly CalendarTimelineSource[] = [
   { id: "eventOccurrences", readItems: readEventOccurrenceTimelineItems },
   { id: "taskTraces", readItems: readTaskTraceTimelineItems },
   { id: "taskOccurrences", readItems: readTaskOccurrenceTimelineItems },
+  { id: "subscribedEvents", readItems: readSubscribedEventTimelineItems },
 ];

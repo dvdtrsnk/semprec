@@ -168,13 +168,34 @@ describe("projectTaskOccurrences (issue #1672)", () => {
     ]);
   });
 
-  it("projects a trashed occurrence's date as virtual again", async () => {
+  it("projects a trashed occurrence's date as virtual again while the series' repeat rule is on", async () => {
     const { tasks, seriesId } = await seriesStartingOn(tenant, "2026-10-16");
     const trashed = await occurrence(tenant, tasks, seriesId, "2026-10-17", "done");
-    await runInTenant(tenant, () => cp.softDeleteItem(tasks, trashed));
+    // Fixture SQL: the choke point trashes a whole series and turns its rule off (issue gh-1882), so the occurrence
+    // is trashed on its own, the state of an active series with one trashed occurrence.
+    const result = await runInTenant(tenant, () =>
+      pool.query("UPDATE items SET deleted_at = now() WHERE database_id = $1 AND id = $2 AND deleted_at IS NULL", [
+        tasks,
+        trashed,
+      ]),
+    );
+    expect(result.rowCount).toBe(1);
     expect(summary(await project(tenant, "2026-10-17", "2026-10-17", "2026-10-16"))).toEqual([
       "2026-10-17 virtual:notDone",
     ]);
+  });
+
+  it("projects no date of a series trashed through the choke point, when one of its occurrences is deleted", async () => {
+    const { tasks, seriesId } = await seriesStartingOn(tenant, "2026-10-16");
+    const trashed = await occurrence(tenant, tasks, seriesId, "2026-10-17", "done");
+    expect(summary(await project(tenant, "2026-10-16", "2026-10-18", "2026-10-16"))).toEqual([
+      "2026-10-16 notDone",
+      "2026-10-17 done",
+      "2026-10-18 virtual:notDone",
+    ]);
+    await runInTenant(tenant, () => cp.softDeleteItem(tasks, trashed));
+    // The first instance went to the Trash with it and the repeat rule is off, so no virtual date is left.
+    expect(await project(tenant, "2026-10-16", "2026-10-18", "2026-10-16")).toEqual([]);
   });
 
   it("produces no date before the anchor and keeps a stored occurrence whose date is not a rule date", async () => {

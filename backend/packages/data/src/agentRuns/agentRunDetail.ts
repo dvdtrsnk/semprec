@@ -265,7 +265,7 @@ interface ReplyRow {
 }
 
 /** The title of a reply that answers the system message with `systemKey`, in `locale` (a `users.locale`). */
-async function systemReplyTitle(systemKey: string, locale: string): Promise<string> {
+export async function systemReplyTitle(systemKey: string, locale: string): Promise<string> {
   const catalogs = await getAgentRunCatalogs();
   const localized = catalogs[toManifestLocale(locale)];
   const lookup = (key: string): string | undefined => localized[key] ?? catalogs.en[key];

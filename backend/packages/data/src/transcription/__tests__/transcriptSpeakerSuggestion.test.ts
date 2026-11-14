@@ -1,5 +1,6 @@
 import { setSelfPersonId } from "../../selfPerson.js";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
@@ -33,10 +34,16 @@ import { listTranscriptSpeakers } from "../transcriptionSpeakerEdges.js";
 import { peopleLastContactJobKey } from "../../people/lastContact.js";
 import { transcriptSpeakerCardContextSchema } from "../transcriptSpeakerCardContext.js";
 import {
+  buildSpeakerSuggestionCheckpoint,
+  isSpeakerSuggestionCurrent,
   proposeSpeakerMappings,
   readSpeakerSuggestionContext,
   type SpeakerMappingSuggestion,
 } from "../transcriptSpeakerSuggestion.js";
+import { matchTranscriptToEvent } from "../transcriptEventMatch.js";
+import { TRANSCRIPTION_OWNER_PROCESS } from "../transcriptionJob.js";
+import { itemDeleteWithClient } from "../../chokePoint/itemTrash.js";
+import { createActionQueueAffinity } from "../../scheduler/actions.js";
 
 let pool: Pool;
 
@@ -1148,6 +1155,399 @@ describe("Speaker mapping suggestions (issue #185)", () => {
 
       expect((await speakerCards()).find((card) => card.id === id)?.status).toBe("rejected");
       expect(await mappedPersonIds()).toEqual([null, null]);
+    });
+  });
+  /** A card's stored `properties` and `updated_at`, read without the choke point. */
+  async function cardRow(cardId: string) {
+    const { rows } = await pool.query<{
+      properties: Record<string, unknown>;
+      updated_at: Date;
+      deleted_at: Date | null;
+    }>("SELECT properties, updated_at, deleted_at FROM items WHERE id = $1", [cardId]);
+    if (!rows[0]) throw new Error(`Card ${cardId} not found`);
+    return rows[0];
+  }
+
+  async function cardOf(speaker: string): Promise<string> {
+    const { rows } = await pool.query<{ id: string }>(
+      `SELECT id FROM items WHERE database_id = $1 AND properties -> 'context' ->> 'speaker' = $2`,
+      [proposalsId, speaker],
+    );
+    if (rows.length !== 1 || !rows[0]) throw new Error(`Expected one card for ${speaker}, found ${rows.length}`);
+    return rows[0].id;
+  }
+
+  const alternativeIds = (properties: Record<string, unknown>): string[] =>
+    transcriptSpeakerCardContextSchema
+      .parse(properties.context)
+      .alternatives.map((alternative) => alternative.personId)
+      .sort();
+
+  /** What the producer does for the cards of a transcript whose Event or participants changed (issue gh-1942). */
+  describe("a clarification card is refreshed and no other card is rewritten (issue gh-1942)", () => {
+    it("refreshes an untouched clarification card with the new alternatives and, when confident, a proposal", async () => {
+      expect(await propose([])).toEqual(["SPEAKER_00", "SPEAKER_01"]);
+      const confident = await cardOf("SPEAKER_00");
+      const unsure = await cardOf("SPEAKER_01");
+      expect(alternativeIds((await cardRow(confident)).properties)).toEqual([]);
+      await linkEvent();
+
+      const created = await propose([{ speaker: "SPEAKER_00", personId: aliceId, reason: "Is greeted as Alice." }]);
+
+      expect(created).toEqual([]);
+      expect(await cardOf("SPEAKER_00")).toBe(confident);
+      const proposed = (await cardRow(confident)).properties;
+      expect(proposed).toMatchObject({
+        status: "proposed",
+        proposal: mapping(aliceId, "SPEAKER_00"),
+        aiProposal: mapping(aliceId, "SPEAKER_00"),
+        aiVersion: 2,
+        context: { reason: "Is greeted as Alice." },
+        history: [expect.objectContaining({ author: "ai", kind: "recompute" })],
+      });
+      expect(alternativeIds(proposed)).toEqual([aliceId, bobId].sort());
+      const stillUnsure = (await cardRow(unsure)).properties;
+      expect(stillUnsure).toMatchObject({ status: "needsClarification", proposal: null, aiVersion: 1 });
+      expect(alternativeIds(stillUnsure)).toEqual([aliceId, bobId].sort());
+      expect((await speakerCards()).length).toBe(2);
+      expect(await mappedPersonIds()).toEqual([null, null]);
+    });
+
+    it("writes nothing when the refresh would change nothing", async () => {
+      await propose([]);
+      const cardId = await cardOf("SPEAKER_00");
+      const before = await cardRow(cardId);
+
+      expect(await propose([])).toEqual([]);
+
+      expect(await cardRow(cardId)).toEqual(before);
+    });
+
+    it("leaves a clarification card the user touched", async () => {
+      await propose([]);
+      const cardId = await cardOf("SPEAKER_00");
+      // A message alone is the user's own history entry; it changes nothing else of the card.
+      await withTransaction(pool, (client) =>
+        reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId, {
+          message: "Not sure yet",
+        }),
+      );
+      await linkEvent();
+      const before = await cardRow(cardId);
+      expect((before.properties.history as Array<{ author: string }>).some((entry) => entry.author === "user")).toBe(
+        true,
+      );
+
+      await propose([{ speaker: "SPEAKER_00", personId: aliceId, reason: "Is greeted as Alice." }]);
+
+      expect(await cardRow(cardId)).toEqual(before);
+    });
+
+    it("leaves a proposed card, whatever the model suggests now", async () => {
+      await linkEvent();
+      await propose([{ speaker: "SPEAKER_00", personId: aliceId, reason: "Is greeted as Alice." }]);
+      const cardId = await cardOf("SPEAKER_00");
+      const before = await cardRow(cardId);
+
+      await propose([{ speaker: "SPEAKER_00", personId: bobId, reason: "Changed its mind." }]);
+
+      expect(await cardRow(cardId)).toEqual(before);
+    });
+
+    it("leaves a rejected card and creates no second one", async () => {
+      await propose([]);
+      const cardId = await cardOf("SPEAKER_00");
+      await withTransaction(pool, (client) =>
+        rejectProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId),
+      );
+      await linkEvent();
+      const before = await cardRow(cardId);
+
+      expect(await propose([{ speaker: "SPEAKER_00", personId: aliceId, reason: "Is greeted as Alice." }])).toEqual([]);
+
+      expect(await cardRow(cardId)).toEqual(before);
+      expect(before.properties.status).toBe("rejected");
+      expect((await speakerCards()).length).toBe(2);
+    });
+
+    it("leaves a clarification card in the Trash", async () => {
+      await propose([]);
+      const cardId = await cardOf("SPEAKER_00");
+      await withTransaction(pool, (client) =>
+        itemDeleteWithClient(client, proposalsId, cardId, { queueAffinity: createActionQueueAffinity() }),
+      );
+      await linkEvent();
+      const before = await cardRow(cardId);
+      expect(before.deleted_at).not.toBeNull();
+
+      expect(await propose([{ speaker: "SPEAKER_00", personId: aliceId, reason: "Is greeted as Alice." }])).toEqual([]);
+
+      expect(await cardRow(cardId)).toEqual(before);
+    });
+
+    it("leaves a card that another transaction holds, without waiting for it", async () => {
+      await propose([]);
+      const cardId = await cardOf("SPEAKER_00");
+      await linkEvent();
+      const before = await cardRow(cardId);
+      // A confirm of the card locks it first and the transcript second: this stands in for one in progress.
+      const holder = await pool.connect();
+      try {
+        await holder.query("BEGIN");
+        await holder.query("SELECT 1 FROM items WHERE id = $1 FOR UPDATE", [cardId]);
+
+        const outcome = await settledWithin(
+          propose([{ speaker: "SPEAKER_00", personId: aliceId, reason: "Is greeted as Alice." }]),
+        );
+
+        expect(outcome).toEqual([]);
+      } finally {
+        await holder.query("ROLLBACK");
+        holder.release();
+      }
+      expect(await cardRow(cardId)).toEqual(before);
+    });
+  });
+
+  /** The checkpoint helpers the suggestion step shares with the task (issue gh-1942). */
+  describe("the checkpoint binding", () => {
+    const context = (eventId: string | null, ids: string[]) => ({
+      eventId,
+      candidates: ids.map((id) => ({ id, name: id, title: null, invitationStatus: null })),
+    });
+
+    it("is current only for the Event and the candidates it was written for, in any order", () => {
+      const checkpoint = buildSpeakerSuggestionCheckpoint(context(eventId, [bobId, aliceId]), undefined, [
+        "SPEAKER_00",
+      ]);
+
+      expect(checkpoint).toEqual({ proposedSpeakers: ["SPEAKER_00"], eventId, candidateIds: [aliceId, bobId].sort() });
+      expect(isSpeakerSuggestionCurrent(checkpoint, context(eventId, [aliceId, bobId]))).toBe(true);
+      expect(isSpeakerSuggestionCurrent(checkpoint, context(eventId, [aliceId]))).toBe(false);
+      expect(isSpeakerSuggestionCurrent(checkpoint, context(eventId, [aliceId, bobId, randomUUID()]))).toBe(false);
+      expect(isSpeakerSuggestionCurrent(checkpoint, context(randomUUID(), [aliceId, bobId]))).toBe(false);
+      expect(isSpeakerSuggestionCurrent(checkpoint, context(null, [aliceId, bobId]))).toBe(false);
+    });
+
+    it("counts an absent, an old and an unreadable checkpoint as different, and a no-Event one as current for no Event", () => {
+      expect(isSpeakerSuggestionCurrent(undefined, context(null, []))).toBe(false);
+      expect(isSpeakerSuggestionCurrent({ proposedSpeakers: ["SPEAKER_00"] }, context(null, []))).toBe(false);
+      expect(isSpeakerSuggestionCurrent({ proposedSpeakers: "SPEAKER_00" }, context(null, []))).toBe(false);
+      const noEvent = buildSpeakerSuggestionCheckpoint(context(null, []), undefined, []);
+      expect(noEvent).toEqual({ proposedSpeakers: [], eventId: null, candidateIds: [] });
+      expect(isSpeakerSuggestionCurrent(noEvent, context(null, []))).toBe(true);
+    });
+
+    it("keeps the keys of an earlier checkpoint and ignores one it cannot read", () => {
+      const earlier = { proposedSpeakers: ["SPEAKER_00"], eventId: null, candidateIds: [] };
+
+      expect(buildSpeakerSuggestionCheckpoint(context(null, []), earlier, ["SPEAKER_01", "SPEAKER_00"])).toMatchObject({
+        proposedSpeakers: ["SPEAKER_00", "SPEAKER_01"],
+      });
+      expect(buildSpeakerSuggestionCheckpoint(context(null, []), "garbage", ["SPEAKER_01"])).toMatchObject({
+        proposedSpeakers: ["SPEAKER_01"],
+      });
+    });
+  });
+
+  /** The hook that asks the speakers again after an edge write (issue gh-1942). */
+  describe("the changed-edge trigger", () => {
+    async function jobKeys(): Promise<string[]> {
+      const { rows } = await pool.query<{ key: string; queue_name: string | null; max_attempts: number }>(
+        `SELECT key, queue_name, max_attempts FROM graphile_worker.jobs
+          WHERE task_identifier = 'transcriptSpeakerSuggestion' ORDER BY key`,
+      );
+      for (const row of rows) {
+        expect(row.queue_name).toBe(`transcript-speaker-suggestion:${getTenantZeroId()}`);
+        expect(row.max_attempts).toBe(3);
+      }
+      return rows.map((row) => row.key);
+    }
+
+    async function clearJobs(): Promise<void> {
+      await pool.query("TRUNCATE graphile_worker._private_jobs RESTART IDENTITY CASCADE");
+    }
+
+    const keyOf = (id: string) => `transcript-speaker-suggestion:${id}`;
+
+    async function createOtherTranscript(): Promise<string> {
+      return withTransaction(pool, async (client) => {
+        const item = await createItemWithClient(client, { databaseId: transcriptsId, properties: { name: "Other" } });
+        await writeComputed(client, transcriptsId, item.id, "segments", SEGMENTS);
+        return item.id;
+      });
+    }
+
+    it("enqueues one job for the transcript when its Event edge is created, and again when it is deleted", async () => {
+      await linkEvent();
+      expect(await jobKeys()).toEqual([keyOf(transcriptId)]);
+      await clearJobs();
+
+      await chokePoint.deleteRelation({
+        relationPropertyId: await propertyIdFor(transcriptsId, "event"),
+        callerItemId: transcriptId,
+        targetItemId: eventId,
+      });
+
+      expect(await jobKeys()).toEqual([keyOf(transcriptId)]);
+    });
+
+    it("enqueues a job for every transcript that shares the Event when a participant is added or removed", async () => {
+      const other = await createOtherTranscript();
+      await linkEvent();
+      await chokePoint.createRelation({
+        relationPropertyId: await propertyIdFor(transcriptsId, "event"),
+        callerItemId: other,
+        targetItemId: eventId,
+      });
+      await clearJobs();
+      const carolId = await createItem(peopleId, "Carol");
+
+      await chokePoint.createRelation({
+        relationPropertyId: await propertyIdFor(eventsId, "people"),
+        callerItemId: eventId,
+        targetItemId: carolId,
+      });
+
+      expect(await jobKeys()).toEqual([keyOf(transcriptId), keyOf(other)].sort());
+      await clearJobs();
+
+      await chokePoint.deleteRelation({
+        relationPropertyId: await propertyIdFor(eventsId, "people"),
+        callerItemId: eventId,
+        targetItemId: carolId,
+      });
+
+      expect(await jobKeys()).toEqual([keyOf(transcriptId), keyOf(other)].sort());
+    });
+
+    it("enqueues nothing for a participant of an Event no transcript is linked to", async () => {
+      await clearJobs();
+
+      await createParticipant("Carol");
+
+      expect(await jobKeys()).toEqual([]);
+    });
+
+    it("enqueues nothing for a participant of an Event whose only transcript is in the Trash", async () => {
+      await linkEvent();
+      await withTransaction(pool, (client) =>
+        itemDeleteWithClient(client, transcriptsId, transcriptId, { queueAffinity: createActionQueueAffinity() }),
+      );
+      await clearJobs();
+
+      await createParticipant("Carol");
+
+      expect(await jobKeys()).toEqual([]);
+    });
+
+    it("enqueues nothing for an update of a participant edge", async () => {
+      await linkEvent();
+      await clearJobs();
+
+      // The server writes the invitation onto the edge, as the calendar module's invitation code does.
+      await chokePoint.updateRelation({
+        relationPropertyId: await propertyIdFor(eventsId, "people"),
+        callerItemId: eventId,
+        targetItemId: aliceId,
+        metadata: { role: "attendee", invitation: ACCEPTED_INVITATION },
+      });
+
+      const { rows } = await pool.query<{ metadata: { invitation?: unknown } }>(
+        `SELECT r.metadata FROM item_relations r WHERE $1 IN (r.item_a, r.item_b) AND $2 IN (r.item_a, r.item_b)`,
+        [eventId, aliceId],
+      );
+      expect(rows[0]?.metadata.invitation).toEqual(ACCEPTED_INVITATION);
+      expect(await jobKeys()).toEqual([]);
+    });
+
+    it("enqueues nothing for another relation of the Event or of the transcript", async () => {
+      await clearJobs();
+      const projectId = await createItem(await databaseIdFor("projects"), "Apollo");
+      await linkEvent();
+      await clearJobs();
+
+      await chokePoint.createRelation({
+        relationPropertyId: await propertyIdFor(eventsId, "project"),
+        callerItemId: eventId,
+        targetItemId: projectId,
+      });
+      await chokePoint.createRelation({
+        relationPropertyId: await propertyIdFor(transcriptsId, "people"),
+        callerItemId: transcriptId,
+        targetItemId: aliceId,
+      });
+
+      expect(await jobKeys()).toEqual([]);
+    });
+
+    it("converges many edge writes onto one job per transcript", async () => {
+      await linkEvent();
+      await createParticipant("Carol");
+      await createParticipant("Dave");
+
+      expect(await jobKeys()).toEqual([keyOf(transcriptId)]);
+    });
+
+    describe("with the Event card of a recording", () => {
+      /** A transcript with a date that no Event overlaps, so the match step left a new-meeting card. */
+      async function eventCard(): Promise<{ cardId: string; cardTranscriptId: string }> {
+        const cardTranscriptId = await withTransaction(pool, async (client) => {
+          const item = await createItemWithClient(
+            client,
+            { databaseId: transcriptsId, properties: { name: "Recorded", date: "2024-03-01T12:00:00.000Z" } },
+            { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+          );
+          return item.id;
+        });
+        await withTransaction(pool, (client) =>
+          matchTranscriptToEvent(client, { transcriptId: cardTranscriptId, durationSeconds: 3600 }),
+        );
+        const { rows } = await pool.query<{ id: string }>(
+          `SELECT i.id FROM items i JOIN item_relations r ON r.item_a = i.id OR r.item_b = i.id
+            WHERE i.database_id = $1 AND i.properties ->> 'kind' = 'transcript' AND $2 IN (r.item_a, r.item_b)`,
+          [proposalsId, cardTranscriptId],
+        );
+        if (rows.length !== 1 || !rows[0]) throw new Error(`Expected one card, found ${rows.length}`);
+        return { cardId: rows[0].id, cardTranscriptId };
+      }
+
+      it("enqueues nothing for a revise of the card to an Event, which is only checked, and one job for its confirm", async () => {
+        const { cardId, cardTranscriptId } = await eventCard();
+        await clearJobs();
+
+        await runInTenant(getTenantZeroId(), () =>
+          withTransaction(pool, (client) =>
+            reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId, {
+              entityKind: "relation",
+              target: eventId,
+              properties: { propertyKey: "event" },
+            }),
+          ),
+        );
+        expect(await jobKeys()).toEqual([]);
+
+        await runInTenant(getTenantZeroId(), () =>
+          withTransaction(pool, (client) =>
+            confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId),
+          ),
+        );
+
+        expect(await jobKeys()).toEqual([keyOf(cardTranscriptId)]);
+      });
+
+      it("enqueues one job for the confirm of a new-meeting card, which writes the participants and the edge", async () => {
+        const { cardId, cardTranscriptId } = await eventCard();
+        await clearJobs();
+
+        await runInTenant(getTenantZeroId(), () =>
+          withTransaction(pool, (client) =>
+            confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId),
+          ),
+        );
+
+        expect(await jobKeys()).toEqual([keyOf(cardTranscriptId)]);
+      });
     });
   });
 });

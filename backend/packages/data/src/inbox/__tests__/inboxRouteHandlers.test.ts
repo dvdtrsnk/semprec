@@ -1597,7 +1597,7 @@ describe("inbox custom route handlers (issue #239)", () => {
       expect(restAfter).toEqual(restBefore);
       expect(historyAfter).toEqual([
         ...(historyBefore as unknown[]),
-        { author: "user", message: "It was the planning meeting", at: expect.any(String) },
+        { id: expect.any(String), author: "user", message: "It was the planning meeting", at: expect.any(String) },
       ]);
       expect((await readCard(cardId)).properties).toEqual(response.item.properties);
     });

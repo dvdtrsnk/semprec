@@ -52,9 +52,9 @@ export interface ReviseProposalFromThreadInput {
  * Throws the `NotFoundError` of a missing proposal unless `subjectItemId` is the source Inbox item of the card:
  * the two are joined by a `sourceInbox` edge. The edge is read `FOR SHARE`, so a removal of it that is still open
  * is waited for and one that committed is seen; the answer is the same for a card of another item as for a card
- * that does not exist.
+ * that does not exist. `splitInboxSourceWithClient` (issue #1939) makes the same check.
  */
-async function assertCardOfSubject(
+export async function assertCardOfSubject(
   client: PoolClient,
   config: ProposalActionConfig,
   card: ItemRow,

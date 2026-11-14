@@ -48,9 +48,11 @@ import {
   createItemWithClient,
   createPasswordResetToken,
   createPendingApprovalRequest,
+  claimSempMessage,
   createSempChatThread,
   createUser,
   finishAgentRun,
+  finishSempMessageTurn,
   generateOpaqueToken,
   getDatabaseByModuleId,
   getPasswordResetTokenByHash,
@@ -85,7 +87,9 @@ import {
   setSempThreadInvalidationHook,
   setInvalidationHook,
   type InvalidationEvent,
+  type MailTransportMessage,
   revokeInvite,
+  sendSempMessage,
   setProjectMcpGrantForAgentPage,
   upsertMcpToolRegistration,
   withTransaction,
@@ -95,6 +99,7 @@ import {
 } from "@semprec/data";
 import { AGENT_TASK_NAMES, CORE_TASK_NAMES, enqueueJob, runOnce, runWorker, type TaskList } from "@semprec/queue";
 import { createDispatcher } from "../app.js";
+import { createChatRun, playReply, type ReplySetup } from "./agentRunReplyFixtures.js";
 import type { CustomRouteDependencies } from "../adapter/customRouteMount.js";
 import { createVoiceChannel, type VoiceIdentity } from "../voiceChannel.js";
 import { SESSION_COOKIE_NAME } from "../authHandler.js";
@@ -145,6 +150,27 @@ const THREAD_TASK_DEPENDENCIES: CustomRouteDependencies = {
 };
 const tmpBlobDir = join(tmpdir(), `semprec-test-blobs-isolation-${randomUUID()}`);
 const filesStorage = new LocalFsBlobStorageWriter(join(tmpBlobDir, "files"));
+/**
+ * What the composition root hands the draft send route (issue gh-1896): a transport that records every message it is
+ * asked to deliver, so a case can tell whose mail reached it, and none reaches a real server.
+ */
+const deliveredMail: MailTransportMessage[] = [];
+const MAIL_SEND_DEPENDENCIES: CustomRouteDependencies = {
+  mailServerClients: {
+    ...MAILBOX_PASSWORD_DEPENDENCIES.mailServerClients,
+    send: {
+      transports: {
+        forMailbox: async () => ({
+          async send(message) {
+            deliveredMail.push(message);
+            return {};
+          },
+        }),
+      },
+      attachmentStorage: { files: filesStorage, mailAttachments: filesStorage },
+    },
+  },
+};
 const noopMailer: PasswordResetMailer = { async sendPasswordResetEmail() {} };
 const moduleRegistry = await loadFullModuleRegistry();
 
@@ -1101,6 +1127,25 @@ function mailboxForDrafts(tenant: TenantFixture): Promise<string> {
   });
 }
 
+/** Gives the mailbox of `tenant` a Sent folder, created the way folder discovery creates it, so a draft in it can be sent. */
+function addSentFolder(tenant: TenantFixture, mailboxId: string): Promise<void> {
+  return inTenantTransaction(tenant.tenantId, async (client) => {
+    const ids = await resolveMailModuleIds(client);
+    const folderProperties = await createChokePoint(pool).listProperties(ids.foldersDatabaseId);
+    const mailboxProperty = folderProperties.find((property) => property.key === "mailbox");
+    if (!mailboxProperty) throw new Error("the Folders database has no mailbox property");
+    await ensureFolderItem(client, {
+      foldersDatabaseId: ids.foldersDatabaseId,
+      mailboxItemId: mailboxId,
+      mailboxRelationPropertyId: mailboxProperty.id,
+      providerId: "SENT",
+      name: "Sent",
+      behavior: "folder",
+      specialPurpose: "sent",
+    });
+  });
+}
+
 /** The body of a create request for a draft in `mailboxId`. */
 function draftBody(mailboxId: string, subject: string): Record<string, unknown> {
   return {
@@ -1204,6 +1249,7 @@ function seedMailThread(
   messageId: string,
   providerId = "message",
   providerThreadId = "thread",
+  attachmentNames: string[] = [],
 ): Promise<string> {
   return runInTenant(fixture.tenantId, () =>
     withTransaction(pool, async (client) => {
@@ -1239,7 +1285,13 @@ function seedMailThread(
             messageId,
             subject: "Isolation",
             envelope: { from: { address: "sender@example.test" } },
-            attachments: [],
+            attachments: attachmentNames.map((filename) => ({
+              filename,
+              contentType: "application/pdf",
+              contentId: null,
+              disposition: "attachment" as const,
+              openStream: () => Readable.from([Buffer.from(filename)]),
+            })),
           },
         }),
         modifyMessageLabels: async () => undefined,
@@ -1263,6 +1315,44 @@ function seedMailThread(
       return result.rows[0].thread_id;
     }),
   );
+}
+
+/** Adds a folder with `specialPurpose` to the mailbox that holds mail thread `threadId`, created the way folder discovery creates it. */
+function addFolderToThreadMailbox(
+  fixture: TenantFixture,
+  threadId: string,
+  providerId: string,
+  specialPurpose: string,
+): Promise<void> {
+  return inTenantTransaction(fixture.tenantId, async (client) => {
+    const ids = await resolveMailModuleIds(client);
+    const folderProperties = await createChokePoint(pool).listProperties(ids.foldersDatabaseId);
+    const mailboxProperty = folderProperties.find((property) => property.key === "mailbox");
+    if (!mailboxProperty) throw new Error("the Folders database has no mailbox property");
+    const holder = await client.query<{ mailbox_item_id: string }>(
+      "SELECT mailbox_item_id FROM mail_message_meta WHERE tenant_id = app_tenant_default() AND thread_id = $1",
+      [threadId],
+    );
+    const mailboxId = holder.rows[0]?.mailbox_item_id;
+    if (!mailboxId) throw new Error("the seeded mail thread has no mailbox");
+    await ensureFolderItem(client, {
+      foldersDatabaseId: ids.foldersDatabaseId,
+      mailboxItemId: mailboxId,
+      mailboxRelationPropertyId: mailboxProperty.id,
+      providerId,
+      name: providerId,
+      behavior: "label",
+      specialPurpose,
+    });
+  });
+}
+
+/** The thread ids `caller`'s Inbox box lists (`GET /api/mail/threads?box=inbox`). */
+async function inboxThreadIds(caller: Caller): Promise<string[]> {
+  const parsed = z
+    .object({ threads: z.array(z.object({ threadId: z.string() })) })
+    .parse(JSON.parse(await sendOk(caller, { method: "GET", path: "/api/mail/threads?box=inbox&limit=200" })));
+  return parsed.threads.map((thread) => thread.threadId);
 }
 
 /**
@@ -1319,6 +1409,45 @@ async function seedThreadProjectAndCompany(
     });
   });
   return { projectName, companyName, domain };
+}
+
+/**
+ * Gives the attachment `fileName` of mail thread `threadId` a project of its own by hand (issue gh-1922), so that the
+ * file's project and link entry differ from the thread's: the link that ingest wrote ends with `broken_by` user.
+ * Returns the project's name.
+ */
+async function seedAttachmentProject(
+  fixture: TenantFixture,
+  threadId: string,
+  fileName: string,
+  marker: string,
+): Promise<string> {
+  const projectName = `${marker}-file-project`;
+  await runInTenant(fixture.tenantId, async () => {
+    const cp = createChokePoint(pool);
+    const found = await withTransaction(pool, async (client) => {
+      const files = await getDatabaseByModuleId(client, "files");
+      const projects = await getDatabaseByModuleId(client, "projects");
+      const { rows } = await client.query<{ id: string }>(
+        `SELECT f.id FROM mail_threads t
+         JOIN mail_message_meta m ON m.tenant_id = t.tenant_id AND m.thread_id = t.id
+         JOIN mail_attachments a ON a.tenant_id = t.tenant_id AND a.message_item_id = m.item_id AND a.filename = $2
+         JOIN items f ON f.tenant_id = t.tenant_id AND f.database_id = $3 AND f.properties->>'name' = a.filename
+         WHERE t.tenant_id = app_tenant_default() AND t.id = $1`,
+        [threadId, fileName, files?.id],
+      );
+      if (!files || !projects || rows.length !== 1 || !rows[0]) throw new Error("Missing Files, Projects or the file");
+      return { files, projects, fileId: rows[0].id };
+    });
+    const relation = (await cp.listProperties(found.files.id)).find((entry) => entry.key === "projects");
+    if (!relation) throw new Error("Missing Files.projects");
+    const project = await cp.createItem({ databaseId: found.projects.id, properties: { name: projectName } });
+    await cp.createRelation(
+      { relationPropertyId: relation.id, callerItemId: found.fileId, targetItemId: project.id },
+      { writerKind: "user" },
+    );
+  });
+  return projectName;
 }
 
 /** A Tasks item of the fixture's tenant linked to mail thread `threadId` through `Threads.tasks`, as a user links it (issue gh-1692). */
@@ -2362,18 +2491,25 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     for (const own of Object.values(ownValues)) expect(answer.text).toContain(own);
   },
   "mail thread detail": async () => {
+    // Each thread brings an attachment whose file has a project of its tenant's own (issue gh-1922).
+    const foreignFile = `foreign-${randomUUID()}.pdf`;
+    const ownFile = `own-${randomUUID()}.pdf`;
     const foreign = await seedMailThread(
       a,
       `<${randomUUID()}@example.test>`,
       `detail-${randomUUID()}`,
       `thread-${randomUUID()}`,
+      [foreignFile],
     );
     const own = await seedMailThread(
       b,
       `<${randomUUID()}@example.test>`,
       `detail-${randomUUID()}`,
       `thread-${randomUUID()}`,
+      [ownFile],
     );
+    const foreignFileProject = await seedAttachmentProject(a, foreign, foreignFile, `detail-${randomUUID()}`);
+    const ownFileProject = await seedAttachmentProject(b, own, ownFile, `detail-${randomUUID()}`);
     // Each thread has a task of its own tenant (issue gh-1692): B's detail lists B's task and never A's.
     const foreignTask = await seedThreadTask(a, foreign);
     const ownTask = await seedThreadTask(b, own);
@@ -2385,19 +2521,31 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(answer.text).not.toContain(foreignTask);
     for (const value of Object.values(foreignValues)) expect(answer.text).not.toContain(value);
     for (const value of Object.values(ownValues)) expect(answer.text).toContain(value);
+    // B's attachment shows B's file project; A's file and its project are nowhere in B's answer.
+    expect(answer.text).toContain(ownFile);
+    expect(answer.text).toContain(ownFileProject);
+    expect(answer.text).toContain("inheritedBroken");
+    expect(answer.text).not.toContain(foreignFile);
+    expect(answer.text).not.toContain(foreignFileProject);
     const result = await expectForeignLikeRandom(b.member, [foreign], ([id]) => ({
       method: "GET",
       path: `/api/mail/threads/${id}`,
     }));
     expect(result.status).toBe(404);
     expect(result.text).not.toContain(foreignTask);
+    expect(result.text).not.toContain(foreignFile);
+    expect(result.text).not.toContain(foreignFileProject);
     for (const value of Object.values(foreignValues)) expect(result.text).not.toContain(value);
     // A reads its own thread with its task, project and company, so the refusal above is a real one.
     const owner = await send(a.member, { method: "GET", path: `/api/mail/threads/${foreign}` });
     expect(owner.status).toBe(200);
     expect(owner.text).toContain(foreignTask);
     for (const value of Object.values(foreignValues)) expect(owner.text).toContain(value);
+    expect(owner.text).toContain(foreignFile);
+    expect(owner.text).toContain(foreignFileProject);
     expect(owner.text).not.toContain(ownTask);
+    expect(owner.text).not.toContain(ownFile);
+    expect(owner.text).not.toContain(ownFileProject);
   },
   // A's mailbox answers B's create like a mailbox that does not exist, and B's draft lands in B's own mailbox, while A
   // itself creates a draft there, so B's refusal is a real one (issue gh-1867).
@@ -2472,6 +2620,36 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     });
     const again = await send(b.member, discard(own.draftId));
     expect(again.status).toBe(404);
+  },
+  // B's POST to send A's draft is answered like one of an id that names no draft: A's draft stays unsent and no
+  // transport is asked to deliver it. B's own draft is delivered once, and A sends its own afterwards, so B's refusal
+  // is a real one (issue gh-1896).
+  "mail draft send": async () => {
+    const foreign = await seedDraft(a);
+    const own = await seedDraft(b);
+    await addSentFolder(a, foreign.mailboxId);
+    await addSentFolder(b, own.mailboxId);
+    const sendRequest = (id: string | undefined): Request => ({ method: "POST", path: `/api/mail/drafts/${id}/send` });
+    const readOfA = () => sendOk(a.member, { method: "GET", path: `/api/mail/drafts/${foreign.draftId}` });
+    const before = await readOfA();
+    const deliveredBefore = deliveredMail.length;
+
+    await leavesAUnchanged(async () => {
+      const refused = await expectForeignLikeRandom(b.member, [foreign.draftId], ([id]) => sendRequest(id));
+      expect(refused.status).toBe(404);
+    });
+    expect(await readOfA()).toBe(before);
+    expect(deliveredMail).toHaveLength(deliveredBefore);
+
+    const answer = await expectExcludesA(b.member, sendRequest(own.draftId), [own.draftId, own.mailboxId]);
+    expect(JSON.parse(answer.text)).toMatchObject({ emailId: own.draftId, mailbox: { id: own.mailboxId } });
+    expect(deliveredMail).toHaveLength(deliveredBefore + 1);
+    expect(deliveredMail.at(-1)?.raw.toString("utf8")).toContain(`Draft of ${b.tenantId}`);
+
+    const owner = await send(a.member, sendRequest(foreign.draftId));
+    expect(owner.status).toBe(200);
+    expect(JSON.parse(owner.text)).toMatchObject({ emailId: foreign.draftId, mailbox: { id: foreign.mailboxId } });
+    expect(deliveredMail.at(-1)?.raw.toString("utf8")).toContain(`Draft of ${a.tenantId}`);
   },
   // B attaches its own new file to its own draft. A's file and A's draft answer B like an id that names nothing, and
   // A's draft lists nothing and A's file stays free for A to attach (issue gh-1895).
@@ -2634,6 +2812,100 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       body: { threadId: foreign, flagged: true },
     });
     expect(await flaggedOf(a.member, foreign)).toBe(true);
+  },
+  // B archives its own thread and trashes another of its own. A's threads answer B like a random thread id and stay in
+  // A's Inbox: A's list shows them before and after B's attempts, and A itself archives and trashes them afterwards, so
+  // B's refusals are real ones (issue gh-1917).
+  "mail thread archive": async () => {
+    const seed = (fixture: TenantFixture) =>
+      seedMailThread(fixture, `<${randomUUID()}@example.test>`, `archive-${randomUUID()}`, `thread-${randomUUID()}`);
+    const foreign = await seed(a);
+    const own = await seed(b);
+    const archive = (id: string): Request => ({ method: "POST", path: `/api/mail/threads/${id}/archive` });
+    expect(await inboxThreadIds(a.member)).toContain(foreign);
+    expect(await inboxThreadIds(b.member)).toContain(own);
+
+    const answer = await expectExcludesA(b.member, archive(own), [own]);
+    expect(JSON.parse(answer.text)).toEqual({ threadId: own, moved: 1 });
+    expect(await inboxThreadIds(b.member)).not.toContain(own);
+
+    const refused = await expectForeignLikeRandom(b.member, [foreign], ([id]) => archive(id!));
+    expect(refused.status).toBe(404);
+    expect(await inboxThreadIds(a.member)).toContain(foreign);
+
+    const ownerAnswer = await send(a.member, archive(foreign));
+    expect({ status: ownerAnswer.status, body: JSON.parse(ownerAnswer.text) }).toEqual({
+      status: 200,
+      body: { threadId: foreign, moved: 1 },
+    });
+    expect(await inboxThreadIds(a.member)).not.toContain(foreign);
+  },
+  "mail thread trash": async () => {
+    const seed = async (fixture: TenantFixture) => {
+      const threadId = await seedMailThread(
+        fixture,
+        `<${randomUUID()}@example.test>`,
+        `trash-${randomUUID()}`,
+        `thread-${randomUUID()}`,
+      );
+      await addFolderToThreadMailbox(fixture, threadId, "TRASH", "trash");
+      return threadId;
+    };
+    const foreign = await seed(a);
+    const own = await seed(b);
+    const trash = (id: string): Request => ({ method: "POST", path: `/api/mail/threads/${id}/trash` });
+    expect(await inboxThreadIds(a.member)).toContain(foreign);
+
+    const answer = await expectExcludesA(b.member, trash(own), [own]);
+    expect(JSON.parse(answer.text)).toEqual({ threadId: own, moved: 1 });
+    expect(await inboxThreadIds(b.member)).not.toContain(own);
+
+    const refused = await expectForeignLikeRandom(b.member, [foreign], ([id]) => trash(id!));
+    expect(refused.status).toBe(404);
+    expect(await inboxThreadIds(a.member)).toContain(foreign);
+
+    const ownerAnswer = await send(a.member, trash(foreign));
+    expect({ status: ownerAnswer.status, body: JSON.parse(ownerAnswer.text) }).toEqual({
+      status: 200,
+      body: { threadId: foreign, moved: 1 },
+    });
+    expect(await inboxThreadIds(a.member)).not.toContain(foreign);
+  },
+  // Both tenants archive their own thread, then B restores its own. A's archived thread answers B like a random thread id
+  // and stays in A's Archive: A's Inbox does not list it before and after B's attempt, and A itself restores it
+  // afterwards, so B's refusal is a real one (issue gh-2033).
+  "mail thread restore": async () => {
+    const seed = async (fixture: TenantFixture) => {
+      const threadId = await seedMailThread(
+        fixture,
+        `<${randomUUID()}@example.test>`,
+        `restore-${randomUUID()}`,
+        `thread-${randomUUID()}`,
+      );
+      const archived = await send(fixture.member, { method: "POST", path: `/api/mail/threads/${threadId}/archive` });
+      expect(archived.status).toBe(200);
+      return threadId;
+    };
+    const foreign = await seed(a);
+    const own = await seed(b);
+    const restore = (id: string): Request => ({ method: "POST", path: `/api/mail/threads/${id}/restore` });
+    expect(await inboxThreadIds(a.member)).not.toContain(foreign);
+    expect(await inboxThreadIds(b.member)).not.toContain(own);
+
+    const answer = await expectExcludesA(b.member, restore(own), [own]);
+    expect(JSON.parse(answer.text)).toEqual({ threadId: own, moved: 1 });
+    expect(await inboxThreadIds(b.member)).toContain(own);
+
+    const refused = await expectForeignLikeRandom(b.member, [foreign], ([id]) => restore(id!));
+    expect(refused.status).toBe(404);
+    expect(await inboxThreadIds(a.member)).not.toContain(foreign);
+
+    const ownerAnswer = await send(a.member, restore(foreign));
+    expect({ status: ownerAnswer.status, body: JSON.parse(ownerAnswer.text) }).toEqual({
+      status: 200,
+      body: { threadId: foreign, moved: 1 },
+    });
+    expect(await inboxThreadIds(a.member)).toContain(foreign);
   },
   // No writer of the grant exists by design (issue #1635 is read only): both tenants' projects get
   // `emailSendAutonomous` by direct SQL, as the server operator would set it.
@@ -3925,6 +4197,62 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       [own.approvalId, own.cardId].sort(),
     );
   },
+  // A and B each get an Inbox item and an active type inside this case, so the shared rows of the two tenants stay as
+  // they are. B's change of A's item answers like a random item id, and B's own item with A's type answers like a random
+  // type id; neither leaves an edge on A's or B's item. B's own change then succeeds, so the refusals are not a route
+  // that refuses everything.
+  "change inbox item type": async () => {
+    const seed = (tenant: TenantFixture) =>
+      inTenantTransaction(tenant.tenantId, async (client) => {
+        const inbox = await getDatabaseByModuleId(client, "inbox");
+        const types = await getDatabaseByModuleId(client, "inboxItemTypes");
+        if (!inbox || !types) throw new Error(`no inbox databases in tenant ${tenant.tenantId}`);
+        const type = await createItemWithClient(client, {
+          databaseId: types.id,
+          properties: { name: "Isolation type", emoji: "☑️", status: "active", processingMethod: "pageContent" },
+        });
+        const item = await createItemWithClient(client, {
+          databaseId: inbox.id,
+          properties: { date: "2026-08-28", time: "09:00", text: "Isolation inbox item" },
+        });
+        return { typeId: type.id, itemId: item.id };
+      });
+    const edgeCount = (tenant: TenantFixture, itemId: string, typeId: string) =>
+      inTenantTransaction(tenant.tenantId, async (client) => {
+        const { rows } = await client.query<{ n: number }>(
+          "SELECT count(*)::int AS n FROM item_relations WHERE (item_a = $1 AND item_b = $2) OR (item_a = $2 AND item_b = $1)",
+          [itemId, typeId],
+        );
+        return rows[0]?.n;
+      });
+    const [own, foreign] = [await seed(b), await seed(a)];
+
+    await leavesAUnchanged(async () => {
+      const unknownItem = await expectForeignLikeRandom(b.member, [foreign.itemId], ([id]) => ({
+        method: "PUT",
+        path: `/api/inbox/items/${id}/type`,
+        body: { typeId: own.typeId },
+      }));
+      expect(unknownItem.status).toBe(404);
+      const unknownType = await expectForeignLikeRandom(b.member, [foreign.typeId], ([id]) => ({
+        method: "PUT",
+        path: `/api/inbox/items/${own.itemId}/type`,
+        body: { typeId: id },
+      }));
+      expect(unknownType.status).toBe(400);
+    });
+    expect(await edgeCount(a, foreign.itemId, own.typeId)).toBe(0);
+    expect(await edgeCount(a, foreign.itemId, foreign.typeId)).toBe(0);
+    expect(await edgeCount(b, own.itemId, foreign.typeId)).toBe(0);
+
+    const changed = await send(b.member, {
+      method: "PUT",
+      path: `/api/inbox/items/${own.itemId}/type`,
+      body: { typeId: own.typeId },
+    });
+    expect(changed.status).toBe(200);
+    expect(await edgeCount(b, own.itemId, own.typeId)).toBe(1);
+  },
   // A gets three cards and one pending tick approval, B one card and one approval, on top of whatever the shared rows
   // and earlier cases left; each count rises by its own tenant's rows only, so neither sees the other's.
   "inbox cards count": async () => {
@@ -4749,6 +5077,106 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(invalid.status).toBe(400);
     expect(readString(invalid.text, "error", "code")).toBe("validation_failed");
   },
+  "semp message retry": async () => {
+    // Case rows: one failed reply in each tenant, played with the production writers of the turn.
+    const seedFailedReply = (fixture: TenantFixture) =>
+      inTenantTransaction(fixture.tenantId, async (client) => {
+        const sent = await sendSempMessage(client, { text: "Retry isolation", context: [], hasContext: false });
+        expect(await claimSempMessage(client, sent.threadId, sent.assistantMessageId)).toBe(true);
+        expect(
+          await finishSempMessageTurn(client, sent.assistantMessageId, { status: "error", errorCode: "modelError" }),
+        ).toBe(true);
+        return { threadId: sent.threadId, messageId: sent.assistantMessageId };
+      });
+    const foreign = await seedFailedReply(a);
+    const own = await seedFailedReply(b);
+    const messageIdsOf = (fixture: TenantFixture, threadId: string) =>
+      inTenantTransaction(fixture.tenantId, async (client) => {
+        const { rows } = await client.query<{ id: string }>("SELECT id FROM semp_messages WHERE thread_id = $1", [
+          threadId,
+        ]);
+        return rows.map((row) => row.id);
+      });
+    const foreignMessagesBefore = await messageIdsOf(a, foreign.threadId);
+    await leavesAUnchanged(async () => {
+      const answer = await expectForeignLikeRandom(
+        b.member,
+        [foreign.threadId, foreign.messageId],
+        ([thread, message]) => ({
+          method: "POST",
+          path: `/api/semp/threads/${thread}/messages/${message}/retry`,
+        }),
+      );
+      expect(answer.status).toBe(404);
+      expect(readString(answer.text, "error", "code")).toBe("not_found");
+      // A's message id in a thread of B's own is not found there either, and answers as a random id does.
+      const mixed = await expectForeignLikeRandom(b.member, [foreign.messageId], ([message]) => ({
+        method: "POST",
+        path: `/api/semp/threads/${own.threadId}/messages/${message}/retry`,
+      }));
+      expect(mixed.status).toBe(404);
+    });
+    expect(await messageIdsOf(a, foreign.threadId)).toEqual(foreignMessagesBefore);
+    const retried = await send(b.member, {
+      method: "POST",
+      path: `/api/semp/threads/${own.threadId}/messages/${own.messageId}/retry`,
+    });
+    expect(retried.status, retried.text).toBe(202);
+    expect(await messageIdsOf(b, own.threadId)).toContain(readString(retried.text, "messageId"));
+  },
+  "semp message regenerate": async () => {
+    // Case rows: one finished reply that made no changes in each tenant, played with the production writers of the turn.
+    const seedDoneReply = async (fixture: TenantFixture) => {
+      const setup: ReplySetup = {
+        admin: adminPool,
+        pool,
+        tenant: fixture.tenantId,
+        userId: fixture.member.userId,
+      };
+      const chat = await createChatRun(setup);
+      const played = await playReply(setup, chat, { userText: "Regenerate isolation", startMs: 0 });
+      return { threadId: chat.threadId, messageId: played.assistantMessageId };
+    };
+    const foreign = await seedDoneReply(a);
+    const own = await seedDoneReply(b);
+    const messageIdsOf = (fixture: TenantFixture, threadId: string) =>
+      inTenantTransaction(fixture.tenantId, async (client) => {
+        const { rows } = await client.query<{ id: string; replaced_by_message_id: string | null }>(
+          "SELECT id, replaced_by_message_id FROM semp_messages WHERE thread_id = $1 ORDER BY id",
+          [threadId],
+        );
+        return rows;
+      });
+    const foreignMessagesBefore = await messageIdsOf(a, foreign.threadId);
+    await leavesAUnchanged(async () => {
+      const answer = await expectForeignLikeRandom(
+        b.member,
+        [foreign.threadId, foreign.messageId],
+        ([thread, message]) => ({
+          method: "POST",
+          path: `/api/semp/threads/${thread}/messages/${message}/regenerate`,
+        }),
+      );
+      expect(answer.status).toBe(404);
+      expect(readString(answer.text, "error", "code")).toBe("not_found");
+      // A's message id in a thread of B's own is not found there either, and answers as a random id does.
+      const mixed = await expectForeignLikeRandom(b.member, [foreign.messageId], ([message]) => ({
+        method: "POST",
+        path: `/api/semp/threads/${own.threadId}/messages/${message}/regenerate`,
+      }));
+      expect(mixed.status).toBe(404);
+    });
+    // Nothing of A's reply changed: no replacement was queued and the reply is not marked as replaced.
+    expect(await messageIdsOf(a, foreign.threadId)).toEqual(foreignMessagesBefore);
+    const regenerated = await send(b.member, {
+      method: "POST",
+      path: `/api/semp/threads/${own.threadId}/messages/${own.messageId}/regenerate`,
+    });
+    expect(regenerated.status, regenerated.text).toBe(202);
+    expect((await messageIdsOf(b, own.threadId)).map((row) => row.id)).toContain(
+      readString(regenerated.text, "messageId"),
+    );
+  },
   "agent run detail": async () => {
     await expectForeignLikeRandom(b.member, [a.agentRunId], ([id]) => ({
       method: "GET",
@@ -5084,6 +5512,43 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     }));
     expect(answer.status).toBe(404);
     expectNoneOf(answer.text, [...a.ids, aHeartbeatId], "project heartbeats");
+  },
+  // B's own fresh project (so its counts are known without leaning on rows other cases change) has one enabled user
+  // automation and one granted tool of B's: B's summary shows exactly those, and A's project id answers exactly like a
+  // random id and carries none of A's ids (issue gh-1935).
+  "project agent summary": async () => {
+    const projectItemId = await runInTenant(b.tenantId, () => createTestProjectItem(pool));
+    await runInTenant(b.tenantId, async () => {
+      await withTransaction(pool, async (client) => {
+        await createHeartbeat(client, {
+          projectItemId,
+          name: "Summary automation",
+          rule: { kind: "interval", minutes: 5 },
+          actionId: "noop",
+          origin: "user",
+        });
+        await setProjectMcpGrantForAgentPage(client, {
+          projectItemId,
+          mcpToolRegistrationId: b.mcpToolRegistrationId,
+          granted: true,
+        });
+      });
+    });
+    const own = await sendOk(b.member, { method: "GET", path: `/api/projects/${projectItemId}/agent-summary` });
+    const summary: unknown = JSON.parse(own);
+    expect(summary).toEqual({
+      hasGuidance: false,
+      guidanceUpdatedAt: null,
+      grantedToolCount: 1,
+      enabledHeartbeatCount: 1,
+      attention: { activeDriftFindings: 0, failingHeartbeats: 0, pendingApprovals: 0, needsAttention: false },
+    });
+    const answer = await expectForeignLikeRandom(b.member, [a.projectItemId], ([id]) => ({
+      method: "GET",
+      path: `/api/projects/${id}/agent-summary`,
+    }));
+    expect(answer.status).toBe(404);
+    expectNoneOf(answer.text, a.ids, "project agent summary");
   },
   "mcp tool registration reclassify": () =>
     leavesAUnchanged(async () => {
@@ -6240,6 +6705,13 @@ function ownerProbes(): OwnerProbe[] {
       contains: [a.mcpToolRegistrationId, '"granted":true'],
     },
     {
+      label: "project agent summary",
+      ids: [a.projectItemId],
+      build: get(([id]) => `/api/projects/${id}/agent-summary`),
+      status: 200,
+      contains: ['"hasGuidance":'],
+    },
+    {
       label: "project database grants",
       ids: [a.projectItemId],
       build: get(([id]) => `/api/projects/${id}/database-grants`),
@@ -6820,6 +7292,7 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
         ...MAIL_OAUTH_DEPENDENCIES,
         ...MAILBOX_PASSWORD_DEPENDENCIES,
         ...THREAD_TASK_DEPENDENCIES,
+        ...MAIL_SEND_DEPENDENCIES,
       },
     });
     server = createServer(dispatch);

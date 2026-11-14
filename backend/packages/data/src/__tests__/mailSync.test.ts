@@ -1465,6 +1465,21 @@ describe("IMAP BODYSTRUCTURE walking (issue #26)", () => {
     expect(result.textPlainPart?.part).toBe("1");
     expect(result.textHtmlPart?.part).toBe("2");
   });
+
+  it("keeps an inline text/calendar leaf of a multipart/alternative as an attachment candidate beside both body leaves (issue gh-1929)", () => {
+    const tree: MessageStructureObject = {
+      type: "multipart/alternative",
+      childNodes: [
+        { part: "1", type: "text/plain" },
+        { part: "2", type: "text/html" },
+        { part: "3", type: "text/calendar", disposition: "inline", parameters: { method: "REQUEST" } },
+      ],
+    };
+    const result = walkBodyStructure(tree);
+    expect(result.textPlainPart?.part).toBe("1");
+    expect(result.textHtmlPart?.part).toBe("2");
+    expect(result.attachmentParts.map((p) => [p.part, p.type])).toEqual([["3", "text/calendar"]]);
+  });
 });
 
 describe("HTML sanitization (issue #26)", () => {

@@ -11,7 +11,7 @@ import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { CardinalityViolationError } from "../../errors.js";
 import { withTransaction } from "../../db/pool.js";
 import { runTenantCutoverMigrations } from "../../db/tenantCutoverMigrations.js";
-import { CALENDARS_MODULE_ID } from "../../seed/calendarsKeys.js";
+import { CALENDARS_MODULE_ID, SUBSCRIBED_EVENTS_MODULE_ID } from "../../seed/calendarsKeys.js";
 import { lockTenantSeedInTransaction, seedSystem } from "../../seed/seedSystem.js";
 import {
   createRuntimeRolePool,
@@ -183,6 +183,8 @@ describe("calendars system database (issue #1600)", () => {
       ["calendars", "kind", "select", "system", "calendar"],
       ["calendars", "name", "title", "user", null],
       ["calendars", "notify", "checkbox", "user", null],
+      ["calendars", "subscribedEvents", "relation", "system", "calendar"],
+      ["calendars", "subscriptionUrl", "url", "user", null],
       ["calendars", "systemKey", "text", "system", "calendar"],
       ["events", "calendar", "relation", "user", null],
     ]);
@@ -206,11 +208,21 @@ describe("calendars system database (issue #1600)", () => {
          FROM relation_definitions r
          JOIN properties pa ON pa.id = r.property_id_a
          JOIN properties pb ON pb.id = r.property_id_b
-        WHERE r.tenant_id = $1 AND (pa.database_id = $2 OR pb.database_id = $2)`,
+        WHERE r.tenant_id = $1 AND (pa.database_id = $2 OR pb.database_id = $2)
+        ORDER BY pa.key`,
       [tenantId, calendarsId],
     );
+    const subscribedEventsId = await databaseId(tenantId, SUBSCRIBED_EVENTS_MODULE_ID);
+    if (!subscribedEventsId) throw new Error("Seeded tenant has no subscribed events database");
     expect(definitions).toEqual([
       { cardinality: "one_to_many", a_database: calendarsId, a_key: "events", b_database: eventsId, b_key: "calendar" },
+      {
+        cardinality: "one_to_many",
+        a_database: calendarsId,
+        a_key: "subscribedEvents",
+        b_database: subscribedEventsId,
+        b_key: "calendar",
+      },
     ]);
 
     const rows = await calendars(tenantId);
@@ -334,11 +346,26 @@ describe("calendars system database (issue #1600)", () => {
       const calendarsId = await databaseId(tenantId, CALENDARS_MODULE_ID);
       const eventsId = await databaseId(tenantId, "events");
       const projectsId = await databaseId(tenantId, "projects");
+      // Looked up through the runtime pool: a superuser lookup inside the transaction would see every tenant's database.
+      const subscribedEventsId = await databaseId(tenantId, SUBSCRIBED_EVENTS_MODULE_ID);
       if (!calendarsId || !eventsId || !projectsId) throw new Error("Seeded tenant is missing a database");
       await withTenantTransaction(adminPool, tenantId, async (client) => {
         const calendarsDb = await databasesStore.getDatabase(client, calendarsId);
         if (!calendarsDb) throw new Error("Calendars database missing");
         const events = { id: eventsId };
+        // The subscribed events database (issue gh-1962) and its relation to Calendars did not exist before #1600 either.
+        if (subscribedEventsId) {
+          await client.query(
+            `DELETE FROM relation_definitions
+              WHERE property_id_a IN (SELECT id FROM properties WHERE database_id = $1 AND key = 'subscribedEvents')`,
+            [calendarsDb.id],
+          );
+          await client.query("DELETE FROM properties WHERE database_id = $1 AND key = 'subscribedEvents'", [
+            calendarsDb.id,
+          ]);
+          await client.query("DELETE FROM properties WHERE database_id = $1", [subscribedEventsId]);
+          await databasesStore.dropDatabaseWithPartition(client, subscribedEventsId);
+        }
         const { rows } = await client.query<{ id: string; definition: string }>(
           "SELECT id, config->>'relationDefinitionId' AS definition FROM properties WHERE database_id = $1 AND key = 'calendar'",
           [events.id],

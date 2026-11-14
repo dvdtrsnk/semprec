@@ -241,6 +241,18 @@ describe("GET /api/mail/threads/:threadId (issue #1632)", () => {
     });
   }
 
+  /**
+   * What the detail adds to an attachment of a thread that has no project (issue gh-1922): no project and, because ingest
+   * links every attachment to its thread's project even before it has one, the inherited link of `Files.projects`.
+   */
+  function shownWithoutProject(files: Awaited<ReturnType<typeof storedAttachments>>) {
+    return files.map((file) => ({
+      ...file,
+      project: null,
+      links: { project: expect.objectContaining({ valueKind: "inherited" }) },
+    }));
+  }
+
   it("returns the four messages of 'Re: Nabídka na web' in date order with the sent and the last attachments", async () => {
     await runInTenant(tenant, async () => {
       const { threadId, first, second, copy, third, last } = await offerThread();
@@ -267,9 +279,9 @@ describe("GET /api/mail/threads/:threadId (issue #1632)", () => {
       expect([second.itemId, copy.itemId]).toContain(reply?.emailId);
       expect(ownReply).toMatchObject({ emailId: third.itemId, isOwn: true, folderPurpose: "sent", attachments: [] });
       expect(latest).toMatchObject({ emailId: last.itemId, isOwn: false, folderPurpose: "inbox" });
-      expect(sent?.attachments).toEqual(await storedAttachments(first.itemId));
+      expect(sent?.attachments).toEqual(shownWithoutProject(await storedAttachments(first.itemId)));
       expect(sent?.attachments).toHaveLength(1);
-      expect(latest?.attachments).toEqual(await storedAttachments(last.itemId));
+      expect(latest?.attachments).toEqual(shownWithoutProject(await storedAttachments(last.itemId)));
       expect(latest?.attachments.map((attachment) => attachment.filename)).toEqual(["cenik.txt", "smlouva.txt"]);
       for (const attachment of [...(sent?.attachments ?? []), ...(latest?.attachments ?? [])]) {
         expect(attachment.blobId).toMatch(/^[0-9a-f-]{36}$/);
@@ -467,7 +479,7 @@ describe("GET /api/mail/threads/:threadId (issue #1632)", () => {
         ["<answer@example.test>", "sent", true],
         ["<draft@example.test>", "drafts", true],
       ]);
-      expect(body.messages.at(-1)?.attachments).toEqual(await storedAttachments(draft.itemId));
+      expect(body.messages.at(-1)?.attachments).toEqual(shownWithoutProject(await storedAttachments(draft.itemId)));
       // The detail header aggregates every live copy, the draft included.
       expect(body).toMatchObject({
         messageCount: 3,
