@@ -5,13 +5,14 @@ import { createRelationPropertyWithClient } from "../chokePoint/relationProperty
 import type { SystemRelationWriteContext } from "../chokePoint/relationEdgeContext.js";
 import { CALENDAR_MODULE_ID } from "../calendar/calendarModuleId.js";
 import { invitationIngestHeartbeat } from "../calendar/invitationIngestAction.js";
+import { invitationReplyHeartbeat } from "../calendar/invitationReplyAction.js";
 import { requireAffectedRows } from "../db/pool.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
 import type { DatabaseRow, PropertyType } from "../types.js";
 import { EMAILS_MODULE_ID, MAILBOXES_MODULE_ID } from "./emailModuleKeys.js";
 import { INVITATIONS_MODULE_ID } from "./invitationsKeys.js";
 import { CALENDARS_MODULE_ID } from "./calendarsKeys.js";
-import { EVENTS_MODULE_ID } from "./tenDatabaseKeys.js";
+import { EVENTS_MODULE_ID, PEOPLE_MODULE_ID } from "./tenDatabaseKeys.js";
 
 /** The `status` options of an invitation; `cancelled` means the organizer cancelled the meeting. */
 const INVITATION_STATUSES = ["pending", "accepted", "tentative", "declined", "acknowledged", "cancelled"] as const;
@@ -65,11 +66,13 @@ const CALENDAR_RELATION_CONTEXT: SystemRelationWriteContext = { ownerProcess: CA
  * the schemas of their targets are locked; the schema of the new database is locked once complete. It
  * creates no rows. It also creates the `calendar.ingestInvitation` heartbeat (issue gh-1929) on the same system project
  * item: it fires on every new Emails item and reads the message's calendar part. A populated tenant that already has
- * the database gets the heartbeat from `calendar/invitationIngestHeartbeatCutoverMigration.ts`.
+ * the database gets the heartbeat from `calendar/invitationIngestHeartbeatCutoverMigration.ts`. The
+ * `calendar.applyInvitationReply` heartbeat (issue gh-1950) is created on the same project item and fires on every new
+ * Emails item as well; a populated tenant gets it from `calendar/invitationReplyHeartbeatCutoverMigration.ts`.
  *
  * Not idempotent on its own: `seedSystem` calls it once for a new tenant, and
  * `calendar/invitationsDatabaseCutoverMigration.ts` calls it only for a tenant without an invitations
- * database. The Events, Emails and Mailboxes databases must already exist.
+ * database. The Events, People, Emails and Mailboxes databases must already exist.
  */
 export async function seedInvitationsDatabaseInTransaction(
   client: PoolClient,
@@ -124,6 +127,19 @@ export async function seedInvitationsDatabaseInTransaction(
       projectItemId: calendarsDatabase.ownerProjectItemId,
       emailsDatabaseId: emails.id,
       invitationsDatabaseId: database.id,
+    }),
+  );
+  const people = await databasesStore.getDatabaseByModuleId(client, PEOPLE_MODULE_ID);
+  if (!people) throw new Error(`The ${PEOPLE_MODULE_ID} database has not been seeded`);
+  const events = await databasesStore.getDatabaseByModuleId(client, EVENTS_MODULE_ID);
+  if (!events) throw new Error(`The ${EVENTS_MODULE_ID} database has not been seeded`);
+  await createHeartbeat(
+    client,
+    invitationReplyHeartbeat({
+      projectItemId: calendarsDatabase.ownerProjectItemId,
+      emailsDatabaseId: emails.id,
+      eventsDatabaseId: events.id,
+      peopleDatabaseId: people.id,
     }),
   );
 }

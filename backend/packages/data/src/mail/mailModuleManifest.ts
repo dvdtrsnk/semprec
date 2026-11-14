@@ -18,10 +18,12 @@ export {
   createMailDraftSendTool,
   createMailDraftUpdateTool,
   createMailThreadGetTool,
+  createMailThreadProposeTaskTool,
   mailDraftCreateArgsSchema,
   mailDraftSendArgsSchema,
   mailDraftUpdateArgsSchema,
   mailThreadGetArgsSchema,
+  mailThreadProposeTaskArgsSchema,
 } from "./mailAgentTools.js";
 export {
   handleMailTriageThreadProject,
@@ -85,6 +87,9 @@ export { createMailboxRemovalRouteHandler } from "./mailboxRemoval.js";
  * runs its handler, which files the approval request of the send (issue gh-1913) and sends nothing, and the generic
  * deferral would put a second approval in front of that request
  * (docs/adr/2026-11-14-the-mail-send-tool-is-declared-without-deferral-and-files-its-own-approval-request.md).
+ * `mail.thread.proposeTask` (issue gh-2035, capability `mail.taskProposal`, `threadTaskProposals.ts`) proposes a task of a
+ * thread as a card in the Inbox and creates none, so it declares no approval either; the user's confirm of the card
+ * creates the task (issue gh-2034).
  *
  * `workers` declares the per-mailbox sync worker (module-contract issue #110's generic
  * per-active-row mechanism, `moduleWorkers.ts`): one instance per active Mailboxes row,
@@ -116,7 +121,7 @@ export const manifest: ModuleManifest = {
       clientVisible: true,
     },
   ],
-  capabilities: ["mail.read", "mail.draft", "mail.send"],
+  capabilities: ["mail.read", "mail.draft", "mail.send", "mail.taskProposal"],
   agentTools: [
     {
       name: "mail.thread.get",
@@ -151,6 +156,17 @@ export const manifest: ModuleManifest = {
       argumentSchemaExport: "mailDraftSendArgsSchema",
       capability: "mail.send",
       approval: "none",
+    },
+    // Issue gh-2035. It writes one Processing proposals card and its source edge and no task: the user's confirm of the card
+    // creates the task, so nothing outside the Inbox changes until then and no approval is needed
+    // (docs/adr/2026-10-28-module-agent-tools-approval-and-grants.md). The capability is granted with the mail databases.
+    {
+      name: "mail.thread.proposeTask",
+      handlerExport: "createMailThreadProposeTaskTool",
+      argumentSchemaExport: "mailThreadProposeTaskArgsSchema",
+      capability: "mail.taskProposal",
+      approval: "none",
+      riskClass: "write",
     },
   ],
   viewTypes: [MAILBOX_CLIENT_VIEW_TYPE],

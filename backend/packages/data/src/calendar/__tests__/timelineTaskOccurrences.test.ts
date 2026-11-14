@@ -588,6 +588,7 @@ describe("calendar timeline: recurring task occurrences (issue gh-1886)", () => 
     expect(Object.keys(virtual ?? {}).sort()).toEqual(
       [
         "allDay",
+        "attendance",
         "calendarId",
         "counts",
         "date",

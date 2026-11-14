@@ -188,6 +188,14 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
     return rows[0].properties;
   }
 
+  /**
+   * Makes the card one written before `referencedItemIds` existed, so the trash of its project does not invalidate it (issue
+   * #1916) and the test reaches the confirm's own validation of its targets. No current writer produces that state.
+   */
+  async function forgetReferencedItems(cardId: string): Promise<void> {
+    await pool.query("UPDATE items SET properties = properties - 'referencedItemIds' WHERE id = $1", [cardId]);
+  }
+
   describe("confirm", () => {
     it.each(["create Event", "link existing Event"] as const)(
       "attributes changed transcript event link during %s confirmation and rollback",
@@ -454,6 +462,7 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
       const staleProjectId = await createItem(projectsId, "Deleted project");
       const eventsBefore = await eventIds();
       await revise(cardId, { ...createEvent(), relations: { project: [staleProjectId] } });
+      await forgetReferencedItems(cardId);
       await createChokePoint(pool).softDeleteItem(projectsId, staleProjectId);
       await expect(confirm(cardId)).rejects.toMatchObject({ status: 400, code: "validation_failed" });
       expect(await eventIds()).toEqual(eventsBefore);
@@ -872,6 +881,7 @@ describe("Transcript proposal confirm/revise (issue #184)", () => {
       await mapSpeaker(transcriptId, "SPEAKER_00", await createPerson("Alice"));
       const proposal = (await cardProperties(cardId)).proposal as ProposalEnvelope;
       await revise(cardId, { ...proposal, relations: { project: [staleProjectId] } });
+      await forgetReferencedItems(cardId);
       await createChokePoint(pool).softDeleteItem(projectsId, staleProjectId);
 
       await expect(confirm(cardId)).rejects.toMatchObject({ status: 400, code: "validation_failed" });

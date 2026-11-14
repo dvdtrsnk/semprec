@@ -26,7 +26,9 @@ import {
   createTasksDayRolloverAction,
   createNextOccurrenceRefreshAction,
   createInvitationIngestAction,
+  createInvitationReplyAction,
   CALENDAR_INGEST_INVITATION_ACTION_ID,
+  CALENDAR_APPLY_INVITATION_REPLY_ACTION_ID,
   LocalFsBlobStorageWriter,
   resolveBlobStorageDir,
   NEXT_OCCURRENCE_REFRESH_ACTION_ID,
@@ -74,11 +76,14 @@ export function createApiActionRegistry(pool: Pool, moduleRegistry: ModuleRegist
   registry.set(TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID, createTranscriptionRequeueSweepAction(pool));
   registry.set(TASKS_DAY_ROLLOVER_ACTION_ID, createTasksDayRolloverAction(pool));
   registry.set(NEXT_OCCURRENCE_REFRESH_ACTION_ID, createNextOccurrenceRefreshAction(pool));
+  const mailAttachmentStorage = new LocalFsBlobStorageWriter(resolveBlobStorageDir("MAIL_ATTACHMENTS_DIR"));
   registry.set(
     CALENDAR_INGEST_INVITATION_ACTION_ID,
-    createInvitationIngestAction(pool, {
-      storage: new LocalFsBlobStorageWriter(resolveBlobStorageDir("MAIL_ATTACHMENTS_DIR")),
-    }),
+    createInvitationIngestAction(pool, { storage: mailAttachmentStorage }),
+  );
+  registry.set(
+    CALENDAR_APPLY_INVITATION_REPLY_ACTION_ID,
+    createInvitationReplyAction(pool, { storage: mailAttachmentStorage }),
   );
   registry.set(SEMPREC_TICK_ACTION_ID, createSemprecTickAction(pool, createProposalComputation({ pool, gateway })));
   registry.set(AGENT_GUIDANCE_DRIFT_ACTION_ID, (_actionConfig, context) =>

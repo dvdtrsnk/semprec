@@ -90,6 +90,13 @@ export interface CalendarTimelineItem {
    * `since`, and for a Task done before today.
    */
   carriedFrom: string | null;
+  /**
+   * How the user answered an invitation that created this Event (issue gh-2008): `"tentative"` when a live
+   * invitation whose `status` is `tentative` links to it through its `event` relation, otherwise `null`. Always
+   * `null` for a Task and for an entry that is not a stored Event. `readCalendarTimeline` fills it after the sources
+   * have read their items.
+   */
+  attendance: "tentative" | null;
   /** The stored item's `updatedAt`, which a write passes back as `ifVersion`. */
   updatedAt: string;
   /**

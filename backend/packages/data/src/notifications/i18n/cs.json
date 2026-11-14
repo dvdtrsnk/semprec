@@ -13,6 +13,7 @@
   "notification.mail_sync_stalled.title": "Synchronizace pošty se zasekla",
   "notification.backup_restore_failed.title": "Test obnovy zálohy selhal",
   "notification.semp_problem.title": "Něco vyžaduje vaši pozornost",
+  "notification.calendar_invitation.title": "{organizer} vás zve: {title}",
   "notification.body.unnamed": "bez názvu",
   "approval.itemDelete": "Smazat „{itemName}“ z „{databaseName}“ ({databaseKey}); propojených položek: {linkedCount}, uchování: {restorableDays} dní. {projectName}",
   "approval.itemDeleteImpact": "Smazat „{itemName}“ z „{databaseName}“ ({databaseKey}); propojených položek: {linkedCount}, instancí v jeho řadě: {seriesInstanceCount}, příloh: {attachmentCount}, událostí, ve kterých je zařazen: {hostEventCount}, uchování: {restorableDays} dní. {projectName}",

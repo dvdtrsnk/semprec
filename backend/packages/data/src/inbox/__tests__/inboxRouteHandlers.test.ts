@@ -2,7 +2,12 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { Pool, PoolClient } from "pg";
-import { setInvalidationHook, type InvalidationEvent } from "../../realtimeHook.js";
+import {
+  setInboxCardsInvalidationHook,
+  setInvalidationHook,
+  type InboxCardsInvalidationEvent,
+  type InvalidationEvent,
+} from "../../realtimeHook.js";
 import { createTenantZeroUser, getTenantZeroId, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { seedSystem } from "../../seed/seedSystem.js";
@@ -12,7 +17,10 @@ import { runInTenant } from "@semprec/shared";
 import { getDatabaseByModuleId, renameDatabase } from "../../chokePoint/databasesStore.js";
 import { createItemWithClient, updateItemWithClient } from "../../chokePoint/itemWrites.js";
 import { createBlob } from "../../blobs/blobsStore.js";
+import { createActionQueueAffinity } from "../../scheduler/actions.js";
 import { createDocStore } from "../../docs/docStore.js";
+import { deleteDocByItemId } from "../../docs/docsStore.js";
+import { deleteItemDependents, itemDeleteWithClient } from "../../chokePoint/itemTrash.js";
 import { createInboxItemWithClient } from "../inboxStore.js";
 import { insertInboxAttachments, listInboxAttachments } from "../inboxAttachmentsStore.js";
 import * as propertiesStore from "../../chokePoint/propertiesStore.js";
@@ -21,19 +29,30 @@ import * as relationsStore from "../../chokePoint/relationsStore.js";
 import { createRelationWithClient, deleteRelationWithClient } from "../../chokePoint/relationOps.js";
 import { getOrCreateJournalItem } from "../../journal/journalStore.js";
 import { createInboxTypeWithClient, type CreateInboxTypeInput } from "../inboxTypesStore.js";
-import { createSemprecTickAction, type ComputeSemprecProposalFn } from "../inboxTickAction.js";
+import { createSemprecTickAction, type ComputeSemprecProposalFn, type ProposalStep } from "../inboxTickAction.js";
 import {
   createConfirmProposalRouteHandler,
   createInboxCardsRouteHandler,
   createInboxTypesRouteHandler,
+  createRecomputeProposalRouteHandler,
   createRejectProposalRouteHandler,
+  createReopenProposalRouteHandler,
+  createResetProposalOverridesRouteHandler,
   createReviseProposalRouteHandler,
   createUpdateProposalValuesRouteHandler,
 } from "../inboxRouteHandlers.js";
-import { matchTranscriptToEvent } from "../../transcription/transcriptEventMatch.js";
+import { createTranscriptEventCard, matchTranscriptToEvent } from "../../transcription/transcriptEventMatch.js";
+import { assignTranscriptSpeaker } from "../../transcription/transcriptSpeakerAssignment.js";
+import { createTranscriptSpeakersRouteHandler } from "../../transcription/transcriptionRouteHandlers.js";
+import { hasCredential } from "../../credentials/externalCredentialsStore.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../../transcription/transcriptionJob.js";
 import { hashIdempotentRequest } from "../idempotentResponsesStore.js";
-import { confirmProposalWithClient, rejectProposalWithClient, reviseProposalWithClient } from "../proposalActions.js";
+import {
+  confirmProposalWithClient,
+  readConfirmationResults,
+  rejectProposalWithClient,
+  reviseProposalWithClient,
+} from "../proposalActions.js";
 import { proposeSpeakerMappings } from "../../transcription/transcriptSpeakerSuggestion.js";
 import { ConflictError, NotFoundError, ValidationError } from "../../errors.js";
 import { createAgentRun } from "../../agentRuns/agentRunsStore.js";
@@ -1239,6 +1258,1567 @@ describe("inbox custom route handlers (issue #239)", () => {
     });
   });
 
+  describe("createReopenProposalRouteHandler (issue #1937)", () => {
+    /** Older than any stored `updatedAt`, so it never equals the version a card holds. */
+    const STALE_VERSION = "2000-01-01T00:00:00.000Z";
+
+    async function storedCard(cardId: string): Promise<ItemRow> {
+      const card = await itemsStore.getItemById(pool, proposalsId, cardId);
+      if (!card) throw new Error(`Card ${cardId} is missing`);
+      return card;
+    }
+
+    function historyOf(item: ItemRow): unknown[] {
+      return z.array(z.unknown()).parse(item.properties.history);
+    }
+
+    /** The stored fields of a card: an update's answer also carries the write's own metadata, which a read of the row has not. */
+    function storedFields(item: ItemRow) {
+      return { id: item.id, properties: item.properties, updatedAt: item.updatedAt };
+    }
+
+    /** The ids of the cards `GET /api/inbox/cards` lists for the tenant's only user. */
+    async function listedCardIds(): Promise<string[]> {
+      const userId = (await createTenantZeroUser(pool)).id;
+      const answer = await createInboxCardsRouteHandler(pool)({ identity: { user: { id: userId, locale: "en" } } });
+      if (!("body" in answer)) throw new Error("expected a raw JSON body");
+      const body = z.object({ cards: z.array(z.object({ cardId: z.string() })) }).parse(answer.body);
+      return body.cards.map((card) => card.cardId);
+    }
+
+    /** Writes properties the tick of these tests never produces (a status, a stored envelope), through the choke point. */
+    async function patchCard(cardId: string, propertiesPatch: Record<string, unknown>): Promise<void> {
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(
+          client,
+          { databaseId: proposalsId, itemId: cardId, propertiesPatch },
+          { allowedSystemKeys: Object.keys(propertiesPatch) },
+        ),
+      );
+    }
+
+    async function reject(cardId: string): Promise<ItemRow> {
+      const answer = await createRejectProposalRouteHandler(pool)({ params: { id: cardId }, body: {} });
+      if (!("item" in answer)) throw new Error("expected an item answer");
+      return answer.item;
+    }
+
+    async function reopen(cardId: string, body: unknown = {}): Promise<ItemRow> {
+      const answer = await createReopenProposalRouteHandler(pool)({ params: { id: cardId }, body });
+      expect(answer.status).toBe(200);
+      if (!("item" in answer)) throw new Error("expected an item answer");
+      return answer.item;
+    }
+
+    /** What a reopen may write: every item's version and every queued Journal recompute job. */
+    async function writtenState(): Promise<{ items: string[]; recomputeJobs: number }> {
+      const items = await pool.query<{ id: string; updated_at: Date }>("SELECT id, updated_at FROM items ORDER BY id");
+      const jobs = await pool.query<{ n: number }>(
+        "SELECT count(*)::int AS n FROM graphile_worker.jobs WHERE task_identifier = 'journalInboxRecompute'",
+      );
+      return {
+        items: items.rows.map((row) => `${row.id} ${row.updated_at.toISOString()}`),
+        recomputeJobs: jobs.rows[0]!.n,
+      };
+    }
+
+    /**
+     * Removes the queued Journal recompute jobs. `graphile_worker.jobs` is a read-only view, so the delete goes to the
+     * table behind it (graphile-worker 0.16, as `inboxTickRecompute.test.ts` does it); a job queued afterwards is the
+     * reopen's own.
+     */
+    async function clearRecomputeJobs(): Promise<void> {
+      await pool.query(
+        `DELETE FROM graphile_worker._private_jobs
+         WHERE task_id IN (SELECT id FROM graphile_worker._private_tasks WHERE identifier = 'journalInboxRecompute')`,
+      );
+    }
+
+    it("returns a rejected card to proposed with the same proposal and overrides, and lists it again", async () => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      await createUpdateProposalValuesRouteHandler(pool)({
+        params: { id: cardId },
+        body: { set: { primary: { name: "Buy oat milk" } } },
+      });
+      const open = await storedCard(cardId);
+      const rejected = await reject(cardId);
+      expect(await listedCardIds()).not.toContain(cardId);
+
+      const item = await reopen(cardId);
+
+      expect(item.id).toBe(cardId);
+      expect(item.properties.status).toBe("proposed");
+      expect(item.properties.proposal).toEqual(open.properties.proposal);
+      expect(item.properties.aiProposal).toEqual(open.properties.aiProposal);
+      expect(item.properties.userOverrides).toEqual({ primary: { name: "Buy oat milk" } });
+      expect(item.properties.userEditedKeys).toEqual(["primary.name"]);
+      expect(item.properties).not.toHaveProperty("results");
+      expect(item.properties).not.toHaveProperty("invalidReason");
+      // The earlier history stays as it was and one `reopened` entry follows it.
+      expect(historyOf(item).slice(0, -1)).toEqual(historyOf(rejected));
+      expect(historyOf(item).at(-1)).toMatchObject({ author: "user", message: "Reopened by user.", kind: "reopened" });
+      expect(await listedCardIds()).toContain(cardId);
+      expect(storedFields(await storedCard(cardId))).toEqual(storedFields(item));
+    });
+
+    it("announces the card to the stack and queues the Journal recompute", async () => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      await reject(cardId);
+      await clearRecomputeJobs();
+      const events: InboxCardsInvalidationEvent[] = [];
+      setInboxCardsInvalidationHook((event) => events.push(event));
+      try {
+        await reopen(cardId);
+      } finally {
+        setInboxCardsInvalidationHook(() => {});
+      }
+
+      expect(events).toEqual([{ op: "updated", cardId }]);
+      expect((await writtenState()).recomputeJobs).toBe(1);
+    });
+
+    it("answers a second reopen with the same card, adds no history entry and writes nothing", async () => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      await reject(cardId);
+      const first = await reopen(cardId);
+      await clearRecomputeJobs();
+      const before = await writtenState();
+
+      const second = await reopen(cardId);
+
+      expect(storedFields(second)).toEqual(storedFields(first));
+      expect(historyOf(second)).toHaveLength(historyOf(first).length);
+      expect(await writtenState()).toEqual(before);
+    });
+
+    it("answers a proposed card unchanged whatever ifVersion says, and writes nothing", async () => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      const before = await storedCard(cardId);
+      const state = await writtenState();
+
+      const item = await reopen(cardId, { ifVersion: STALE_VERSION });
+
+      expect(storedFields(item)).toEqual(storedFields(before));
+      expect(await storedCard(cardId)).toEqual(before);
+      expect(await writtenState()).toEqual(state);
+    });
+
+    it.each(["needsClarification", "invalid", "computing", "computeFailed"])(
+      "refuses a %s card with validation_failed on status and leaves it as it was",
+      async (status) => {
+        const cardId = await createDatabaseProposal("Buy milk");
+        await patchCard(cardId, { status });
+        const before = await storedCard(cardId);
+
+        await expect(
+          createReopenProposalRouteHandler(pool)({ params: { id: cardId }, body: {} }),
+        ).rejects.toMatchObject({
+          status: 400,
+          code: "validation_failed",
+          details: { field: "status", currentStatus: status },
+        });
+
+        expect(await storedCard(cardId)).toEqual(before);
+      },
+    );
+
+    it("answers a stale ifVersion on a rejected card with 409 and the card, which stays rejected", async () => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      await reject(cardId);
+      const before = await storedCard(cardId);
+      const state = await writtenState();
+
+      await expect(
+        createReopenProposalRouteHandler(pool)({ params: { id: cardId }, body: { ifVersion: STALE_VERSION } }),
+      ).rejects.toMatchObject({
+        status: 409,
+        code: "version_conflict",
+        details: { current: { id: cardId, updatedAt: before.updatedAt } },
+      });
+
+      expect(await storedCard(cardId)).toEqual(before);
+      expect(before.properties.status).toBe("rejected");
+      expect(await writtenState()).toEqual(state);
+    });
+
+    it("reopens a rejected card when ifVersion is its current updatedAt", async () => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      await reject(cardId);
+      const { updatedAt } = await storedCard(cardId);
+
+      const item = await reopen(cardId, { ifVersion: updatedAt });
+
+      expect(item.properties.status).toBe("proposed");
+    });
+
+    it("makes the card invalid when its stored envelope no longer validates, and keeps the envelope", async () => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      const tasksId = await databaseIdFor("tasks");
+      // An envelope the tick would refuse (`unknownProperty` is no Tasks property); the tick of these tests never stores one.
+      const envelope = { entityKind: "database", target: tasksId, properties: { unknownProperty: "x" } };
+      await patchCard(cardId, { proposal: envelope, status: "rejected" });
+
+      const item = await reopen(cardId);
+
+      expect(item.properties.status).toBe("invalid");
+      expect(item.properties.proposal).toEqual(envelope);
+      expect(historyOf(item).at(-1)).toMatchObject({ kind: "reopened" });
+      expect(await listedCardIds()).toContain(cardId);
+    });
+
+    it("makes the card invalid when it holds no stored envelope", async () => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      await patchCard(cardId, { proposal: null, status: "rejected" });
+
+      const item = await reopen(cardId);
+
+      expect(item.properties.status).toBe("invalid");
+      expect(item.properties.proposal).toBeNull();
+    });
+
+    it("clears the invalidReason a card kept from before it was discarded", async () => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      const invalidReason = { code: "targetDeleted", field: "project", itemId: randomUUID(), label: "Gone" };
+      await patchCard(cardId, { invalidReason, status: "rejected" });
+
+      const item = await reopen(cardId);
+
+      expect(item.properties.status).toBe("proposed");
+      expect(item.properties.invalidReason).toBeNull();
+    });
+
+    it("keeps the card invalid with its sourceDeleted reason while the source Inbox item is still deleted", async () => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      // The id of an Inbox item that does not exist stands for the deleted source the tick marked the card with.
+      const invalidReason = { code: "sourceDeleted", field: "", itemId: randomUUID(), label: "Gone" };
+      await patchCard(cardId, { invalidReason, status: "rejected" });
+
+      const item = await reopen(cardId);
+
+      expect(item.properties.status).toBe("invalid");
+      expect(item.properties.invalidReason).toEqual(invalidReason);
+      expect(historyOf(item).at(-1)).toMatchObject({ kind: "reopened" });
+      expect(await storedCard(cardId)).toMatchObject({ properties: { status: "invalid", invalidReason } });
+    });
+
+    it("clears a sourceDeleted reason when its Inbox item is live again, and returns the card to proposed", async () => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      const { rows } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [inboxId]);
+      const invalidReason = { code: "sourceDeleted", field: "", itemId: rows[0]!.id, label: "Back" };
+      await patchCard(cardId, { invalidReason, status: "rejected" });
+
+      const item = await reopen(cardId);
+
+      expect(item.properties.status).toBe("proposed");
+      expect(item.properties.invalidReason).toBeNull();
+    });
+
+    it("leaves a rejected card locked for the tick: its source is not recomputed", async () => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      const { rows } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [inboxId]);
+      const sourceId = rows[0]!.id;
+      const rejected = await reject(cardId);
+      await pool.query('UPDATE items SET properties = properties || \'{"text": "Buy oat milk"}\' WHERE id = $1', [
+        sourceId,
+      ]); // raw: the text of the source changes, which the fingerprint gate would otherwise answer with a recompute
+
+      await createSemprecTickAction(pool, async () => {
+        throw new Error("A rejected card must not be recomputed");
+      })(
+        { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
+        { heartbeatId: "hb", projectItemId: "proj", itemId: sourceId },
+      );
+
+      expect(storedFields(await storedCard(cardId))).toEqual(storedFields(rejected));
+    });
+
+    it("answers 404 for an unknown card id", async () => {
+      await expect(
+        createReopenProposalRouteHandler(pool)({ params: { id: randomUUID() }, body: {} }),
+      ).rejects.toBeInstanceOf(NotFoundError);
+    });
+
+    it("answers 404 for a soft-deleted card", async () => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      await reject(cardId);
+      await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, proposalsId, cardId));
+
+      await expect(createReopenProposalRouteHandler(pool)({ params: { id: cardId }, body: {} })).rejects.toBeInstanceOf(
+        NotFoundError,
+      );
+    });
+
+    it("rejects a request with no `id` path parameter", async () => {
+      await expect(createReopenProposalRouteHandler(pool)({ params: {}, body: {} })).rejects.toThrow(ValidationError);
+    });
+
+    it("accepts a null body as a reopen without ifVersion", async () => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      await reject(cardId);
+
+      const item = await reopen(cardId, null);
+
+      expect(item.properties.status).toBe("proposed");
+    });
+
+    it.each([
+      ["an array body", []],
+      ["a string body", "nope"],
+      ["a number ifVersion", { ifVersion: 7 }],
+      ["a null ifVersion", { ifVersion: null }],
+      ["an empty ifVersion", { ifVersion: "" }],
+      ["a date-only ifVersion", { ifVersion: "2026-11-14" }],
+    ])("refuses %s with validation_failed and leaves the card rejected", async (_label, body) => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      await reject(cardId);
+
+      await expect(createReopenProposalRouteHandler(pool)({ params: { id: cardId }, body })).rejects.toMatchObject({
+        status: 400,
+        code: "validation_failed",
+      });
+
+      expect((await storedCard(cardId)).properties.status).toBe("rejected");
+    });
+  });
+
+  describe("createReopenProposalRouteHandler on a confirmed card (issue #1943)", () => {
+    /** Older than any stored `updatedAt`, so it never equals the version a card holds. */
+    const STALE_VERSION = "2000-01-01T00:00:00.000Z";
+    const EVENT_DATE = "2024-03-01T12:00:00.000Z";
+    let tasksId: string;
+    let transcriptsId: string;
+    let eventsId: string;
+    let peopleId: string;
+
+    beforeEach(async () => {
+      tasksId = await databaseIdFor("tasks");
+      transcriptsId = await databaseIdFor("transcripts");
+      eventsId = await databaseIdFor("events");
+      peopleId = await databaseIdFor("people");
+    });
+
+    type Step = ProposalStep;
+
+    /** A test that runs inside tenant zero, which the relation writes need for the value-link propagation they trigger. */
+    function tenantIt(name: string, body: () => Promise<void>): void {
+      it(name, () => runInTenant(getTenantZeroId(), body));
+    }
+
+    /** The stored fields of a card: an update's answer also carries the write's own metadata, which a read of the row has not. */
+    function storedFields(item: ItemRow) {
+      return { id: item.id, properties: item.properties, updatedAt: item.updatedAt };
+    }
+
+    async function storedCard(cardId: string): Promise<ItemRow> {
+      const card = await itemsStore.getItemById(pool, proposalsId, cardId);
+      if (!card) throw new Error(`Card ${cardId} is missing`);
+      return card;
+    }
+
+    /** An item of `databaseId` in any state, the Trash included. */
+    async function anyItem(itemId: string): Promise<ItemRow> {
+      const [item] = await itemsStore.getItemsByIdsIncludingDeleted(pool, [itemId]);
+      if (!item) throw new Error(`Item ${itemId} is missing`);
+      return item;
+    }
+
+    async function createIn(databaseId: string, properties: Record<string, unknown>): Promise<string> {
+      const item = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId, properties }));
+      return item.id;
+    }
+
+    async function confirmCard(cardId: string, body: Record<string, unknown> = {}): Promise<ItemRow> {
+      const answer = await createConfirmProposalRouteHandler(pool)({ params: { id: cardId }, body });
+      if (!("item" in answer)) throw new Error("expected an item answer");
+      expect(answer.item.properties.status).toBe("confirmed");
+      return answer.item;
+    }
+
+    function callReopen(cardId: string, body: unknown = {}) {
+      return createReopenProposalRouteHandler(pool)({ params: { id: cardId }, body });
+    }
+
+    async function reopenCard(cardId: string, body: unknown = {}): Promise<{ item: ItemRow; keptItems: unknown[] }> {
+      const answer = await callReopen(cardId, body);
+      expect(answer.status).toBe(200);
+      if (!("item" in answer) || answer.keptItems === undefined) throw new Error("expected an item and keptItems");
+      return { item: answer.item, keptItems: answer.keptItems };
+    }
+
+    async function originItemIds(cardId: string): Promise<string[]> {
+      const { rows } = await pool.query<{ item_id: string }>(
+        "SELECT item_id FROM item_origins WHERE proposal_id = $1",
+        [cardId],
+      );
+      return rows.map((row) => row.item_id);
+    }
+
+    async function edgeExists(a: string, b: string): Promise<boolean> {
+      const { rows } = await pool.query<{ n: number }>(
+        "SELECT count(*)::int AS n FROM item_relations WHERE (item_a = $1 AND item_b = $2) OR (item_a = $2 AND item_b = $1)",
+        [a, b],
+      );
+      return rows[0]!.n > 0;
+    }
+
+    function historyOf(item: ItemRow): unknown[] {
+      return z.array(z.unknown()).parse(item.properties.history);
+    }
+
+    /** What an undo may write: every item's version and its trash state, the origin rows and the credentials. */
+    async function writtenState(): Promise<string[]> {
+      const items = await pool.query<{ id: string; updated_at: Date; deleted_at: Date | null }>(
+        "SELECT id, updated_at, deleted_at FROM items ORDER BY id",
+      );
+      const origins = await pool.query<{ item_id: string }>("SELECT item_id FROM item_origins ORDER BY item_id");
+      const edges = await pool.query<{ id: string }>("SELECT id FROM item_relations ORDER BY id");
+      return [
+        ...items.rows.map((row) => `item ${row.id} ${row.updated_at.toISOString()} ${row.deleted_at?.toISOString()}`),
+        ...origins.rows.map((row) => `origin ${row.item_id}`),
+        ...edges.rows.map((row) => `edge ${row.id}`),
+      ];
+    }
+
+    /**
+     * A card the tick never produces (a page insert, a multi-step envelope), created through the choke point with
+     * the system-owned keys the tick writes.
+     */
+    async function createCardWith(envelope: Record<string, unknown>): Promise<string> {
+      const card = await withTransaction(pool, (client) =>
+        createItemWithClient(
+          client,
+          {
+            databaseId: proposalsId,
+            properties: { kind: "inbox", status: "proposed", proposal: envelope, aiProposal: envelope },
+          },
+          { allowedSystemKeys: ["kind", "status", "proposal", "aiProposal"] },
+        ),
+      );
+      return card.id;
+    }
+
+    function stepsEnvelope(target: string, steps: Step[]): Record<string, unknown> {
+      const primary = steps.find((step) => step.role === "primary");
+      return { entityKind: "database", target, properties: primary?.properties ?? {}, operations: steps };
+    }
+
+    tenantIt(
+      "sends the created task to the trash, returns the card to proposed with its values and removes the origin row",
+      async () => {
+        const cardId = await createDatabaseProposal("Buy milk");
+        const open = await storedCard(cardId);
+        const confirmed = await confirmCard(cardId);
+        const taskId = z.string().parse(confirmed.properties.resultItemId);
+        expect(await originItemIds(cardId)).toEqual([taskId]);
+
+        const { item, keptItems } = await reopenCard(cardId);
+
+        expect(item.properties.status).toBe("proposed");
+        expect(item.properties.proposal).toEqual(open.properties.proposal);
+        expect(item.properties.aiProposal).toEqual(open.properties.aiProposal);
+        expect(item.properties.userOverrides).toEqual(open.properties.userOverrides);
+        expect(item.properties.resultItemId).toBeNull();
+        expect(item.properties.resultLabel).toBeNull();
+        expect(readConfirmationResults(item.properties)).toEqual([]);
+        expect(keptItems).toEqual([]);
+        const history = historyOf(item);
+        expect(history.slice(0, -1)).toEqual(historyOf(confirmed));
+        expect(history.at(-1)).toMatchObject({ author: "user", message: "Reopened by user.", kind: "reopened" });
+        expect((await anyItem(taskId)).deletedAt).not.toBeNull();
+        expect(await originItemIds(cardId)).toEqual([]);
+        expect(storedFields(await storedCard(cardId))).toEqual(storedFields(item));
+      },
+    );
+
+    tenantIt("lets the reopened card be confirmed again, which creates a new task", async () => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      const first = z.string().parse((await confirmCard(cardId)).properties.resultItemId);
+      await reopenCard(cardId);
+
+      const second = z.string().parse((await confirmCard(cardId)).properties.resultItemId);
+
+      expect(second).not.toBe(first);
+      expect((await anyItem(first)).deletedAt).not.toBeNull();
+      expect((await anyItem(second)).deletedAt).toBeNull();
+      expect(await originItemIds(cardId)).toEqual([second]);
+    });
+
+    tenantIt("lists the reopened card in GET /api/inbox/cards again", async () => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      await confirmCard(cardId);
+      const userId = (await createTenantZeroUser(pool)).id;
+      const listed = async (): Promise<string[]> => {
+        const answer = await createInboxCardsRouteHandler(pool)({ identity: { user: { id: userId, locale: "en" } } });
+        if (!("body" in answer)) throw new Error("expected a raw JSON body");
+        return z
+          .object({ cards: z.array(z.object({ cardId: z.string() })) })
+          .parse(answer.body)
+          .cards.map((card) => card.cardId);
+      };
+      expect(await listed()).not.toContain(cardId);
+
+      await reopenCard(cardId);
+
+      expect(await listed()).toContain(cardId);
+    });
+
+    tenantIt("announces the card to the stack and queues the Journal recompute", async () => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      await confirmCard(cardId);
+      await pool.query(
+        `DELETE FROM graphile_worker._private_jobs
+         WHERE task_id IN (SELECT id FROM graphile_worker._private_tasks WHERE identifier = 'journalInboxRecompute')`,
+      ); // raw: the view over the jobs is read-only (graphile-worker 0.16); a job queued afterwards is the reopen's own
+      const events: InboxCardsInvalidationEvent[] = [];
+      setInboxCardsInvalidationHook((event) => events.push(event));
+      try {
+        await reopenCard(cardId);
+      } finally {
+        setInboxCardsInvalidationHook(() => {});
+      }
+
+      expect(events).toEqual([{ op: "updated", cardId }]);
+      const jobs = await pool.query<{ n: number }>(
+        "SELECT count(*)::int AS n FROM graphile_worker.jobs WHERE task_identifier = 'journalInboxRecompute'",
+      );
+      expect(jobs.rows[0]!.n).toBe(1);
+    });
+
+    tenantIt(
+      "answers 409 version_conflict with the task when it was edited after the confirmation, and changes nothing",
+      async () => {
+        const cardId = await createDatabaseProposal("Buy milk");
+        const taskId = z.string().parse((await confirmCard(cardId)).properties.resultItemId);
+        await withTransaction(pool, (client) =>
+          updateItemWithClient(client, {
+            databaseId: tasksId,
+            itemId: taskId,
+            propertiesPatch: { name: "Buy oat milk" },
+          }),
+        );
+        const before = await writtenState();
+        const card = await storedCard(cardId);
+
+        await expect(callReopen(cardId)).rejects.toMatchObject({
+          status: 409,
+          code: "version_conflict",
+          details: { itemId: taskId, databaseKey: "tasks", label: "Buy milk" },
+        });
+
+        expect(await writtenState()).toEqual(before);
+        expect(await storedCard(cardId)).toEqual(card);
+        expect(card.properties.status).toBe("confirmed");
+        expect((await anyItem(taskId)).properties.name).toBe("Buy oat milk");
+      },
+    );
+
+    tenantIt("answers 409 when the created task was moved to the trash after the confirmation", async () => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      const taskId = z.string().parse((await confirmCard(cardId)).properties.resultItemId);
+      await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, tasksId, taskId));
+      const before = await writtenState();
+
+      await expect(callReopen(cardId)).rejects.toMatchObject({
+        status: 409,
+        code: "version_conflict",
+        details: { itemId: taskId },
+      });
+
+      expect(await writtenState()).toEqual(before);
+    });
+
+    tenantIt("answers 409 when the created task was deleted for good after the confirmation", async () => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      const taskId = z.string().parse((await confirmCard(cardId)).properties.resultItemId);
+      const task = await anyItem(taskId);
+      await withTransaction(pool, async (client) => {
+        await deleteItemDependents(client, task);
+        await client.query("DELETE FROM items WHERE id = $1", [taskId]); // raw: the purge of an expired Trash row
+      });
+      const before = await writtenState();
+
+      await expect(callReopen(cardId)).rejects.toMatchObject({
+        status: 409,
+        code: "version_conflict",
+        details: { itemId: taskId, databaseKey: "tasks" },
+      });
+
+      expect(await writtenState()).toEqual(before);
+    });
+
+    tenantIt(
+      "checks ifVersion after the status: a stale one answers 409 with the card, the current one reopens it",
+      async () => {
+        const cardId = await createDatabaseProposal("Buy milk");
+        const taskId = z.string().parse((await confirmCard(cardId)).properties.resultItemId);
+        const card = await storedCard(cardId);
+        const before = await writtenState();
+
+        await expect(callReopen(cardId, { ifVersion: STALE_VERSION })).rejects.toMatchObject({
+          status: 409,
+          code: "version_conflict",
+          details: { current: { id: cardId, updatedAt: card.updatedAt } },
+        });
+        expect(await writtenState()).toEqual(before);
+
+        const { item } = await reopenCard(cardId, { ifVersion: card.updatedAt });
+        expect(item.properties.status).toBe("proposed");
+        expect((await anyItem(taskId)).deletedAt).not.toBeNull();
+      },
+    );
+
+    describe("page insert", () => {
+      async function createPageCard(hostId: string, markdown: string): Promise<string> {
+        return createCardWith({
+          entityKind: "pageContent",
+          target: hostId,
+          properties: { markdown, placement: "end" },
+        });
+      }
+
+      tenantIt("removes only the blocks the confirmation inserted", async () => {
+        const hostId = await createIn(await databaseIdFor("projects"), { name: "Host" });
+        const docs = createDocStore(pool);
+        const first = await createPageCard(hostId, "Alpha");
+        const second = await createPageCard(hostId, "Beta");
+        await confirmCard(first);
+        const confirmedSecond = await confirmCard(second);
+        expect((await docs.readPageMarkdown(hostId)).markdown).toBe("Alpha\n\nBeta");
+        const blockIds = readConfirmationResults(confirmedSecond.properties)[0]!.blockIds;
+        expect(blockIds).toHaveLength(1);
+
+        const { item } = await reopenCard(second);
+
+        expect((await docs.readPageMarkdown(hostId)).markdown).toBe("Alpha");
+        expect(item.properties.status).toBe("proposed");
+        expect((await anyItem(hostId)).deletedAt).toBeNull();
+        expect((await anyItem(hostId)).properties.name).toBe("Host");
+      });
+
+      tenantIt("removes the block of an old-shape envelope and keeps the neighbouring blocks", async () => {
+        const hostId = await createIn(await databaseIdFor("projects"), { name: "Host" });
+        const docs = createDocStore(pool);
+        await confirmCard(await createPageCard(hostId, "Alpha"));
+        // The old shape ({ flavour, fields }) writes one legacy block under the card's id, outside the page order.
+        const legacyCardId = await createCardWith({
+          entityKind: "pageContent",
+          target: hostId,
+          properties: { flavour: "paragraph", fields: { content: "Legacy" } },
+        });
+        const confirmed = await confirmCard(legacyCardId);
+        expect(readConfirmationResults(confirmed.properties)[0]!.blockIds).toEqual([legacyCardId]);
+        expect(await docs.getBlock(hostId, legacyCardId)).not.toBeNull();
+
+        const { item } = await reopenCard(legacyCardId);
+
+        expect(item.properties.status).toBe("proposed");
+        expect(await docs.getBlock(hostId, legacyCardId)).toBeNull();
+        expect((await docs.readPageMarkdown(hostId)).markdown).toBe("Alpha");
+      });
+
+      tenantIt("reopens when the user already deleted an inserted block", async () => {
+        const hostId = await createIn(await databaseIdFor("projects"), { name: "Host" });
+        const docs = createDocStore(pool);
+        const cardId = await createPageCard(hostId, "Alpha");
+        const confirmed = await confirmCard(cardId);
+        const [blockId] = readConfirmationResults(confirmed.properties)[0]!.blockIds;
+        await docs.deleteBlock(hostId, blockId!, "user");
+
+        const { item } = await reopenCard(cardId);
+
+        expect(item.properties.status).toBe("proposed");
+        expect((await docs.readPageMarkdown(hostId)).markdown).toBe("");
+      });
+
+      tenantIt("reopens a page insert whose page document is gone, removing nothing", async () => {
+        const hostId = await createIn(await databaseIdFor("projects"), { name: "Host" });
+        const cardId = await createPageCard(hostId, "Alpha");
+        await confirmCard(cardId);
+        await withTransaction(pool, (client) => deleteDocByItemId(client, hostId));
+
+        const { item } = await reopenCard(cardId);
+
+        expect(item.properties.status).toBe("proposed");
+      });
+
+      tenantIt("answers 409 when the page item was changed after the confirmation", async () => {
+        const hostId = await createIn(await databaseIdFor("projects"), { name: "Host" });
+        const cardId = await createPageCard(hostId, "Alpha");
+        await confirmCard(cardId);
+        const projectsDb = await databaseIdFor("projects");
+        await withTransaction(pool, (client) =>
+          updateItemWithClient(client, {
+            databaseId: projectsDb,
+            itemId: hostId,
+            propertiesPatch: { name: "Renamed" },
+          }),
+        );
+        const before = await writtenState();
+
+        await expect(callReopen(cardId)).rejects.toMatchObject({
+          status: 409,
+          details: { itemId: hostId, databaseKey: "projects" },
+        });
+
+        expect(await writtenState()).toEqual(before);
+        expect((await createDocStore(pool).readPageMarkdown(hostId)).markdown).toBe("Alpha");
+      });
+    });
+
+    describe("transcript cards", () => {
+      async function createTranscript(name: string): Promise<string> {
+        return withTransaction(pool, async (client) => {
+          const transcript = await createItemWithClient(
+            client,
+            { databaseId: transcriptsId, properties: { name, date: EVENT_DATE } },
+            { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+          );
+          return transcript.id;
+        });
+      }
+
+      async function propertyIdFor(databaseId: string, key: string): Promise<string> {
+        const { rows } = await pool.query<{ id: string }>(
+          "SELECT id FROM properties WHERE database_id = $1 AND key = $2",
+          [databaseId, key],
+        );
+        if (!rows[0]) throw new Error(`Property '${key}' was not seeded`);
+        return rows[0].id;
+      }
+
+      async function onlyTranscriptCardId(): Promise<string> {
+        const { rows } = await pool.query<{ id: string }>(
+          "SELECT id FROM items WHERE database_id = $1 AND properties->>'kind' = 'transcript' AND deleted_at IS NULL",
+          [proposalsId],
+        );
+        if (rows.length !== 1 || !rows[0]) throw new Error(`Expected one transcript card, found ${rows.length}`);
+        return rows[0].id;
+      }
+
+      /** A transcript with one speaker, its Event with a participant person, and the card that proposes that person for the speaker. */
+      async function createSpeakerCard() {
+        const transcriptId = await createTranscript("Speaker fixture");
+        const personId = await createIn(peopleId, { name: "Alice" });
+        const eventId = await createIn(eventsId, { name: "Meeting", type: "meeting", date: EVENT_DATE });
+        await withTransaction(pool, async (client) => {
+          await itemsStore.writeComputed(client, transcriptsId, transcriptId, "segments", [
+            { speaker: "SPEAKER_01", text: "Hello", startsAt: 0, endsAt: 1 },
+          ]);
+          // The suggestion is proposed only for a person who took part in the transcript's Event.
+          await createRelationWithClient(client, {
+            relationPropertyId: await propertyIdFor(eventsId, "people"),
+            callerItemId: eventId,
+            targetItemId: personId,
+          });
+          await createRelationWithClient(client, {
+            relationPropertyId: await propertyIdFor(transcriptsId, "event"),
+            callerItemId: transcriptId,
+            targetItemId: eventId,
+          });
+          await proposeSpeakerMappings(client, {
+            transcriptId,
+            suggestions: [{ speaker: "SPEAKER_01", personId, reason: "Recognized from the discussion" }],
+          });
+        });
+        return { cardId: await onlyTranscriptCardId(), transcriptId, personId, eventId };
+      }
+
+      /** The transcript's edges to `personId` through its `speakers` relation: the derived `people` links to the same person are not these. */
+      async function speakerEdgeMetadata(transcriptId: string, personId: string): Promise<unknown[]> {
+        const { rows } = await pool.query<{ metadata: unknown }>(
+          `SELECT r.metadata FROM item_relations r
+           JOIN relation_definitions d ON d.id = r.relation_definition_id
+           JOIN properties p ON p.id = d.property_id_a OR p.id = d.property_id_b
+           WHERE p.key = 'speakers' AND p.database_id = $1 AND r.item_a = $2 AND r.item_b = $3`,
+          [transcriptsId, transcriptId, personId],
+        );
+        return rows.map((row) => row.metadata);
+      }
+
+      async function speakerLabels(transcriptId: string): Promise<unknown> {
+        const answer = await createTranscriptSpeakersRouteHandler(pool)({
+          params: { id: transcriptId },
+          identity: { user: { locale: "en" } },
+        });
+        if (!("body" in answer)) throw new Error("expected a raw JSON body");
+        return answer.body;
+      }
+
+      tenantIt(
+        "deletes the speakers edge, keeps an Event participant that existed before the confirmation, and the speakers read shows the placeholder again",
+        async () => {
+          const { cardId, transcriptId, personId, eventId } = await createSpeakerCard();
+          const unmapped = await speakerLabels(transcriptId);
+          await confirmCard(cardId);
+          expect(await speakerLabels(transcriptId)).toEqual({
+            speakers: [{ speaker: "SPEAKER_01", label: "Alice", personId }],
+          });
+          expect(await edgeExists(transcriptId, personId)).toBe(true);
+
+          // The person is an Event participant already (the fixture put them there), so the confirm adds no edge of its own.
+          const { item } = await reopenCard(cardId);
+
+          expect(item.properties.status).toBe("proposed");
+          expect(await speakerEdgeMetadata(transcriptId, personId)).toEqual([]);
+          expect(await speakerLabels(transcriptId)).toEqual(unmapped);
+          expect(unmapped).toEqual({ speakers: [{ speaker: "SPEAKER_01", label: "Speaker 1", personId: null }] });
+          expect(await edgeExists(eventId, personId)).toBe(true);
+        },
+      );
+
+      tenantIt("deletes the Event participant edge a confirmation added", async () => {
+        const { cardId, transcriptId, personId, eventId } = await createSpeakerCard();
+        await withTransaction(pool, async (client) => {
+          await deleteRelationWithClient(client, {
+            relationPropertyId: await propertyIdFor(eventsId, "people"),
+            callerItemId: eventId,
+            targetItemId: personId,
+          });
+        });
+        await confirmCard(cardId);
+        expect(await edgeExists(eventId, personId)).toBe(true);
+
+        await reopenCard(cardId);
+
+        expect(await edgeExists(eventId, personId)).toBe(false);
+        expect(await speakerEdgeMetadata(transcriptId, personId)).toEqual([]);
+      });
+
+      tenantIt("keeps a speakers edge the user has since mapped to another speaker key", async () => {
+        const { cardId, transcriptId, personId } = await createSpeakerCard();
+        await confirmCard(cardId);
+        await withTransaction(pool, async (client) => {
+          await itemsStore.writeComputed(client, transcriptsId, transcriptId, "segments", [
+            { speaker: "SPEAKER_01", text: "Hello", startsAt: 0, endsAt: 1 },
+            { speaker: "SPEAKER_02", text: "Hi", startsAt: 1, endsAt: 2 },
+          ]);
+          // The one edge of the pair now maps the person to the other key; writing it again replaces the metadata.
+          await createRelationWithClient(client, {
+            relationPropertyId: await propertyIdFor(transcriptsId, "speakers"),
+            callerItemId: transcriptId,
+            targetItemId: personId,
+            metadata: { speaker: "SPEAKER_02" },
+          });
+        });
+
+        const { item } = await reopenCard(cardId);
+
+        expect(item.properties.status).toBe("proposed");
+        expect(await speakerEdgeMetadata(transcriptId, personId)).toEqual([{ speaker: "SPEAKER_02" }]);
+      });
+
+      tenantIt(
+        "reverses nothing for a card a manual speaker assignment settled, and keeps the user's edge and participant",
+        async () => {
+          const { cardId, transcriptId, personId, eventId } = await createSpeakerCard();
+          const userId = (await createTenantZeroUser(pool)).id;
+          await withTransaction(pool, (client) =>
+            assignTranscriptSpeaker(client, { transcriptId, speaker: "SPEAKER_01", personId, userId }),
+          );
+          expect((await storedCard(cardId)).properties.status).toBe("confirmed");
+          // A later edit of the transcript would refuse an undo that checks it; a card with no write of its own does not.
+          await withTransaction(pool, (client) =>
+            updateItemWithClient(
+              client,
+              { databaseId: transcriptsId, itemId: transcriptId, propertiesPatch: { name: "Renamed" } },
+              { allowedSystemKeys: ["name"] },
+            ),
+          );
+
+          const { item, keptItems } = await reopenCard(cardId);
+
+          expect(item.properties.status).toBe("proposed");
+          expect(keptItems).toEqual([]);
+          expect(await edgeExists(transcriptId, personId)).toBe(true);
+          expect(await edgeExists(eventId, personId)).toBe(true);
+          expect(await speakerLabels(transcriptId)).toEqual({
+            speakers: [{ speaker: "SPEAKER_01", label: "Alice", personId }],
+          });
+        },
+      );
+
+      tenantIt("trashes the Event a create-Event card made and deletes the transcript's edge to it", async () => {
+        const transcriptId = await createTranscript("Weekly sync");
+        await withTransaction(pool, (client) =>
+          matchTranscriptToEvent(client, { transcriptId, durationSeconds: 3600 }),
+        );
+        const cardId = await onlyTranscriptCardId();
+        const confirmed = await confirmCard(cardId);
+        const eventId = z.string().parse(confirmed.properties.resultItemId);
+        expect(await edgeExists(transcriptId, eventId)).toBe(true);
+
+        const { item } = await reopenCard(cardId);
+
+        expect(item.properties.status).toBe("proposed");
+        expect((await anyItem(eventId)).deletedAt).not.toBeNull();
+        expect(await edgeExists(transcriptId, eventId)).toBe(false);
+        expect(await originItemIds(cardId)).toEqual([]);
+      });
+
+      tenantIt(
+        "keeps the participant edges of the Event a create-Event card made, which restore with the Event",
+        async () => {
+          const transcriptId = await createTranscript("Weekly sync");
+          const personId = await createIn(peopleId, { name: "Alice" });
+          const userId = (await createTenantZeroUser(pool)).id;
+          await withTransaction(pool, async (client) => {
+            await itemsStore.writeComputed(client, transcriptsId, transcriptId, "segments", [
+              { speaker: "SPEAKER_01", text: "Hello", startsAt: 0, endsAt: 1 },
+            ]);
+            await assignTranscriptSpeaker(client, { transcriptId, speaker: "SPEAKER_01", personId, userId });
+            await matchTranscriptToEvent(client, { transcriptId, durationSeconds: 3600 });
+          });
+          const confirmed = await confirmCard(await onlyTranscriptCardId());
+          const eventId = z.string().parse(confirmed.properties.resultItemId);
+          expect(await edgeExists(eventId, personId)).toBe(true);
+
+          await reopenCard(confirmed.id);
+
+          expect((await anyItem(eventId)).deletedAt).not.toBeNull();
+          expect(await edgeExists(eventId, personId)).toBe(true);
+        },
+      );
+
+      tenantIt("keeps a transcript event edge that existed before the confirmation", async () => {
+        const transcriptId = await createTranscript("Weekly sync");
+        await withTransaction(pool, (client) =>
+          matchTranscriptToEvent(client, { transcriptId, durationSeconds: 3600 }),
+        );
+        const cardId = await onlyTranscriptCardId();
+        const eventId = await createIn(eventsId, { name: "Planning", type: "meeting", date: EVENT_DATE });
+        await withTransaction(pool, async (client) => {
+          await createRelationWithClient(client, {
+            relationPropertyId: await propertyIdFor(transcriptsId, "event"),
+            callerItemId: transcriptId,
+            targetItemId: eventId,
+          });
+        });
+        await createReviseProposalRouteHandler(pool)({
+          params: { id: cardId },
+          body: { entityKind: "relation", target: eventId, properties: { propertyKey: "event" } },
+        });
+        await confirmCard(cardId);
+
+        const { item } = await reopenCard(cardId);
+
+        expect(item.properties.status).toBe("proposed");
+        expect(await edgeExists(transcriptId, eventId)).toBe(true);
+      });
+
+      tenantIt("gives a speakers edge the user had mapped before the confirmation its metadata back", async () => {
+        const { cardId, transcriptId, personId } = await createSpeakerCard();
+        await withTransaction(pool, async (client) => {
+          await itemsStore.writeComputed(client, transcriptsId, transcriptId, "segments", [
+            { speaker: "SPEAKER_01", text: "Hello", startsAt: 0, endsAt: 1 },
+            { speaker: "SPEAKER_02", text: "Hi", startsAt: 1, endsAt: 2 },
+          ]);
+          await createRelationWithClient(client, {
+            relationPropertyId: await propertyIdFor(transcriptsId, "speakers"),
+            callerItemId: transcriptId,
+            targetItemId: personId,
+            metadata: { speaker: "SPEAKER_02" },
+          });
+        });
+        await confirmCard(cardId);
+        expect(await speakerEdgeMetadata(transcriptId, personId)).toEqual([{ speaker: "SPEAKER_01" }]);
+
+        const { item } = await reopenCard(cardId);
+
+        expect(item.properties.status).toBe("proposed");
+        expect(await speakerEdgeMetadata(transcriptId, personId)).toEqual([{ speaker: "SPEAKER_02" }]);
+      });
+
+      tenantIt(
+        "removes the edge to the occurrence a relation card linked and leaves the Events item the confirmation materialized",
+        async () => {
+          const series = await createIn(eventsId, {
+            name: "Standup",
+            type: "standup",
+            date: "2026-10-12",
+            timeFrom: "09:00",
+            timeTo: "09:30",
+            recurrence: { kind: "weekdays", days: ["mon", "tue", "wed", "thu", "fri"] },
+          });
+          const transcriptId = await withTransaction(pool, async (client) => {
+            const transcript = await createItemWithClient(
+              client,
+              { databaseId: transcriptsId, properties: { date: "2026-10-14T07:01:00.000Z" } },
+              { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+            );
+            await itemsStore.writeComputed(client, transcriptsId, transcript.id, "segments", [
+              { speaker: "SPEAKER_00", text: "Good morning everyone." },
+            ]);
+            await itemsStore.writeComputed(client, transcriptsId, transcript.id, "durationSeconds", 1200);
+            const match = await matchTranscriptToEvent(client, { transcriptId: transcript.id, durationSeconds: 1200 });
+            if (typeof match === "string" || match.outcome !== "ambiguous") throw new Error("Expected a match card");
+            await createTranscriptEventCard(client, {
+              transcriptId: transcript.id,
+              candidates: match.candidates,
+              recommendation: null,
+            });
+            return transcript.id;
+          });
+          const cardId = await onlyTranscriptCardId();
+          const confirmed = await confirmCard(cardId);
+          const occurrenceId = z.string().parse(confirmed.properties.resultItemId);
+          expect(occurrenceId).not.toBe(series);
+          expect(await edgeExists(transcriptId, occurrenceId)).toBe(true);
+
+          const { item } = await reopenCard(cardId);
+
+          expect(item.properties.status).toBe("proposed");
+          expect(await edgeExists(transcriptId, occurrenceId)).toBe(false);
+          // Trashing the materialized item would read as a cancelled occurrence, so it stays (the ADR of the undo says why).
+          const occurrence = await anyItem(occurrenceId);
+          expect(occurrence.deletedAt).toBeNull();
+          expect(occurrence.properties).toMatchObject({ seriesId: series, occurrenceDate: "2026-10-14" });
+        },
+      );
+
+      tenantIt(
+        "does not bring back the edge to a trashed Event that the confirmation released, and leaves that Event in the trash",
+        async () => {
+          const transcriptId = await createTranscript("Weekly sync");
+          await withTransaction(pool, (client) =>
+            matchTranscriptToEvent(client, { transcriptId, durationSeconds: 3600 }),
+          );
+          const cardId = await onlyTranscriptCardId();
+          const trashedId = await createIn(eventsId, { name: "Old plan", type: "meeting", date: EVENT_DATE });
+          const eventId = await createIn(eventsId, { name: "Planning", type: "meeting", date: EVENT_DATE });
+          await withTransaction(pool, async (client) => {
+            await createRelationWithClient(client, {
+              relationPropertyId: await propertyIdFor(transcriptsId, "event"),
+              callerItemId: transcriptId,
+              targetItemId: trashedId,
+            });
+            await itemDeleteWithClient(client, eventsId, trashedId, { queueAffinity: createActionQueueAffinity() });
+          });
+          await createReviseProposalRouteHandler(pool)({
+            params: { id: cardId },
+            body: { entityKind: "relation", target: eventId, properties: { propertyKey: "event" } },
+          });
+          await confirmCard(cardId);
+          expect(await edgeExists(transcriptId, trashedId)).toBe(false);
+          expect(await edgeExists(transcriptId, eventId)).toBe(true);
+
+          const { item } = await reopenCard(cardId);
+
+          expect(item.properties.status).toBe("proposed");
+          expect(await edgeExists(transcriptId, eventId)).toBe(false);
+          expect(await edgeExists(transcriptId, trashedId)).toBe(false);
+          expect((await anyItem(trashedId)).deletedAt).not.toBeNull();
+        },
+      );
+
+      tenantIt("deletes the transcript's event edge of a card that linked an existing Event", async () => {
+        const transcriptId = await createTranscript("Weekly sync");
+        await withTransaction(pool, (client) =>
+          matchTranscriptToEvent(client, { transcriptId, durationSeconds: 3600 }),
+        );
+        const cardId = await onlyTranscriptCardId();
+        const eventId = await createIn(eventsId, { name: "Planning", type: "meeting", date: EVENT_DATE });
+        await createReviseProposalRouteHandler(pool)({
+          params: { id: cardId },
+          body: { entityKind: "relation", target: eventId, properties: { propertyKey: "event" } },
+        });
+        await confirmCard(cardId);
+        expect(await edgeExists(transcriptId, eventId)).toBe(true);
+
+        await reopenCard(cardId);
+
+        expect(await edgeExists(transcriptId, eventId)).toBe(false);
+        expect((await anyItem(eventId)).deletedAt).toBeNull();
+      });
+    });
+
+    describe("multi-step proposals", () => {
+      tenantIt("restores the values and the relation an update step changed", async () => {
+        const oldArea = await createIn(await databaseIdFor("areas"), { name: "Old" });
+        const newArea = await createIn(await databaseIdFor("areas"), { name: "New" });
+        const projectsDb = await databaseIdFor("projects");
+        const projectId = await createIn(projectsDb, { name: "Before" });
+        const areaProperty = await withTransaction(pool, (client) =>
+          propertiesStore.getPropertyByKey(client, projectsDb, "area"),
+        );
+        if (!areaProperty) throw new Error("Projects has no area property");
+        await withTransaction(pool, (client) =>
+          createRelationWithClient(client, {
+            relationPropertyId: areaProperty.id,
+            callerItemId: projectId,
+            targetItemId: oldArea,
+          }),
+        );
+        const cardId = await createCardWith(
+          stepsEnvelope(projectsDb, [
+            {
+              ref: "project",
+              op: "update",
+              itemId: projectId,
+              role: "primary",
+              properties: { name: "After" },
+              relations: { area: [newArea] },
+              before: { properties: { name: "Before" }, relations: { area: [oldArea] } },
+              after: { properties: { name: "After" }, relations: { area: [newArea] } },
+            },
+          ]),
+        );
+        await confirmCard(cardId);
+        expect((await anyItem(projectId)).properties.name).toBe("After");
+        expect(await edgeExists(projectId, newArea)).toBe(true);
+
+        const { item } = await reopenCard(cardId);
+
+        expect(item.properties.status).toBe("proposed");
+        const project = await anyItem(projectId);
+        expect(project.properties.name).toBe("Before");
+        expect(project.deletedAt).toBeNull();
+        expect(await edgeExists(projectId, oldArea)).toBe(true);
+        expect(await edgeExists(projectId, newArea)).toBe(false);
+      });
+
+      tenantIt("restores the relation of an update step that changed no property", async () => {
+        const oldArea = await createIn(await databaseIdFor("areas"), { name: "Old" });
+        const newArea = await createIn(await databaseIdFor("areas"), { name: "New" });
+        const projectsDb = await databaseIdFor("projects");
+        const projectId = await createIn(projectsDb, { name: "Project" });
+        const areaProperty = await withTransaction(pool, (client) =>
+          propertiesStore.getPropertyByKey(client, projectsDb, "area"),
+        );
+        if (!areaProperty) throw new Error("Projects has no area property");
+        await withTransaction(pool, (client) =>
+          createRelationWithClient(client, {
+            relationPropertyId: areaProperty.id,
+            callerItemId: projectId,
+            targetItemId: oldArea,
+          }),
+        );
+        const cardId = await createCardWith(
+          stepsEnvelope(projectsDb, [
+            {
+              ref: "project",
+              op: "update",
+              itemId: projectId,
+              role: "primary",
+              properties: {},
+              before: { relations: { area: [oldArea] } },
+              after: { relations: { area: [newArea] } },
+            },
+          ]),
+        );
+        await confirmCard(cardId);
+        expect(await edgeExists(projectId, newArea)).toBe(true);
+
+        await reopenCard(cardId);
+
+        expect(await edgeExists(projectId, oldArea)).toBe(true);
+        expect(await edgeExists(projectId, newArea)).toBe(false);
+        expect((await anyItem(projectId)).properties.name).toBe("Project");
+      });
+
+      tenantIt(
+        "answers 409 for an update step whose item was edited after the confirmation, and restores nothing",
+        async () => {
+          const projectsDb = await databaseIdFor("projects");
+          const projectId = await createIn(projectsDb, { name: "Before" });
+          const cardId = await createCardWith(
+            stepsEnvelope(projectsDb, [
+              {
+                ref: "project",
+                op: "update",
+                itemId: projectId,
+                role: "primary",
+                properties: { name: "After" },
+                before: { properties: { name: "Before" } },
+                after: { properties: { name: "After" } },
+              },
+            ]),
+          );
+          await confirmCard(cardId);
+          await withTransaction(pool, (client) =>
+            updateItemWithClient(client, {
+              databaseId: projectsDb,
+              itemId: projectId,
+              propertiesPatch: { name: "Edited by hand" },
+            }),
+          );
+          const before = await writtenState();
+
+          await expect(callReopen(cardId)).rejects.toMatchObject({
+            status: 409,
+            details: { itemId: projectId, databaseKey: "projects", label: "After" },
+          });
+
+          expect(await writtenState()).toEqual(before);
+          expect((await anyItem(projectId)).properties.name).toBe("Edited by hand");
+        },
+      );
+
+      tenantIt("deletes the edge a link step wrote between existing items, and keeps both items", async () => {
+        const areaId = await createIn(await databaseIdFor("areas"), { name: "Area" });
+        const projectsDb = await databaseIdFor("projects");
+        const projectId = await createIn(projectsDb, { name: "Project" });
+        const cardId = await createCardWith(
+          stepsEnvelope(await databaseIdFor("companies"), [
+            { ref: "company", op: "create", databaseKey: "companies", role: "primary", properties: { name: "Acme" } },
+            { ref: "link", op: "link", itemId: projectId, role: "secondary", relations: { area: [areaId] } },
+          ]),
+        );
+        await confirmCard(cardId);
+        expect(await edgeExists(projectId, areaId)).toBe(true);
+
+        const { item } = await reopenCard(cardId);
+
+        expect(item.properties.status).toBe("proposed");
+        expect(await edgeExists(projectId, areaId)).toBe(false);
+        expect((await anyItem(projectId)).deletedAt).toBeNull();
+        expect((await anyItem(areaId)).deletedAt).toBeNull();
+      });
+
+      tenantIt("keeps an edge a link step proposed that existed before the confirmation", async () => {
+        const areaId = await createIn(await databaseIdFor("areas"), { name: "Area" });
+        const projectsDb = await databaseIdFor("projects");
+        const projectId = await createIn(projectsDb, { name: "Project" });
+        const areaProperty = await withTransaction(pool, (client) =>
+          propertiesStore.getPropertyByKey(client, projectsDb, "area"),
+        );
+        if (!areaProperty) throw new Error("Projects has no area property");
+        // The user linked the pair by hand before the card was confirmed; the confirm writes the same pair again.
+        await withTransaction(pool, (client) =>
+          createRelationWithClient(client, {
+            relationPropertyId: areaProperty.id,
+            callerItemId: projectId,
+            targetItemId: areaId,
+          }),
+        );
+        const cardId = await createCardWith(
+          stepsEnvelope(await databaseIdFor("companies"), [
+            { ref: "company", op: "create", databaseKey: "companies", role: "primary", properties: { name: "Acme" } },
+            { ref: "link", op: "link", itemId: projectId, role: "secondary", relations: { area: [areaId] } },
+          ]),
+        );
+        await confirmCard(cardId);
+
+        const { item } = await reopenCard(cardId);
+
+        expect(item.properties.status).toBe("proposed");
+        expect(await edgeExists(projectId, areaId)).toBe(true);
+      });
+
+      tenantIt("restores the metadata of an edge an update step removed", async () => {
+        const eventsDb = await databaseIdFor("events");
+        const peopleDb = await databaseIdFor("people");
+        const eventId = await createIn(eventsDb, { name: "Meeting", type: "meeting", date: EVENT_DATE });
+        const alice = await createIn(peopleDb, { name: "Alice" });
+        const bob = await createIn(peopleDb, { name: "Bob" });
+        const peopleProperty = await withTransaction(pool, (client) =>
+          propertiesStore.getPropertyByKey(client, eventsDb, "people"),
+        );
+        if (!peopleProperty) throw new Error("Events has no people property");
+        await withTransaction(pool, (client) =>
+          createRelationWithClient(client, {
+            relationPropertyId: peopleProperty.id,
+            callerItemId: eventId,
+            targetItemId: alice,
+            metadata: { role: "attendee" },
+          }),
+        );
+        const cardId = await createCardWith(
+          stepsEnvelope(eventsDb, [
+            {
+              ref: "event",
+              op: "update",
+              itemId: eventId,
+              role: "primary",
+              properties: {},
+              before: { relations: { people: [alice] } },
+              after: { relations: { people: [bob] } },
+            },
+          ]),
+        );
+        await confirmCard(cardId);
+        expect(await edgeExists(eventId, alice)).toBe(false);
+        expect(await edgeExists(eventId, bob)).toBe(true);
+
+        await reopenCard(cardId);
+
+        expect(await edgeExists(eventId, bob)).toBe(false);
+        const { rows } = await pool.query<{ metadata: unknown }>(
+          "SELECT metadata FROM item_relations WHERE (item_a = $1 AND item_b = $2) OR (item_a = $2 AND item_b = $1)",
+          [eventId, alice],
+        );
+        expect(rows.map((row) => row.metadata)).toEqual([{ role: "attendee" }]);
+      });
+
+      tenantIt(
+        "trashes every created item of a two-step proposal and leaves the edges between them for a restore",
+        async () => {
+          const cardId = await createCardWith(
+            stepsEnvelope(await databaseIdFor("companies"), [
+              { ref: "company", op: "create", databaseKey: "companies", role: "primary", properties: { name: "Acme" } },
+              {
+                ref: "person",
+                op: "create",
+                databaseKey: "people",
+                role: "secondary",
+                properties: { name: "Jane" },
+                relations: { companies: [{ ref: "company" }] },
+              },
+            ]),
+          );
+          const confirmed = await confirmCard(cardId);
+          const ids = readConfirmationResults(confirmed.properties).map((result) => result.itemId);
+          expect(ids).toHaveLength(2);
+
+          await reopenCard(cardId);
+
+          for (const id of ids) expect((await anyItem(id)).deletedAt).not.toBeNull();
+          expect(await edgeExists(ids[0]!, ids[1]!)).toBe(true);
+          expect(await originItemIds(cardId)).toEqual([]);
+        },
+      );
+
+      tenantIt("applies no step when a later reversal fails, and applies all of them once it can", async () => {
+        const areaId = await createIn(await databaseIdFor("areas"), { name: "Area" });
+        const projectsDb = await databaseIdFor("projects");
+        const projectId = await createIn(projectsDb, { name: "Project" });
+        const otherId = await createIn(projectsDb, { name: "Old restore" });
+        const cardId = await createCardWith(
+          stepsEnvelope(await databaseIdFor("companies"), [
+            { ref: "company", op: "create", databaseKey: "companies", role: "primary", properties: { name: "Acme" } },
+            { ref: "link", op: "link", itemId: projectId, role: "secondary", relations: { area: [areaId] } },
+            {
+              ref: "other",
+              op: "update",
+              itemId: otherId,
+              role: "secondary",
+              properties: { name: "New" },
+              before: { properties: { name: "Old restore" } },
+              after: { properties: { name: "New" } },
+            },
+          ]),
+        );
+        await confirmCard(cardId);
+        // Fault injection: the write that restores the second step's value fails, after the first reversal deleted its edge.
+        await pool.query(`CREATE FUNCTION fail_restore() RETURNS trigger LANGUAGE plpgsql AS
+          $$ BEGIN RAISE EXCEPTION 'injected failure of the second reversal'; END $$`);
+        await pool.query(`CREATE TRIGGER fail_restore BEFORE UPDATE ON items FOR EACH ROW
+          WHEN (NEW.properties->>'name' = 'Old restore') EXECUTE FUNCTION fail_restore()`);
+        try {
+          const before = await writtenState();
+          const card = await storedCard(cardId);
+
+          await expect(callReopen(cardId)).rejects.toThrow(/injected failure/);
+
+          expect(await writtenState()).toEqual(before);
+          expect(await storedCard(cardId)).toEqual(card);
+          expect(await edgeExists(projectId, areaId)).toBe(true);
+          expect((await anyItem(otherId)).properties.name).toBe("New");
+        } finally {
+          await pool.query("DROP TRIGGER fail_restore ON items");
+          await pool.query("DROP FUNCTION fail_restore()");
+        }
+
+        const { item } = await reopenCard(cardId);
+
+        expect(item.properties.status).toBe("proposed");
+        expect(await edgeExists(projectId, areaId)).toBe(false);
+        expect((await anyItem(otherId)).properties.name).toBe("Old restore");
+      });
+    });
+
+    describe("an Inbox attachment moved into Files", () => {
+      async function listInboxAttachmentIds(inboxItemId: string): Promise<string[]> {
+        const rows = await withTransaction(pool, (client) => listInboxAttachments(client, [inboxItemId]));
+        return rows.map((row) => row.attachmentId);
+      }
+
+      async function cardWithAttachmentMove(): Promise<{ cardId: string; inboxItemId: string }> {
+        const type = await withTransaction(pool, (client) =>
+          createInboxTypeWithClient(client, {
+            inboxItemTypesDatabaseId: typesId,
+            name: "Task",
+            emoji: "☑️",
+            processingMethod: "database",
+            targetDatabase: "tasks",
+          }),
+        );
+        const item = await withTransaction(pool, (client) =>
+          createInboxItemWithClient(client, {
+            inboxDatabaseId: inboxId,
+            date: "2026-08-28",
+            time: "09:00",
+            text: "Pay the invoice",
+            type: type.id,
+          }),
+        );
+        const attachmentId = await withTransaction(pool, async (client) => {
+          const blob = await createBlob(client, {
+            mimeType: "application/pdf",
+            byteSize: 2048,
+            storageKey: `blobs/${randomUUID()}`,
+          });
+          await insertInboxAttachments(client, item.id, [{ blobId: blob.id, source: "camera" }]);
+          const [attachment] = await listInboxAttachments(client, [item.id]);
+          if (!attachment) throw new Error("The attachment was not stored");
+          return attachment.attachmentId;
+        });
+        await createSemprecTickAction(pool, async () => ({ properties: { name: "Pay the invoice" } }))(
+          { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
+          { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
+        );
+        const { rows } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [proposalsId]);
+        const cardId = rows[0]!.id;
+        const steps: Step[] = [
+          { ref: "task", op: "create", databaseKey: "tasks", role: "primary", properties: { name: "Pay the invoice" } },
+          {
+            ref: "file",
+            op: "fileFromAttachment",
+            role: "secondary",
+            properties: { attachmentId, name: "Invoice" },
+          },
+        ];
+        const envelope = stepsEnvelope(tasksId, steps);
+        await withTransaction(pool, (client) =>
+          updateItemWithClient(
+            client,
+            {
+              databaseId: proposalsId,
+              itemId: cardId,
+              propertiesPatch: { proposal: envelope, aiProposal: envelope },
+            },
+            { allowedSystemKeys: ["proposal", "aiProposal"] },
+          ),
+        );
+        return { cardId, inboxItemId: item.id };
+      }
+
+      tenantIt("reverses the other steps, keeps the Files item live and lists it in keptItems", async () => {
+        const { cardId, inboxItemId } = await cardWithAttachmentMove();
+        const confirmed = await confirmCard(cardId);
+        const results = readConfirmationResults(confirmed.properties);
+        const filesDatabaseId = await databaseIdFor("files");
+        const taskId = results.find((result) => result.ref === "task")!.itemId;
+        const fileId = results.find((result) => result.ref === "file")!.itemId;
+        expect(await listInboxAttachmentIds(inboxItemId)).toEqual([]);
+        // The Files item is not part of the precondition: an edit after the confirmation does not refuse the undo.
+        await withTransaction(pool, (client) =>
+          updateItemWithClient(client, {
+            databaseId: filesDatabaseId,
+            itemId: fileId,
+            propertiesPatch: { name: "Renamed invoice" },
+          }),
+        );
+
+        const { item, keptItems } = await reopenCard(cardId);
+
+        expect(item.properties.status).toBe("proposed");
+        expect(keptItems).toEqual([
+          { itemId: fileId, databaseKey: "files", label: "Invoice", reason: "attachmentMovedToFiles" },
+        ]);
+        expect((await anyItem(taskId)).deletedAt).not.toBeNull();
+        const file = await anyItem(fileId);
+        expect(file.deletedAt).toBeNull();
+        expect(file.properties.name).toBe("Renamed invoice");
+        // The file keeps its origin row; the task's is gone. The move has no reverse, so the attachment stays moved.
+        expect(await originItemIds(cardId)).toEqual([fileId]);
+        expect(await listInboxAttachmentIds(inboxItemId)).toEqual([]);
+      });
+
+      tenantIt("does not list a kept Files item that the user has since moved to the trash", async () => {
+        const { cardId } = await cardWithAttachmentMove();
+        const confirmed = await confirmCard(cardId);
+        const fileId = readConfirmationResults(confirmed.properties).find((result) => result.ref === "file")!.itemId;
+        const filesDatabaseId = await databaseIdFor("files");
+        await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, filesDatabaseId, fileId));
+
+        const { keptItems } = await reopenCard(cardId);
+
+        expect(keptItems).toEqual([]);
+      });
+    });
+
+    tenantIt("removes the credential stored for a created MCP server, and trashes the server", async () => {
+      const cardId = await createDatabaseProposal("seed");
+      const mcpServersId = await databaseIdFor("mcpServers");
+      const envelope = {
+        entityKind: "database",
+        target: mcpServersId,
+        properties: { name: "Remote tool", connectionConfig: { transport: "sse", url: "https://mcp.example.com/sse" } },
+      };
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(
+          client,
+          { databaseId: proposalsId, itemId: cardId, propertiesPatch: { proposal: envelope, aiProposal: envelope } },
+          { allowedSystemKeys: ["proposal", "aiProposal"] },
+        ),
+      );
+      const confirmed = await confirmCard(cardId, { credential: { credentialType: "api_key", plaintext: "sk-test" } });
+      const serverId = z.string().parse(confirmed.properties.resultItemId);
+      expect(await withTransaction(pool, (client) => hasCredential(client, serverId))).toBe(true);
+
+      await reopenCard(cardId);
+
+      expect(await withTransaction(pool, (client) => hasCredential(client, serverId))).toBe(false);
+      expect((await anyItem(serverId)).deletedAt).not.toBeNull();
+    });
+
+    tenantIt("refuses a confirmed card that recorded no results, and changes nothing", async () => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(
+          client,
+          { databaseId: proposalsId, itemId: cardId, propertiesPatch: { status: "confirmed" } },
+          { allowedSystemKeys: ["status"] },
+        ),
+      );
+      const before = await storedCard(cardId);
+
+      await expect(callReopen(cardId)).rejects.toMatchObject({
+        status: 400,
+        code: "validation_failed",
+        details: { field: "results" },
+      });
+
+      expect(await storedCard(cardId)).toEqual(before);
+    });
+
+    tenantIt("refuses a confirmed card with no stored envelope", async () => {
+      const cardId = await createDatabaseProposal("Buy milk");
+      await confirmCard(cardId);
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(
+          client,
+          { databaseId: proposalsId, itemId: cardId, propertiesPatch: { proposal: null } },
+          { allowedSystemKeys: ["proposal"] },
+        ),
+      );
+
+      await expect(callReopen(cardId)).rejects.toMatchObject({
+        status: 400,
+        code: "validation_failed",
+        details: { field: "proposal" },
+      });
+    });
+
+    tenantIt(
+      "refuses a confirmed card whose envelope has an entityKind this release does not know with 409",
+      async () => {
+        const cardId = await createDatabaseProposal("Buy milk");
+        await confirmCard(cardId);
+        const unknown = { entityKind: "futureKind", target: "x", properties: {} };
+        await withTransaction(pool, (client) =>
+          updateItemWithClient(
+            client,
+            { databaseId: proposalsId, itemId: cardId, propertiesPatch: { proposal: unknown } },
+            { allowedSystemKeys: ["proposal"] },
+          ),
+        );
+
+        await expect(callReopen(cardId)).rejects.toMatchObject({ status: 409, details: { field: "entityKind" } });
+      },
+    );
+  });
+
   describe("ifVersion on confirm and reject (issue #1852)", () => {
     /** Older than any stored `updatedAt`, so it never equals the version a card holds. */
     const STALE_VERSION = "2000-01-01T00:00:00.000Z";
@@ -2242,6 +3822,306 @@ describe("inbox custom route handlers (issue #239)", () => {
           runInTenant(getTenantZeroId(), () => handler({ params: { id: proposalId }, body, ...keyed("key-1") })),
         ).rejects.toThrow(z.ZodError);
       });
+    });
+  });
+
+  describe("createResetProposalOverridesRouteHandler (issue #1912)", () => {
+    async function readCard(id: string): Promise<ItemRow> {
+      const card = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, id));
+      if (!card) throw new Error(`card ${id} not found`);
+      return card;
+    }
+    /** A card with a manual title over the assistant's "Buy milk". */
+    async function editedCard(): Promise<string> {
+      const proposalId = await createDatabaseProposal("Buy milk");
+      await createUpdateProposalValuesRouteHandler(pool)({
+        params: { id: proposalId },
+        body: { set: { primary: { name: "Buy oat milk" } } },
+      });
+      return proposalId;
+    }
+
+    it("returns the card to the assistant's proposal, a thin mapping onto resetProposalOverridesWithClient", async () => {
+      const proposalId = await editedCard();
+      const handler = createResetProposalOverridesRouteHandler(pool);
+
+      const result = await handler({ params: { id: proposalId }, body: {} });
+
+      expect(result.status).toBe(200);
+      expect("item" in result && result.item.id).toBe(proposalId);
+      expect("item" in result && result.item.properties.userEditedKeys).toEqual([]);
+      const stored = await readCard(proposalId);
+      expect(stored.properties.proposal).toMatchObject({ properties: { name: "Buy milk" } });
+      expect(stored.properties.userOverrides).toEqual({});
+    });
+
+    it("takes a null body as an empty one", async () => {
+      const proposalId = await editedCard();
+
+      const result = await createResetProposalOverridesRouteHandler(pool)({ params: { id: proposalId }, body: null });
+
+      expect(result.status).toBe(200);
+      expect((await readCard(proposalId)).properties.userEditedKeys).toEqual([]);
+    });
+
+    it("passes a current ifVersion through", async () => {
+      const proposalId = await editedCard();
+
+      const result = await createResetProposalOverridesRouteHandler(pool)({
+        params: { id: proposalId },
+        body: { ifVersion: (await readCard(proposalId)).updatedAt },
+      });
+
+      expect(result.status).toBe(200);
+      expect((await readCard(proposalId)).properties.userEditedKeys).toEqual([]);
+    });
+
+    it("answers a stale ifVersion with a version conflict that carries the current card, and writes nothing", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+      const stale = (await readCard(proposalId)).updatedAt;
+      await createUpdateProposalValuesRouteHandler(pool)({
+        params: { id: proposalId },
+        body: { set: { primary: { name: "First" } } },
+      });
+      const before = await readCard(proposalId);
+
+      const error = await createResetProposalOverridesRouteHandler(pool)({
+        params: { id: proposalId },
+        body: { ifVersion: stale },
+      }).then(
+        () => null,
+        (err: unknown) => err,
+      );
+
+      expect(error).toBeInstanceOf(ConflictError);
+      expect(error).toMatchObject({ status: 409, code: "version_conflict" });
+      expect(error).toHaveProperty("details.current.id", proposalId);
+      expect(await readCard(proposalId)).toEqual(before);
+    });
+
+    it("answers a card with nothing edited unchanged", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+      const before = await readCard(proposalId);
+
+      const result = await createResetProposalOverridesRouteHandler(pool)({ params: { id: proposalId }, body: {} });
+
+      expect(result.status).toBe(200);
+      expect("item" in result && result.item).toEqual(before);
+      expect(await readCard(proposalId)).toEqual(before);
+    });
+
+    it("refuses a confirmed card with a ValidationError and writes nothing", async () => {
+      const proposalId = await editedCard();
+      await withTransaction(pool, (client) =>
+        confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposalId),
+      );
+      const before = await readCard(proposalId);
+
+      const error = await createResetProposalOverridesRouteHandler(pool)({
+        params: { id: proposalId },
+        body: {},
+      }).then(
+        () => null,
+        (err: unknown) => err,
+      );
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toHaveProperty("details.field", "status");
+      expect(await readCard(proposalId)).toEqual(before);
+    });
+
+    it("rejects a request with no `id` path parameter", async () => {
+      await expect(createResetProposalOverridesRouteHandler(pool)({ params: {}, body: {} })).rejects.toThrow(
+        ValidationError,
+      );
+    });
+
+    it("rejects an unknown proposal id", async () => {
+      await expect(
+        createResetProposalOverridesRouteHandler(pool)({ params: { id: randomUUID() }, body: {} }),
+      ).rejects.toThrow(NotFoundError);
+    });
+
+    it.each([
+      ["an array body", []],
+      ["a string body", "reset"],
+      ["a numeric ifVersion", { ifVersion: 5 }],
+      ["a null ifVersion", { ifVersion: null }],
+      ["an ifVersion that is no timestamp", { ifVersion: "yesterday" }],
+    ])("rejects %s with a ValidationError and writes nothing", async (_label, body) => {
+      const proposalId = await editedCard();
+      const before = await readCard(proposalId);
+
+      const error = await createResetProposalOverridesRouteHandler(pool)({ params: { id: proposalId }, body }).then(
+        () => null,
+        (err: unknown) => err,
+      );
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(await readCard(proposalId)).toEqual(before);
+    });
+  });
+
+  describe("createRecomputeProposalRouteHandler (issue gh-1955)", () => {
+    async function readCard(id: string): Promise<ItemRow> {
+      const card = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, id));
+      if (!card) throw new Error(`card ${id} not found`);
+      return card;
+    }
+    const historyKinds = (card: ItemRow): unknown[] =>
+      z
+        .array(z.object({ kind: z.string().optional() }))
+        .parse(card.properties.history)
+        .map((entry) => entry.kind);
+
+    it("sends the card back to the tick, a thin mapping onto recomputeProposalWithClient", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+      const before = await readCard(proposalId);
+
+      const result = await createRecomputeProposalRouteHandler(pool)({ params: { id: proposalId }, body: {} });
+
+      expect(result.status).toBe(200);
+      expect("item" in result && result.item.id).toBe(proposalId);
+      expect("item" in result && result.item.properties.status).toBe("computing");
+      const stored = await readCard(proposalId);
+      expect(stored.properties).toMatchObject({ status: "computing", proposal: before.properties.proposal });
+      expect(historyKinds(stored).at(-1)).toBe("recompute");
+    });
+
+    it("takes a null body as an empty one", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+
+      const result = await createRecomputeProposalRouteHandler(pool)({ params: { id: proposalId }, body: null });
+
+      expect(result.status).toBe(200);
+      expect((await readCard(proposalId)).properties.status).toBe("computing");
+    });
+
+    it("passes a current ifVersion through", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+
+      const result = await createRecomputeProposalRouteHandler(pool)({
+        params: { id: proposalId },
+        body: { ifVersion: (await readCard(proposalId)).updatedAt },
+      });
+
+      expect(result.status).toBe(200);
+      expect((await readCard(proposalId)).properties.status).toBe("computing");
+    });
+
+    it("answers a stale ifVersion with a version conflict that carries the current card, and writes nothing", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+      const stale = (await readCard(proposalId)).updatedAt;
+      await createUpdateProposalValuesRouteHandler(pool)({
+        params: { id: proposalId },
+        body: { set: { primary: { name: "First" } } },
+      });
+      const before = await readCard(proposalId);
+
+      const error = await createRecomputeProposalRouteHandler(pool)({
+        params: { id: proposalId },
+        body: { ifVersion: stale },
+      }).then(
+        () => null,
+        (err: unknown) => err,
+      );
+
+      expect(error).toBeInstanceOf(ConflictError);
+      expect(error).toMatchObject({ status: 409, code: "version_conflict" });
+      expect(error).toHaveProperty("details.current.id", proposalId);
+      expect(await readCard(proposalId)).toEqual(before);
+    });
+
+    it("answers a card that is computing already unchanged", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+      await createRecomputeProposalRouteHandler(pool)({ params: { id: proposalId }, body: {} });
+      const before = await readCard(proposalId);
+
+      const result = await createRecomputeProposalRouteHandler(pool)({ params: { id: proposalId }, body: {} });
+
+      expect(result.status).toBe(200);
+      expect("item" in result && result.item).toEqual(before);
+      expect(await readCard(proposalId)).toEqual(before);
+    });
+
+    it("refuses a confirmed card with the 409 proposal_locked and writes nothing", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+      await withTransaction(pool, (client) =>
+        confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposalId),
+      );
+      const before = await readCard(proposalId);
+
+      const error = await createRecomputeProposalRouteHandler(pool)({ params: { id: proposalId }, body: {} }).then(
+        () => null,
+        (err: unknown) => err,
+      );
+
+      expect(error).toMatchObject({ status: 409, code: "proposal_locked" });
+      expect(await readCard(proposalId)).toEqual(before);
+    });
+
+    it("addresses the invalidation of the card write to the caller", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+      const userId = randomUUID();
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      try {
+        await createRecomputeProposalRouteHandler(pool)({
+          params: { id: proposalId },
+          body: {},
+          identity: { user: { id: userId } },
+        });
+      } finally {
+        setInvalidationHook(() => {});
+      }
+
+      const cardEvents = events.filter((event) => event.scope === "item" && event.itemId === proposalId);
+      expect(cardEvents).toHaveLength(1);
+      expect(cardEvents[0]).toMatchObject({ op: "update", userId });
+    });
+
+    it("rejects a request with no `id` path parameter", async () => {
+      await expect(createRecomputeProposalRouteHandler(pool)({ params: {}, body: {} })).rejects.toThrow(
+        ValidationError,
+      );
+    });
+
+    it("rejects an id that is no UUID with a ValidationError on id", async () => {
+      const error = await createRecomputeProposalRouteHandler(pool)({ params: { id: "not-a-uuid" }, body: {} }).then(
+        () => null,
+        (err: unknown) => err,
+      );
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toHaveProperty("details.field", "id");
+    });
+
+    it("rejects an unknown proposal id", async () => {
+      await expect(
+        createRecomputeProposalRouteHandler(pool)({ params: { id: randomUUID() }, body: {} }),
+      ).rejects.toThrow(NotFoundError);
+    });
+
+    it.each([
+      ["an array body", []],
+      ["a string body", "recompute"],
+      ["a numeric ifVersion", { ifVersion: 5 }],
+      ["a null ifVersion", { ifVersion: null }],
+      ["an ifVersion that is no timestamp", { ifVersion: "yesterday" }],
+      ["an unknown key", { force: true }],
+    ])("rejects %s with a ValidationError, writes nothing and queues no job", async (_label, body) => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+      const before = await readCard(proposalId);
+      const jobsBefore = (await pool.query("SELECT key, revision FROM graphile_worker.jobs ORDER BY id")).rows;
+
+      const error = await createRecomputeProposalRouteHandler(pool)({ params: { id: proposalId }, body }).then(
+        () => null,
+        (err: unknown) => err,
+      );
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(await readCard(proposalId)).toEqual(before);
+      expect((await pool.query("SELECT key, revision FROM graphile_worker.jobs ORDER BY id")).rows).toEqual(jobsBefore);
     });
   });
 

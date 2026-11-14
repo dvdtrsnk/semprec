@@ -485,6 +485,7 @@ describe("Event occurrences in the calendar timeline (issue gh-1877)", () => {
         timeFrom: "09:00",
         status: null,
         counts: { open: 0, total: 0 },
+        attendance: null,
         updatedAt: expect.any(String),
         readOnly: true,
         seriesId: series,
@@ -580,7 +581,8 @@ describe("Event occurrences in the calendar timeline (issue gh-1877)", () => {
   it("reads with a number of statements that does not depend on the number of series", () =>
     runInTenant(tenant, async () => {
       const f = await setup();
-      await f.eventIn("Work", STANDUP);
+      // One stored Event in the range, so the count includes the read of its attendance (issue gh-2008).
+      await f.materialize(await f.eventIn("Work", STANDUP), "2026-10-14");
       const countStatements = (): Promise<number> =>
         withTransaction(runtime, async (client) => {
           let count = 0;

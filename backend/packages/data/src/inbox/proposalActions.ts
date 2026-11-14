@@ -1,9 +1,7 @@
 import { insertInboxOriginNotes } from "./originNote.js";
 import { isDeepStrictEqual } from "node:util";
-import { DateTime } from "luxon";
 import { z } from "zod";
 import type { PoolClient } from "pg";
-import { getSystemTimezone } from "../systemSettings.js";
 import { deriveEventTimeProperties, eventDateIsInstant } from "../calendar/eventTime.js";
 import { readProposalTimezone } from "./proposalComputedUpdates.js";
 import { assertEventCreateRules } from "../calendar/eventValidationHook.js";
@@ -34,7 +32,8 @@ import {
   type ProposalEntityKind,
   type ProposalEnvelope,
 } from "./inboxTickAction.js";
-import { insertItemOrigins, type ItemOriginSource } from "./itemOriginsStore.js";
+import { insertItemOrigins } from "./itemOriginsStore.js";
+import { requireRelationPropertyId, resolveItemOriginSource } from "./proposalItemOrigin.js";
 import { MAIL_THREAD_CARD_KIND, assertValidMailThreadCard, confirmMailThreadCard } from "./mailThreadCard.js";
 export {
   updateProposalValuesWithClient,
@@ -42,14 +41,19 @@ export {
   type UpdateProposalValuesResult,
 } from "./proposalValueUpdates.js";
 export { reviseProposalFromThreadWithClient, type ReviseProposalFromThreadInput } from "./proposalThreadRevision.js";
+export { resetProposalOverridesWithClient, type ResetProposalOverridesInput } from "./proposalReset.js";
+export { reopenProposalWithClient, type ReopenProposalInput, type ReopenProposalResult } from "./proposalReopen.js";
+export { recomputeProposalWithClient, type RecomputeProposalInput } from "./proposalRecompute.js";
 import { recordTranscriptCardInstruction } from "./transcriptCardInstruction.js";
 export type { ProposalWarning } from "./editorSchema.js";
 import { assertRequiredFieldsHaveValues } from "./proposalEditorRules.js";
 import { assertCardIsNotStdioMcpServer, normalizeEnvelopeForWrite } from "./proposalHiddenFields.js";
 import { appendDroppedValuesEntry, retainValuesForRevise } from "./proposalRetention.js";
 import { executeProposalSteps } from "./proposalSteps.js";
+import { createEdgeRecorder, writeRecordedEdge } from "./proposalEdgeRecording.js";
 import { effectiveStepRelations } from "./proposalStepGraph.js";
 import { enqueueJournalInboxRecomputeForProposal } from "./journalInboxCompute.js";
+import { referencedItemIdsOf, runWhileConfirmingCard } from "./proposalReferences.js";
 import { publishInboxCardChange } from "./inboxCardsRealtime.js";
 import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
 import { EVENTS_MODULE_ID, PEOPLE_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
@@ -95,7 +99,7 @@ async function resolveResultLabel(client: PoolClient, databaseId: string, item: 
   return typeof value === "string" && value.length > 0 ? value : item.id;
 }
 
-const confirmationResultSchema = z.object({
+export const confirmationResultSchema = z.object({
   ref: z.string(),
   itemId: z.string(),
   databaseKey: z.string().nullable(),
@@ -184,12 +188,6 @@ async function requireDatabaseIdByModuleId(client: PoolClient, moduleId: string)
   return database.id;
 }
 
-async function requireRelationPropertyId(client: PoolClient, databaseId: string, key: string): Promise<string> {
-  const property = await propertiesStore.getPropertyByKey(client, databaseId, key);
-  if (!property) throw new NotFoundError(`Property '${key}' not found on database ${databaseId}`);
-  return property.id;
-}
-
 /**
  * Writes the envelope's `relations` edges from the freshly created item, in the order of the keys
  * and ids in the envelope. Runs in the confirm transaction, so a failing edge aborts the item and
@@ -260,55 +258,6 @@ export async function requireSourceTranscriptId(
     });
   }
   return relationsStore.otherSide(edge, proposal.id);
-}
-
-/**
- * The moment an Inbox item was captured: its `date` and `time` (the user's meant moment, stored
- * verbatim) read in the system timezone, or null when either is missing or unparseable.
- */
-function inboxCaptureInstant(inboxItem: ItemRow, timezone: string): string | null {
-  const { date, time } = inboxItem.properties;
-  if (typeof date !== "string" || typeof time !== "string") return null;
-  const captured = DateTime.fromISO(`${date}T${time}`, { zone: timezone });
-  return captured.isValid ? captured.toUTC().toISO() : null;
-}
-
-/**
- * Where the items a confirm creates came from. Only a valid Inbox capture date and time supplies
- * a known timestamp; transcript cards and missing or invalid capture times remain unknown.
- */
-async function resolveItemOriginSource(
-  client: PoolClient,
-  config: ProposalActionConfig,
-  proposal: ItemRow,
-  transcriptId: string | null,
-): Promise<ItemOriginSource> {
-  if (transcriptId !== null) {
-    return {
-      proposalId: proposal.id,
-      inboxItemId: null,
-      sourceTranscriptId: transcriptId,
-      capturedAt: null,
-      captureTimeBasis: "unknown",
-      captureChannel: "transcript",
-    };
-  }
-  const propertyId = await requireRelationPropertyId(client, config.processingProposalsDatabaseId, "sourceInbox");
-  const relationDefinition = await relationsStore.getRelationDefinitionByPropertyId(client, propertyId);
-  if (!relationDefinition)
-    throw new NotFoundError(`Relation definition for Processing proposals 'sourceInbox' not found`);
-  const [edge] = await relationsStore.listRelationsForItem(client, relationDefinition.id, proposal.id);
-  const inboxItemId = edge ? relationsStore.otherSide(edge, proposal.id) : null;
-  const [inboxItem] = inboxItemId ? await itemsStore.getItemsByIds(client, [inboxItemId]) : [];
-  const capturedAt = inboxItem ? inboxCaptureInstant(inboxItem, await getSystemTimezone(client)) : null;
-  return {
-    proposalId: proposal.id,
-    inboxItemId,
-    sourceTranscriptId: null,
-    capturedAt,
-    captureTimeBasis: capturedAt === null ? "unknown" : "inboxCapture",
-    captureChannel: "inbox",
-  };
 }
 
 /**
@@ -513,6 +462,13 @@ export async function assertValidEnvelopeForCard(
  * Inbox item or transcript to take them from. A source Threads item that is in the Trash is a 409 `conflict` with
  * nothing written, and the card stays `proposed`.
  *
+ * The reference hooks leave this card alone while its steps run (`runWhileConfirmingCard`, issue #1916).
+ *
+ * The edges the confirm writes between items that already existed (a link step, the edges an update step adds, the
+ * edge of a transcript card) and the edges an update step deletes are recorded in the history entry of the confirmation
+ * (`writtenRelations`, `removedRelations`; `proposalEdgeRecording.ts`), so the undo reverses only those
+ * (`docs/adr/2026-11-14-the-undo-of-a-confirmation-reverses-only-the-edges-it-recorded.md`).
+ *
  * `ifVersion` (issue #1852) is the `updatedAt` the caller last saw. It is checked after the card is locked, after
  * the answer for a card that is already `confirmed` (returned unchanged, whatever `ifVersion` says, so a replayed
  * decision succeeds) and after the refusal of any status other than `proposed`: an `ifVersion` that is not the
@@ -533,339 +489,348 @@ export async function confirmProposalWithClient(
     throw incompatibleStatusError(`Cannot confirm a proposal in status '${String(status)}'`, status);
   }
   assertProposalVersion(proposal, ifVersion);
-
-  const envelope = parseStoredProposalEnvelope(proposal.properties.proposal, proposal.id);
-  if (!envelope) throw new ValidationError("Proposal has no computed envelope to confirm", { field: "proposal" });
-  if ("unknownKind" in envelope) throw unsupportedEntityKindError(envelope.entityKind);
-  const markdownPageContent = envelope.entityKind === "pageContent" && Object.hasOwn(envelope.properties, "markdown");
-  if (markdownPageContent && proposal.properties.kind === "transcript")
-    throw new ValidationError("A transcript proposal cannot target page content", { field: "entityKind" });
-  await assertCardIsNotStdioMcpServer(client, envelope);
-  let validated: EnvelopeForCard;
-  try {
-    validated = await assertValidEnvelopeForCard(client, config, proposal, envelope);
-  } catch (error) {
-    // A heading removed since the card was computed is a conflict the client can answer with a new choice, not a
-    // malformed proposal: 409, the card stays `proposed` and nothing is written.
-    if (markdownPageContent && error instanceof ValidationError && isHeadingUnavailable(error)) {
-      throw new ConflictError("The chosen heading no longer exists on the page", { field: "placement" });
+  // A step may archive an item this card refers to; the reference hooks must not invalidate the card being confirmed.
+  return runWhileConfirmingCard(client, proposal.id, async () => {
+    const envelope = parseStoredProposalEnvelope(proposal.properties.proposal, proposal.id);
+    if (!envelope) throw new ValidationError("Proposal has no computed envelope to confirm", { field: "proposal" });
+    if ("unknownKind" in envelope) throw unsupportedEntityKindError(envelope.entityKind);
+    const markdownPageContent = envelope.entityKind === "pageContent" && Object.hasOwn(envelope.properties, "markdown");
+    if (markdownPageContent && proposal.properties.kind === "transcript")
+      throw new ValidationError("A transcript proposal cannot target page content", { field: "entityKind" });
+    await assertCardIsNotStdioMcpServer(client, envelope);
+    let validated: EnvelopeForCard;
+    try {
+      validated = await assertValidEnvelopeForCard(client, config, proposal, envelope);
+    } catch (error) {
+      // A heading removed since the card was computed is a conflict the client can answer with a new choice, not a
+      // malformed proposal: 409, the card stays `proposed` and nothing is written.
+      if (markdownPageContent && error instanceof ValidationError && isHeadingUnavailable(error)) {
+        throw new ConflictError("The chosen heading no longer exists on the page", { field: "placement" });
+      }
+      throw error;
     }
-    throw error;
-  }
-  const { transcriptCardEdge, targetDatabase, mailThreadItemId } = validated;
-  await assertRequiredFieldsHaveValues(client, proposal, envelope);
-  const written = await normalizeEnvelopeForWrite(client, proposal, envelope, targetDatabase);
+    const { transcriptCardEdge, targetDatabase, mailThreadItemId } = validated;
+    await assertRequiredFieldsHaveValues(client, proposal, envelope);
+    const written = await normalizeEnvelopeForWrite(client, proposal, envelope, targetDatabase);
 
-  let resultItemId: string;
-  let resultLabel: string;
-  let stepResults: Array<{ ref: string; itemId: string; databaseId: string }> = [];
-  let blockIds: string[] = [];
-  const addedRelations: Array<{
-    edgeId: string;
-    relationPropertyId: string;
-    callerItemId: string;
-    targetItemId: string;
-  }> = [];
-  const reusedFileRefs = new Set<string>();
-  /** The item a `'relation'` envelope linked: its `target`, or the item its synthetic occurrence id became. */
-  let linkedTargetId: string | null = null;
-  if (mailThreadItemId !== undefined) {
-    if (credential) {
-      throw new ValidationError("A credential may only be supplied when confirming an MCP server proposal", {
-        field: "credential",
-      });
-    }
-    const task = await confirmMailThreadCard(client, mailThreadItemId, written.properties, actingUserId);
-    resultItemId = task.id;
-    stepResults = [{ ref: "primary", itemId: task.id, databaseId: task.databaseId }];
-    resultLabel = await resolveResultLabel(client, task.databaseId, task);
-  } else if (envelope.entityKind === "database") {
-    if (credential) {
-      if (targetDatabase?.ownerModuleId !== MCP_SERVERS_MODULE_ID) {
+    let resultItemId: string;
+    let resultLabel: string;
+    let stepResults: Array<{ ref: string; itemId: string; databaseId: string }> = [];
+    let blockIds: string[] = [];
+    const addedRelations: Array<{
+      edgeId: string;
+      relationPropertyId: string;
+      callerItemId: string;
+      targetItemId: string;
+    }> = [];
+    /** The edges between existing items this confirm writes or deletes, stored in its history entry for the undo. */
+    const recorder = createEdgeRecorder();
+    const reusedFileRefs = new Set<string>();
+    /** The item a `'relation'` envelope linked: its `target`, or the item its synthetic occurrence id became. */
+    let linkedTargetId: string | null = null;
+    if (mailThreadItemId !== undefined) {
+      if (credential) {
         throw new ValidationError("A credential may only be supplied when confirming an MCP server proposal", {
           field: "credential",
         });
       }
-    }
-    const origin = await resolveItemOriginSource(client, config, proposal, transcriptCardEdge?.transcriptId ?? null);
-    // A multi-step envelope writes every active step; a single-step one keeps the direct path below.
-    let created: ItemRow;
-    let createdItemIds: string[];
-    let resultDatabaseId = envelope.target;
-    if (written.operations) {
-      const executed = await executeProposalSteps(client, written.operations, {
-        writer: CONFIRMING_USER_WRITER,
-        actingUserId,
-        sourceInboxItemId: origin.inboxItemId,
-      });
-      const [primaryItem] = await itemsStore.getItemsByIds(client, [executed.primaryItemId]);
-      if (!primaryItem) throw new Error(`Primary step item ${executed.primaryItemId} disappeared during confirm`);
-      created = primaryItem;
-      resultDatabaseId = executed.primaryDatabaseId;
-      createdItemIds = executed.createdItemIds;
-      stepResults = executed.executedSteps;
-      for (const file of executed.fileFromAttachments) if (!file.created) reusedFileRefs.add(file.ref);
-    } else {
-      created = await createItemWithClient(
-        client,
-        { databaseId: envelope.target, properties: written.properties },
-        { writer: CONFIRMING_USER_WRITER, actingUserId },
-      );
-      createdItemIds = [created.id];
-    }
-    await insertItemOrigins(client, createdItemIds, origin);
-    await insertInboxOriginNotes(client, createdItemIds, origin.inboxItemId, actingUserId);
-    resultItemId = created.id;
-    if (!envelope.operations) stepResults = [{ ref: "primary", itemId: created.id, databaseId: created.databaseId }];
-    resultLabel = await resolveResultLabel(client, resultDatabaseId, created);
-    if (credential) {
-      await storeCredential(client, {
-        itemId: created.id,
-        credentialType: credential.credentialType,
-        plaintext: credential.plaintext,
-      });
-    }
-    // A 'database' envelope on a transcript card is its create-Event shape, or a new person for a speaker card.
-    // The Event gets its envelope relations and its participants before the transcript's own edge (issue #1818).
-    // A multi-step envelope's relations live on its steps and were written by them.
-    if (!envelope.operations) {
-      await writeEnvelopeRelations(client, envelope.target, created.id, envelope.relations, actingUserId);
-    }
-    if (transcriptCardEdge?.role === "event") {
-      addedRelations.push(
-        ...(await addSpeakersAsEventParticipants(
+      const task = await confirmMailThreadCard(client, mailThreadItemId, written.properties, actingUserId);
+      resultItemId = task.id;
+      stepResults = [{ ref: "primary", itemId: task.id, databaseId: task.databaseId }];
+      resultLabel = await resolveResultLabel(client, task.databaseId, task);
+    } else if (envelope.entityKind === "database") {
+      if (credential) {
+        if (targetDatabase?.ownerModuleId !== MCP_SERVERS_MODULE_ID) {
+          throw new ValidationError("A credential may only be supplied when confirming an MCP server proposal", {
+            field: "credential",
+          });
+        }
+      }
+      const origin = await resolveItemOriginSource(client, config, proposal, transcriptCardEdge?.transcriptId ?? null);
+      // A multi-step envelope writes every active step; a single-step one keeps the direct path below.
+      let created: ItemRow;
+      let createdItemIds: string[];
+      let resultDatabaseId = envelope.target;
+      if (written.operations) {
+        const executed = await executeProposalSteps(client, written.operations, {
+          writer: CONFIRMING_USER_WRITER,
+          actingUserId,
+          sourceInboxItemId: origin.inboxItemId,
+        });
+        const [primaryItem] = await itemsStore.getItemsByIds(client, [executed.primaryItemId]);
+        if (!primaryItem) throw new Error(`Primary step item ${executed.primaryItemId} disappeared during confirm`);
+        created = primaryItem;
+        resultDatabaseId = executed.primaryDatabaseId;
+        createdItemIds = executed.createdItemIds;
+        stepResults = executed.executedSteps;
+        for (const file of executed.fileFromAttachments) if (!file.created) reusedFileRefs.add(file.ref);
+        recorder.written.push(...executed.recordedEdges.written);
+        recorder.removed.push(...executed.recordedEdges.removed);
+      } else {
+        created = await createItemWithClient(
           client,
-          { transcriptId: transcriptCardEdge.transcriptId, eventId: created.id },
+          { databaseId: envelope.target, properties: written.properties },
+          { writer: CONFIRMING_USER_WRITER, actingUserId },
+        );
+        createdItemIds = [created.id];
+      }
+      await insertItemOrigins(client, createdItemIds, origin);
+      await insertInboxOriginNotes(client, createdItemIds, origin.inboxItemId, actingUserId);
+      resultItemId = created.id;
+      if (!envelope.operations) stepResults = [{ ref: "primary", itemId: created.id, databaseId: created.databaseId }];
+      resultLabel = await resolveResultLabel(client, resultDatabaseId, created);
+      if (credential) {
+        await storeCredential(client, {
+          itemId: created.id,
+          credentialType: credential.credentialType,
+          plaintext: credential.plaintext,
+        });
+      }
+      // A 'database' envelope on a transcript card is its create-Event shape, or a new person for a speaker card.
+      // The Event gets its envelope relations and its participants before the transcript's own edge (issue #1818).
+      // A multi-step envelope's relations live on its steps and were written by them.
+      if (!envelope.operations) {
+        await writeEnvelopeRelations(client, envelope.target, created.id, envelope.relations, actingUserId);
+      }
+      if (transcriptCardEdge?.role === "event") {
+        addedRelations.push(
+          ...(await addSpeakersAsEventParticipants(
+            client,
+            { transcriptId: transcriptCardEdge.transcriptId, eventId: created.id },
+            CONFIRMING_USER_WRITER,
+            actingUserId,
+          )),
+        );
+      }
+      if (transcriptCardEdge) {
+        await releaseTrashedEventOfPairingCard(client, transcriptCardEdge, actingUserId);
+        await writeRecordedEdge(
+          client,
+          recorder,
+          {
+            relationPropertyId: transcriptCardEdge.relationPropertyId,
+            callerItemId: transcriptCardEdge.transcriptId,
+            targetItemId: created.id,
+            ...(transcriptCardEdge.role === "speaker" ? { metadata: { speaker: transcriptCardEdge.speaker } } : {}),
+          },
           CONFIRMING_USER_WRITER,
           actingUserId,
-        )),
-      );
-    }
-    if (transcriptCardEdge) {
+        );
+      }
+    } else if (envelope.entityKind === "relation") {
+      // `assertValidEnvelopeForCard` above only accepts a 'relation' envelope on a transcript
+      // card, through the Transcripts `event` or `speakers` property — so `transcriptCardEdge`
+      // names this write.
+      if (!transcriptCardEdge) throw new Error(`Relation proposal ${proposal.id} has no source item to link from`);
+      // A synthetic occurrence id becomes its Events item here, in the confirm's own transaction (issue gh-1850); a
+      // repeat finds the item the first call created, and a cancelled occurrence's item refuses the link below.
+      const occurrence = parseOccurrenceId(envelope.target);
+      linkedTargetId = occurrence
+        ? (
+            await materializeEventOccurrence(client, {
+              ...occurrence,
+              options: { writer: CONFIRMING_USER_WRITER, actingUserId },
+            })
+          ).item.id
+        : envelope.target;
       await releaseTrashedEventOfPairingCard(client, transcriptCardEdge, actingUserId);
-      await createRelationWithClient(
+      await writeRecordedEdge(
         client,
+        recorder,
         {
           relationPropertyId: transcriptCardEdge.relationPropertyId,
           callerItemId: transcriptCardEdge.transcriptId,
-          targetItemId: created.id,
-          ...(transcriptCardEdge.role === "speaker" ? { metadata: { speaker: transcriptCardEdge.speaker } } : {}),
+          targetItemId: linkedTargetId,
+          metadata: relationEnvelopeMetadata(envelope),
         },
-        undefined,
         CONFIRMING_USER_WRITER,
         actingUserId,
       );
+      const [linked] = await itemsStore.getItemsByIds(client, [linkedTargetId]);
+      resultItemId = linkedTargetId;
+      const [transcript] = await itemsStore.getItemsByIds(client, [transcriptCardEdge.transcriptId]);
+      if (!transcript) throw new Error("Source transcript disappeared during confirm");
+      stepResults = [{ ref: "primary", itemId: transcript.id, databaseId: transcript.databaseId }];
+      resultLabel = linked ? await resolveResultLabel(client, linked.databaseId, linked) : linkedTargetId;
+    } else {
+      if (markdownPageContent) {
+        // Validated by `assertValidProposalEnvelope` above, so the parse cannot fail; it types the stored properties.
+        const content = pageContentV2Schema.parse(envelope.properties);
+        blockIds = await insertProposalPageContent(client, proposal.id, envelope.target, content);
+      } else {
+        // Safe to cast without a further runtime check here: `assertValidProposalEnvelope`
+        // above already rejects a 'pageContent' envelope whose `flavour` isn't a non-empty
+        // string, or whose `fields`/`children` (if present) aren't a plain object / string
+        // array respectively.
+        const { flavour, fields, children } = envelope.properties as {
+          flavour: string;
+          fields?: Record<string, unknown>;
+          children?: string[];
+        };
+        const inserted = await putBlockWithClient(
+          client,
+          envelope.target,
+          { id: proposal.id, flavour, fields, children },
+          "user",
+        );
+        blockIds = inserted ? [proposal.id] : [];
+      }
+      const [targetPage] = await itemsStore.getItemsByIds(client, [envelope.target]);
+      resultItemId = envelope.target;
+      if (!targetPage) throw new Error("Target page disappeared during confirm");
+      stepResults = [{ ref: "primary", itemId: targetPage.id, databaseId: targetPage.databaseId }];
+      resultLabel = await resolveResultLabel(client, targetPage.databaseId, targetPage);
     }
-  } else if (envelope.entityKind === "relation") {
-    // `assertValidEnvelopeForCard` above only accepts a 'relation' envelope on a transcript
-    // card, through the Transcripts `event` or `speakers` property — so `transcriptCardEdge`
-    // names this write.
-    if (!transcriptCardEdge) throw new Error(`Relation proposal ${proposal.id} has no source item to link from`);
-    // A synthetic occurrence id becomes its Events item here, in the confirm's own transaction (issue gh-1850); a
-    // repeat finds the item the first call created, and a cancelled occurrence's item refuses the link below.
-    const occurrence = parseOccurrenceId(envelope.target);
-    linkedTargetId = occurrence
-      ? (
-          await materializeEventOccurrence(client, {
-            ...occurrence,
-            options: { writer: CONFIRMING_USER_WRITER, actingUserId },
-          })
-        ).item.id
-      : envelope.target;
-    await releaseTrashedEventOfPairingCard(client, transcriptCardEdge, actingUserId);
-    await createRelationWithClient(
+
+    if (transcriptCardEdge?.role === "speaker") {
+      const [transcript] = await itemsStore.getItemsByIds(client, [transcriptCardEdge.transcriptId]);
+      if (!transcript) throw new Error("Source transcript disappeared during confirm");
+      const eventProperty = await requireRelationPropertyId(
+        client,
+        transcript.databaseId,
+        TRANSCRIPT_EVENT_PROPERTY_KEY,
+      );
+      const definition = await relationsStore.getRelationDefinitionByPropertyId(client, eventProperty);
+      if (!definition) throw new NotFoundError("Transcript event relation not found");
+      const events = await relationsStore.listRelationsForItem(client, definition.id, transcript.id);
+      if (events.length > 1) throw new ConflictError("Transcript has multiple linked events");
+      const event = events[0] ? relationsStore.otherSide(events[0], transcript.id) : null;
+      if (event) {
+        const eventsDatabase = await requireDatabaseIdByModuleId(client, EVENTS_MODULE_ID);
+        const relationPropertyId = await requireRelationPropertyId(client, eventsDatabase, "people");
+        const added = await createRelationIfAbsentWithClient(
+          client,
+          { relationPropertyId, callerItemId: event, targetItemId: resultItemId },
+          undefined,
+          CONFIRMING_USER_WRITER,
+          actingUserId,
+        );
+        if (added.inserted)
+          addedRelations.push({
+            edgeId: added.edge.id,
+            relationPropertyId,
+            callerItemId: event,
+            targetItemId: resultItemId,
+          });
+      }
+    }
+
+    const idsByRef = new Map(stepResults.map((step) => [step.ref, step.itemId]));
+    const results: ConfirmationResult[] = [];
+    for (const written of stepResults) {
+      const [item] = await itemsStore.getItemsByIds(client, [written.itemId]);
+      const database = await databasesStore.getDatabase(client, written.databaseId);
+      if (!item || !database) throw new Error("Confirmed result item or database disappeared");
+      const step = envelope.operations?.find((operation) => operation.ref === written.ref);
+      const requestedRelations = step
+        ? effectiveStepRelations(step)
+        : envelope.entityKind === "relation"
+          ? {}
+          : (envelope.relations ?? {});
+      const targets: Array<string | undefined> = [];
+      if (linkedTargetId !== null) targets.push(linkedTargetId);
+      const requests: Array<{ definitionId: string; target: string }> = [];
+      const resolved = new Map<string, Array<string | undefined>>();
+      const definitions = new Map<string, string>();
+      for (const [key, values] of Object.entries(requestedRelations)) {
+        const ids = values.map((value) => (typeof value === "string" ? value : idsByRef.get(value.ref)));
+        resolved.set(key, ids);
+        if (reusedFileRefs.has(written.ref)) {
+          const property = await propertiesStore.getPropertyByKey(client, written.databaseId, key);
+          const definition = property && (await relationsStore.getRelationDefinitionByPropertyId(client, property.id));
+          if (!definition) throw new Error(`Missing confirmed relation definition for ${key}`);
+          definitions.set(key, definition.id);
+          for (const target of ids) if (target !== undefined) requests.push({ definitionId: definition.id, target });
+        }
+      }
+      const retained = new Map<string, Set<string>>();
+      if (requests.length > 0) {
+        const { rows } = await client.query<{ definition_id: string; target_id: string }>(
+          `SELECT r.relation_definition_id AS definition_id,
+                  CASE WHEN r.item_a = $3::uuid THEN r.item_b ELSE r.item_a END AS target_id
+           FROM item_relations r
+           JOIN unnest($1::uuid[], $2::uuid[]) AS wanted(definition_id, target_id)
+             ON wanted.definition_id = r.relation_definition_id
+            AND ((r.item_a = $3::uuid AND r.item_b = wanted.target_id)
+              OR (r.item_b = $3::uuid AND r.item_a = wanted.target_id))
+           ORDER BY r.relation_definition_id, r.id FOR SHARE OF r`,
+          [requests.map((request) => request.definitionId), requests.map((request) => request.target), item.id],
+        );
+        for (const row of rows) {
+          const ids = retained.get(row.definition_id) ?? new Set<string>();
+          ids.add(row.target_id);
+          retained.set(row.definition_id, ids);
+        }
+      }
+      for (const [key, ids] of resolved) {
+        if (!reusedFileRefs.has(written.ref)) {
+          targets.push(...ids);
+          continue;
+        }
+        const definitionId = definitions.get(key);
+        if (!definitionId) throw new Error(`Missing confirmed relation definition for ${key}`);
+        const existing = retained.get(definitionId);
+        for (const id of ids) if (id !== undefined && existing?.has(id)) targets.push(id);
+      }
+      const linked = await itemsStore.getItemsByIds(
+        client,
+        targets.filter((id): id is string => id !== undefined),
+      );
+      const linkedById = new Map(linked.map((item) => [item.id, item]));
+      const linkLabels: string[] = [];
+      for (const targetId of targets) {
+        const target = targetId === undefined ? undefined : linkedById.get(targetId);
+        if (target) linkLabels.push(await resolveResultLabel(client, target.databaseId, target));
+      }
+      const dateValue =
+        database.key === "events" ? item.properties.date : database.key === "journal" ? item.properties.period : null;
+      const date =
+        typeof dateValue === "string" && /^\d{4}-\d{2}-\d{2}(?:$|T)/.test(dateValue) ? dateValue.slice(0, 10) : null;
+      results.push({
+        ref: written.ref,
+        itemId: item.id,
+        databaseKey: database.key,
+        label: await resolveResultLabel(client, database.id, item),
+        role: step?.role ?? "primary",
+        date,
+        linkLabels,
+        followUp: null,
+        updatedAt: item.updatedAt,
+        blockIds: written.ref === "primary" ? blockIds : [],
+      });
+    }
+    results.sort((a, b) => Number(b.role === "primary") - Number(a.role === "primary"));
+
+    const updated = await updateItemWithClient(
       client,
       {
-        relationPropertyId: transcriptCardEdge.relationPropertyId,
-        callerItemId: transcriptCardEdge.transcriptId,
-        targetItemId: linkedTargetId,
-        metadata: relationEnvelopeMetadata(envelope),
+        databaseId: config.processingProposalsDatabaseId,
+        itemId: proposal.id,
+        propertiesPatch: {
+          status: "confirmed",
+          resultItemId,
+          resultLabel,
+          results,
+          history: appendHistoryEntry(proposal.properties.history, "Confirmed by user.", "user", {
+            ...(addedRelations.length ? { addedRelations } : {}),
+            writtenRelations: recorder.written,
+            removedRelations: recorder.removed,
+          }),
+        },
       },
-      undefined,
-      CONFIRMING_USER_WRITER,
-      actingUserId,
-    );
-    const [linked] = await itemsStore.getItemsByIds(client, [linkedTargetId]);
-    resultItemId = linkedTargetId;
-    const [transcript] = await itemsStore.getItemsByIds(client, [transcriptCardEdge.transcriptId]);
-    if (!transcript) throw new Error("Source transcript disappeared during confirm");
-    stepResults = [{ ref: "primary", itemId: transcript.id, databaseId: transcript.databaseId }];
-    resultLabel = linked ? await resolveResultLabel(client, linked.databaseId, linked) : linkedTargetId;
-  } else {
-    if (markdownPageContent) {
-      // Validated by `assertValidProposalEnvelope` above, so the parse cannot fail; it types the stored properties.
-      const content = pageContentV2Schema.parse(envelope.properties);
-      blockIds = await insertProposalPageContent(client, proposal.id, envelope.target, content);
-    } else {
-      // Safe to cast without a further runtime check here: `assertValidProposalEnvelope`
-      // above already rejects a 'pageContent' envelope whose `flavour` isn't a non-empty
-      // string, or whose `fields`/`children` (if present) aren't a plain object / string
-      // array respectively.
-      const { flavour, fields, children } = envelope.properties as {
-        flavour: string;
-        fields?: Record<string, unknown>;
-        children?: string[];
-      };
-      const inserted = await putBlockWithClient(
-        client,
-        envelope.target,
-        { id: proposal.id, flavour, fields, children },
-        "user",
-      );
-      blockIds = inserted ? [proposal.id] : [];
-    }
-    const [targetPage] = await itemsStore.getItemsByIds(client, [envelope.target]);
-    resultItemId = envelope.target;
-    if (!targetPage) throw new Error("Target page disappeared during confirm");
-    stepResults = [{ ref: "primary", itemId: targetPage.id, databaseId: targetPage.databaseId }];
-    resultLabel = await resolveResultLabel(client, targetPage.databaseId, targetPage);
-  }
-
-  if (transcriptCardEdge?.role === "speaker") {
-    const [transcript] = await itemsStore.getItemsByIds(client, [transcriptCardEdge.transcriptId]);
-    if (!transcript) throw new Error("Source transcript disappeared during confirm");
-    const eventProperty = await requireRelationPropertyId(client, transcript.databaseId, TRANSCRIPT_EVENT_PROPERTY_KEY);
-    const definition = await relationsStore.getRelationDefinitionByPropertyId(client, eventProperty);
-    if (!definition) throw new NotFoundError("Transcript event relation not found");
-    const events = await relationsStore.listRelationsForItem(client, definition.id, transcript.id);
-    if (events.length > 1) throw new ConflictError("Transcript has multiple linked events");
-    const event = events[0] ? relationsStore.otherSide(events[0], transcript.id) : null;
-    if (event) {
-      const eventsDatabase = await requireDatabaseIdByModuleId(client, EVENTS_MODULE_ID);
-      const relationPropertyId = await requireRelationPropertyId(client, eventsDatabase, "people");
-      const added = await createRelationIfAbsentWithClient(
-        client,
-        { relationPropertyId, callerItemId: event, targetItemId: resultItemId },
-        undefined,
-        CONFIRMING_USER_WRITER,
+      {
+        allowedSystemKeys: ["status", "resultItemId", "resultLabel", "results", "history"],
+        writer: CONFIRMING_USER_WRITER,
         actingUserId,
-      );
-      if (added.inserted)
-        addedRelations.push({
-          edgeId: added.edge.id,
-          relationPropertyId,
-          callerItemId: event,
-          targetItemId: resultItemId,
-        });
-    }
-  }
-
-  const idsByRef = new Map(stepResults.map((step) => [step.ref, step.itemId]));
-  const results: ConfirmationResult[] = [];
-  for (const written of stepResults) {
-    const [item] = await itemsStore.getItemsByIds(client, [written.itemId]);
-    const database = await databasesStore.getDatabase(client, written.databaseId);
-    if (!item || !database) throw new Error("Confirmed result item or database disappeared");
-    const step = envelope.operations?.find((operation) => operation.ref === written.ref);
-    const requestedRelations = step
-      ? effectiveStepRelations(step)
-      : envelope.entityKind === "relation"
-        ? {}
-        : (envelope.relations ?? {});
-    const targets: Array<string | undefined> = [];
-    if (linkedTargetId !== null) targets.push(linkedTargetId);
-    const requests: Array<{ definitionId: string; target: string }> = [];
-    const resolved = new Map<string, Array<string | undefined>>();
-    const definitions = new Map<string, string>();
-    for (const [key, values] of Object.entries(requestedRelations)) {
-      const ids = values.map((value) => (typeof value === "string" ? value : idsByRef.get(value.ref)));
-      resolved.set(key, ids);
-      if (reusedFileRefs.has(written.ref)) {
-        const property = await propertiesStore.getPropertyByKey(client, written.databaseId, key);
-        const definition = property && (await relationsStore.getRelationDefinitionByPropertyId(client, property.id));
-        if (!definition) throw new Error(`Missing confirmed relation definition for ${key}`);
-        definitions.set(key, definition.id);
-        for (const target of ids) if (target !== undefined) requests.push({ definitionId: definition.id, target });
-      }
-    }
-    const retained = new Map<string, Set<string>>();
-    if (requests.length > 0) {
-      const { rows } = await client.query<{ definition_id: string; target_id: string }>(
-        `SELECT r.relation_definition_id AS definition_id,
-                CASE WHEN r.item_a = $3::uuid THEN r.item_b ELSE r.item_a END AS target_id
-         FROM item_relations r
-         JOIN unnest($1::uuid[], $2::uuid[]) AS wanted(definition_id, target_id)
-           ON wanted.definition_id = r.relation_definition_id
-          AND ((r.item_a = $3::uuid AND r.item_b = wanted.target_id)
-            OR (r.item_b = $3::uuid AND r.item_a = wanted.target_id))
-         ORDER BY r.relation_definition_id, r.id FOR SHARE OF r`,
-        [requests.map((request) => request.definitionId), requests.map((request) => request.target), item.id],
-      );
-      for (const row of rows) {
-        const ids = retained.get(row.definition_id) ?? new Set<string>();
-        ids.add(row.target_id);
-        retained.set(row.definition_id, ids);
-      }
-    }
-    for (const [key, ids] of resolved) {
-      if (!reusedFileRefs.has(written.ref)) {
-        targets.push(...ids);
-        continue;
-      }
-      const definitionId = definitions.get(key);
-      if (!definitionId) throw new Error(`Missing confirmed relation definition for ${key}`);
-      const existing = retained.get(definitionId);
-      for (const id of ids) if (id !== undefined && existing?.has(id)) targets.push(id);
-    }
-    const linked = await itemsStore.getItemsByIds(
-      client,
-      targets.filter((id): id is string => id !== undefined),
-    );
-    const linkedById = new Map(linked.map((item) => [item.id, item]));
-    const linkLabels: string[] = [];
-    for (const targetId of targets) {
-      const target = targetId === undefined ? undefined : linkedById.get(targetId);
-      if (target) linkLabels.push(await resolveResultLabel(client, target.databaseId, target));
-    }
-    const dateValue =
-      database.key === "events" ? item.properties.date : database.key === "journal" ? item.properties.period : null;
-    const date =
-      typeof dateValue === "string" && /^\d{4}-\d{2}-\d{2}(?:$|T)/.test(dateValue) ? dateValue.slice(0, 10) : null;
-    results.push({
-      ref: written.ref,
-      itemId: item.id,
-      databaseKey: database.key,
-      label: await resolveResultLabel(client, database.id, item),
-      role: step?.role ?? "primary",
-      date,
-      linkLabels,
-      followUp: null,
-      updatedAt: item.updatedAt,
-      blockIds: written.ref === "primary" ? blockIds : [],
-    });
-  }
-  results.sort((a, b) => Number(b.role === "primary") - Number(a.role === "primary"));
-
-  const updated = await updateItemWithClient(
-    client,
-    {
-      databaseId: config.processingProposalsDatabaseId,
-      itemId: proposal.id,
-      propertiesPatch: {
-        status: "confirmed",
-        resultItemId,
-        resultLabel,
-        results,
-        history: appendHistoryEntry(
-          proposal.properties.history,
-          "Confirmed by user.",
-          "user",
-          addedRelations.length ? { addedRelations } : undefined,
-        ),
       },
-    },
-    {
-      allowedSystemKeys: ["status", "resultItemId", "resultLabel", "results", "history"],
-      writer: CONFIRMING_USER_WRITER,
-      actingUserId,
-    },
-  );
-  publishInboxCardChange(client, proposal.id, "closed");
-  // Issue #106's "proposal transition" invalidation trigger: confirm/reject/revise change
-  // the source Inbox item's displayed status but never touch the Inbox item itself, so
-  // nothing else would invalidate its Journal day's cached list.
-  await enqueueJournalInboxRecomputeForProposal(client, proposal.id);
-  return updated;
+    );
+    publishInboxCardChange(client, proposal.id, "closed");
+    // Issue #106's "proposal transition" invalidation trigger: confirm/reject/revise change
+    // the source Inbox item's displayed status but never touch the Inbox item itself, so
+    // nothing else would invalidate its Journal day's cached list.
+    await enqueueJournalInboxRecomputeForProposal(client, proposal.id);
+    return updated;
+  });
 }
 
 /**
@@ -909,6 +874,9 @@ export async function rejectProposalWithClient(
   await enqueueJournalInboxRecomputeForProposal(client, proposal.id);
   return updated;
 }
+
+/** The start of the history message of a card that `settleSpeakerCardWithClient` closed. Only the text of the entry: nothing reads it back. */
+const MANUAL_SETTLEMENT_MESSAGE_PREFIX = "Settled by a manual assignment";
 
 /** What `settleSpeakerCardWithClient` did with the card: closed it as `confirmed` or `rejected`, or left it `untouched`. */
 export type SpeakerCardSettlement = "confirmed" | "rejected" | "untouched";
@@ -964,7 +932,7 @@ export async function settleSpeakerCardWithClient(
           status: "rejected",
           history: appendHistoryEntry(
             proposal.properties.history,
-            "Settled by a manual assignment: the speaker was assigned to another person.",
+            `${MANUAL_SETTLEMENT_MESSAGE_PREFIX}: the speaker was assigned to another person.`,
             "user",
           ),
         },
@@ -1008,7 +976,7 @@ export async function settleSpeakerCardWithClient(
         results,
         history: appendHistoryEntry(
           proposal.properties.history,
-          "Settled by a manual assignment: the speaker was assigned to the proposed person.",
+          `${MANUAL_SETTLEMENT_MESSAGE_PREFIX}: the speaker was assigned to the proposed person.`,
           "user",
         ),
       },
@@ -1168,6 +1136,7 @@ export async function reviseProposalWithClient(
       itemId: proposal.id,
       propertiesPatch: {
         proposal: effective,
+        referencedItemIds: referencedItemIdsOf(effective),
         ...aiProposalPatch(proposal.properties, envelope),
         userOverrides: retained.userOverrides,
         userEditedKeys: retained.userEditedKeys,
@@ -1182,6 +1151,7 @@ export async function reviseProposalWithClient(
         "proposal",
         "aiProposal",
         "aiVersion",
+        "referencedItemIds",
         "userOverrides",
         "userEditedKeys",
         "status",

@@ -19,7 +19,8 @@ type CustomRouteResult = { status: number; body: unknown };
  * `{ pendingApprovals, pendingInvites, openInboxItems }`. Shaped for exactly one consumer, the
  * client's badge, so it is the "single-consumer-read" justification. `pendingApprovals` is
  * `countPendingApprovalRequests` with every source kind, so it equals the pending count of the
- * approval queue; `pendingInvites` and `openInboxItems` are `0` for now. Tenant and user come only
+ * approval queue; `pendingInvites` is the number of live invitations whose status is `pending` (issue
+ * gh-1954) and `openInboxItems` is `0` for now. Tenant and user come only
  * from the session. The route takes no query parameters and writes nothing.
  */
 export function createBadgeCountsRouteHandler(pool: Pool) {

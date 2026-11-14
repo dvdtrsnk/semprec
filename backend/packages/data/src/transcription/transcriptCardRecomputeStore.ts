@@ -32,6 +32,7 @@ import {
   parseUserOverrides,
   retainOverridesForThreadRevision,
 } from "../inbox/proposalOverrides.js";
+import { referencedItemIdsOf } from "../inbox/proposalReferences.js";
 import { appendDroppedValuesEntry } from "../inbox/proposalRetention.js";
 import { PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
@@ -487,6 +488,7 @@ export async function applyTranscriptCardRecompute(
       propertiesPatch: {
         proposal: effective,
         ...aiProposalPatch(card.properties, composed.aiProposal),
+        referencedItemIds: referencedItemIdsOf(effective),
         userOverrides: composed.userOverrides,
         userEditedKeys: composed.userEditedKeys,
         status: "proposed",
@@ -506,6 +508,7 @@ export async function applyTranscriptCardRecompute(
         "proposal",
         "aiProposal",
         "aiVersion",
+        "referencedItemIds",
         "userOverrides",
         "userEditedKeys",
         "status",

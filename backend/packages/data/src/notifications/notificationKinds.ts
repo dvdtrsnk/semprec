@@ -9,6 +9,8 @@
  * producer is issue #178's monthly restore test, at `observability/restoreTestResult.ts`.
  * `semp_problem` (issue #1466, migration 0121) is written by `raiseProblem`
  * (`semp/sempProblemsStore.ts`) when a deduplicated Semp problem is created or its severity rises.
+ * `calendar_invitation` (issue gh-1954, migration 0171) is written by the invitation ingest
+ * (`calendar/invitationIngestAction.ts`) when a pending invitation is first created.
  *
  * Its own file so both `notify.ts` (the writer) and `notificationsStore.ts` (the fanout job's
  * reader) can depend on it without a `notify.ts` <-> `notificationFanoutJob.ts` import cycle.
@@ -26,6 +28,7 @@ export const NOTIFICATION_KINDS = [
   "agent_guidance_drift",
   "agent_guidance_drift_resolved",
   "semp_problem",
+  "calendar_invitation",
 ] as const;
 
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
@@ -65,6 +68,7 @@ export interface PayloadSeverityKindPolicy {
 export const NOTIFICATION_KIND_POLICY: Record<NotificationKind, NotificationKindPolicy | PayloadSeverityKindPolicy> = {
   approval_pending: { category: "approvals", push: true },
   semp_problem: { category: "problems", severity: "payload", push: true },
+  calendar_invitation: { category: "invites", push: true },
   // The problem sources below still store their own notification for the in-app list. The Semp
   // problem they raise is what gets pushed, so these are not (issue #1466).
   mail_sync_error: { category: "problems", severity: "critical", push: false },

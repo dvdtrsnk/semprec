@@ -35,6 +35,7 @@ import { getMailMessageMetaByItemId, resolveMergedThreadId } from "./mailMessage
 import { resolveMailModuleIds } from "./mailModuleIds.js";
 import { requestMailSendApproval } from "./mailSendApproval.js";
 import { getMailThreadDetail } from "./mailThreadDetail.js";
+import { proposeThreadTask, threadTaskProposalNameSchema } from "./threadTaskProposals.js";
 
 /** The most of one message's text that `mail.thread.get` returns. */
 const MAX_MESSAGE_TEXT_LENGTH = 20_000;
@@ -73,6 +74,23 @@ export const mailDraftUpdateArgsSchema = z.strictObject({
 });
 
 export const mailDraftSendArgsSchema = z.strictObject({ draftId: z.uuid() });
+
+/**
+ * The arguments of `mail.thread.proposeTask` (issue gh-2035). The description is what the model reads of the tool: the
+ * session passes this schema to it as the tool's parameters.
+ */
+export const mailThreadProposeTaskArgsSchema = z
+  .strictObject({
+    threadId: z.uuid().describe("The id of the mail thread the task is suggested from."),
+    name: threadTaskProposalNameSchema.describe(
+      "A short name of the task, written from the conversation, up to 500 characters. Give no due date: the user sets it.",
+    ),
+  })
+  .describe(
+    "Suggest a task from a mail thread. Use this tool when the conversation asks the user to do something; it puts a " +
+      "proposal in the user's Inbox that the user may edit, and only the user's confirmation creates the task. Do not " +
+      "create tasks of a thread yourself: this tool never creates one.",
+  );
 
 export interface MailAgentToolResult {
   error: boolean;
@@ -504,5 +522,32 @@ export function createMailDraftSendTool(pool: Pool): MailAgentTool {
         approvalRequestId: request.id,
       };
     });
+  };
+}
+
+/**
+ * `mail.thread.proposeTask { threadId, name }` (issue gh-2035): proposes a task for a mail thread and answers
+ * `{ proposalId, status }` as JSON, the id of the Processing proposals card in the user's Inbox and its status
+ * `proposed`. It writes only that card and its edge to the thread (`proposeThreadTask`): no task and no `Threads.tasks`
+ * edge, which the user's confirm of the card creates. For that reason it needs no approval. The tool takes no due date,
+ * because the user sets it. A call for a thread that already has a `proposed` card of the same name (after trimming and
+ * case folding) answers that card and writes nothing. A merged-away thread id proposes for the current thread; an
+ * unknown thread, another tenant's and one in the Trash are the same 404, a run that is unknown (404) or has no project
+ * (403) is refused as by the other mail tools, and an empty name, one over 500 characters or an argument that is not
+ * one of the two is a 400. A refusal writes nothing.
+ */
+export function createMailThreadProposeTaskTool(pool: Pool): MailAgentTool {
+  return async function mailThreadProposeTask(runId, rawArgs) {
+    const args = mailThreadProposeTaskArgsSchema.safeParse(rawArgs);
+    if (!args.success) {
+      const field = args.error.issues[0]?.path[0];
+      return refusal(new ValidationError("Invalid arguments", typeof field === "string" ? { field } : undefined));
+    }
+    return answering(() =>
+      withTransaction(pool, async (client) => {
+        await runContext(client, runId);
+        return { error: false, result: JSON.stringify(await proposeThreadTask(client, args.data)) };
+      }),
+    );
   };
 }

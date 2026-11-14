@@ -40,6 +40,7 @@ import {
   coreAgentRunAction,
   CORE_AGENT_RUN_ACTION_ID,
   createAgentRun,
+  CALENDAR_MODULE_ID,
   createChokePoint,
   createCoreTaskList,
   createEventInCalendar,
@@ -47,6 +48,7 @@ import {
   createInvite,
   createItemWithClient,
   createPasswordResetToken,
+  createRelationWithClient,
   createPendingApprovalRequest,
   claimSempMessage,
   createSempChatThread,
@@ -57,6 +59,7 @@ import {
   getDatabaseByModuleId,
   getPasswordResetTokenByHash,
   getUserById,
+  listPropertiesByDatabase,
   transcriptionSourceLink,
   updateItemWithClient,
   writeComputed,
@@ -3215,6 +3218,56 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(own.status).toBe(200);
     expect(readString(own.text, "properties", "status")).toBe("rejected");
   },
+  // A gets two `rejected` cards with a valid envelope inside this case. B's reopen of the one answers like a random id
+  // and leaves it as it was; A's own reopen of the other returns it to `proposed`, so the refusal is not a route that
+  // refuses everything. A's reopened card is rejected again at the end, so the "inbox cards" case never counts it as open.
+  "reopen proposal": async () => {
+    const seedRejectedCard = (tenant: TenantFixture) =>
+      inTenantTransaction(tenant.tenantId, async (client) => {
+        const cards = await getDatabaseByModuleId(client, "processingProposals");
+        const tasks = await getDatabaseByModuleId(client, "tasks");
+        if (!cards || !tasks) throw new Error(`no proposal or task database in tenant ${tenant.tenantId}`);
+        const envelope = { entityKind: "database", target: tasks.id, properties: { name: "Seeded task" } };
+        const card = await createItemWithClient(
+          client,
+          {
+            databaseId: cards.id,
+            properties: { kind: "inbox", status: "rejected", proposal: envelope, aiProposal: envelope },
+          },
+          { allowedSystemKeys: ["kind", "status", "proposal", "aiProposal"] },
+        );
+        return card.id;
+      });
+    const reject = (tenant: TenantFixture, cardId: string) =>
+      inTenantTransaction(tenant.tenantId, async (client) => {
+        const cards = await getDatabaseByModuleId(client, "processingProposals");
+        if (!cards) throw new Error(`no proposal database in tenant ${tenant.tenantId}`);
+        await updateItemWithClient(
+          client,
+          { databaseId: cards.id, itemId: cardId, propertiesPatch: { status: "rejected" } },
+          { allowedSystemKeys: ["status"] },
+        );
+      });
+    const [own, foreign] = [await seedRejectedCard(a), await seedRejectedCard(a)];
+    const readCard = (id: string) => sendOk(a.member, { method: "GET", path: `/api/items/${id}` });
+    const foreignBefore = await readCard(foreign);
+    await leavesAUnchanged(async () => {
+      const answer = await expectForeignLikeRandom(b.member, [foreign], ([id]) => ({
+        method: "POST",
+        path: `/api/proposals/${id}/reopen`,
+        body: {},
+      }));
+      expect(answer.status).toBe(404);
+    });
+    expect(await readCard(foreign)).toBe(foreignBefore);
+
+    const reopened = await send(a.member, { method: "POST", path: `/api/proposals/${own}/reopen`, body: {} });
+    expect(reopened.status, reopened.text).toBe(200);
+    expect(readString(reopened.text, "properties", "status")).toBe("proposed");
+    expect(reopened.text).toContain('"keptItems":[]');
+    expect(await readCard(foreign)).toBe(foreignBefore);
+    await reject(a, own);
+  },
   "revise proposal": () =>
     leavesAUnchanged(async () => {
       await expectForeignLikeRandom(b.member, [a.proposalItemId], ([id]) => ({
@@ -3273,6 +3326,120 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     });
     expect(edited.status, edited.text).toBe(200);
     expect(edited.text).toContain('"userEditedKeys":["primary.name"]');
+    expect(await readCard(foreign)).toBe(foreignBefore);
+    await Promise.all([settle(b, own), settle(a, foreign)]);
+  },
+  // A and B each get a `proposed` card with a manual value inside this case. B's reset of A's card answers like a random id
+  // and leaves A's card, manual value included, as it was; B's reset of its own card succeeds and clears its manual value.
+  "reset proposal overrides": async () => {
+    const seedCard = (tenant: TenantFixture) =>
+      inTenantTransaction(tenant.tenantId, async (client) => {
+        const cards = await getDatabaseByModuleId(client, "processingProposals");
+        const tasks = await getDatabaseByModuleId(client, "tasks");
+        if (!cards || !tasks) throw new Error(`no proposal or task database in tenant ${tenant.tenantId}`);
+        const assistant = { entityKind: "database", target: tasks.id, properties: { name: "Seeded task" } };
+        const effective = { ...assistant, properties: { name: "Edited task" } };
+        const card = await createItemWithClient(
+          client,
+          {
+            databaseId: cards.id,
+            properties: {
+              kind: "inbox",
+              status: "proposed",
+              proposal: effective,
+              aiProposal: assistant,
+              userOverrides: { primary: { name: "Edited task" } },
+              userEditedKeys: ["primary.name"],
+            },
+          },
+          { allowedSystemKeys: ["kind", "status", "proposal", "aiProposal", "userOverrides", "userEditedKeys"] },
+        );
+        return card.id;
+      });
+    // A rejected card is no open card, so the "inbox cards" case, which counts each tenant's open cards, never sees these.
+    const settle = (tenant: TenantFixture, cardId: string) =>
+      inTenantTransaction(tenant.tenantId, async (client) => {
+        const cards = await getDatabaseByModuleId(client, "processingProposals");
+        if (!cards) throw new Error(`no proposal database in tenant ${tenant.tenantId}`);
+        await updateItemWithClient(
+          client,
+          { databaseId: cards.id, itemId: cardId, propertiesPatch: { status: "rejected" } },
+          { allowedSystemKeys: ["status"] },
+        );
+      });
+    const [own, foreign] = [await seedCard(b), await seedCard(a)];
+    const readCard = (id: string) => sendOk(a.member, { method: "GET", path: `/api/items/${id}` });
+    const foreignBefore = await readCard(foreign);
+    await leavesAUnchanged(async () => {
+      const answer = await expectForeignLikeRandom(b.member, [foreign], ([id]) => ({
+        method: "POST",
+        path: `/api/proposals/${id}/reset-overrides`,
+        body: {},
+      }));
+      expect(answer.status).toBe(404);
+    });
+    expect(await readCard(foreign)).toBe(foreignBefore);
+
+    const reset = await send(b.member, { method: "POST", path: `/api/proposals/${own}/reset-overrides`, body: {} });
+    expect(reset.status, reset.text).toBe(200);
+    expect(reset.text).toContain('"userEditedKeys":[]');
+    expect(await readCard(foreign)).toBe(foreignBefore);
+    await Promise.all([settle(b, own), settle(a, foreign)]);
+  },
+  // A and B each get an Inbox item and its `proposed` card inside this case. B's recompute of A's card answers like a random
+  // id and leaves A's card as it was; B's recompute of its own card succeeds and makes it `computing`, so the refusal is not a
+  // route that refuses everything.
+  "recompute proposal": async () => {
+    const seedCard = (tenant: TenantFixture) =>
+      inTenantTransaction(tenant.tenantId, async (client) => {
+        const cards = await getDatabaseByModuleId(client, "processingProposals");
+        const inbox = await getDatabaseByModuleId(client, "inbox");
+        if (!cards || !inbox) throw new Error(`no inbox pipeline in tenant ${tenant.tenantId}`);
+        const source = await createItemWithClient(client, {
+          databaseId: inbox.id,
+          properties: { date: "2026-08-28", time: "09:00", text: "Isolation inbox item" },
+        });
+        const card = await createItemWithClient(
+          client,
+          { databaseId: cards.id, properties: { kind: "inbox", status: "proposed", proposal: null } },
+          { allowedSystemKeys: ["kind", "status", "proposal"] },
+        );
+        const property = (await listPropertiesByDatabase(client, cards.id)).find(({ key }) => key === "sourceInbox");
+        if (!property) throw new Error(`no 'sourceInbox' property in tenant ${tenant.tenantId}`);
+        await createRelationWithClient(
+          client,
+          { relationPropertyId: property.id, callerItemId: card.id, targetItemId: source.id },
+          { ownerProcess: "processingProposals" },
+        );
+        return card.id;
+      });
+    // A rejected card is no open card, so the "inbox cards" case, which counts each tenant's open cards, never sees these.
+    const settle = (tenant: TenantFixture, cardId: string) =>
+      inTenantTransaction(tenant.tenantId, async (client) => {
+        const cards = await getDatabaseByModuleId(client, "processingProposals");
+        if (!cards) throw new Error(`no proposal database in tenant ${tenant.tenantId}`);
+        await updateItemWithClient(
+          client,
+          { databaseId: cards.id, itemId: cardId, propertiesPatch: { status: "rejected" } },
+          { allowedSystemKeys: ["status"] },
+        );
+      });
+    const [own, foreign] = [await seedCard(b), await seedCard(a)];
+    const readCard = (id: string) => sendOk(a.member, { method: "GET", path: `/api/items/${id}` });
+    const foreignBefore = await readCard(foreign);
+    await leavesAUnchanged(async () => {
+      const answer = await expectForeignLikeRandom(b.member, [foreign], ([id]) => ({
+        method: "POST",
+        path: `/api/proposals/${id}/recompute`,
+        body: {},
+      }));
+      expect(answer.status).toBe(404);
+    });
+    expect(await readCard(foreign)).toBe(foreignBefore);
+
+    const recomputed = await send(b.member, { method: "POST", path: `/api/proposals/${own}/recompute`, body: {} });
+    expect(recomputed.status, recomputed.text).toBe(200);
+    expect(recomputed.text).toContain('"status":"computing"');
     expect(await readCard(foreign)).toBe(foreignBefore);
     await Promise.all([settle(b, own), settle(a, foreign)]);
   },
@@ -4293,8 +4460,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(await totalOf(a)).toBe(aBefore + 4);
     expect(await totalOf(b)).toBe(bBefore + 2);
   },
-  // A gets three pending approvals and B one, on top of whatever earlier cases left; each tenant's count rises by its
-  // own approvals only, and the two fields without a source stay 0 for both.
+  // A gets three pending approvals and two pending invitations, B one of each, on top of whatever earlier cases left
+  // (issue gh-1954); each tenant's counts rise by its own rows only, and the field without a source stays 0 for both.
   "badge counts": async () => {
     const request: Request = { method: "GET", path: "/api/badge-counts" };
     const countsOf = async (tenant: TenantFixture) =>
@@ -4322,19 +4489,49 @@ const ROUTE_CASES: Record<string, RouteCase> = {
           });
         }
       });
+    // The ingest of an iMIP message is the only production writer of an invitation; the fixture writes the row it would.
+    const seedInvitations = async (tenant: TenantFixture, count: number) => {
+      const invitationsDatabaseId = await databaseIdFor(tenant.tenantId, "invitations");
+      await inTenantTransaction(tenant.tenantId, async (client) => {
+        for (let n = 0; n < count; n += 1) {
+          await createItemWithClient(
+            client,
+            {
+              databaseId: invitationsDatabaseId,
+              properties: {
+                title: `Badge count probe ${n}`,
+                startsAt: "2026-11-20T09:00:00.000Z",
+                endsAt: "2026-11-20T10:00:00.000Z",
+                allDay: false,
+                status: "pending",
+                kind: "invite",
+                uid: `badge-count-probe-${n}-${randomUUID()}@example.test`,
+                sequence: 0,
+              },
+            },
+            {
+              allowedSystemKeys: ["title", "startsAt", "endsAt", "allDay", "status", "kind", "uid", "sequence"],
+              systemOwnerProcess: CALENDAR_MODULE_ID,
+            },
+          );
+        }
+      });
+    };
     const [aBefore, bBefore] = [await countsOf(a), await countsOf(b)];
 
     await seedApprovals(a, 3);
     await seedApprovals(b, 1);
+    await seedInvitations(a, 2);
+    await seedInvitations(b, 1);
 
     expect(await countsOf(a)).toEqual({
       pendingApprovals: aBefore.pendingApprovals + 3,
-      pendingInvites: 0,
+      pendingInvites: aBefore.pendingInvites + 2,
       openInboxItems: 0,
     });
     expect(await countsOf(b)).toEqual({
       pendingApprovals: bBefore.pendingApprovals + 1,
-      pendingInvites: 0,
+      pendingInvites: bBefore.pendingInvites + 1,
       openInboxItems: 0,
     });
   },
@@ -4572,6 +4769,81 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(copyOfA).not.toBe(copyId);
     expect(await peopleOf(a.member, copyOfA)).toContain(foreign.personId);
     expect(await peopleOf(b.member, copyId)).not.toContain(foreign.personId);
+  },
+  // Each tenant gets one pending invitation, seeded here and used by no other case (issue gh-1944). B answers A's:
+  // the answer is the 404 of a random id, and A's invitation stays pending with no Event made in either tenant. B's
+  // answer to its own invitation makes B's Event only, so the 404 is a refusal and not a route that never works.
+  "calendar invitation respond": async () => {
+    const seed = async (
+      tenant: TenantFixture,
+      title: string,
+    ): Promise<{ id: string; invitationsDatabaseId: string }> => {
+      const invitationsDatabaseId = await databaseIdFor(tenant.tenantId, "invitations");
+      // The ingest of an iMIP message is the only production writer of an invitation; the fixture writes the row it would.
+      const id = await inTenantTransaction(tenant.tenantId, async (client) => {
+        const invitation = await createItemWithClient(
+          client,
+          {
+            databaseId: invitationsDatabaseId,
+            properties: {
+              title,
+              startsAt: "2026-11-20T09:00:00.000Z",
+              endsAt: "2026-11-20T10:00:00.000Z",
+              allDay: false,
+              status: "pending",
+              kind: "invite",
+              uid: `${title}@example.test`,
+              sequence: 0,
+            },
+          },
+          {
+            allowedSystemKeys: ["title", "startsAt", "endsAt", "allDay", "status", "kind", "uid", "sequence"],
+            systemOwnerProcess: CALENDAR_MODULE_ID,
+          },
+        );
+        return invitation.id;
+      });
+      return { id, invitationsDatabaseId };
+    };
+    const [own, foreign] = [await seed(b, "Isolation probe of B"), await seed(a, "Isolation probe of A")];
+    const respondTo = (id: string | undefined): Request => ({
+      method: "POST",
+      path: `/api/calendar/invitations/${id}/respond`,
+      body: { response: "accepted" },
+    });
+    const rowsOf = (caller: Caller, databaseId: string): Promise<string> =>
+      sendOk(caller, { method: "POST", path: `/api/databases/${databaseId}/query`, body: {} });
+    const [eventsDatabaseOfA, eventsDatabaseOfB] = [
+      await databaseIdFor(a.tenantId, "events"),
+      await databaseIdFor(b.tenantId, "events"),
+    ];
+    const [eventsOfA, invitationsOfA] = [
+      await rowsOf(a.member, eventsDatabaseOfA),
+      await rowsOf(a.member, foreign.invitationsDatabaseId),
+    ];
+    const eventsOfB = await rowsOf(b.member, eventsDatabaseOfB);
+
+    const answer = await expectForeignLikeRandom(b.member, [foreign.id], ([id]) => respondTo(id));
+    expect(answer.status).toBe(404);
+    expect(await rowsOf(a.member, eventsDatabaseOfA)).toBe(eventsOfA);
+    expect(await rowsOf(a.member, foreign.invitationsDatabaseId)).toBe(invitationsOfA);
+    expect(await rowsOf(b.member, eventsDatabaseOfB)).toBe(eventsOfB);
+
+    const accepted = await sendOk(b.member, respondTo(own.id));
+    expect(readString(accepted, "properties", "status")).toBe("accepted");
+    expectNoneOf(accepted, [foreign.id], "B's answer");
+    const eventsAfter = await rowsOf(b.member, eventsDatabaseOfB);
+    expect(eventsAfter).toContain("Isolation probe of B");
+    expect(eventsAfter).not.toContain("Isolation probe of A");
+    expect(await rowsOf(a.member, eventsDatabaseOfA)).toBe(eventsOfA);
+    expect(await rowsOf(a.member, foreign.invitationsDatabaseId)).toBe(invitationsOfA);
+    // The answer is the only way to change the status: a generic write of it is refused.
+    const generic = await send(b.member, {
+      method: "PATCH",
+      path: `/api/items/${own.id}`,
+      body: { properties: { status: "declined" }, ifVersion: readString(accepted, "updatedAt") },
+    });
+    expect(generic.status, generic.text).toBe(403);
   },
   // Each tenant gets its own calendar whose Events carry invitations, seeded here and used by no other case
   // (issue gh-2003). A's calendar holds more of everything than B's, so a leaked count would show in B's answer.
@@ -6787,6 +7059,20 @@ function ownerProbes(): OwnerProbe[] {
       ids: [a.proposalItemId],
       build: call("PATCH", ([id]) => `/api/proposals/${id}/values`, { set: { primary: { name: "Owner edit" } } }),
       // The fixture proposal has no status, so A's own edit is refused and writes nothing.
+      status: 400,
+    },
+    {
+      label: "reset proposal overrides",
+      ids: [a.proposalItemId],
+      build: call("POST", ([id]) => `/api/proposals/${id}/reset-overrides`),
+      // The fixture proposal has no status, so A's own reset is refused and writes nothing.
+      status: 400,
+    },
+    {
+      label: "recompute proposal",
+      ids: [a.proposalItemId],
+      build: call("POST", ([id]) => `/api/proposals/${id}/recompute`),
+      // The fixture proposal is no card of an Inbox item, so A's own recompute is refused and writes nothing.
       status: 400,
     },
     {

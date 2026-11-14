@@ -728,6 +728,76 @@ describe("sendApnsNotification approval fields (issue #1831)", () => {
   });
 });
 
+describe("sendApnsNotification calendar invitation fields (issue gh-1954)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Sends one alert through the owned peer and returns the JSON body the adapter put on the wire. */
+  async function sendAndRead(payload: NotificationPushPayload) {
+    return withApnsPeer({ status: 200 }, async (requests) => {
+      const result = await sendApnsNotification(apnsTarget, payload, apnsTestConfig);
+      expect(result).toEqual({ outcome: "delivered" });
+      expect(requests).toHaveLength(1);
+      const wire: unknown = JSON.parse(requests[0]!.body);
+      return wire;
+    });
+  }
+
+  const invitationId = "0c0e3bb4-2d4c-4f43-8c7b-6b5f4f1d3f10";
+  const invitationPayload: NotificationPushPayload = {
+    notificationId: "notif-invitation",
+    title: "Olga invites you: Sprint review",
+    body: null,
+    linkHref: null,
+    interruptionLevel: "active",
+    sourceTable: "items",
+    sourceId: invitationId,
+    kind: "calendar_invitation",
+  };
+
+  it("sends aps.category CALENDAR_INVITATION and the invitation id beside aps", async () => {
+    const wire = await sendAndRead({
+      ...invitationPayload,
+      apns: { category: "CALENDAR_INVITATION", data: { invitation_id: invitationId } },
+    });
+
+    expect(wire).toEqual({
+      aps: {
+        alert: { title: "Olga invites you: Sprint review" },
+        "interruption-level": "active",
+        category: "CALENDAR_INVITATION",
+      },
+      link_href: null,
+      notification_id: "notif-invitation",
+      invitation_id: invitationId,
+    });
+  });
+
+  it("sends no custom key when the apns fields carry no data", async () => {
+    const wire = await sendAndRead({ ...invitationPayload, apns: { category: "CALENDAR_INVITATION" } });
+
+    expect(Object.keys(wire as object).sort()).toEqual(["aps", "link_href", "notification_id"]);
+  });
+
+  it("never lets a custom key replace aps or the keys the adapter sets itself", async () => {
+    const wire = await sendAndRead({
+      ...invitationPayload,
+      apns: {
+        category: "CALENDAR_INVITATION",
+        data: { aps: "x", link_href: "x", notification_id: "x", invitation_id: invitationId },
+      },
+    });
+
+    expect(wire).toMatchObject({
+      aps: { category: "CALENDAR_INVITATION" },
+      link_href: null,
+      notification_id: "notif-invitation",
+      invitation_id: invitationId,
+    });
+  });
+});
+
 describe("sendApnsBackgroundPush headers (issue #1829)", () => {
   afterEach(() => {
     vi.restoreAllMocks();

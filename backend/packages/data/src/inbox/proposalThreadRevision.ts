@@ -15,6 +15,7 @@ import {
   type ProposalActionConfig,
 } from "./proposalActions.js";
 import { aiProposalPatch, readAiProposal, type ProposalEntityKind, type ProposalEnvelope } from "./proposalEnvelope.js";
+import { referencedItemIdsOf } from "./proposalReferences.js";
 import { appendDroppedValuesEntry } from "./proposalRetention.js";
 import { composeEffectiveEnvelope, parseUserOverrides, retainOverridesForThreadRevision } from "./proposalOverrides.js";
 
@@ -148,6 +149,7 @@ export async function reviseProposalFromThreadWithClient(
       itemId: proposal.id,
       propertiesPatch: {
         proposal: effective,
+        referencedItemIds: referencedItemIdsOf(effective),
         ...aiProposalPatch(proposal.properties, retained.aiProposal),
         userOverrides: retained.userOverrides,
         userEditedKeys: retained.userEditedKeys,
@@ -162,6 +164,7 @@ export async function reviseProposalFromThreadWithClient(
         "proposal",
         "aiProposal",
         "aiVersion",
+        "referencedItemIds",
         "userOverrides",
         "userEditedKeys",
         "status",

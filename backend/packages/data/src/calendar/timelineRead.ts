@@ -5,6 +5,7 @@ import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { CALENDARS_MODULE_ID } from "../seed/calendarsKeys.js";
+import { INVITATIONS_MODULE_ID } from "../seed/invitationsKeys.js";
 import { EVENTS_MODULE_ID, TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { taskDisplayDay } from "../tasks/taskDisplayDay.js";
 import { TASK_DISPLAY_DAY_SQL } from "../tasks/taskDisplayDaySql.js";
@@ -228,6 +229,39 @@ export async function readEventTranscripts(
   return new Map(rows.map((row) => [row.event_id, { id: row.transcript_id, status: text(row.status) }]));
 }
 
+/** The id of a stored item; an id of any other form (a virtual occurrence's `<seriesId>@<date>`) names no item. */
+const ITEM_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Of `$2`, the Events that a live invitation of status `tentative` links to through its `event` relation. The
+ * relation is Invitations' own and one-directional, so `Invitations.event` is property A of its definition and an edge
+ * holds the invitation in `item_a` and the Event in `item_b`, as `EVENT_TRANSCRIPTS_SQL` reads `Events.transcript`.
+ * `$1` is the Invitations database.
+ */
+const TENTATIVE_EVENTS_SQL = `
+  SELECT DISTINCT e.item_b AS event_id
+    FROM properties p
+    JOIN relation_definitions d ON d.property_id_a = p.id
+    JOIN item_relations e ON e.relation_definition_id = d.id AND e.item_b = ANY($2::uuid[])
+    JOIN items invitation ON invitation.database_id = $1 AND invitation.id = e.item_a
+     AND invitation.deleted_at IS NULL AND invitation.properties->>'status' = 'tentative'
+   WHERE p.database_id = $1 AND p.type = 'relation' AND p.key = 'event'`;
+
+/**
+ * The ids among `eventIds` of the Events a live `tentative` invitation links to (issue gh-2008), read with one
+ * query (after the lookup of the Invitations database) whatever the number of Events, in the caller's tenant scope.
+ * An id that is not an item id (a virtual occurrence) is never one of them. A tenant without an Invitations database
+ * has none, and nothing is read for an empty list.
+ */
+export async function readTentativeEventIds(client: PoolClient, eventIds: string[]): Promise<Set<string>> {
+  const itemIds = eventIds.filter((id) => ITEM_ID_PATTERN.test(id));
+  if (itemIds.length === 0) return new Set();
+  const invitations = await getDatabaseByModuleId(client, INVITATIONS_MODULE_ID);
+  if (!invitations) return new Set();
+  const { rows } = await client.query<{ event_id: string }>(TENTATIVE_EVENTS_SQL, [invitations.id, itemIds]);
+  return new Set(rows.map((row) => row.event_id));
+}
+
 const EVENT_RELATION_KEYS = ["calendar", "project", "people"] as const;
 const TASK_RELATION_KEYS = ["project", "people"] as const;
 
@@ -309,6 +343,7 @@ export async function toTimelineItems(
           : { id: project.id, name: text(project.properties.name) ?? "", color: text(project.properties.color) },
       people: liveTargets(row.id, "people").map(({ id, properties }) => ({ id, name: text(properties.name) ?? "" })),
       transcript: null,
+      attendance: null,
       hostEvent: null,
       tasks: null,
       counts: null,
@@ -509,6 +544,7 @@ export type CalendarTimelineCompactItem = Pick<
   | "timeFrom"
   | "status"
   | "counts"
+  | "attendance"
   | "updatedAt"
   | "readOnly"
 > &
@@ -520,8 +556,23 @@ export type CalendarTimelineCompactItem = Pick<
  */
 function toCompactItem(entry: CalendarTimelineEntry): CalendarTimelineCompactItem | CalendarDerivedTimelineItem {
   if (entry.kind !== "event" && entry.kind !== "task") return entry;
-  const { id, kind, title, calendarId, allDay, date, endDate, timeFrom, status, counts, updatedAt, readOnly } = entry;
-  const compact = { id, kind, title, calendarId, allDay, date, endDate, timeFrom, status, counts, updatedAt, readOnly };
+  const { id, kind, title, calendarId, allDay, date, endDate, timeFrom, status, counts, attendance } = entry;
+  const { updatedAt, readOnly } = entry;
+  const compact = {
+    id,
+    kind,
+    title,
+    calendarId,
+    allDay,
+    date,
+    endDate,
+    timeFrom,
+    status,
+    counts,
+    attendance,
+    updatedAt,
+    readOnly,
+  };
   return "seriesId" in entry ? { ...compact, seriesId: entry.seriesId, occurrenceDate: entry.occurrenceDate } : compact;
 }
 
@@ -551,7 +602,9 @@ export interface CalendarTimelineInFullShape extends CalendarTimeline {
  * English (`toManifestLocale`), and in Czech when the tenant has no user. `shape: "compact"` returns the
  * fields of `CalendarTimelineCompactItem` for an Event or a Task; a derived entry is returned as it is. A Task
  * is placed by its display day (`readTaskTimelineItems`), and the Tasks that sit in Events are added to the Events
- * and the Tasks' host events to the Tasks by `attachTaskInEventState` (issue gh-1880).
+ * and the Tasks' host events to the Tasks by `attachTaskInEventState` (issue gh-1880). An Event that a live `tentative`
+ * invitation links to gets `attendance` `"tentative"`, from one query over all the Events of the range
+ * (`readTentativeEventIds`, issue gh-2008).
  *
  * The caller passes calendar dates with `to` not before `from`, and bounds the length of the range. The read
  * writes nothing.
@@ -580,7 +633,14 @@ export async function readCalendarTimeline(
   };
   const read: CalendarTimelineEntry[] = [];
   for (const source of CALENDAR_TIMELINE_SOURCES) read.push(...(await source.readItems(client, context)));
-  const items = await attachTaskInEventState(client, read, context);
+  const attached = await attachTaskInEventState(client, read, context);
+  const tentative = await readTentativeEventIds(
+    client,
+    attached.filter((entry) => entry.kind === "event").map((entry) => entry.id),
+  );
+  const items = attached.map((entry) =>
+    entry.kind === "event" && tentative.has(entry.id) ? { ...entry, attendance: "tentative" as const } : entry,
+  );
 
   const collator = new Intl.Collator(toManifestLocale((await getTenantUserLocale(client)) ?? "cs"));
   items.sort((a, b) => {

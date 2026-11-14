@@ -13,6 +13,7 @@
   "notification.mail_sync_stalled.title": "Mail sync has stalled",
   "notification.backup_restore_failed.title": "Backup restore test failed",
   "notification.semp_problem.title": "Something needs your attention",
+  "notification.calendar_invitation.title": "{organizer} invites you: {title}",
   "notification.body.unnamed": "unnamed",
   "approval.itemDelete": "Delete \"{itemName}\" from \"{databaseName}\" ({databaseKey}); {linkedCount} linked items, retained for {restorableDays} days. {projectName}",
   "approval.itemDeleteImpact": "Delete \"{itemName}\" from \"{databaseName}\" ({databaseKey}); {linkedCount} linked items, {seriesInstanceCount} instances in its series, {attachmentCount} attachments, {hostEventCount} events it is placed in, retained for {restorableDays} days. {projectName}",

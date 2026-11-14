@@ -21,7 +21,10 @@ export {
   createInboxCardsCountRouteHandler,
   createInboxCardsRouteHandler,
   createInboxTypesRouteHandler,
+  createReopenProposalRouteHandler,
+  createRecomputeProposalRouteHandler,
   createRejectProposalRouteHandler,
+  createResetProposalOverridesRouteHandler,
   createReviseProposalRouteHandler,
   createUpdateProposalValuesRouteHandler,
 } from "./inboxRouteHandlers.js";
@@ -50,8 +53,9 @@ export {
  * has exactly one producer process that creates its cards — `inbox` by `semprec.tick`,
  * `transcript` by `semprec-transcribe`, from its match step (`transcription/transcriptEventMatch.ts`)
  * and its speaker suggestion step (`transcription/transcriptSpeakerSuggestion.ts`). `mailThread` cards (source
- * relation `sourceThread`, issue gh-2034) have no producer process yet: issue #2035 decides it
- * (`docs/adr/2026-11-14-a-mail-thread-card-proposes-one-task-of-a-thread-and-is-confirmed-as-a-user-write.md`).
+ * relation `sourceThread`, issue gh-2034, `docs/adr/2026-11-14-a-mail-thread-card-proposes-one-task-of-a-thread-and-is-confirmed-as-a-user-write.md`)
+ * by the mail module, from its agent tool `mail.thread.proposeTask` (issue gh-2035, `mail/threadTaskProposals.ts`,
+ * `docs/adr/2026-11-14-mail-thread-cards-are-produced-by-the-mail-module-when-semp-proposes-a-task.md`).
  * Everything after creation (confirm/reject/revise) stays with this module's proposal actions, with two additions.
  * First (`docs/adr/2026-11-14-transcript-cards-are-recomputed-by-their-producer-on-instruction.md`): when a user's
  * instruction is recorded on a `transcript` card, `semprec-transcribe` also rewrites that card's `aiProposal`,
@@ -125,6 +129,18 @@ export const manifest: ModuleManifest = {
       justification: "transactional-semantics",
     },
     {
+      name: "reopenProposal",
+      method: "POST",
+      path: "/api/proposals/:id/reopen",
+      handlerExport: "createReopenProposalRouteHandler",
+      // The proposal's lock, the validation of its stored envelope, the status transition back out of the locked
+      // `rejected` status, its history entry and the Journal recompute commit in one transaction. A `confirmed` card is
+      // reopened in the same transaction: the reversal of its recorded writes across several databases (items to the
+      // Trash, edges, page blocks), the removal of the credential stored for a created MCP server and the `keptItems`
+      // it answers with. A generic item update cannot express either (`status` is system-owned).
+      justification: "transactional-semantics",
+    },
+    {
       name: "reviseProposal",
       method: "POST",
       path: "/api/proposals/:id/revise",
@@ -141,6 +157,25 @@ export const manifest: ModuleManifest = {
       // The proposal's lock, the merge into its user overrides and the history entry commit in one
       // transaction, which a generic item update cannot express (it refuses the system-owned
       // `proposal`, `status` and `history` of a Processing proposal).
+      justification: "transactional-semantics",
+    },
+    {
+      name: "resetProposalOverrides",
+      method: "POST",
+      path: "/api/proposals/:id/reset-overrides",
+      handlerExport: "createResetProposalOverridesRouteHandler",
+      // The proposal's lock, the restore of the assistant's envelope with the cleared manual values and the history
+      // entry commit in one transaction, which a generic item update cannot express (it refuses the system-owned
+      // `proposal`, `status` and `history` of a Processing proposal).
+      justification: "transactional-semantics",
+    },
+    {
+      name: "recomputeProposal",
+      method: "POST",
+      path: "/api/proposals/:id/recompute",
+      handlerExport: "createRecomputeProposalRouteHandler",
+      // The card's `computing` status, its history entry and the trigger of the tick commit in one transaction, which a
+      // generic item update cannot express (`status` is system-owned and the tick is queued in the same transaction).
       justification: "transactional-semantics",
     },
     {

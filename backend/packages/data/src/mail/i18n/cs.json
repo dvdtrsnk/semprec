@@ -69,5 +69,6 @@
   "agentTool.mail.thread.get.label": "Zobrazit e-mailové vlákno",
   "agentTool.mail.draft.create.label": "Vytvořit koncept e-mailu",
   "agentTool.mail.draft.update.label": "Upravit koncept e-mailu",
-  "agentTool.mail.draft.send.label": "Odeslat koncept e-mailu"
+  "agentTool.mail.draft.send.label": "Odeslat koncept e-mailu",
+  "agentTool.mail.thread.proposeTask.label": "Navrhnout úkol z e-mailového vlákna"
 }

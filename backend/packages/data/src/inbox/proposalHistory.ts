@@ -1,5 +1,25 @@
 import { z } from "zod";
 
+const edgeMetadataSchema = z.record(z.string(), z.unknown());
+
+const edgeEndsSchema = z.object({
+  relationPropertyId: z.string().uuid(),
+  callerItemId: z.string().uuid(),
+  targetItemId: z.string().uuid(),
+});
+
+/**
+ * An edge the confirmation wrote: `metadata` is what the edge held right after the write, `previousMetadata` is `null`
+ * when the confirmation inserted the edge and the metadata the edge already had when the write replaced it.
+ */
+export const writtenRelationSchema = edgeEndsSchema.extend({
+  metadata: edgeMetadataSchema,
+  previousMetadata: edgeMetadataSchema.nullable(),
+});
+
+/** An edge the confirmation deleted, with the metadata it had. */
+export const removedRelationSchema = edgeEndsSchema.extend({ metadata: edgeMetadataSchema });
+
 /** A Processing proposal's chat + decision log entry (issue #104). */
 const PROPOSAL_HISTORY_KINDS = [
   "computed",
@@ -39,7 +59,18 @@ export const proposalHistoryEntrySchema = z.object({
       }),
     )
     .optional(),
+  /**
+   * On the entry of a confirmation: every edge between items that already existed which the confirmation wrote (link steps, the
+   * edges an update step added, the edge of a transcript card), recorded as `writtenRelationSchema` says. Present, even
+   * as an empty array, on every entry written by a confirmation that records its edges; absent on one written before.
+   */
+  writtenRelations: z.array(writtenRelationSchema).optional(),
+  /** On the entry of a confirmation: the edges an update step of the confirmation deleted, with the metadata they had. */
+  removedRelations: z.array(removedRelationSchema).optional(),
 });
+
+export type WrittenRelation = z.infer<typeof writtenRelationSchema>;
+export type RemovedRelation = z.infer<typeof removedRelationSchema>;
 
 export type ProposalHistoryEntry = z.infer<typeof proposalHistoryEntrySchema>;
 
@@ -55,7 +86,15 @@ export function appendHistoryEntry(
   author: "ai" | "user" = "ai",
   extra?: Pick<
     ProposalHistoryEntry,
-    "id" | "kind" | "keys" | "threadId" | "messageId" | "instructionEntryId" | "addedRelations"
+    | "id"
+    | "kind"
+    | "keys"
+    | "threadId"
+    | "messageId"
+    | "instructionEntryId"
+    | "addedRelations"
+    | "writtenRelations"
+    | "removedRelations"
   >,
 ): ProposalHistoryEntry[] {
   const parsed = z.array(proposalHistoryEntrySchema).safeParse(history);

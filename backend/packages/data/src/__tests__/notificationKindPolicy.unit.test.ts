@@ -30,20 +30,21 @@ describe("notification kind policy", () => {
     }
   });
 
-  it("never pushes info kinds, and pushes only approvals and Semp problems (issue #1466)", () => {
+  it("never pushes info kinds, and pushes only approvals, Semp problems and calendar invitations (issues #1466, gh-1954)", () => {
     for (const kind of NOTIFICATION_KINDS) {
       const policy = policyForKind(kind);
       const isInfo = policy.category === "problems" && policy.severity === "info";
       expect(policy.push && isInfo, kind).toBe(false);
     }
     const pushed = NOTIFICATION_KINDS.filter((kind) => policyForKind(kind).push).sort();
-    expect(pushed).toEqual(["approval_pending", "semp_problem"]);
+    expect(pushed).toEqual(["approval_pending", "calendar_invitation", "semp_problem"]);
   });
 
   it("classifies the listed kinds", () => {
     const expected: Record<NotificationKind, string> = {
       approval_pending: "approvals",
       semp_problem: "problems/payload",
+      calendar_invitation: "invites",
       mail_sync_error: "problems/critical",
       mail_sync_stalled: "problems/critical",
       backup_restore_failed: "problems/critical",

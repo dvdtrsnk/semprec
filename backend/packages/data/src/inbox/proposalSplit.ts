@@ -7,6 +7,7 @@ import { publishInboxCardChange } from "./inboxCardsRealtime.js";
 import { lockInboxSource } from "./inboxSourceGuard.js";
 import { aiProposalPatch, type ProposalEntityKind, type ProposalEnvelope } from "./proposalEnvelope.js";
 import { appendHistoryEntry } from "./proposalHistory.js";
+import { referencedItemIdsOf } from "./proposalReferences.js";
 import { assertValidEnvelopeForCard, lockLiveProposal, type ProposalActionConfig } from "./proposalActions.js";
 import { assertCardOfSubject, reviseProposalFromThreadWithClient } from "./proposalThreadRevision.js";
 
@@ -136,6 +137,7 @@ export async function splitInboxSourceWithClient(
           kind: "inbox",
           proposal: envelope,
           ...aiProposalPatch({}, envelope),
+          referencedItemIds: referencedItemIdsOf(envelope),
           history: appendHistoryEntry([], input.message ?? "Created by splitting the source.", "ai", {
             kind: "threadRevision",
             threadId: input.threadId,
@@ -146,7 +148,16 @@ export async function splitInboxSourceWithClient(
         },
       },
       {
-        allowedSystemKeys: ["kind", "proposal", "aiProposal", "aiVersion", "history", "status", "splitFromProposalId"],
+        allowedSystemKeys: [
+          "kind",
+          "proposal",
+          "aiProposal",
+          "aiVersion",
+          "referencedItemIds",
+          "history",
+          "status",
+          "splitFromProposalId",
+        ],
         ...(input.actingUserId === undefined ? {} : { actingUserId: input.actingUserId }),
       },
     );

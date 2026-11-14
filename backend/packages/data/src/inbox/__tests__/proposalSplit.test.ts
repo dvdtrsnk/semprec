@@ -295,6 +295,24 @@ describe("splitInboxSourceWithClient (issue #1939)", () => {
     expect(after.edges).toBe(before.edges + 1);
   });
 
+  it("stores the referenced item ids of a sibling card, an empty list for an envelope that refers to no item (issue gh-1916)", async () => {
+    const fixture = await createCard(owner);
+
+    const result = await split(fixture, twoCards(fixture));
+
+    const siblingId = result.siblings[0]?.id;
+    if (!siblingId) throw new Error("Missing sibling");
+    const stored = await runInTenant(fixture.tenant, () =>
+      runtime.query<{ referenced: unknown }>(
+        "SELECT properties->'referencedItemIds' AS referenced FROM items WHERE id = $1",
+        [siblingId],
+      ),
+    );
+    // The key itself is the proof: a sibling written without it is invisible to the hooks that invalidate a card when an
+    // item it refers to is archived or deleted.
+    expect(stored.rows[0]?.referenced).toEqual([]);
+  });
+
   it("gives every card a default history text when the call carries no message", async () => {
     const fixture = await createCard(owner);
 

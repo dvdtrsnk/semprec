@@ -5,7 +5,7 @@ import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { createItemWithClient, prepareUserItemPatch, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { readProposalTimezone } from "./proposalComputedUpdates.js";
-import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
+import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { ChokePointError, ConflictError, NotFoundError, ValidationError } from "../errors.js";
 import type { WriterIdentity } from "../chokePoint/writerKind.js";
 import { lockBlobById } from "../blobs/blobsStore.js";
@@ -19,6 +19,12 @@ import { effectiveStepRelations, selectActiveSteps } from "./proposalStepGraph.j
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import { isDeepStrictEqual } from "node:util";
 import { assertUpdateStepShape, withStepRef } from "./proposalEnvelopeValidation.js";
+import {
+  createEdgeRecorder,
+  deleteRecordedEdge,
+  writeRecordedEdge,
+  type EdgeRecorder,
+} from "./proposalEdgeRecording.js";
 
 /** What a `fileFromAttachment` step resolved to: the Files item, the attachment it moved, and whether this step created the item. */
 export interface FileFromAttachmentResult {
@@ -37,6 +43,8 @@ export interface ExecutedProposalSteps {
   /** One entry per `fileFromAttachment` step, in execution order. */
   fileFromAttachments: FileFromAttachmentResult[];
   executedSteps: Array<{ ref: string; itemId: string; databaseId: string }>;
+  /** The edges the steps wrote or deleted on items that already existed (a link step, an update step), for the undo. */
+  recordedEdges: EdgeRecorder;
 }
 
 interface StepWriteContext {
@@ -46,6 +54,8 @@ interface StepWriteContext {
   sourceInboxItemId: string | null;
   /** `ref` of every step executed so far -> the id of the item it created or changed. */
   itemIdsByRef: Map<string, string>;
+  /** Collects the edges `link` and `update` steps write and delete; the edges of a newly created item stay with it and are not recorded. */
+  recorder: EdgeRecorder;
 }
 
 /** What one step wrote: the item it resolved to, and for a `fileFromAttachment` step the attachment it moved. */
@@ -228,22 +238,28 @@ async function createEdges(
   itemId: string,
   relations: StepRelationTargets,
   ctx: StepWriteContext,
+  record: boolean,
 ): Promise<void> {
   for (const [key, targets] of Object.entries(relations)) {
     const relationPropertyId = await requireRelationPropertyId(client, step, databaseId, key);
     for (const target of targets) {
       const targetItemId = resolveTargetId(step, key, target, ctx);
       await withStepDetails(step, key, () =>
-        createRelationWithClient(
-          client,
-          { relationPropertyId, callerItemId: itemId, targetItemId },
-          undefined,
-          ctx.writer,
-          ctx.actingUserId,
-        ),
+        writeEdge(client, ctx, { relationPropertyId, callerItemId: itemId, targetItemId }, record),
       );
     }
   }
+}
+
+/** Writes one edge; `record` says it is on an item that already existed, so the undo needs to know what the write did to it. */
+async function writeEdge(
+  client: PoolClient,
+  ctx: StepWriteContext,
+  input: { relationPropertyId: string; callerItemId: string; targetItemId: string },
+  record: boolean,
+): Promise<void> {
+  if (record) await writeRecordedEdge(client, ctx.recorder, input, ctx.writer, ctx.actingUserId);
+  else await createRelationWithClient(client, input, undefined, ctx.writer, ctx.actingUserId);
 }
 
 /** Moves an item's relations: deletes the `before` edges that are gone from `after`, then creates the new ones. */
@@ -261,10 +277,10 @@ async function moveEdges(
     const previous = step.before?.relations?.[key] ?? [];
     for (const targetItemId of previous.filter((id) => !next.includes(id))) {
       await withStepDetails(step, key, () =>
-        deleteRelationWithClient(
+        deleteRecordedEdge(
           client,
+          ctx.recorder,
           { relationPropertyId, callerItemId: itemId, targetItemId },
-          undefined,
           ctx.writer,
           ctx.actingUserId,
         ),
@@ -272,13 +288,7 @@ async function moveEdges(
     }
     for (const targetItemId of next.filter((id) => !previous.includes(id))) {
       await withStepDetails(step, key, () =>
-        createRelationWithClient(
-          client,
-          { relationPropertyId, callerItemId: itemId, targetItemId },
-          undefined,
-          ctx.writer,
-          ctx.actingUserId,
-        ),
+        writeEdge(client, ctx, { relationPropertyId, callerItemId: itemId, targetItemId }, true),
       );
     }
   }
@@ -364,7 +374,7 @@ async function executeFileFromAttachment(
         { writer: ctx.writer, actingUserId: ctx.actingUserId },
       ),
     );
-    await createEdges(client, step, filesDatabase.id, fileItem.id, step.relations ?? {}, ctx);
+    await createEdges(client, step, filesDatabase.id, fileItem.id, step.relations ?? {}, ctx, false);
     fileItemId = fileItem.id;
     created = true;
   }
@@ -396,7 +406,7 @@ async function executeStep(client: PoolClient, step: ProposalStep, ctx: StepWrit
         { writer: ctx.writer, actingUserId: ctx.actingUserId },
       ),
     );
-    await createEdges(client, step, database.id, created.id, step.relations ?? {}, ctx);
+    await createEdges(client, step, database.id, created.id, step.relations ?? {}, ctx, false);
     return { itemId: created.id, databaseId: database.id, created: true };
   }
 
@@ -408,7 +418,7 @@ async function executeStep(client: PoolClient, step: ProposalStep, ctx: StepWrit
     });
   }
   if (step.op === "link") {
-    await createEdges(client, step, item.databaseId, item.id, step.relations ?? {}, ctx);
+    await createEdges(client, step, item.databaseId, item.id, step.relations ?? {}, ctx, true);
     return { itemId: item.id, databaseId: item.databaseId, created: false };
   }
   await assertUpdateBefore(client, step, item.databaseId, item.id);
@@ -444,6 +454,7 @@ export async function executeProposalSteps(
     actingUserId: options.actingUserId,
     sourceInboxItemId: options.sourceInboxItemId,
     itemIdsByRef: new Map(),
+    recorder: createEdgeRecorder(),
   };
   let primary: Pick<ExecutedProposalSteps, "primaryItemId" | "primaryDatabaseId"> | null = null;
   const createdItemIds: string[] = [];
@@ -467,5 +478,5 @@ export async function executeProposalSteps(
     if (step.role === "primary") primary = { primaryItemId: outcome.itemId, primaryDatabaseId: outcome.databaseId };
   }
   if (!primary) throw new ValidationError("Proposal has no primary step to write", { field: "operations" });
-  return { ...primary, createdItemIds, fileFromAttachments, executedSteps };
+  return { ...primary, createdItemIds, fileFromAttachments, executedSteps, recordedEdges: ctx.recorder };
 }

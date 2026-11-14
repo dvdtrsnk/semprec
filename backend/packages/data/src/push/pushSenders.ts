@@ -5,13 +5,19 @@ import type { ApnsEnvironment } from "./types.js";
 export type NotificationInterruptionLevel = "passive" | "active" | "time-sensitive";
 
 /**
- * What only an APNs push carries beyond the shared payload (issue #1831): the category the app registered
- * its notification actions against and the id of the request those actions decide. Web Push ignores it.
- * `interruptionLevel` of the payload stays where issue #1443 put it.
+ * What only an APNs push carries beyond the shared payload: the category the app registered its notification
+ * actions against and the id of the request those actions decide (issue #1831), and custom top-level keys of the
+ * APNs payload (issue gh-1954). Web Push ignores it. `interruptionLevel` of the payload stays where issue #1443
+ * put it.
  */
 export interface NotificationApnsFields {
   category?: string;
   approvalRequestId?: string;
+  /**
+   * Custom keys sent beside `aps` (`invitation_id` of a calendar invitation). A key that names `aps`,
+   * `link_href` or `notification_id` is overridden by the adapter's own value.
+   */
+  data?: Readonly<Record<string, string>>;
 }
 
 export interface NotificationPushPayload {

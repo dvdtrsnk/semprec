@@ -487,6 +487,21 @@ describe("Speaker mapping suggestions (issue #185)", () => {
         { aiProposal: mapping(aliceId, "SPEAKER_01"), proposal: mapping(aliceId, "SPEAKER_01"), aiVersion: 1 },
       ]);
     });
+
+    it("stores the proposed person as the card's referencedItemIds, and none for a card without a proposal (issue #1916)", async () => {
+      await linkEvent();
+      await propose([{ speaker: "SPEAKER_01", personId: aliceId, reason: "Named." }]);
+
+      const { rows } = await pool.query<{ status: string; referencedItemIds: unknown }>(
+        `SELECT properties ->> 'status' AS status, properties -> 'referencedItemIds' AS "referencedItemIds"
+           FROM items WHERE database_id = $1 AND properties ->> 'kind' = 'transcript' ORDER BY properties ->> 'status'`,
+        [proposalsId],
+      );
+      expect(rows).toEqual([
+        { status: "needsClarification", referencedItemIds: [] },
+        { status: "proposed", referencedItemIds: [aliceId] },
+      ]);
+    });
   });
 
   it.each(["rejected", "trashed"] as const)(
@@ -1190,6 +1205,7 @@ describe("Speaker mapping suggestions (issue #185)", () => {
       const confident = await cardOf("SPEAKER_00");
       const unsure = await cardOf("SPEAKER_01");
       expect(alternativeIds((await cardRow(confident)).properties)).toEqual([]);
+      expect((await cardRow(confident)).properties.referencedItemIds).toEqual([]);
       await linkEvent();
 
       const created = await propose([{ speaker: "SPEAKER_00", personId: aliceId, reason: "Is greeted as Alice." }]);
@@ -1206,6 +1222,8 @@ describe("Speaker mapping suggestions (issue #185)", () => {
         history: [expect.objectContaining({ author: "ai", kind: "recompute" })],
       });
       expect(alternativeIds(proposed)).toEqual([aliceId, bobId].sort());
+      // The refreshed proposal names the person, so the card is found when that person is archived or deleted (issue gh-1916).
+      expect(proposed.referencedItemIds).toEqual([aliceId]);
       const stillUnsure = (await cardRow(unsure)).properties;
       expect(stillUnsure).toMatchObject({ status: "needsClarification", proposal: null, aiVersion: 1 });
       expect(alternativeIds(stillUnsure)).toEqual([aliceId, bobId].sort());

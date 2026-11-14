@@ -209,7 +209,8 @@ const APNS_ALERT_TTL_SECONDS = 24 * 60 * 60;
  * Every alert carries `apns-push-type: alert`, `apns-priority: 10` and an `apns-expiration` 24 hours after
  * the send; when the source has a durable identity (`apnsCollapseKey`) it also carries the same key as
  * `apns-collapse-id` and as `aps["thread-id"]` (issue #1829). `aps.category` and the top-level
- * `approvalRequestId` are sent only when the payload's `apns` fields carry them (issue #1831).
+ * `approvalRequestId` are sent only when the payload's `apns` fields carry them (issue #1831), and so are
+ * the keys of `apns.data` (issue gh-1954), at the top level beside `aps`.
  * A 410 or `BadDeviceToken` means this exact device token is dead — the caller pairs that with #150's
  * `revokePushSubscriptionByProviderInvalidation`. Everything else (network failure, other 4xx/5xx)
  * is transient and left for the job's own retry. Missing `APNS_*` env vars or an unreadable key
@@ -223,6 +224,8 @@ export async function sendApnsNotification(
 ): Promise<PushSendResult> {
   const collapseKey = apnsCollapseKey(payload);
   const body = JSON.stringify({
+    // The custom keys come first, so none of them can replace a key the adapter sets below.
+    ...payload.apns?.data,
     // `alert.body` is sent only when the notification has one (issue #1773), so a notification of
     // another kind keeps the title-only alert it always had. `interruption-level` is sent only when
     // the fanout job decided one; without it APNs delivers at its default, `active`.

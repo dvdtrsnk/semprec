@@ -627,6 +627,7 @@ export { createCalendarTimelineRouteHandler } from "./calendar/timelineRouteHand
 export { createCalendarAgendaRouteHandler } from "./calendar/agendaRouteHandler.js";
 export { createRemindersFeedRouteHandler } from "./calendar/remindersFeedRouteHandler.js";
 export { createCalendarCancellationImpactRouteHandler } from "./calendar/cancellationImpactRouteHandler.js";
+export { createRespondToInvitationRouteHandler } from "./calendar/invitationRouteHandlers.js";
 export {
   createInviteEventPersonRouteHandler,
   createListEventPeopleRouteHandler,
@@ -877,6 +878,7 @@ export {
 export { handleMailLinkPersonEmailsTask } from "./mail/linkPersonEmailsJob.js";
 
 export type { ConfirmationResult, ProposalWarning } from "./inbox/proposalActions.js";
+export type { KeptItem } from "./inbox/undoConfirmedProposal.js";
 
 export {
   createSempChatThread,

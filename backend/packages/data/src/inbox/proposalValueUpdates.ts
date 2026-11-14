@@ -5,6 +5,7 @@ import type { ItemRow } from "../types.js";
 import { appendHistoryEntry, isFinalInvalid, readAiProposal } from "./inboxTickAction.js";
 import { LOCKED_PROPOSAL_STATUSES } from "./inboxTypesStore.js";
 import { enqueueJournalInboxRecomputeForProposal } from "./journalInboxCompute.js";
+import { referencedItemIdsOf } from "./proposalReferences.js";
 import {
   assertValidEnvelopeForCard,
   lockLiveProposal,
@@ -211,6 +212,7 @@ export async function updateProposalValuesWithClient(
       itemId: proposal.id,
       propertiesPatch: {
         proposal: effective,
+        referencedItemIds: referencedItemIdsOf(effective),
         ...(materializesAiProposal ? { aiProposal: aiEnvelope } : {}),
         userOverrides,
         userEditedKeys: computeUserEditedKeys(aiEnvelope, userOverrides, hiddenKeys),
@@ -225,6 +227,7 @@ export async function updateProposalValuesWithClient(
     {
       allowedSystemKeys: [
         "proposal",
+        "referencedItemIds",
         ...(materializesAiProposal ? ["aiProposal"] : []),
         "userOverrides",
         "userEditedKeys",

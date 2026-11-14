@@ -422,7 +422,7 @@ describe("the mail agent tools (issue gh-1927)", () => {
   }
 
   describe("composition", () => {
-    it("lists the four tools for a run of the project that owns the mail databases and classifies the three draft tools without approval", async () => {
+    it("lists the five tools for a run of the project that owns the mail databases and classifies the three draft tools without approval", async () => {
       const { runId } = await runOf(tenant);
 
       const tools = (await toolsFor(tenant, runId)).filter((tool) => tool.name.startsWith("mail."));
@@ -432,12 +432,14 @@ describe("the mail agent tools (issue gh-1927)", () => {
         "mail.draft.send",
         "mail.draft.update",
         "mail.thread.get",
+        "mail.thread.proposeTask",
       ]);
       expect(Object.fromEntries(tools.map((tool) => [tool.name, [tool.requiresApproval, tool.riskClass]]))).toEqual({
         "mail.thread.get": [false, "read"],
         "mail.draft.create": [false, "write"],
         "mail.draft.update": [false, "write"],
         "mail.draft.send": [false, "unclassified"],
+        "mail.thread.proposeTask": [false, "write"],
       });
     });
 
