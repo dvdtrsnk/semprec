@@ -560,6 +560,48 @@ describe("adapter route (issue #238)", () => {
     if (failures.length > 1) throw new AggregateError(failures, "Adapter test and settlement failed");
   });
 
+  it("adds a top-level `keptItems` field when the handler returns kept items, an empty list included, and none otherwise", async () => {
+    const token = await tokenFor("kept-items@example.com");
+    const keptItems = [
+      {
+        itemId: "6c9d0cde-3a38-4a3e-9a38-5c8a5e5b7f01",
+        databaseKey: "files",
+        label: "Invoice",
+        reason: "attachmentMovedToFiles" as const,
+      },
+    ];
+    const keptServer = createServer(
+      asVoid(
+        createAdapterRequestListener(pool, async ({ req }) => {
+          if (req.url === "/some") return { status: 200, item: SAMPLE_ITEM, keptItems };
+          if (req.url === "/empty") return { status: 200, item: SAMPLE_ITEM, keptItems: [] };
+          return { status: 200, item: SAMPLE_ITEM };
+        }),
+      ),
+    );
+    await new Promise<void>((resolve) => keptServer.listen(0, resolve));
+    const failures: unknown[] = [];
+    try {
+      const address = keptServer.address();
+      if (!address || typeof address === "string") throw new Error("Expected bound TCP address");
+      const base = `http://127.0.0.1:${address.port}`;
+      const headers = { Authorization: `Bearer ${token}` };
+      const read = async (path: string): Promise<unknown> => (await fetch(`${base}${path}`, { headers })).json();
+      expect(await read("/some")).toEqual({ ...SAMPLE_ITEM, keptItems });
+      expect(await read("/empty")).toEqual({ ...SAMPLE_ITEM, keptItems: [] });
+      expect(await read("/none")).toEqual(SAMPLE_ITEM);
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      await new Promise<void>((resolve, reject) => keptServer.close((error) => (error ? reject(error) : resolve())));
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Adapter test and settlement failed");
+  });
+
   it("keeps blob metadata identical when typed results are added", async () => {
     const token = await tokenFor("result-blob@example.com");
     const item = await runInTenant(getTenantZeroId(), async () => {

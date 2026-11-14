@@ -13,6 +13,7 @@ import type {
   PageRestoreOutput,
 } from "@semprec/shared";
 import type { CreatedBy, DocKind, DocRow } from "../types.js";
+import { deleteBlocks, readPageBlocks } from "@semprec/block-model";
 import * as docsStore from "./docsStore.js";
 import { loadDoc, mutateDoc, mutateDocWithClient } from "./docPersistence.js";
 import * as blocks from "./blocks.js";
@@ -67,6 +68,31 @@ export async function putBlockWithClient(
     const inserted = blocks.getBlock(ydoc, block.id) === null;
     blocks.putBlock(ydoc, block);
     return inserted;
+  });
+}
+
+/**
+ * The client-scoped removal of blocks from a page, for a caller that needs it to commit atomically with its own
+ * structured-data write (issue #1943's undo of a confirmed proposal: the removal of the blocks the confirm inserted and
+ * the card's return to `proposed` must both land, or neither does). Removes each block of `blockIds` that the page
+ * still holds, from the block map and from the order, and returns the ids it removed; an id the page no longer holds
+ * (the user deleted that block) is skipped, and an item without a page document removes none. The caller holds the
+ * row lock of the page item.
+ */
+export async function deleteBlocksWithClient(
+  client: PoolClient,
+  itemId: string,
+  blockIds: readonly string[],
+  origin: CreatedBy,
+): Promise<string[]> {
+  const doc = await docsStore.getDocByItemId(client, itemId);
+  if (!doc) return [];
+  assertKind(doc, "page");
+  return mutateDocWithClient(client, doc.id, origin, (ydoc) => {
+    const held = new Set(readPageBlocks(ydoc).flatMap((block) => (block.id === null ? [] : [block.id])));
+    const present = blockIds.filter((id) => held.has(id));
+    if (present.length > 0) deleteBlocks(ydoc, present);
+    return present;
   });
 }
 

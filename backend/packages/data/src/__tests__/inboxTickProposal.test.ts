@@ -47,6 +47,7 @@ import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWr
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { registerItemPreWriteTransform } from "../chokePoint/hooks.js";
 import { ValidationError } from "../errors.js";
+import { referencedItemIdsOf } from "../inbox/proposalReferences.js";
 import {
   aiProposalPatch,
   assertValidProposalEnvelope,
@@ -5935,6 +5936,184 @@ describe("aiProposal and aiVersion on the tick's writes (issue #1471)", () => {
     const revised = await findProposalForItem(pool, proposalsId, item.id);
     expect(revised!.properties.aiProposal).toEqual(revised!.properties.proposal);
     expect(revised!.properties.aiVersion).toBe(1);
+  });
+});
+
+describe("referencedItemIds on the tick's writes (issue #1916)", () => {
+  let inboxId: string;
+  let typesId: string;
+  let proposalsId: string;
+  let projectsId: string;
+  let databaseIds: TickDatabaseIds;
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    viewTypeRegistry = createViewTypeRegistry();
+    await resetDatabase(pool);
+    await seedSystem(pool, viewTypeRegistry);
+    inboxId = await databaseIdFor("inbox");
+    typesId = await databaseIdFor("inboxItemTypes");
+    proposalsId = await databaseIdFor("processingProposals");
+    projectsId = await databaseIdFor("projects");
+    databaseIds = {
+      inboxDatabaseId: inboxId,
+      inboxItemTypesDatabaseId: typesId,
+      processingProposalsDatabaseId: proposalsId,
+    };
+  });
+
+  const createProject = (name: string) =>
+    withTransaction(
+      pool,
+      async (client) => (await createItemWithClient(client, { databaseId: projectsId, properties: { name } })).id,
+    );
+
+  async function createTaskSource(text: string) {
+    const type = await withTransaction(pool, (client) =>
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Task",
+        emoji: "☑️",
+        processingMethod: "database",
+        targetDatabase: "tasks",
+      }),
+    );
+    const item = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        date: "2026-08-28",
+        time: "09:00",
+        text,
+        type: type.id,
+      }),
+    );
+    return { type, item };
+  }
+
+  const cardOf = async (itemId: string) => (await findProposalForItem(pool, proposalsId, itemId))!;
+
+  it("the create stores the ids of the envelope's relation targets", async () => {
+    const project = await createProject("Alpha");
+    const { item } = await createTaskSource("Buy milk");
+
+    await runTick(pool, databaseIds, item.id, async () => ({
+      properties: { name: "Buy milk" },
+      relations: { project: [project] },
+    }));
+
+    const card = await cardOf(item.id);
+    expect(card.properties.referencedItemIds).toEqual([project]);
+    expect(card.properties.referencedItemIds).toEqual(
+      referencedItemIdsOf(parseStoredProposalEnvelope(card.properties.proposal, card.id) as ProposalEnvelope),
+    );
+  });
+
+  it("the create of an envelope without relations stores an empty list", async () => {
+    const { item } = await createTaskSource("Buy milk");
+
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
+
+    expect((await cardOf(item.id)).properties.referencedItemIds).toEqual([]);
+  });
+
+  it("a recompute replaces the ids with those of the new envelope", async () => {
+    const [first, second] = [await createProject("Alpha"), await createProject("Beta")];
+    const { item } = await createTaskSource("Buy milk");
+    await runTick(pool, databaseIds, item.id, async () => ({
+      properties: { name: "Buy milk" },
+      relations: { project: [first] },
+    }));
+    await withTransaction(pool, (client) =>
+      itemsStore.updateItemProperties(client, {
+        databaseId: inboxId,
+        itemId: item.id,
+        propertiesPatch: { text: "Buy milk and eggs" },
+      }),
+    );
+
+    await runTick(pool, databaseIds, item.id, async () => ({
+      properties: { name: "Buy milk and eggs" },
+      relations: { project: [second] },
+    }));
+
+    expect((await cardOf(item.id)).properties.referencedItemIds).toEqual([second]);
+  });
+
+  it("a recompute of a card the user edited stores the ids of the proposal it stores, not of the assistant's envelope", async () => {
+    const [assistant, chosen, recomputed] = [
+      await createProject("Alpha"),
+      await createProject("Beta"),
+      await createProject("Gamma"),
+    ];
+    const { item } = await createTaskSource("Buy milk");
+    await runTick(pool, databaseIds, item.id, async () => ({
+      properties: { name: "Buy milk" },
+      relations: { project: [assistant] },
+    }));
+    const card = await cardOf(item.id);
+    await withTransaction(pool, (client) =>
+      updateProposalValuesWithClient(client, { processingProposalsDatabaseId: proposalsId }, card.id, {
+        set: { primary: { name: "Typed title" } },
+        relations: { primary: { project: [chosen] } },
+      }),
+    );
+    expect((await cardOf(item.id)).properties.referencedItemIds).toEqual([chosen]);
+    await withTransaction(pool, (client) =>
+      itemsStore.updateItemProperties(client, {
+        databaseId: inboxId,
+        itemId: item.id,
+        propertiesPatch: { text: "Buy milk and eggs" },
+      }),
+    );
+
+    await runTick(pool, databaseIds, item.id, async () => ({
+      properties: { name: "Buy milk and eggs" },
+      relations: { project: [recomputed] },
+    }));
+
+    const revised = await cardOf(item.id);
+    expect(revised.properties.aiProposal).toMatchObject({ relations: { project: [recomputed] } });
+    expect(revised.properties.referencedItemIds).toEqual(
+      referencedItemIdsOf(parseStoredProposalEnvelope(revised.properties.proposal, revised.id) as ProposalEnvelope),
+    );
+    expect(revised.properties.referencedItemIds).toHaveLength(1);
+  });
+
+  it("an untyped item's needsClarification stores an empty list", async () => {
+    const item = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        date: "2026-08-28",
+        time: "09:00",
+        text: "no type",
+      }),
+    );
+
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: {}, candidates: [] }));
+
+    expect((await cardOf(item.id)).properties).toMatchObject({ status: "needsClarification", referencedItemIds: [] });
+  });
+
+  it("a needsClarification written over a card that referenced a project clears the ids", async () => {
+    const project = await createProject("Alpha");
+    const { type, item } = await createTaskSource("Buy milk");
+    await runTick(pool, databaseIds, item.id, async () => ({
+      properties: { name: "Buy milk" },
+      relations: { project: [project] },
+    }));
+    expect((await cardOf(item.id)).properties.referencedItemIds).toEqual([project]);
+
+    await withTransaction(pool, async (client) => {
+      const typeProperty = await propertiesStore.getPropertyByKey(client, inboxId, "type");
+      await deleteRelationWithClient(client, {
+        relationPropertyId: typeProperty!.id,
+        callerItemId: item.id,
+        targetItemId: type.id,
+      });
+    });
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: {}, candidates: [] }));
+
+    expect((await cardOf(item.id)).properties).toMatchObject({ status: "needsClarification", referencedItemIds: [] });
   });
 });
 

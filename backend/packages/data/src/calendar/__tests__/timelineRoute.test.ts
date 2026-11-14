@@ -55,6 +55,7 @@ const fullBodySchema = z
           project: z.object({ id: z.string(), name: z.string(), color: z.string().nullable() }).strict().nullable(),
           people: z.array(z.object({ id: z.string(), name: z.string() }).strict()),
           transcript: z.object({ id: z.string(), status: z.string().nullable() }).strict().nullable(),
+          attendance: z.literal("tentative").nullable(),
           hostEvent: z.null(),
           tasks: z.array(z.unknown()).nullable(),
           counts: z.object({ open: z.number(), total: z.number() }).strict().nullable(),
@@ -81,6 +82,7 @@ const compactBodySchema = fullBodySchema.extend({
         timeFrom: z.string().nullable(),
         status: z.string().nullable(),
         counts: z.object({ open: z.number(), total: z.number() }).strict().nullable(),
+        attendance: z.literal("tentative").nullable(),
         updatedAt: z.string(),
         readOnly: z.boolean(),
       })

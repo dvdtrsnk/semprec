@@ -6,7 +6,10 @@ import { getDatabaseByKey, getDatabaseByModuleId } from "../chokePoint/databases
 import {
   confirmProposalWithClient,
   readConfirmationResults,
+  recomputeProposalWithClient,
   rejectProposalWithClient,
+  reopenProposalWithClient,
+  resetProposalOverridesWithClient,
   reviseProposalWithClient,
   updateProposalValuesWithClient,
   type ConfirmationResult,
@@ -16,6 +19,7 @@ import {
   type UpdateProposalValuesResult,
 } from "./proposalActions.js";
 import type { ProposalEntityKind } from "./proposalEnvelope.js";
+import type { KeptItem } from "./undoConfirmedProposal.js";
 import { hashIdempotentRequest, readIdempotencyKeyHeader, runIdempotent } from "./idempotentResponsesStore.js";
 import { listActiveInboxTypes, type InboxTypeSummary } from "./inboxTypesStore.js";
 import { countOpenInboxCards, listInboxCards } from "./inboxCardsStore.js";
@@ -51,14 +55,20 @@ import type { ItemRow } from "../types.js";
 interface CustomRouteRequestContext {
   params: Record<string, string>;
   body: unknown;
-  /** The authenticated caller; only the confirm, revise, update-values and change-type routes read it. */
+  /** The authenticated caller; only the confirm, reopen, revise, update-values, recompute and change-type routes read it. */
   identity?: { user: { id: string } };
   /** The request, which carries the `Idempotency-Key` header the update-values route reads. */
   req?: { headers: Record<string, string | string[] | undefined> };
 }
 
 type CustomRouteResult =
-  | { status: number; item: ItemRow; results?: ConfirmationResult[]; warnings?: ProposalWarning[] }
+  | {
+      status: number;
+      item: ItemRow;
+      results?: ConfirmationResult[];
+      warnings?: ProposalWarning[];
+      keptItems?: KeptItem[];
+    }
   | { status: number; body: unknown };
 
 function requireParam(params: Record<string, string>, name: string): string {
@@ -185,6 +195,34 @@ export function createRejectProposalRouteHandler(pool: Pool) {
       return rejectProposalWithClient(client, { processingProposalsDatabaseId }, proposalId, message, ifVersion);
     });
     return { status: 200, item };
+  };
+}
+
+/**
+ * `POST /api/proposals/:id/reopen` (issues #1937 and #1943): returns a card the user decided on to the stack, as one
+ * transaction of `reopenProposalWithClient`. The body is `{ ifVersion? }` with the card's `updatedAt` as an ISO 8601 UTC
+ * timestamp, or no body. Thin mapping only: the lock, the status rules (a `proposed` card is answered unchanged, a
+ * `rejected` or `confirmed` one is reopened, any other status is refused), the version check, the validation of the
+ * stored envelope of a rejected card and the reversal of a confirmed one live in the action. Answers `200` with the card
+ * item and `keptItems`, the items the undo of a confirmation left in place (empty for any other reopen); the card has
+ * no `results`.
+ */
+export function createReopenProposalRouteHandler(pool: Pool) {
+  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+    const proposalId = requireParam(ctx.params, "id");
+    const ifVersion = parseIfVersion(bodyObject(ctx.body));
+    const actingUserId = ctx.identity?.user.id;
+    const { item, keptItems } = await withTransaction(pool, async (client) => {
+      const processingProposalsDatabaseId = await resolveDatabaseIdByModuleId(client, PROCESSING_PROPOSALS_MODULE_ID);
+      return reopenProposalWithClient(
+        client,
+        { processingProposalsDatabaseId },
+        proposalId,
+        ifVersion === undefined ? {} : { ifVersion },
+        actingUserId,
+      );
+    });
+    return { status: 200, item, keptItems };
   };
 }
 
@@ -432,6 +470,59 @@ export function createUpdateProposalValuesRouteHandler(pool: Pool) {
     );
     const stored = storedUpdateSchema.parse(response.body);
     return { status: response.status, item: stored.item, warnings: stored.warnings };
+  };
+}
+
+/**
+ * `POST /api/proposals/:id/reset-overrides` (issue #1912): returns a card to the assistant's last proposal, as one
+ * transaction of `resetProposalOverridesWithClient`. The body is `{ ifVersion? }` with the card's `updatedAt` as an
+ * ISO 8601 UTC timestamp, or no body. Thin mapping only: the lock, the status rules, the version check, the
+ * validation of the restored envelope and the unchanged answer for a card with nothing edited live in the action.
+ * Answers `200` with the card.
+ */
+export function createResetProposalOverridesRouteHandler(pool: Pool) {
+  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+    const proposalId = requireParam(ctx.params, "id");
+    const ifVersion = parseIfVersion(bodyObject(ctx.body));
+    const item = await withTransaction(pool, async (client) => {
+      const processingProposalsDatabaseId = await resolveDatabaseIdByModuleId(client, PROCESSING_PROPOSALS_MODULE_ID);
+      return resetProposalOverridesWithClient(
+        client,
+        { processingProposalsDatabaseId },
+        proposalId,
+        ifVersion === undefined ? {} : { ifVersion },
+      );
+    });
+    return { status: 200, item };
+  };
+}
+
+/**
+ * `POST /api/proposals/:id/recompute` (issue gh-1955): asks for a new computation of an Inbox card, as one transaction of
+ * `recomputeProposalWithClient` (the `computing` status, its history entry and the tick trigger). A custom route because
+ * the generic item update cannot set the system-owned `status` and cannot queue the tick in the same transaction. The body
+ * is `{ ifVersion? }` with the card's `updatedAt` as an ISO 8601 UTC timestamp, or no body, and has no other key. Thin
+ * mapping only: the kind and status rules, the version check, the answer for a card that is `computing` already and the
+ * trigger live in the action. Answers `200` with the card.
+ */
+export function createRecomputeProposalRouteHandler(pool: Pool) {
+  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+    const proposalId = requireParam(ctx.params, "id");
+    if (!UUID_RE.test(proposalId)) throw new ValidationError("'id' must be a UUID string", { field: "id" });
+    const body = bodyObject(ctx.body);
+    for (const key of Object.keys(body)) {
+      if (key !== "ifVersion") throw new ValidationError(`Unknown field '${key}'`, { field: key });
+    }
+    const ifVersion = parseIfVersion(body);
+    const actingUserId = ctx.identity?.user.id;
+    const item = await withTransaction(pool, async (client) => {
+      const processingProposalsDatabaseId = await resolveDatabaseIdByModuleId(client, PROCESSING_PROPOSALS_MODULE_ID);
+      return recomputeProposalWithClient(client, { processingProposalsDatabaseId }, proposalId, {
+        ...(ifVersion === undefined ? {} : { ifVersion }),
+        ...(actingUserId === undefined ? {} : { actingUserId }),
+      });
+    });
+    return { status: 200, item };
   };
 }
 

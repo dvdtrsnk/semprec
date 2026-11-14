@@ -22,6 +22,7 @@ import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWr
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { aiProposalPatch, assertValidProposalEnvelope, type ProposalEnvelope } from "../inbox/inboxTickAction.js";
 import { publishInboxCardChange } from "../inbox/inboxCardsRealtime.js";
+import { referencedItemIdsOf } from "../inbox/proposalReferences.js";
 import { PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { EVENTS_MODULE_ID, FILES_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { NotFoundError } from "../errors.js";
@@ -208,7 +209,12 @@ async function refreshClarificationCard(
       propertiesPatch: {
         context: cardContext,
         ...(envelope
-          ? { proposal: envelope, ...aiProposalPatch(locked.properties, envelope), status: "proposed" }
+          ? {
+              proposal: envelope,
+              ...aiProposalPatch(locked.properties, envelope),
+              referencedItemIds: referencedItemIdsOf(envelope),
+              status: "proposed",
+            }
           : {}),
         history: appendHistoryEntry(
           locked.properties.history,
@@ -218,7 +224,7 @@ async function refreshClarificationCard(
         ),
       },
     },
-    { allowedSystemKeys: ["context", "proposal", "aiProposal", "aiVersion", "status", "history"] },
+    { allowedSystemKeys: ["context", "proposal", "aiProposal", "aiVersion", "referencedItemIds", "status", "history"] },
   );
   publishInboxCardChange(client, locked.id, "updated");
   return true;
@@ -312,11 +318,14 @@ export async function proposeSpeakerMappings(
           kind: "transcript",
           proposal: envelope,
           ...aiProposalPatch({}, envelope),
+          referencedItemIds: referencedItemIdsOf(envelope),
           context: cardContext,
           status: envelope ? "proposed" : "needsClarification",
         },
       },
-      { allowedSystemKeys: ["kind", "proposal", "aiProposal", "aiVersion", "context", "status"] },
+      {
+        allowedSystemKeys: ["kind", "proposal", "aiProposal", "aiVersion", "referencedItemIds", "context", "status"],
+      },
     );
     await createRelationWithClient(
       client,

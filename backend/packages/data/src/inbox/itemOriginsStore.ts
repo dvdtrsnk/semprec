@@ -42,3 +42,21 @@ export async function insertItemOrigins(
 export async function deleteItemOrigin(client: PoolClient, itemId: string): Promise<void> {
   await client.query("DELETE FROM item_origins WHERE item_id = $1", [itemId]);
 }
+
+/**
+ * Removes the origin rows of `itemIds` that belong to the proposal `proposalId`, in the caller's transaction, and
+ * returns how many it removed. An item with no row of that proposal is skipped: the undo of a confirmed card
+ * (issue #1943) names every item it trashes, and a card that wrote no origin row (a `mailThread` card) has none.
+ */
+export async function deleteItemOriginsOfProposal(
+  client: PoolClient,
+  proposalId: string,
+  itemIds: string[],
+): Promise<number> {
+  if (itemIds.length === 0) return 0;
+  const { rowCount } = await client.query(
+    "DELETE FROM item_origins WHERE proposal_id = $1 AND item_id = ANY($2::uuid[])",
+    [proposalId, itemIds],
+  );
+  return rowCount ?? 0;
+}

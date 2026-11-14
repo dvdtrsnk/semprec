@@ -1731,3 +1731,103 @@ it("adds Semp error and accounting columns over populated synthetic legacy rows 
     );
   if (failure) throw failure.error;
 }, 120_000);
+
+it("accepts the calendar invitation kind after migration 0171 and keeps every earlier notification and kind valid", async () => {
+  const url = process.env.TEST_DATABASE_URL;
+  if (!url) throw new Error("Missing test database URL");
+  // CREATE and DROP interpolate only this fixed ASCII prefix and randomUUID hex identifier.
+  const name = `gh1954_kind_${randomUUID().replaceAll("-", "")}`;
+  const admin = new Pool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
+  const dir = await mkdtemp(path.join(tmpdir(), "semprec-gh1954-kind-"));
+  const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
+  const migration = "0171_notification_kind_calendar_invitation.sql";
+  // Every kind of the constraint that migration 0121 left, which is the latest one before 0171.
+  const earlierKinds = [
+    "approval_pending",
+    "agent_run_error",
+    "heartbeat_error",
+    "automation_error",
+    "mail_sync_error",
+    "process_stale",
+    "queue_backlog",
+    "mail_sync_stalled",
+    "backup_restore_failed",
+    "agent_guidance_drift",
+    "agent_guidance_drift_resolved",
+    "semp_problem",
+  ];
+  let scratch: Pool | undefined;
+  let created = false;
+  let failure: { error: unknown } | undefined;
+  try {
+    await admin.query(`CREATE DATABASE "${name}"`);
+    created = true;
+    const scratchUrl = new URL(url);
+    scratchUrl.pathname = `/${name}`;
+    scratch = new Pool({
+      connectionString: scratchUrl.toString(),
+      connectionTimeoutMillis: 5000,
+      statement_timeout: 30000,
+    });
+    const db = scratch;
+    for (const file of (await readdir(migrations))
+      .filter((entry) => entry.endsWith(".sql") && entry < migration)
+      .sort())
+      await copyFile(path.join(migrations, file), path.join(dir, file));
+    await runMigrations(db, dir);
+    const tenantId = (await db.query<{ id: string }>("SELECT id FROM tenants LIMIT 1")).rows[0]?.id;
+    if (!tenantId) throw new Error("Missing initial tenant");
+    const userId = randomUUID();
+    await db.query("INSERT INTO users (id, tenant_id, email, password_hash) VALUES ($1, $2, $3, $4)", [
+      userId,
+      tenantId,
+      `${userId}@example.test`,
+      "unused",
+    ]);
+    const insertKind = (kind: string, sourceId: string) =>
+      db.query(
+        "INSERT INTO notifications (tenant_id, user_id, kind, title, source_table, source_id, transition_instance) VALUES ($1, $2, $3, $4, 'legacy', $5, 'one')",
+        [tenantId, userId, kind, `Legacy ${kind}`, sourceId],
+      );
+    for (const kind of earlierKinds) await insertKind(kind, kind);
+    // The previous release's constraint refuses the new kind, so the check below proves the migration widened it.
+    await expect(insertKind("calendar_invitation", "before")).rejects.toMatchObject({ code: "23514" });
+
+    await copyFile(path.join(migrations, migration), path.join(dir, migration));
+    await runMigrations(db, dir);
+
+    const stored = await db.query<{ kind: string; title: string }>("SELECT kind, title FROM notifications");
+    expect(stored.rows.map((row) => row.kind).sort()).toEqual([...earlierKinds].sort());
+    expect(stored.rows.every((row) => row.title === `Legacy ${row.kind}`)).toBe(true);
+    for (const kind of earlierKinds) await insertKind(kind, `after-${kind}`);
+    await insertKind("calendar_invitation", "after");
+    await expect(insertKind("not_a_kind", "unknown")).rejects.toMatchObject({ code: "23514" });
+    expect((await db.query<{ count: number }>("SELECT count(*)::int AS count FROM notifications")).rows).toEqual([
+      { count: earlierKinds.length * 2 + 1 },
+    ]);
+  } catch (error) {
+    failure = { error };
+  }
+  const cleanupErrors: unknown[] = [];
+  for (const cleanup of [
+    async () => scratch?.end(),
+    async () => {
+      if (created) await dropClosedDatabase(admin, name);
+    },
+    async () => admin.end(),
+    async () => rm(dir, { recursive: true, force: true }),
+  ]) {
+    try {
+      await cleanup();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  if (cleanupErrors.length)
+    throw new AggregateError(
+      failure ? [failure.error, ...cleanupErrors] : cleanupErrors,
+      "Notification kind migration cleanup failed",
+      { cause: failure?.error },
+    );
+  if (failure) throw failure.error;
+}, 120_000);

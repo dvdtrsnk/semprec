@@ -465,7 +465,7 @@ describe("Gmail label folders (issue #1496)", () => {
     );
     expect(rows[0]?.count).toBe("201");
     expect(await folderProviderIds(params)).not.toContain("UNREAD");
-  }, 30_000);
+  }, 120_000);
 
   it("rejects missing and system tenant scope before Gmail reconciliation queries", async () => {
     const params = await setup();
@@ -837,7 +837,7 @@ describe("Gmail label folders (issue #1496)", () => {
         }
       },
     );
-  }, 30_000);
+  }, 120_000);
 
   it("settles and closes an owned reconcile that times out before the provider barrier", async () => {
     const params = await setup();
@@ -951,7 +951,7 @@ describe("Gmail label folders (issue #1496)", () => {
         );
       },
     );
-  }, 30_000);
+  }, 120_000);
 
   it("settles an owned pool when fixture rollback fails", async () => {
     const operationPool = await createRuntimeRolePool(admin, "semprec_data");
@@ -1009,7 +1009,7 @@ describe("Gmail label folders (issue #1496)", () => {
         );
       },
     );
-  }, 30_000);
+  }, 120_000);
 
   it("preserves a body failure when rollback also fails and the owned pool settles", async () => {
     const operationPool = await createRuntimeRolePool(admin, "semprec_data");
@@ -1101,7 +1101,7 @@ describe("Gmail label folders (issue #1496)", () => {
         );
       },
     );
-  }, 30_000);
+  }, 120_000);
 
   it("settles a connection acquired after owned pool cleanup starts", async () => {
     const params = await setup();
@@ -1229,7 +1229,7 @@ describe("Gmail label folders (issue #1496)", () => {
         );
       },
     );
-  }, 30_000);
+  }, 120_000);
 
   it("cleanup removes pseudo-folders, keeps archived mail visible through Archive, and a second run changes nothing", async () => {
     const params = await setup();

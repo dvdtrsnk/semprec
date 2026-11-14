@@ -32,6 +32,8 @@ export { aiProposalPatch, readAiProposal } from "./proposalEnvelope.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { z } from "zod";
 import { semprecTickActionConfigSchema, type SemprecTickActionConfig } from "./proposalEnvelope.js";
+import { invalidReasonLabel } from "./invalidReason.js";
+import { referencedItemIdsOf } from "./proposalReferences.js";
 export { semprecTickActionConfigSchema, type SemprecTickActionConfig } from "./proposalEnvelope.js";
 import {
   assertValidEnvelopeRelations,
@@ -463,6 +465,7 @@ async function writeNeedsClarification(
         propertiesPatch: {
           fingerprint,
           proposal: null,
+          referencedItemIds: [],
           reason: null,
           ...clarificationPatch,
           ...aiProposalPatch(locked.properties, null),
@@ -478,6 +481,7 @@ async function writeNeedsClarification(
           "proposal",
           "aiProposal",
           "aiVersion",
+          "referencedItemIds",
           "status",
           "invalidReason",
           "history",
@@ -497,6 +501,7 @@ async function writeNeedsClarification(
         kind: "inbox",
         fingerprint,
         proposal: null,
+        referencedItemIds: [],
         reason: null,
         ...clarificationPatch,
         ...aiProposalPatch({}, null),
@@ -512,6 +517,7 @@ async function writeNeedsClarification(
         "proposal",
         "aiProposal",
         "aiVersion",
+        "referencedItemIds",
         "history",
         "status",
       ],
@@ -549,23 +555,6 @@ export function isFinalInvalid(properties: Record<string, unknown>): boolean {
   if (properties.status !== "invalid") return false;
   const parsed = invalidReasonSchema.safeParse(properties.invalidReason);
   return parsed.success && parsed.data.code === "sourceDeleted";
-}
-
-/** The most characters (code points, not UTF-16 units) an `invalidReason` label keeps, ellipsis included. */
-const INVALID_REASON_LABEL_MAX = 80;
-
-/**
- * The source Inbox item's text as an `invalidReason` label (issue #1482): its first line, trimmed,
- * and at most `INVALID_REASON_LABEL_MAX` characters, a longer one ending with an ellipsis. Cut by
- * code point, so an emoji is never split. An item with no text, or none at all (a hard-deleted
- * source), gives the empty label.
- */
-function invalidReasonLabel(item: ItemRow | null): string {
-  const text = typeof item?.properties.text === "string" ? item.properties.text : "";
-  const characters = Array.from((text.split("\n")[0] ?? "").trim());
-  return characters.length > INVALID_REASON_LABEL_MAX
-    ? `${characters.slice(0, INVALID_REASON_LABEL_MAX - 1).join("")}…`
-    : characters.join("");
 }
 
 /**
@@ -620,7 +609,7 @@ async function invalidateProposalForDeletedSource(
  * envelope before storing it (`assertValidProposalEnvelope`). A card with no envelope, or one
  * that no longer parses or violates relation cardinality, does not pass. Other errors propagate.
  */
-async function storedEnvelopeStillValid(client: PoolClient, proposal: ItemRow): Promise<boolean> {
+export async function storedEnvelopeStillValid(client: PoolClient, proposal: ItemRow): Promise<boolean> {
   const parsed = proposalEnvelopeSchema.safeParse(proposal.properties.proposal);
   if (!parsed.success) return false;
   try {
@@ -834,6 +823,7 @@ async function reviseProposal(
       propertiesPatch: {
         fingerprint,
         proposal: merged.effective,
+        referencedItemIds: referencedItemIdsOf(merged.effective),
         reason,
         ...recognitionPatch,
         ...aiProposalPatch(locked.properties, envelope),
@@ -850,6 +840,7 @@ async function reviseProposal(
         "proposal",
         "aiProposal",
         "aiVersion",
+        "referencedItemIds",
         "userOverrides",
         "userEditedKeys",
         "status",
@@ -957,6 +948,7 @@ async function writeTickResult(
         kind: "inbox",
         fingerprint,
         proposal: envelope,
+        referencedItemIds: referencedItemIdsOf(envelope),
         reason,
         ...recognitionPatch,
         ...aiProposalPatch({}, envelope),
@@ -972,6 +964,7 @@ async function writeTickResult(
         "proposal",
         "aiProposal",
         "aiVersion",
+        "referencedItemIds",
         "history",
         "status",
       ],

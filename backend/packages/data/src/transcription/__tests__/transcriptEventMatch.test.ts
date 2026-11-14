@@ -682,7 +682,7 @@ describe("matchTranscriptToEvent (issue #247)", () => {
 
     const cards = await cardsFor(transcriptId);
     expect(cards).toHaveLength(1);
-    expect(cards[0]?.properties).toMatchObject({ aiVersion: 1 });
+    expect(cards[0]?.properties).toMatchObject({ aiVersion: 1, referencedItemIds: [] });
     expect(cards[0]?.properties.aiProposal).toEqual({
       entityKind: "database",
       target: eventsId,
@@ -1272,6 +1272,7 @@ describe("the Event recommendation of an ambiguous recording, through the runtim
           proposal,
           aiProposal: proposal,
           aiVersion: 1,
+          referencedItemIds: [meetingId],
           history: [
             expect.objectContaining({
               message:

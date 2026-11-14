@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createUser } from "../auth/usersStore.js";
 import { readPageMarkdown } from "../docs/pageMarkdown.js";
 import { z } from "zod";
@@ -18,14 +18,23 @@ import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { createPool, withTransaction } from "../db/pool.js";
 import { runMigrations } from "../db/migrate.js";
-import { ConflictError, NotFoundError, ValidationError } from "../errors.js";
+import { ConflictError, NotFoundError, ProposalLockedError, ValidationError } from "../errors.js";
 import { randomUUID } from "node:crypto";
 import { createItemWithClient, prepareUserItemPatch, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
-import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
+import {
+  setInboxCardsInvalidationHook,
+  setInvalidationHook,
+  type InboxCardsInvalidationEvent,
+  type InvalidationEvent,
+} from "../realtimeHook.js";
+import { runOnce, type TaskList } from "@semprec/queue";
+import { heartbeatFireJobKey } from "../scheduler/schedulerStore.js";
+import { COMPUTING_TIMEOUT_MS } from "../inbox/inboxCardsStore.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { prepareComputedUpdates } from "../inbox/proposalComputedUpdates.js";
 import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
+import { referencedItemIdsOf } from "../inbox/proposalReferences.js";
 import { createMarkdownPageContentProposal } from "../testSupport/pageProposalFixtures.js";
 import {
   appendHistoryEntry,
@@ -37,7 +46,9 @@ import {
 } from "../inbox/inboxTickAction.js";
 import {
   confirmProposalWithClient,
+  recomputeProposalWithClient,
   rejectProposalWithClient,
+  resetProposalOverridesWithClient,
   reviseProposalFromThreadWithClient,
   reviseProposalWithClient,
   updateProposalValuesWithClient,
@@ -6851,6 +6862,846 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
           expect((await readCard(card)).properties.userEditedKeys).toBeUndefined();
         });
       });
+    });
+  });
+
+  describe("returning a card to the assistant's proposal (issue #1912)", () => {
+    const config = () => ({ processingProposalsDatabaseId: proposalsId });
+    const reset = (cardId: string, ifVersion?: string): Promise<ItemRow> =>
+      withTransaction(pool, (client) =>
+        resetProposalOverridesWithClient(client, config(), cardId, ifVersion === undefined ? {} : { ifVersion }),
+      );
+    const edit = (cardId: string, set: Record<string, Record<string, unknown>>): Promise<unknown> =>
+      withTransaction(pool, (client) => updateProposalValuesWithClient(client, config(), cardId, { set }));
+    const readCard = async (id: string): Promise<ItemRow> => {
+      const card = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, id));
+      if (!card) throw new Error(`card ${id} not found`);
+      return card;
+    };
+    /** Stores system properties through the choke point: the states no route writes (a status, a reason, a malformed value). */
+    const store = (cardId: string, patch: Record<string, unknown>) =>
+      withTransaction(pool, (client) =>
+        updateItemWithClient(
+          client,
+          { databaseId: proposalsId, itemId: cardId, propertiesPatch: patch },
+          { allowedSystemKeys: Object.keys(patch) },
+        ),
+      );
+    const historyOf = (card: ItemRow) => z.array(z.record(z.string(), z.unknown())).parse(card.properties.history);
+    const taskEnvelope = (name: string) => ({ entityKind: "database", target: tasksId, properties: { name } });
+    /** Runs `attempt`, expects its refusal and proves it wrote nothing: the card's properties and `updatedAt` are as they were. */
+    async function expectRefusedUnchanged(cardId: string, attempt: () => Promise<unknown>) {
+      const before = await readCard(cardId);
+      const error = await attempt().then(
+        () => null,
+        (err: unknown) => err,
+      );
+      const after = await readCard(cardId);
+      expect(after.properties).toEqual(before.properties);
+      expect(after.updatedAt).toBe(before.updatedAt);
+      return error;
+    }
+    /** A card with two manual values on top of the assistant's "Send the invoice". */
+    async function editedCard(): Promise<ItemRow> {
+      const card = await createDatabaseProposal("Send the invoice");
+      await edit(card.id, { primary: { name: "Poslat fakturu Alze", flagged: true } });
+      return readCard(card.id);
+    }
+
+    it("restores the assistant's envelope, empties userOverrides and userEditedKeys and adds one reset entry", async () => {
+      const edited = await editedCard();
+      expect(edited.properties.userEditedKeys).toEqual(["primary.flagged", "primary.name"]);
+
+      const restored = await reset(edited.id);
+
+      expect(restored.properties.proposal).toEqual(taskEnvelope("Send the invoice"));
+      expect(restored.properties.proposal).toEqual(restored.properties.aiProposal);
+      expect(restored.properties.userOverrides).toEqual({});
+      expect(restored.properties.userEditedKeys).toEqual([]);
+      expect(restored.properties.status).toBe("proposed");
+      expect(restored.properties.aiVersion).toBe(edited.properties.aiVersion);
+      expect(restored.properties).not.toHaveProperty("invalidReason");
+      const history = historyOf(restored);
+      expect(history).toHaveLength(historyOf(edited).length + 1);
+      expect(history.at(-1)).toMatchObject({
+        author: "user",
+        kind: "reset",
+        keys: ["primary.flagged", "primary.name"],
+      });
+      const stored = await readCard(edited.id);
+      expect(stored.properties).toEqual(restored.properties);
+      expect(stored.updatedAt).toBe(restored.updatedAt);
+    });
+
+    it("confirms the assistant's value after a reset, not the typed one", async () => {
+      const edited = await editedCard();
+      await reset(edited.id);
+
+      const confirmed = await withTransaction(pool, (client) => confirmProposalWithClient(client, config(), edited.id));
+
+      expect(confirmed.properties.resultLabel).toBe("Send the invoice");
+    });
+
+    it("returns the values of the assistant's latest computation, not the first one", async () => {
+      const edited = await editedCard();
+      await withTransaction(pool, (client) =>
+        reviseProposalWithClient(client, config(), edited.id, {
+          message: "Chosen type",
+          entityKind: "database",
+          target: tasksId,
+          properties: { name: "Send the invoice today" },
+        }),
+      );
+      const revised = await readCard(edited.id);
+      expect(revised.properties.userEditedKeys).toEqual(["primary.flagged", "primary.name"]);
+
+      const restored = await reset(edited.id);
+
+      expect(restored.properties.proposal).toEqual(taskEnvelope("Send the invoice today"));
+      expect(restored.properties.aiProposal).toEqual(taskEnvelope("Send the invoice today"));
+      expect(restored.properties.userEditedKeys).toEqual([]);
+    });
+
+    it("resets a card that has userEditedKeys but no userOverrides", async () => {
+      const card = await createDatabaseProposal("Send the invoice");
+      await store(card.id, { userEditedKeys: ["primary.name"] });
+
+      const restored = await reset(card.id);
+
+      expect(restored.properties.userEditedKeys).toEqual([]);
+      expect(historyOf(restored).at(-1)).toMatchObject({ kind: "reset", keys: ["primary.name"] });
+    });
+
+    it("resets a card that has userOverrides but no userEditedKeys, as when a hidden field was edited", async () => {
+      const card = await createDatabaseProposal("Send the invoice");
+      await store(card.id, { userOverrides: { primary: { name: "Typed" } }, proposal: taskEnvelope("Typed") });
+
+      const restored = await reset(card.id);
+
+      expect(restored.properties.proposal).toEqual(taskEnvelope("Send the invoice"));
+      expect(restored.properties.userOverrides).toEqual({});
+      expect(historyOf(restored).at(-1)).toMatchObject({ kind: "reset", keys: [] });
+    });
+
+    it("returns the card unchanged and writes no history entry when nothing is edited", async () => {
+      const card = await createDatabaseProposal("Send the invoice");
+      const before = await readCard(card.id);
+
+      const answered = await reset(card.id);
+
+      expect(answered).toEqual(before);
+      expect(historyOf(answered)).toEqual(historyOf(before));
+      expect((await readCard(card.id)).updatedAt).toBe(before.updatedAt);
+    });
+
+    it("returns the card unchanged after a reset that already happened", async () => {
+      const edited = await editedCard();
+      const first = await reset(edited.id);
+
+      const second = await reset(edited.id);
+
+      expect(second.properties).toEqual(first.properties);
+      expect(second.updatedAt).toBe(first.updatedAt);
+      expect(historyOf(second).filter((entry) => entry.kind === "reset")).toHaveLength(1);
+    });
+
+    it("accepts a current ifVersion", async () => {
+      const edited = await editedCard();
+
+      const restored = await reset(edited.id, edited.updatedAt);
+
+      expect(restored.properties.userEditedKeys).toEqual([]);
+    });
+
+    it("answers a stale ifVersion with a ConflictError carrying the current card, and writes nothing", async () => {
+      const card = await createDatabaseProposal("Send the invoice");
+      const stale = (await readCard(card.id)).updatedAt;
+      await edit(card.id, { primary: { name: "First edit" } });
+      const current = await readCard(card.id);
+
+      const error = await expectRefusedUnchanged(card.id, () => reset(card.id, stale));
+
+      expect(error).toBeInstanceOf(ConflictError);
+      expect(error).toMatchObject({ status: 409, code: "version_conflict" });
+      expect(error).toHaveProperty("details.current.id", card.id);
+      expect(error).toHaveProperty("details.current.updatedAt", current.updatedAt);
+      expect(current.properties.userOverrides).toEqual({ primary: { name: "First edit" } });
+    });
+
+    it("answers a stale ifVersion with a ConflictError also when nothing is edited", async () => {
+      const card = await createDatabaseProposal("Send the invoice");
+      const stale = (await readCard(card.id)).updatedAt;
+      await store(card.id, { reason: "changed since" });
+
+      const error = await expectRefusedUnchanged(card.id, () => reset(card.id, stale));
+
+      expect(error).toBeInstanceOf(ConflictError);
+    });
+
+    it.each(["confirm", "reject"] as const)(
+      "refuses a card that was %sed with a ValidationError and writes nothing",
+      async (action) => {
+        const edited = await editedCard();
+        await withTransaction(pool, (client) =>
+          action === "confirm"
+            ? confirmProposalWithClient(client, config(), edited.id)
+            : rejectProposalWithClient(client, config(), edited.id),
+        );
+
+        const error = await expectRefusedUnchanged(edited.id, () => reset(edited.id));
+
+        expect(error).toBeInstanceOf(ValidationError);
+        expect(error).toHaveProperty("details", { field: "status" });
+        expect((error as Error).message).toContain("locked");
+      },
+    );
+
+    it("refuses a confirmed card with nothing edited as it refuses an edited one", async () => {
+      const card = await createDatabaseProposal("Send the invoice");
+      await withTransaction(pool, (client) => confirmProposalWithClient(client, config(), card.id));
+
+      const error = await expectRefusedUnchanged(card.id, () => reset(card.id));
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toHaveProperty("details", { field: "status" });
+    });
+
+    it.each(["computing", "computeFailed"])("refuses a card in the status %s", async (status) => {
+      const edited = await editedCard();
+      await store(edited.id, { status });
+
+      const error = await expectRefusedUnchanged(edited.id, () => reset(edited.id));
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toHaveProperty("details", { field: "status" });
+    });
+
+    it("moves a fixable invalid card back to proposed and clears its invalidReason", async () => {
+      const edited = await editedCard();
+      await store(edited.id, {
+        status: "invalid",
+        invalidReason: { code: "targetArchived", field: "project", itemId: randomUUID(), label: "Project" },
+      });
+
+      const restored = await reset(edited.id);
+
+      expect(restored.properties.status).toBe("proposed");
+      expect(restored.properties.invalidReason).toBeNull();
+      expect(restored.properties.proposal).toEqual(taskEnvelope("Send the invoice"));
+    });
+
+    it("refuses a card that is final invalid because its source was deleted, and writes nothing", async () => {
+      const edited = await editedCard();
+      await store(edited.id, {
+        status: "invalid",
+        invalidReason: { code: "sourceDeleted", field: "", itemId: randomUUID(), label: "Source" },
+      });
+
+      const error = await expectRefusedUnchanged(edited.id, () => reset(edited.id));
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toHaveProperty("details", { field: "status" });
+    });
+
+    it("moves a needsClarification card that holds an envelope to proposed", async () => {
+      const edited = await editedCard();
+      await store(edited.id, { status: "needsClarification" });
+
+      const restored = await reset(edited.id);
+
+      expect(restored.properties.status).toBe("proposed");
+      expect(restored.properties.proposal).toEqual(taskEnvelope("Send the invoice"));
+    });
+
+    it("returns a needsClarification card with no envelope and nothing edited unchanged", async () => {
+      const card = await createDatabaseProposal("Send the invoice");
+      await store(card.id, { status: "needsClarification", proposal: null, aiProposal: null });
+      const before = await readCard(card.id);
+
+      const answered = await reset(card.id);
+
+      expect(answered).toEqual(before);
+    });
+
+    it("refuses a card whose manual values have no assistant envelope to return to, and writes nothing", async () => {
+      const card = await createDatabaseProposal("Send the invoice");
+      await store(card.id, {
+        status: "needsClarification",
+        proposal: null,
+        aiProposal: null,
+        userOverrides: { primary: { name: "Typed" } },
+        userEditedKeys: ["primary.name"],
+      });
+
+      const error = await expectRefusedUnchanged(card.id, () => reset(card.id));
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toHaveProperty("details", { field: "proposal" });
+    });
+
+    it("refuses a card whose assistant envelope has an unknown entityKind with a ConflictError, and writes nothing", async () => {
+      const edited = await editedCard();
+      await store(edited.id, {
+        aiProposal: { entityKind: "someFutureKind", target: "future-target", properties: { a: 1 } },
+      });
+
+      const error = await expectRefusedUnchanged(edited.id, () => reset(edited.id));
+
+      expect(error).toBeInstanceOf(ConflictError);
+      expect(error).toMatchObject({ details: { field: "entityKind", entityKind: "someFutureKind" } });
+    });
+
+    it("refuses an assistant envelope that no longer fits its destination, and keeps the manual values", async () => {
+      const edited = await editedCard();
+      await store(edited.id, { aiProposal: { ...taskEnvelope("Send the invoice"), target: randomUUID() } });
+
+      const error = await expectRefusedUnchanged(edited.id, () => reset(edited.id));
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((await readCard(edited.id)).properties.userEditedKeys).toEqual(["primary.flagged", "primary.name"]);
+    });
+
+    it("fails on a malformed stored userEditedKeys instead of resetting it", async () => {
+      const card = await createDatabaseProposal("Send the invoice");
+      await store(card.id, { userEditedKeys: { primary: "name" } });
+
+      const error = await expectRefusedUnchanged(card.id, () => reset(card.id));
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain("Malformed userEditedKeys");
+    });
+
+    it("answers an unknown card id with a NotFoundError", async () => {
+      await expect(reset(randomUUID())).rejects.toBeInstanceOf(NotFoundError);
+    });
+
+    it("answers a card in the trash with a NotFoundError and leaves it as it was", async () => {
+      const edited = await editedCard();
+      await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, proposalsId, edited.id));
+
+      await expect(reset(edited.id)).rejects.toBeInstanceOf(NotFoundError);
+    });
+  });
+
+  describe("recomputing a card (issue gh-1955)", () => {
+    const config = () => ({ processingProposalsDatabaseId: proposalsId });
+    const recompute = (cardId: string, input: { ifVersion?: string; actingUserId?: string } = {}): Promise<ItemRow> =>
+      withTransaction(pool, (client) => recomputeProposalWithClient(client, config(), cardId, input));
+    const readCard = async (id: string): Promise<ItemRow> => {
+      const card = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, id));
+      if (!card) throw new Error(`card ${id} not found`);
+      return card;
+    };
+    /** Stores system properties through the choke point: the states no route writes (a status, a reason). */
+    const store = (cardId: string, patch: Record<string, unknown>) =>
+      withTransaction(pool, (client) =>
+        updateItemWithClient(
+          client,
+          { databaseId: proposalsId, itemId: cardId, propertiesPatch: patch },
+          { allowedSystemKeys: Object.keys(patch) },
+        ),
+      );
+    /** What a card's row holds; the item a write returns also carries the metadata of the patch, which a read does not. */
+    const plain = (card: ItemRow) => ({ id: card.id, updatedAt: card.updatedAt, properties: card.properties });
+    const historyOf = (card: ItemRow) => z.array(z.record(z.string(), z.unknown())).parse(card.properties.history);
+    /** A card of the given `kind` and `status` with no source, written through the choke point. */
+    const bareCard = (kind: string, status: string) =>
+      withTransaction(
+        pool,
+        async (client) =>
+          (
+            await createItemWithClient(
+              client,
+              { databaseId: proposalsId, properties: { kind, status, proposal: null } },
+              { allowedSystemKeys: ["kind", "status", "proposal"] },
+            )
+          ).id,
+      );
+    /** The Inbox item the card's `sourceInbox` edge leads to. */
+    const sourceOf = (cardId: string): Promise<string> =>
+      withTransaction(pool, async (client) => {
+        const property = await propertiesStore.getPropertyByKey(client, proposalsId, "sourceInbox");
+        const definition = await relationsStore.getRelationDefinitionByPropertyId(client, property!.id);
+        const edges = await relationsStore.listRelationsForItem(client, definition!.id, cardId);
+        expect(edges).toHaveLength(1);
+        return relationsStore.otherSide(edges[0]!, cardId);
+      });
+    /** The queue, by key and how often a keyed enqueue replaced the queued job (`revision`). */
+    const queuedJobs = async () =>
+      (
+        await pool.query<{ key: string | null; revision: number }>(
+          "SELECT key, revision FROM graphile_worker.jobs ORDER BY id",
+        )
+      ).rows;
+    /** Empties the queue through the worker, so that a job enqueued afterwards is a new row of revision 0. */
+    async function discardQueuedJobs(): Promise<void> {
+      let remaining = Number.POSITIVE_INFINITY;
+      for (;;) {
+        const { rows } = await pool.query<{ task_identifier: string }>(
+          "SELECT task_identifier FROM graphile_worker.jobs ORDER BY id",
+        );
+        if (rows.length === 0) return;
+        if (rows.length >= remaining) throw new Error(`Queued jobs stopped draining: ${JSON.stringify(rows)}`);
+        remaining = rows.length;
+        const taskList: TaskList = Object.fromEntries(rows.map((row) => [row.task_identifier, async () => {}]));
+        await runOnce({ pgPool: pool }, taskList);
+      }
+    }
+    /** The key of the job that runs the tick of the Inbox `update` heartbeat for `itemId`. */
+    async function tickJobKey(itemId: string): Promise<string> {
+      const { rows } = await pool.query<{ id: string }>(
+        `SELECT id FROM project_heartbeats
+         WHERE rule ->> 'kind' = 'onItemEvent' AND rule ->> 'databaseId' = $1 AND rule ->> 'event' = 'update'`,
+        [inboxId],
+      );
+      if (!rows[0]) throw new Error("The Inbox 'update' heartbeat was not seeded");
+      return heartbeatFireJobKey(rows[0].id, itemId);
+    }
+    /** A card with a manual title over the assistant's "Buy milk", its source item, and an empty queue. */
+    async function editedCard() {
+      const card = await createDatabaseProposal("Buy milk");
+      await withTransaction(pool, (client) =>
+        updateProposalValuesWithClient(client, config(), card.id, { set: { primary: { name: "My own title" } } }),
+      );
+      const itemId = await sourceOf(card.id);
+      await discardQueuedJobs();
+      return { card: await readCard(card.id), itemId };
+    }
+    /** Runs `attempt`, expects it to fail and proves it wrote nothing: the card, its `updatedAt` and the queue are as they were. */
+    async function expectRefusedUnchanged(cardId: string, attempt: () => Promise<unknown>): Promise<unknown> {
+      const cardBefore = await readCard(cardId);
+      const jobsBefore = await queuedJobs();
+      const error = await attempt().then(
+        () => null,
+        (err: unknown) => err,
+      );
+      expect(error).not.toBeNull();
+      expect(await readCard(cardId)).toEqual(cardBefore);
+      expect(await queuedJobs()).toEqual(jobsBefore);
+      return error;
+    }
+
+    it("sends a card with an edited title to the tick, which proposes the other fields again and keeps the title", async () => {
+      const { card, itemId } = await editedCard();
+      expect(card.properties.userEditedKeys).toEqual(["primary.name"]);
+
+      const answered = await recompute(card.id);
+
+      expect(answered.properties.status).toBe("computing");
+      expect(plain(answered)).toEqual(plain(await readCard(card.id)));
+      for (const key of ["proposal", "aiProposal", "aiVersion", "userOverrides", "userEditedKeys"]) {
+        expect(answered.properties[key], key).toEqual(card.properties[key]);
+      }
+      expect(historyOf(answered).slice(0, -1)).toEqual(historyOf(card));
+      expect(historyOf(answered).at(-1)).toMatchObject({ author: "user", kind: "recompute" });
+      expect(await queuedJobs()).toEqual([{ key: await tickJobKey(itemId), revision: 0 }]);
+
+      await runTick(itemId, async () => ({ properties: { name: "Buy oat milk", description: "From the shop" } }));
+
+      const proposed = await readCard(card.id);
+      expect(proposed.properties).toMatchObject({
+        status: "proposed",
+        aiProposal: {
+          entityKind: "database",
+          target: tasksId,
+          properties: { name: "Buy oat milk", description: "From the shop" },
+        },
+        proposal: {
+          entityKind: "database",
+          target: tasksId,
+          properties: { name: "My own title", description: "From the shop" },
+        },
+        userOverrides: { primary: { name: "My own title" } },
+        userEditedKeys: ["primary.name"],
+      });
+      expect(historyOf(proposed).filter((entry) => entry.kind === "recompute" && entry.author === "user")).toHaveLength(
+        1,
+      );
+    });
+
+    it("answers a card that is computing already unchanged, and a second call queues no job", async () => {
+      const { card, itemId } = await editedCard();
+      const first = await recompute(card.id);
+      expect(await queuedJobs()).toEqual([{ key: await tickJobKey(itemId), revision: 0 }]);
+      await discardQueuedJobs();
+
+      const second = await recompute(card.id);
+
+      expect(plain(second)).toEqual(plain(first));
+      expect(plain(await readCard(card.id))).toEqual(plain(first));
+      expect(historyOf(second).filter((entry) => entry.kind === "recompute")).toHaveLength(1);
+      expect(await queuedJobs()).toEqual([]);
+    });
+
+    it("answers a computing card unchanged also when the ifVersion it carries is stale", async () => {
+      const { card } = await editedCard();
+      const first = await recompute(card.id);
+      await discardQueuedJobs();
+
+      const second = await recompute(card.id, { ifVersion: card.updatedAt });
+
+      expect(card.updatedAt).not.toBe(first.updatedAt);
+      expect(plain(second)).toEqual(plain(first));
+      expect(await queuedJobs()).toEqual([]);
+    });
+
+    it.each(["needsClarification", "computeFailed"])("accepts a card in status %s", async (status) => {
+      const { card, itemId } = await editedCard();
+      await store(card.id, { status });
+      await discardQueuedJobs();
+
+      const answered = await recompute(card.id);
+
+      expect(answered.properties.status).toBe("computing");
+      expect(historyOf(answered).at(-1)).toMatchObject({ author: "user", kind: "recompute" });
+      expect(await queuedJobs()).toEqual([{ key: await tickJobKey(itemId), revision: 0 }]);
+    });
+
+    it("accepts a fixable invalid card and clears its invalid reason with the status", async () => {
+      const { card, itemId } = await editedCard();
+      await store(card.id, {
+        status: "invalid",
+        invalidReason: { code: "targetArchived", field: "", itemId: tasksId, label: "Tasks" },
+      });
+      await discardQueuedJobs();
+
+      const answered = await recompute(card.id);
+
+      expect(answered.properties.status).toBe("computing");
+      expect(answered.properties.invalidReason).toBeNull();
+      expect(await queuedJobs()).toEqual([{ key: await tickJobKey(itemId), revision: 0 }]);
+    });
+
+    it("refuses a card whose source Inbox item was deleted with a ValidationError on status, and writes nothing", async () => {
+      const { card, itemId } = await editedCard();
+      await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, itemId));
+      await runTick(itemId, async () => {
+        throw new Error("The tick must not compute a card whose source was deleted");
+      });
+      expect(await readCard(card.id)).toMatchObject({
+        properties: { status: "invalid", invalidReason: { code: "sourceDeleted" } },
+      });
+      await discardQueuedJobs();
+
+      const error = await expectRefusedUnchanged(card.id, () => recompute(card.id));
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toHaveProperty("details.field", "status");
+    });
+
+    it.each(["transcript", "mailThread"])("refuses a card of kind %s with a ValidationError on kind", async (kind) => {
+      const cardId = await bareCard(kind, "proposed");
+
+      const error = await expectRefusedUnchanged(cardId, () => recompute(cardId));
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toHaveProperty("details.field", "kind");
+    });
+
+    it("refuses a card without a kind with a ValidationError on kind, so only a card of an Inbox item is recomputed", async () => {
+      const cardId = await withTransaction(
+        pool,
+        async (client) =>
+          (
+            await createItemWithClient(
+              client,
+              { databaseId: proposalsId, properties: { status: "proposed", proposal: null } },
+              { allowedSystemKeys: ["status", "proposal"] },
+            )
+          ).id,
+      );
+
+      const error = await expectRefusedUnchanged(cardId, () => recompute(cardId));
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toHaveProperty("details.field", "kind");
+    });
+
+    it.each(["confirmed", "rejected"])(
+      "refuses a %s card with the 409 proposal_locked, and writes nothing",
+      async (status) => {
+        const { card } = await editedCard();
+        await withTransaction(pool, (client) =>
+          status === "confirmed"
+            ? confirmProposalWithClient(client, config(), card.id)
+            : rejectProposalWithClient(client, config(), card.id),
+        );
+
+        const error = await expectRefusedUnchanged(card.id, () => recompute(card.id));
+
+        expect(error).toBeInstanceOf(ProposalLockedError);
+        expect(error).toMatchObject({ status: 409, code: "proposal_locked" });
+      },
+    );
+
+    it("refuses a stale ifVersion with the 409 version_conflict that carries the current card, and writes nothing", async () => {
+      const { card } = await editedCard();
+      await withTransaction(pool, (client) =>
+        updateProposalValuesWithClient(client, config(), card.id, { set: { primary: { name: "Edited again" } } }),
+      );
+      const current = await readCard(card.id);
+      expect(current.updatedAt).not.toBe(card.updatedAt);
+
+      const error = await expectRefusedUnchanged(card.id, () => recompute(card.id, { ifVersion: card.updatedAt }));
+
+      expect(error).toBeInstanceOf(ConflictError);
+      expect(error).toMatchObject({ status: 409, code: "version_conflict", details: { current } });
+    });
+
+    it("accepts the current ifVersion", async () => {
+      const { card, itemId } = await editedCard();
+
+      const answered = await recompute(card.id, { ifVersion: card.updatedAt });
+
+      expect(answered.properties.status).toBe("computing");
+      expect(await queuedJobs()).toEqual([{ key: await tickJobKey(itemId), revision: 0 }]);
+    });
+
+    it("refuses an unknown card with a NotFoundError", async () => {
+      await expect(recompute(randomUUID())).rejects.toThrow(NotFoundError);
+    });
+
+    it("refuses a card of an Inbox item that has no source edge with a NotFoundError, and writes nothing", async () => {
+      const cardId = await bareCard("inbox", "proposed");
+
+      const error = await expectRefusedUnchanged(cardId, () => recompute(cardId));
+
+      expect(error).toBeInstanceOf(NotFoundError);
+    });
+
+    it("refuses a card whose source Inbox item is in the Trash but whose status the tick has not changed yet, and writes nothing", async () => {
+      const { card, itemId } = await editedCard();
+      // Raw SQL: the production trash write leaves the card to the tick, which this test does not run; the point is the card's
+      // state while the tick is still to come.
+      await pool.query("UPDATE items SET deleted_at = now() WHERE id = $1", [itemId]);
+
+      const error = await expectRefusedUnchanged(card.id, () => recompute(card.id));
+
+      expect(error).toBeInstanceOf(NotFoundError);
+    });
+
+    it("announces the change of the card once after the commit, and nothing for a refusal", async () => {
+      const { card } = await editedCard();
+      const events: InboxCardsInvalidationEvent[] = [];
+      setInboxCardsInvalidationHook((event) => events.push(event));
+      try {
+        await expect(recompute(card.id, { ifVersion: "2000-01-01T00:00:00.000Z" })).rejects.toThrow(ConflictError);
+        expect(events).toEqual([]);
+
+        await recompute(card.id);
+        expect(events).toEqual([{ op: "updated", cardId: card.id }]);
+      } finally {
+        setInboxCardsInvalidationHook(() => {});
+      }
+    });
+
+    it("addresses the invalidation of the card write to the acting user", async () => {
+      const { card } = await editedCard();
+      const actingUserId = randomUUID();
+      const events: InvalidationEvent[] = [];
+      setInvalidationHook((event) => events.push(event));
+      try {
+        await recompute(card.id, { actingUserId });
+      } finally {
+        setInvalidationHook(() => {});
+      }
+
+      const cardEvents = events.filter((event) => event.scope === "item" && event.itemId === card.id);
+      expect(cardEvents).toHaveLength(1);
+      expect(cardEvents[0]).toMatchObject({ op: "update", userId: actingUserId });
+    });
+
+    describe("a card that stays computing past the timeout (issue gh-2026)", () => {
+      const MINUTE_MS = 60_000;
+
+      /** Moves the clock `ms` ahead of the real one. Only `Date` is faked, so the database and the timers of the pool run as they do. */
+      function clockAfter(ms: number): void {
+        const base = Date.now();
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(base + ms);
+      }
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      /** A card sent back by the user once, its source item, and an empty queue. */
+      async function computingCard() {
+        const { card, itemId } = await editedCard();
+        const computing = await recompute(card.id);
+        await discardQueuedJobs();
+        return { card: computing, itemId };
+      }
+
+      it("sends a card that has been computing for longer than the timeout back again: a new updatedAt, a second recompute entry and exactly one tick job", async () => {
+        const { card, itemId } = await computingCard();
+        clockAfter(COMPUTING_TIMEOUT_MS + MINUTE_MS);
+
+        const answered = await recompute(card.id);
+
+        expect(answered.properties.status).toBe("computing");
+        expect(answered.updatedAt).not.toBe(card.updatedAt);
+        expect(plain(answered)).toEqual(plain(await readCard(card.id)));
+        expect(historyOf(answered).slice(0, -1)).toEqual(historyOf(card));
+        expect(historyOf(answered).at(-1)).toMatchObject({ author: "user", kind: "recompute" });
+        expect(historyOf(answered).filter((entry) => entry.kind === "recompute")).toHaveLength(2);
+        expect(await queuedJobs()).toEqual([{ key: await tickJobKey(itemId), revision: 0 }]);
+      });
+
+      it("returns a card that has been computing for less than the timeout unchanged and queues no job", async () => {
+        const { card } = await computingCard();
+        clockAfter(COMPUTING_TIMEOUT_MS - MINUTE_MS);
+
+        const answered = await recompute(card.id);
+
+        expect(plain(answered)).toEqual(plain(card));
+        expect(plain(await readCard(card.id))).toEqual(plain(card));
+        expect(await queuedJobs()).toEqual([]);
+      });
+
+      it("checks the ifVersion of a timed-out card, which is no longer answered as computing: a stale one is the 409 version_conflict", async () => {
+        const { card } = await computingCard();
+        clockAfter(COMPUTING_TIMEOUT_MS + MINUTE_MS);
+
+        const error = await expectRefusedUnchanged(card.id, () =>
+          recompute(card.id, { ifVersion: "2000-01-01T00:00:00.000Z" }),
+        );
+
+        expect(error).toBeInstanceOf(ConflictError);
+        expect(error).toMatchObject({ status: 409, code: "version_conflict" });
+      });
+
+      it("accepts the current ifVersion of a timed-out card", async () => {
+        const { card } = await computingCard();
+        clockAfter(COMPUTING_TIMEOUT_MS + MINUTE_MS);
+
+        const answered = await recompute(card.id, { ifVersion: card.updatedAt });
+
+        expect(answered.updatedAt).not.toBe(card.updatedAt);
+      });
+
+      it("lets a late tick turn a timed-out card into a proposed one, whose title stays the user's", async () => {
+        const { card, itemId } = await computingCard();
+        clockAfter(COMPUTING_TIMEOUT_MS + MINUTE_MS);
+
+        await runTick(itemId, async () => ({ properties: { name: "Buy oat milk", description: "From the shop" } }));
+
+        const proposed = await readCard(card.id);
+        expect(proposed.properties).toMatchObject({
+          status: "proposed",
+          proposal: { properties: { name: "My own title", description: "From the shop" } },
+        });
+      });
+    });
+  });
+
+  describe("referencedItemIds on the card actions (issue #1916)", () => {
+    const config = () => ({ processingProposalsDatabaseId: proposalsId });
+    const readCard = async (id: string): Promise<ItemRow> => {
+      const card = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, id));
+      if (!card) throw new Error(`card ${id} not found`);
+      return card;
+    };
+    const createProject = (name: string) =>
+      withTransaction(
+        pool,
+        async (client) =>
+          (await createItemWithClient(client, { databaseId: await databaseIdFor("projects"), properties: { name } }))
+            .id,
+      );
+    const revise = (cardId: string, name: string, relations?: Record<string, string[]>) =>
+      withTransaction(pool, (client) =>
+        reviseProposalWithClient(client, config(), cardId, {
+          message: "Chat correction",
+          entityKind: "database",
+          target: tasksId,
+          properties: { name },
+          ...(relations === undefined ? {} : { relations }),
+        }),
+      );
+    const editRelations = (cardId: string, projects: string[]) =>
+      withTransaction(pool, (client) =>
+        updateProposalValuesWithClient(client, config(), cardId, { relations: { primary: { project: projects } } }),
+      );
+    const reset = (cardId: string) =>
+      withTransaction(pool, (client) => resetProposalOverridesWithClient(client, config(), cardId, {}));
+    /** The ids the card's stored `proposal` refers to, which `referencedItemIds` has to equal. */
+    const referencedBy = (card: ItemRow) =>
+      referencedItemIdsOf(parseStoredProposalEnvelope(card.properties.proposal, card.id) as ProposalEnvelope);
+
+    it("reviseProposalWithClient stores the ids of the revised envelope's relation targets and clears them again", async () => {
+      const project = await createProject("Alpha");
+      const card = await createDatabaseProposal("Send the invoice");
+      expect((await readCard(card.id)).properties.referencedItemIds).toEqual([]);
+
+      const withProject = await revise(card.id, "Send the invoice", { project: [project] });
+      expect(withProject.properties.referencedItemIds).toEqual([project]);
+      expect(referencedBy(withProject)).toEqual([project]);
+
+      const withoutProject = await revise(card.id, "Send the invoice today");
+      expect(withoutProject.properties.referencedItemIds).toEqual([]);
+    });
+
+    it("reviseProposalWithClient stores the ids of the effective envelope, so a project the user chose stays referenced", async () => {
+      const [assistant, chosen] = [await createProject("Alpha"), await createProject("Beta")];
+      const card = await createDatabaseProposal("Send the invoice");
+      await editRelations(card.id, [chosen]);
+
+      const revised = await revise(card.id, "Send the invoice today", { project: [assistant] });
+
+      expect(revised.properties.aiProposal).toMatchObject({ relations: { project: [assistant] } });
+      expect(revised.properties.referencedItemIds).toEqual(referencedBy(revised));
+    });
+
+    it("the values route stores the ids of the edited relation list, and an emptied list clears them", async () => {
+      const project = await createProject("Alpha");
+      const card = await createDatabaseProposal("Send the invoice");
+
+      const chosen = await editRelations(card.id, [project]);
+      expect(chosen.item.properties.referencedItemIds).toEqual([project]);
+
+      const emptied = await editRelations(card.id, []);
+      expect(emptied.item.properties.referencedItemIds).toEqual([]);
+    });
+
+    it("the reset stores the ids of the assistant's envelope again", async () => {
+      const [assistant, chosen] = [await createProject("Alpha"), await createProject("Beta")];
+      const card = await createDatabaseProposal("Send the invoice");
+      await revise(card.id, "Send the invoice", { project: [assistant] });
+      const edited = await editRelations(card.id, [chosen]);
+      expect(edited.item.properties.referencedItemIds).toEqual([chosen]);
+
+      const restored = await reset(card.id);
+
+      expect(restored.properties.referencedItemIds).toEqual([assistant]);
+      expect(referencedBy(restored)).toEqual([assistant]);
+    });
+
+    it("a revision from an item thread stores the ids of the effective envelope", async () => {
+      const chosen = await createProject("Alpha");
+      const card = await createDatabaseProposal("Send the invoice");
+      await editRelations(card.id, [chosen]);
+      const sourceId = await withTransaction(pool, async (client) => {
+        const property = await propertiesStore.getPropertyByKey(client, proposalsId, "sourceInbox");
+        const definition = await relationsStore.getRelationDefinitionByPropertyId(client, property!.id);
+        const edges = await relationsStore.listRelationsForItem(client, definition!.id, card.id);
+        return relationsStore.otherSide(edges[0]!, card.id);
+      });
+
+      const revised = await withTransaction(pool, (client) =>
+        reviseProposalFromThreadWithClient(client, config(), {
+          proposalId: card.id,
+          subjectItemId: sourceId,
+          threadId: randomUUID(),
+          messageId: randomUUID(),
+          entityKind: "database",
+          target: tasksId,
+          properties: { name: "Send the invoice today" },
+        }),
+      );
+
+      expect(revised.properties.referencedItemIds).toEqual(referencedBy(revised));
+      expect(revised.properties.referencedItemIds).toEqual([chosen]);
     });
   });
 

@@ -158,6 +158,11 @@ import { journalItemCreateHook } from "./journal/journalWriteHook.js";
 import { journalItemRestoreHook } from "./journal/journalRestoreHook.js";
 import { inboxItemCreateHook } from "./inbox/inboxCreateHook.js";
 import { idempotentResponsesPurgeHook } from "./inbox/idempotentResponsesPurgeHook.js";
+import {
+  proposalReferenceItemDeleteHook,
+  proposalReferenceItemRestoreHook,
+  proposalReferenceItemUpdateHook,
+} from "./inbox/proposalReferenceInvalidation.js";
 import { journalDayRelinkItemCreateHook } from "./inbox/journalDayRelinkHook.js";
 import { inboxTypeItemCreateHook, inboxTypeItemUpdateHook } from "./inbox/inboxTypeWriteHook.js";
 import {
@@ -475,6 +480,14 @@ registerThreadSearchGroup(sempThreadSearchGroup);
 // (docs/adr/2026-11-13-related-rows-are-contributed-through-a-per-process-registry.md).
 registerRelatedRowContributor(PEOPLE_MODULE_ID, personMailThreadsRelatedRow);
 
+// Issue gh-1916: an open Processing proposals card that refers to a project that is archived, or to an item that is
+// deleted, becomes `invalid` in the same transaction, and returns to `proposed` when the item comes back. gh-1905, the
+// Shared-file ordering blocker of gh-1916, is on the branch; these entries go after its entries above.
+registerItemUpdateHook(proposalReferenceItemUpdateHook);
+registerItemDeleteHook(proposalReferenceItemDeleteHook);
+registerItemRestoreHook(proposalReferenceItemRestoreHook);
+
 // Issue gh-1923: a person newly linked to a message of a thread is queued for the people of the thread's tasks. gh-1923
-// names #1916 and #2033 for shared-file ordering only; neither registers a hook yet, and their entries go before this one.
+// names #1916 and #2033 for shared-file ordering only; #1916's entries are above, #2033 registers no hook yet, and its
+// entries go before this one.
 registerRelationEdgeChangedHook(threadTaskPeopleEdgeChangedHook);

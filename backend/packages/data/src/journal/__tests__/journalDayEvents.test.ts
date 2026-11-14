@@ -772,7 +772,8 @@ describe("journal day events and birthdays (issues #1721, #2015)", () => {
         if (index === -1) throw new Error(`The day read did not send: ${statement}`);
         own.splice(index, 1);
       }
-      return { own, total: dayRead.statements.length };
+      // The statements are compared as a set of texts: where a repeated text sits in the day read depends on the day.
+      return { own: own.sort(), total: dayRead.statements.length };
     }
 
     // Restored by `vi.restoreAllMocks()` in `afterEach`.

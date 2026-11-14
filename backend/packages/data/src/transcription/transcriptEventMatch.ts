@@ -14,6 +14,7 @@ import {
   type ProposalEnvelope,
 } from "../inbox/inboxTickAction.js";
 import { publishInboxCardChange } from "../inbox/inboxCardsRealtime.js";
+import { referencedItemIdsOf } from "../inbox/proposalReferences.js";
 import { PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { EVENTS_MODULE_ID, TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { getCalendarClock, type CalendarClock } from "../calendarTime.js";
@@ -560,7 +561,18 @@ async function createTranscriptCard(
       idempotencyKey: input.idempotencyKey,
       properties: { kind: "transcript", ...input.properties },
     },
-    { allowedSystemKeys: ["kind", "proposal", "aiProposal", "aiVersion", "history", "context", "status"] },
+    {
+      allowedSystemKeys: [
+        "kind",
+        "proposal",
+        "aiProposal",
+        "aiVersion",
+        "referencedItemIds",
+        "history",
+        "context",
+        "status",
+      ],
+    },
   );
   const sourceTranscriptPropertyId = await requirePropertyId(
     client,
@@ -656,6 +668,7 @@ export async function matchTranscriptToEvent(
     properties: {
       proposal: envelope,
       ...aiProposalPatch({}, envelope),
+      referencedItemIds: referencedItemIdsOf(envelope),
       history: appendHistoryEntry(
         [],
         `${open.events.length} Events overlapped the recording's time interval, so none was linked; proposed a new Event.`,
@@ -848,6 +861,7 @@ export async function createTranscriptEventCard(
     properties: {
       proposal: envelope,
       ...aiProposalPatch({}, envelope),
+      referencedItemIds: referencedItemIdsOf(envelope),
       context,
       history: appendHistoryEntry(
         [],

@@ -481,7 +481,8 @@ describe("calendar.ingestInvitation (issue gh-1929)", () => {
       expect(await edgesOf(world, before.id, "sourceEmail")).toEqual([first]);
     });
 
-    it.each(["accepted", "tentative", "declined", "acknowledged", "cancelled"])(
+    // An invitation the user answered is updated by a higher SEQUENCE: `invitationUpdate.test.ts`.
+    it.each(["acknowledged", "cancelled"])(
       "changes nothing for an invitation that is %s, whatever the SEQUENCE",
       async (status) => {
         const first = await receive(world, "<answered@example.test>", [calendarPart(ics())]);
@@ -531,6 +532,7 @@ describe("calendar.ingestInvitation (issue gh-1929)", () => {
       expect(store.reads).toEqual([]);
     });
 
+    // A CANCEL of a UID that no invitation has creates nothing; one of a known UID is `invitationCancel.test.ts`.
     it.each([
       ["CANCEL", "CANCEL"],
       ["REPLY", "REPLY"],
@@ -539,16 +541,6 @@ describe("calendar.ingestInvitation (issue gh-1929)", () => {
     ])("does nothing for a %s calendar", async (_name, method) => {
       await ingest(world, await receive(world, "<other-method@example.test>", [calendarPart(ics({ method }))]));
       expect(await invitationsOf(world)).toEqual([]);
-    });
-
-    it("does not touch the invitation of a CANCEL for a known UID", async () => {
-      await ingest(world, await receive(world, "<known@example.test>", [calendarPart(ics())]));
-      const before = await onlyInvitation(world);
-      await ingest(
-        world,
-        await receive(world, "<cancel@example.test>", [calendarPart(ics({ method: "CANCEL", sequence: 5 }))]),
-      );
-      expect(await invitationsOf(world)).toEqual([before]);
     });
 
     it("skips a delivery status notification before it reads any part", async () => {

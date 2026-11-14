@@ -289,6 +289,17 @@ function readCard(cardId: string): Promise<Card> {
   });
 }
 
+/** The `referencedItemIds` stored on the card, which `cardSchema` leaves out. */
+function storedReferencedItemIds(cardId: string): Promise<unknown> {
+  return inTenant(async () => {
+    const { rows } = await dataPool.query<{ referenced: unknown }>(
+      "SELECT properties -> 'referencedItemIds' AS referenced FROM items WHERE id = $1",
+      [cardId],
+    );
+    return rows[0]?.referenced;
+  });
+}
+
 /** The card without its history: what the task leaves as it is when it only answers the instruction. */
 function stateOf(card: Card): Record<string, unknown> {
   return Object.fromEntries(Object.entries(card).filter(([key]) => key !== "history"));
@@ -382,6 +393,8 @@ describe("transcriptCardRecompute task: an Event card (issue gh-1940)", () => {
     const relation = { entityKind: "relation", target: scenario.accountantId, properties: { propertyKey: "event" } };
     expect(after).toMatchObject({ status: "proposed", proposal: relation, aiProposal: relation, aiVersion: 2 });
     expect(after.context.role).toBe("event");
+    // The new proposal names the Event, so the card is found when that Event is deleted (issue gh-1916).
+    expect(await storedReferencedItemIds(scenario.cardId)).toEqual([scenario.accountantId]);
     const [answer, ...others] = answerEntries(after, payload.instructionEntryId);
     expect(others).toEqual([]);
     expect(answer).toMatchObject({ author: "ai", message: "The user named the accountant call." });

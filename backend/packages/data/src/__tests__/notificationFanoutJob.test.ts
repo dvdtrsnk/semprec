@@ -447,6 +447,90 @@ describe("notificationFanout job (issue #151)", () => {
     });
   });
 
+  describe("APNs category and invitation id of a calendar invitation push (issue gh-1954)", () => {
+    const invitationId = "0c0e3bb4-2d4c-4f43-8c7b-6b5f4f1d3f10";
+
+    async function addRegistrations(userId: string, label: string): Promise<void> {
+      await upsertWebPushSubscription(pool, {
+        userId,
+        sessionId: null,
+        endpoint: `https://push.example/${label}`,
+        p256dh: "p256dh-key",
+        authSecret: "auth-secret",
+      });
+      await upsertApnsSubscription(pool, {
+        userId,
+        sessionId: null,
+        platform: "ios",
+        deviceToken: `device-token-${label}`,
+        apnsEnvironment: "sandbox",
+      });
+    }
+
+    function senders() {
+      return {
+        sendWebPush: vi.fn().mockResolvedValue({ outcome: "delivered" }),
+        sendApns: vi.fn().mockResolvedValue({ outcome: "delivered" }),
+      };
+    }
+
+    it("hands the category, the invitation id from source_id and the active level to the APNs sender", async () => {
+      const userId = await createTestUser();
+      await addRegistrations(userId, "invitation-fields");
+      const notificationId = await writeTestNotification(userId, invitationId, "calendar_invitation", "items", {
+        invitationId,
+      });
+      const sent = senders();
+
+      await handleNotificationFanoutTask(pool, { notificationId }, sent);
+
+      expect(sent.sendApns).toHaveBeenCalledTimes(1);
+      expect(sent.sendApns.mock.calls[0]![1]).toMatchObject({
+        notificationId,
+        kind: "calendar_invitation",
+        interruptionLevel: "active",
+        apns: { category: "CALENDAR_INVITATION", data: { invitation_id: invitationId } },
+      });
+    });
+
+    it("sets no category and no invitation id on a calendar invitation notification whose source is not an item", async () => {
+      const userId = await createTestUser();
+      await addRegistrations(userId, "invitation-other-source");
+      const notificationId = await writeTestNotification(
+        userId,
+        "not-an-item-id",
+        "calendar_invitation",
+        "semp_problems",
+        {},
+      );
+      const sent = senders();
+
+      await handleNotificationFanoutTask(pool, { notificationId }, sent);
+
+      expect(sent.sendApns).toHaveBeenCalledTimes(1);
+      expect(sent.sendApns.mock.calls[0]![1]).not.toHaveProperty("apns");
+    });
+
+    it("stores the notification and sends no push to any registration once the invites category is off", async () => {
+      const userId = await createTestUser();
+      await addRegistrations(userId, "invitation-off");
+      await withTransaction(pool, (client) => patchNotificationPreferences(client, userId, { invites: false }));
+      const notificationId = await writeTestNotification(userId, invitationId, "calendar_invitation", "items", {
+        invitationId,
+      });
+      const sent = senders();
+
+      await handleNotificationFanoutTask(pool, { notificationId }, sent);
+
+      expect(sent.sendApns).not.toHaveBeenCalled();
+      expect(sent.sendWebPush).not.toHaveBeenCalled();
+      expect(await countRows(`SELECT count(*) FROM notifications WHERE id = $1`, [notificationId])).toBe(1);
+      expect(await countRows(`SELECT count(*) FROM push_deliveries WHERE notification_id = $1`, [notificationId])).toBe(
+        0,
+      );
+    });
+  });
+
   it("never dispatches an already-revoked registration", async () => {
     const userId = await createTestUser();
     await upsertWebPushSubscription(pool, {

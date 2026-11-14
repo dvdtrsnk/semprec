@@ -502,15 +502,16 @@ describe("GET /api/areas/:id/overview (issue #1760)", () => {
     const titles = ["Dort", "Čaj", "Cibule"];
     const untimed = new Map<string, string>();
     for (const title of titles) untimed.set(title, await w.task(project, { name: title, date: TOMORROW }));
-    // Entries that agree in day, time and title. The read puts tasks before events, so events are created until
-    // one has an id below the task's: the id then decides against the order the entries were read in.
-    const twinTask = await w.task(project, { name: "Stejný", date: TOMORROW });
+    // Entries that agree in day, time and title, so that only the id decides. The read puts tasks before events,
+    // so the events are created first: ids that grow with time then put every event before every task, against the
+    // order the entries were read in, and the expectation below (all of them by id) proves that the id decides.
     const twinEvents: string[] = [];
-    while (!twinEvents.some((id) => id < twinTask)) {
-      if (twinEvents.length === 16) throw new Error("No event got an id below the task's in 16 tries");
+    for (let index = 0; index < 3; index += 1)
       twinEvents.push(await w.event(project, { name: "Stejný", date: TOMORROW }));
-    }
-    const twins = [twinTask, ...twinEvents].sort();
+    const twinTasks: string[] = [];
+    for (let index = 0; index < 3; index += 1)
+      twinTasks.push(await w.task(project, { name: "Stejný", date: TOMORROW }));
+    const twins = [...twinEvents, ...twinTasks].sort();
     const morningEvent = await w.event(project, { name: "Zítra ráno", date: TOMORROW, timeFrom: "08:00" });
     const morningTask = await w.task(project, { name: "Až potom", date: TOMORROW, timeFrom: "09:00" });
     const earlier = await w.task(project, { name: "Žádný čas", date: TODAY });

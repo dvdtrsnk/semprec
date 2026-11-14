@@ -132,6 +132,27 @@ describe("sendWebPushNotification body (issue #1773)", () => {
       tag: "notif-9",
     });
   });
+
+  it("leaves the APNs category and the invitation id of a calendar invitation out of the delivered Web Push payload (issue gh-1954)", async () => {
+    const sent = await sendAndReadPayload({
+      notificationId: "notif-10",
+      title: "Olga invites you: Sprint review",
+      body: null,
+      linkHref: null,
+      interruptionLevel: "active",
+      sourceTable: "items",
+      sourceId: "0c0e3bb4-2d4c-4f43-8c7b-6b5f4f1d3f10",
+      kind: "calendar_invitation",
+      apns: { category: "CALENDAR_INVITATION", data: { invitation_id: "0c0e3bb4-2d4c-4f43-8c7b-6b5f4f1d3f10" } },
+    });
+
+    expect(sent).toEqual({
+      title: "Olga invites you: Sprint review",
+      linkHref: null,
+      notificationId: "notif-10",
+      tag: "notif-10",
+    });
+  });
 });
 
 describe("sendWebPushNotification tag (issue #1826)", () => {

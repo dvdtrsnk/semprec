@@ -166,6 +166,7 @@ export async function readSubscribedEventTimelineItems(
         project: null,
         people: [],
         transcript: null,
+        attendance: null,
         hostEvent: null,
         tasks: null,
         counts: null,

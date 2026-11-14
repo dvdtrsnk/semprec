@@ -44,6 +44,21 @@ const COUNTED_STATUSES: readonly OpenCardStatus[] = OPEN_CARD_STATUSES.filter(
 
 const CARD_KINDS = ["inbox", "transcript"] as const;
 
+/**
+ * How long a card may stay `computing` before the list reports it as failed (issue gh-2026): 10 minutes, a constant and
+ * no setting. Nothing is written when it passes; see `isComputingTimedOut`.
+ */
+export const COMPUTING_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * True when the card's stored status is `computing` and its `updatedAt` is older than `COMPUTING_TIMEOUT_MS` at `now`.
+ * A card that is `computing` for exactly the timeout is not timed out yet, and an `updatedAt` that is no timestamp never
+ * times a card out. A card with any other status is never timed out.
+ */
+export function isComputingTimedOut(card: Pick<ItemRow, "properties" | "updatedAt">, now: Date): boolean {
+  return card.properties.status === "computing" && Date.parse(card.updatedAt) < now.getTime() - COMPUTING_TIMEOUT_MS;
+}
+
 /** The card kinds whose targets carry a label, one catalog entry `card.target.<baseKind>` each. */
 export const INBOX_CARD_TARGET_LABEL_KINDS: readonly InboxCardKind[] = [
   "task",
@@ -123,8 +138,13 @@ export interface InboxCard {
   source: "proposal" | "approval";
   cardKind: InboxCardKind;
   baseKind: InboxCardKind;
-  /** The stored proposal status, or `pending` for an approval request. */
+  /**
+   * The stored proposal status, or `pending` for an approval request. A card stored as `computing` for longer than
+   * `COMPUTING_TIMEOUT_MS` is listed as `computeFailed` (issue gh-2026), with `computeTimedOut` set.
+   */
   status: string;
+  /** `true` on a card that is listed as `computeFailed` because it has been `computing` past the timeout; absent on every other card. */
+  computeTimedOut?: true;
   /** The item's `updatedAt`, usable as `ifVersion`; `null` for an approval request, which has no item. */
   version: string | null;
   resolvedSource: InboxCardResolvedSource | null;
@@ -520,10 +540,12 @@ async function buildProposalCards(
     locale: toManifestLocale(locale),
   };
 
+  const now = new Date();
   const cards: InboxCard[] = [];
   for (const candidate of candidates) {
     const item = cardItems.get(candidate.id);
     if (!item) continue;
+    const timedOut = isComputingTimedOut(item, now);
     const { envelope, steps } = envelopes.get(item.id) ?? { envelope: null, steps: null };
     const { cardKind, baseKind } = deriveInboxCardKind({
       kind: candidate.kind,
@@ -557,7 +579,8 @@ async function buildProposalCards(
       source: "proposal",
       cardKind,
       baseKind,
-      status: candidate.status,
+      status: timedOut ? "computeFailed" : candidate.status,
+      ...(timedOut ? { computeTimedOut: true as const } : {}),
       version: item.updatedAt,
       resolvedSource,
       context: item.properties.context ?? null,
@@ -646,8 +669,10 @@ export async function countOpenInboxCards(client: PoolClient, input: CountOpenIn
  * included), invalid, needsClarification, transcript. Inside a group the order is chronological by capture
  * time (an approval by `requested_at`, a transcript card by its transcript's date), then by id. At most
  * `INBOX_CARDS_LIMIT` cards are returned. `total` is `countOpenInboxCards`: every open card of the set except
- * those in `computing` and `computeFailed`, which are listed but not counted. The caller owns the tenant
- * transaction, and `ownerUserId` decides whose approvals are read.
+ * those in `computing` and `computeFailed`, which are listed but not counted. A card stored as `computing` that
+ * `isComputingTimedOut` is listed as `computeFailed` with `computeTimedOut` set, in the group of its stored status and
+ * uncounted like every `computing` card; the stored card is not changed. The caller owns the tenant transaction, and
+ * `ownerUserId` decides whose approvals are read.
  */
 export async function listInboxCards(client: PoolClient, input: ListInboxCardsInput): Promise<InboxCardList> {
   const approvalCards = await listApprovalCards(client, input);

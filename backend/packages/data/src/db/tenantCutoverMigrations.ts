@@ -30,6 +30,7 @@ import { runEventsCalendarPropertiesCutoverMigration } from "../calendar/eventsC
 import { runEventsIcalIdentityCutoverMigration } from "../calendar/eventsIcalIdentityCutoverMigration.js";
 import { runCalendarsCutoverMigration } from "../calendar/calendarsCutoverMigration.js";
 import { runInvitationIngestHeartbeatCutoverMigration } from "../calendar/invitationIngestHeartbeatCutoverMigration.js";
+import { runInvitationReplyHeartbeatCutoverMigration } from "../calendar/invitationReplyHeartbeatCutoverMigration.js";
 import { runInvitationsDatabaseCutoverMigration } from "../calendar/invitationsDatabaseCutoverMigration.js";
 import { runNextOccurrenceDateCutoverMigration } from "../calendar/nextOccurrenceDateCutoverMigration.js";
 import { runPeopleEventsInverseCutoverMigration } from "../calendar/peopleEventsInverseCutoverMigration.js";
@@ -210,6 +211,11 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     // of the step above and the Emails database, and stands after the entries of the sources it declares as blockers,
     // before the area-note cutover that stays last.
     await runInvitationIngestHeartbeatCutoverMigration(pool);
+    // Issue gh-1950: the `calendar.applyInvitationReply` heartbeat on the Emails database. It needs the invitations
+    // database of the gh-1901 step and the Emails, Events and People databases, and stands after the entries of the
+    // sources it declares as blockers (gh-1941 above; gh-1944 has no cutover entry) and after the gh-1929 step beside
+    // which it sits, before the entry of gh-1958 that names it and the area-note cutover that stays last.
+    await runInvitationReplyHeartbeatCutoverMigration(pool);
     // Issue gh-1958: raises the Semp problems of the failures that exist at deploy, under the keys of the producers
     // (#1911, #1465, #1506, #1945) it reads: mailboxes, guidance drift findings, heartbeats, library automation and
     // transcriptions. It needs no other step's result. None of its declared blockers (#1506, #1945, #1950) has a

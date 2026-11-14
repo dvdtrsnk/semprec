@@ -69,5 +69,6 @@
   "agentTool.mail.thread.get.label": "Read mail thread",
   "agentTool.mail.draft.create.label": "Create mail draft",
   "agentTool.mail.draft.update.label": "Update mail draft",
-  "agentTool.mail.draft.send.label": "Send mail draft"
+  "agentTool.mail.draft.send.label": "Send mail draft",
+  "agentTool.mail.thread.proposeTask.label": "Suggest a task from a mail thread"
 }

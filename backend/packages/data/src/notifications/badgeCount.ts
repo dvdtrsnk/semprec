@@ -1,3 +1,4 @@
+import { countPendingInvitations } from "../calendar/pendingInvitationCount.js";
 import type { Queryable } from "../db/pool.js";
 import { countPendingApprovalRequests } from "../mcp/approvalRequestsStore.js";
 import { getNotificationPreferences } from "./notificationPreferencesStore.js";
@@ -6,7 +7,7 @@ import { getNotificationPreferences } from "./notificationPreferencesStore.js";
 export interface BadgeCounts {
   /** The pending approval requests of the user's runs, of every source: the count `GET /api/approval-requests/count` serves. */
   pendingApprovals: number;
-  /** `0` until the invitation source provides a count and wires it in here. */
+  /** The live invitations of the tenant whose `status` is `pending` (issue gh-1954). */
   pendingInvites: number;
   /** `0` until the Inbox count is wired in here. */
   openInboxItems: number;
@@ -16,11 +17,12 @@ export interface BadgeCounts {
  * The three badge counts of `userId` (issue #1828), read on `client`. `GET /api/badge-counts` answers
  * them and `computeBadgeForUser` sums them, so the preview and the badge on the device are computed from
  * one function. `pendingApprovals` counts every source kind, so it equals the pending count of the approval
- * queue; `pendingInvites` and `openInboxItems` are `0` for now.
+ * queue; `pendingInvites` counts the live pending invitations of the tenant in scope; `openInboxItems` is `0` for now.
  */
 export async function loadBadgeCounts(client: Queryable, userId: string): Promise<BadgeCounts> {
   const pendingApprovals = await countPendingApprovalRequests(client, { ownerUserId: userId, sourceKinds: null });
-  return { pendingApprovals, pendingInvites: 0, openInboxItems: 0 };
+  const pendingInvites = await countPendingInvitations(client);
+  return { pendingApprovals, pendingInvites, openInboxItems: 0 };
 }
 
 /**

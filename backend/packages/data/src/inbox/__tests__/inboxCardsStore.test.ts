@@ -1,6 +1,6 @@
 import "../../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
@@ -27,16 +27,23 @@ import { createTranscriptEventCard, matchTranscriptToEvent } from "../../transcr
 import { createInboxItemWithClient } from "../inboxStore.js";
 import { createInboxTypeWithClient } from "../inboxTypesStore.js";
 import { createSemprecTickAction, type ComputeSemprecProposalFn } from "../inboxTickAction.js";
-import { confirmProposalWithClient, rejectProposalWithClient } from "../proposalActions.js";
+import {
+  confirmProposalWithClient,
+  recomputeProposalWithClient,
+  rejectProposalWithClient,
+} from "../proposalActions.js";
 import { createInboxCardsCountRouteHandler, createInboxCardsRouteHandler } from "../inboxRouteHandlers.js";
 import {
+  COMPUTING_TIMEOUT_MS,
   INBOX_CARDS_LIMIT,
   countOpenInboxCards,
+  isComputingTimedOut,
   listInboxCards,
   type InboxCard,
   type InboxCardList,
 } from "../inboxCardsStore.js";
 import type { ProposalStep } from "../proposalEnvelope.js";
+import type { ItemRow } from "../../types.js";
 
 // Each test seeds the system databases and a handful of cards; the bulk tests create hundreds of rows.
 const BULK_TEST_TIMEOUT_MS = 120_000;
@@ -421,6 +428,144 @@ describe("listInboxCards (issue #1807)", () => {
 
       expect(cardIds(list)).toEqual([computing.cardId]);
       expect(list.total).toBe(0);
+    });
+  });
+
+  describe("a card that stays computing past the timeout (issue gh-2026)", () => {
+    const MINUTE_MS = 60_000;
+
+    /** Moves the clock `ms` ahead of the real one. Only `Date` is faked, so the database and the timers of the pools run as they do. */
+    function clockAfter(ms: number): void {
+      const base = Date.now();
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(base + ms);
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** Asks for a new computation of the card through the production action, which stores `computing` with a new `updatedAt`. */
+    function sendBack(cardId: string): Promise<ItemRow> {
+      return inTenantZero(() =>
+        withTransaction(adminPool, (client) =>
+          recomputeProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId, {}),
+        ),
+      );
+    }
+
+    /** What a card's row holds, as `GET /api/items/:id` would read it. */
+    async function stored(cardId: string): Promise<{ updatedAt: string; properties: Record<string, unknown> }> {
+      const card = await inTenantZero(() =>
+        withTransaction(adminPool, (client) => itemsStore.getItemById(client, proposalsId, cardId)),
+      );
+      if (!card) throw new Error(`card ${cardId} not found`);
+      return { updatedAt: card.updatedAt, properties: card.properties };
+    }
+
+    it("lists a card that has been computing for less than the timeout as computing, without the timeout flag", async () => {
+      const card = await proposedCard("Computing");
+      await sendBack(card.cardId);
+      clockAfter(COMPUTING_TIMEOUT_MS - MINUTE_MS);
+
+      const listed = cardOf(await listCards(adminPool, ownerId), card.cardId);
+
+      expect(listed.status).toBe("computing");
+      expect(listed).not.toHaveProperty("computeTimedOut");
+    });
+
+    it("lists a card that has been computing for longer than the timeout as computeFailed with computeTimedOut, and changes nothing else about it", async () => {
+      const card = await proposedCard("Computing");
+      await sendBack(card.cardId);
+      const before = await stored(card.cardId);
+      const fresh = cardOf(await listCards(adminPool, ownerId), card.cardId);
+      clockAfter(COMPUTING_TIMEOUT_MS + MINUTE_MS);
+
+      const listed = cardOf(await listCards(adminPool, ownerId), card.cardId);
+
+      expect(listed).toEqual({ ...fresh, status: "computeFailed", computeTimedOut: true });
+      expect(listed.version).toBe(before.updatedAt);
+    });
+
+    it("leaves the stored card as it was, uncounted like every computing card", async () => {
+      const proposed = await proposedCard("Proposed");
+      const card = await proposedCard("Computing");
+      await sendBack(card.cardId);
+      const before = await stored(card.cardId);
+      clockAfter(COMPUTING_TIMEOUT_MS + MINUTE_MS);
+
+      const list = await listCards(adminPool, ownerId);
+
+      expect(cardOf(list, card.cardId).status).toBe("computeFailed");
+      expect(await stored(card.cardId)).toEqual(before);
+      expect(before.properties.status).toBe("computing");
+      expect(list.total).toBe(1);
+      expect(await countCards(adminPool, ownerId)).toBe(1);
+      expect(cardIds(list).sort()).toEqual([proposed.cardId, card.cardId].sort());
+    });
+
+    it("answers the card list of the route with the timed-out card as computeFailed, and the count of the route without it", async () => {
+      await proposedCard("Proposed");
+      const card = await proposedCard("Computing");
+      await sendBack(card.cardId);
+      clockAfter(COMPUTING_TIMEOUT_MS + MINUTE_MS);
+
+      const listAnswer = await inTenantZero(() =>
+        createInboxCardsRouteHandler(adminPool)({ identity: { user: { id: ownerId, locale: "en" } } }),
+      );
+      const countAnswer = await inTenantZero(() =>
+        createInboxCardsCountRouteHandler(adminPool)({ identity: { user: { id: ownerId } } }),
+      );
+
+      expect(listAnswer).toMatchObject({
+        status: 200,
+        body: {
+          cards: expect.arrayContaining([
+            expect.objectContaining({ cardId: card.cardId, status: "computeFailed", computeTimedOut: true }),
+          ]),
+          total: 1,
+        },
+      });
+      expect(countAnswer).toEqual({ status: 200, body: { total: 1 } });
+    });
+
+    it("lists the card as proposed once a late tick has stored its result", async () => {
+      const card = await proposedCard("Buy milk");
+      await sendBack(card.cardId);
+      clockAfter(COMPUTING_TIMEOUT_MS + MINUTE_MS);
+      expect(cardOf(await listCards(adminPool, ownerId), card.cardId).status).toBe("computeFailed");
+
+      await inTenantZero(() =>
+        createSemprecTickAction(adminPool, async () => ({ properties: { name: "Buy oat milk" } }))(
+          { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
+          { heartbeatId: "hb", projectItemId: "proj", itemId: card.itemId },
+        ),
+      );
+
+      const listed = cardOf(await listCards(adminPool, ownerId), card.cardId);
+      expect(listed.status).toBe("proposed");
+      expect(listed).not.toHaveProperty("computeTimedOut");
+      expect((await stored(card.cardId)).properties).toMatchObject({
+        status: "proposed",
+        proposal: { properties: { name: "Buy oat milk" } },
+      });
+    });
+
+    it("never times out a card that is not computing, however old it is", async () => {
+      const proposed = await proposedCard("Proposed", { when: { date: "2026-08-28", time: "09:00" } });
+      const failed = await proposedCard("Failed", { when: { date: "2026-08-28", time: "08:00" } });
+      await setCardStatus(failed.cardId, "computeFailed");
+      const clarification = await proposedCard("Unclear capture");
+      await setCardStatus(clarification.cardId, "needsClarification");
+      clockAfter(24 * 60 * MINUTE_MS);
+
+      const list = await listCards(adminPool, ownerId);
+
+      expect(list.cards.map((card) => [card.cardId, card.status, "computeTimedOut" in card])).toEqual([
+        [failed.cardId, "computeFailed", false],
+        [proposed.cardId, "proposed", false],
+        [clarification.cardId, "needsClarification", false],
+      ]);
     });
   });
 
@@ -1473,5 +1618,42 @@ describe("listInboxCards (issue #1807)", () => {
       },
       BULK_TEST_TIMEOUT_MS,
     );
+  });
+});
+
+describe("isComputingTimedOut (issue gh-2026)", () => {
+  const NOW = new Date("2026-11-14T12:00:00.000Z");
+  const card = (status: unknown, updatedAt: string) => ({ properties: { status }, updatedAt });
+  const ago = (ms: number) => new Date(NOW.getTime() - ms).toISOString();
+
+  it("is 10 minutes, a constant", () => {
+    expect(COMPUTING_TIMEOUT_MS).toBe(10 * 60 * 1000);
+  });
+
+  it("is false for a computing card that was updated less than the timeout ago", () => {
+    expect(isComputingTimedOut(card("computing", ago(COMPUTING_TIMEOUT_MS - 1)), NOW)).toBe(false);
+  });
+
+  it("is false for a computing card that was updated exactly the timeout ago", () => {
+    expect(isComputingTimedOut(card("computing", ago(COMPUTING_TIMEOUT_MS)), NOW)).toBe(false);
+  });
+
+  it("is true for a computing card that was updated more than the timeout ago", () => {
+    expect(isComputingTimedOut(card("computing", ago(COMPUTING_TIMEOUT_MS + 1)), NOW)).toBe(true);
+  });
+
+  it.each(["proposed", "computeFailed", "needsClarification", "invalid", "confirmed", "rejected", undefined])(
+    "is false for a card with the status %s, however old",
+    (status) => {
+      expect(isComputingTimedOut(card(status, ago(24 * 60 * 60 * 1000)), NOW)).toBe(false);
+    },
+  );
+
+  it("is false for a computing card whose updatedAt is no timestamp", () => {
+    expect(isComputingTimedOut(card("computing", "not a timestamp"), NOW)).toBe(false);
+  });
+
+  it("is false for a computing card updated after now", () => {
+    expect(isComputingTimedOut(card("computing", new Date(NOW.getTime() + 1000).toISOString()), NOW)).toBe(false);
   });
 });

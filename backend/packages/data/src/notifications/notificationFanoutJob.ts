@@ -169,15 +169,25 @@ function policyForNotification(notification: NotificationRow): NotificationKindP
 /** The APNs category the app registers the Approve, Reject and Open actions of an approval push against. */
 const APPROVAL_PUSH_CATEGORY = "APPROVAL_REQUEST";
 
+/** The APNs category the app registers the Accept, Maybe and Decline actions of a calendar invitation push against. */
+const CALENDAR_INVITATION_PUSH_CATEGORY = "CALENDAR_INVITATION";
+
 /**
- * The APNs-only fields of this notification's push (issue #1831): for an approval notification the action
- * category and the id of the request, which is the notification's `source_id`. Any other notification, and an
- * `approval_pending` one whose source is not an approval request, gets none. Only ids go on the wire: the body
- * of the push is the one rendered at write time (issue #1773).
+ * The APNs-only fields of this notification's push: for an approval notification the action category and the id
+ * of the request, which is the notification's `source_id` (issue #1831); for a calendar invitation notification
+ * the action category and the id of the invitation item, also its `source_id`, as `invitation_id` (issue
+ * gh-1954). Any other notification, an `approval_pending` one whose source is not an approval request and a
+ * `calendar_invitation` one whose source is not an item, gets none. Only ids go on the wire: the body of the push
+ * is the one rendered at write time (issue #1773).
  */
 function apnsFieldsFor(notification: NotificationRow): NotificationApnsFields | undefined {
-  if (notification.kind !== "approval_pending" || notification.sourceTable !== "approval_requests") return undefined;
-  return { category: APPROVAL_PUSH_CATEGORY, approvalRequestId: notification.sourceId };
+  if (notification.kind === "approval_pending" && notification.sourceTable === "approval_requests") {
+    return { category: APPROVAL_PUSH_CATEGORY, approvalRequestId: notification.sourceId };
+  }
+  if (notification.kind === "calendar_invitation" && notification.sourceTable === "items") {
+    return { category: CALENDAR_INVITATION_PUSH_CATEGORY, data: { invitation_id: notification.sourceId } };
+  }
+  return undefined;
 }
 
 export interface HandleNotificationFanoutInput {
