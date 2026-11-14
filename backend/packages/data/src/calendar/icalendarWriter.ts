@@ -1,6 +1,7 @@
-// Serializes the iTIP messages the calendar sends about an Event (issue #1774): a `REQUEST` that invites one
-// person or updates an invitation, and the `CANCEL` that withdraws it. The output is one iCalendar object
-// (RFC 5545) with the iTIP method of RFC 5546, lines ended by CRLF and folded at 75 octets.
+// Serializes the iTIP messages the calendar sends about an Event: a `REQUEST` that invites one person or updates an
+// invitation and the `CANCEL` that withdraws it (issue #1774), and the `REPLY` with which an invited person answers
+// an organizer's invitation (issue gh-1953). The output is one iCalendar object (RFC 5545) with the iTIP method of
+// RFC 5546, lines ended by CRLF and folded at 75 octets.
 import { DateTime } from "luxon";
 import { ValidationError } from "../errors.js";
 
@@ -79,12 +80,16 @@ function formatDate(date: string, field: string): string {
   return parsed.toFormat("yyyyMMdd");
 }
 
-function formatInstant(value: string, field: string): string {
+function instantOf(value: string, field: string): DateTime {
   const parsed = INSTANT_PATTERN.test(value)
     ? DateTime.fromISO(value, { zone: "utc" })
     : DateTime.invalid("bad instant");
   if (!parsed.isValid) throw invalid(field, `'${field}' must be a UTC instant`);
-  return formatUtc(parsed);
+  return parsed;
+}
+
+function formatInstant(value: string, field: string): string {
+  return formatUtc(instantOf(value, field));
 }
 
 function mailto(address: string, field: string): string {
@@ -92,11 +97,20 @@ function mailto(address: string, field: string): string {
   return `mailto:${address}`;
 }
 
-function buildItipMessage(method: "REQUEST" | "CANCEL", input: ItipEventInput): string {
+function checkIdentity(input: { uid: string; sequence: number }): void {
   if (!Number.isSafeInteger(input.sequence) || input.sequence < 0) {
     throw invalid("sequence", "'sequence' must be a non-negative integer");
   }
   if (input.uid.length === 0) throw invalid("uid", "'uid' must not be empty");
+}
+
+/** The lines of one iCalendar object, folded and ended by CRLF. */
+function toCalendarText(lines: string[]): string {
+  return lines.map(fold).join("\r\n") + "\r\n";
+}
+
+function buildItipMessage(method: "REQUEST" | "CANCEL", input: ItipEventInput): string {
+  checkIdentity(input);
   if (!Number.isFinite(input.stamp.getTime())) throw invalid("stamp", "'stamp' must be a valid instant");
   const organizer = mailto(input.organizerEmail, "organizerEmail");
   const attendee = mailto(input.attendeeEmail, "attendeeEmail");
@@ -121,7 +135,7 @@ function buildItipMessage(method: "REQUEST" | "CANCEL", input: ItipEventInput): 
     "END:VEVENT",
     "END:VCALENDAR",
   ];
-  return lines.map(fold).join("\r\n") + "\r\n";
+  return toCalendarText(lines);
 }
 
 /**
@@ -139,4 +153,73 @@ export function buildItipRequest(input: ItipEventInput): string {
  */
 export function buildItipCancel(input: ItipEventInput): string {
   return buildItipMessage("CANCEL", input);
+}
+
+/** The `PARTSTAT` values a `REPLY` carries; an invitation that is only noted (`acknowledged`) is not replied to. */
+export type ItipReplyPartstat = "ACCEPTED" | "TENTATIVE" | "DECLINED";
+
+/**
+ * What an invited person's answer says about the invitation. `startsAt` and `endsAt` are UTC instants
+ * (`2026-10-22T11:00:00.000Z`) as an invitation stores them: for an all-day invitation `startsAt` is midnight of the
+ * first day and `endsAt` midnight of the last day, `null` for a single day; for a timed one `endsAt` is `null` when the
+ * invitation had no end. `sequence` is the revision of the invitation that is answered.
+ */
+export interface ItipReplyInput {
+  uid: string;
+  sequence: number;
+  /** The address the reply is sent to. */
+  organizerEmail: string;
+  /** The address of the person who answers. */
+  attendeeEmail: string;
+  /** The `CN` of the attendee; left out when absent or blank. */
+  attendeeName?: string;
+  partstat: ItipReplyPartstat;
+  summary: string;
+  startsAt: string;
+  endsAt: string | null;
+  allDay: boolean;
+}
+
+/** A parameter value in double quotes (RFC 5545 section 3.2); a quote becomes an apostrophe, control characters go. */
+function quotedParameter(value: string): string {
+  return `"${value.replace(/\p{Cc}/gu, "").replace(/"/g, "'")}"`;
+}
+
+/**
+ * The `METHOD:REPLY` message of the invited person `attendeeEmail`: the invitation's `UID` and `SEQUENCE`, a
+ * `DTSTAMP` of the moment it is made, the original `DTSTART` and `DTEND` (an all-day invitation as `DATE` values with
+ * the day after its last day as the exclusive end; no `DTEND` for a timed invitation that had none), and one
+ * `ATTENDEE` carrying the `PARTSTAT`. Refuses with `validation_failed` an input whose sequence, UID, times or
+ * addresses cannot be written.
+ */
+export function buildItipReply(input: ItipReplyInput): string {
+  checkIdentity(input);
+  const organizer = mailto(input.organizerEmail, "organizerEmail");
+  const attendee = mailto(input.attendeeEmail, "attendeeEmail");
+  const start = instantOf(input.startsAt, "startsAt");
+  const end = input.endsAt === null ? null : instantOf(input.endsAt, "endsAt");
+  const times = input.allDay
+    ? [
+        `DTSTART;VALUE=DATE:${start.toFormat("yyyyMMdd")}`,
+        `DTEND;VALUE=DATE:${(end ?? start).plus({ days: 1 }).toFormat("yyyyMMdd")}`,
+      ]
+    : [`DTSTART:${formatUtc(start)}`, ...(end === null ? [] : [`DTEND:${formatUtc(end)}`])];
+  const name = input.attendeeName?.trim() ?? "";
+  const lines = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//Semprec//Calendar//EN",
+    "METHOD:REPLY",
+    "BEGIN:VEVENT",
+    `UID:${escapeText(input.uid)}`,
+    `SEQUENCE:${input.sequence}`,
+    `DTSTAMP:${formatUtc(DateTime.now())}`,
+    ...times,
+    `SUMMARY:${escapeText(input.summary)}`,
+    `ORGANIZER:${organizer}`,
+    `ATTENDEE${name === "" ? "" : `;CN=${quotedParameter(name)}`};PARTSTAT=${input.partstat}:${attendee}`,
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ];
+  return toCalendarText(lines);
 }

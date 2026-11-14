@@ -529,6 +529,7 @@ describe("calendar timeline source of subscribed events (issue gh-2005)", () => 
       today: "2026-10-20",
       now: { date: "2026-10-20", time: "12:00" },
       at: new Date("2026-10-20T10:00:00Z"),
+      includeSleep: true,
     };
     const items = await runInTenant(tenantId, () =>
       withTransaction(dataPool, (client) => readSubscribedEventTimelineItems(client, context)),

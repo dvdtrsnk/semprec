@@ -144,10 +144,15 @@ function ageBlob(blobId: string, hours: number): Promise<unknown> {
   ]);
 }
 
+/** The bytes of a PDF that carries `text`: `POST /api/blobs` stores only bytes whose type it recognises (issue gh-1963). */
+function pdfBytes(text: string): Buffer {
+  return Buffer.from(`%PDF-1.7 ${text}`);
+}
+
 function upload(storage: FakeStorage, bytes: string, maxBytes = 1024) {
   return ingestUploadedBlob(pool, {
     mimeType: "image/png",
-    source: Readable.from([Buffer.from(bytes)]),
+    source: Readable.from([pdfBytes(bytes)]),
     maxBytes,
     storage,
   });
@@ -177,10 +182,10 @@ describe("standalone blobs (issue #1401)", () => {
       const { blob, created } = await upload(storage, "png bytes");
 
       expect(created).toBe(true);
-      expect(blob.mimeType).toBe("application/octet-stream");
-      expect(blob.byteSize).toBe(String("png bytes".length));
+      expect(blob.mimeType).toBe("application/pdf");
+      expect(blob.byteSize).toBe(String(pdfBytes("png bytes").length));
       expect(blob.storageKey.split("/")[1]).toBe("blobs");
-      expect(storage.bytesByKey.get(blob.storageKey)).toEqual(Buffer.from("png bytes"));
+      expect(storage.bytesByKey.get(blob.storageKey)).toEqual(pdfBytes("png bytes"));
       expect(await countFilesItems()).toBe(0);
     });
 
@@ -193,6 +198,65 @@ describe("standalone blobs (issue #1401)", () => {
       expect(second.blob.id).toBe(first.blob.id);
       expect(storage.bytesByKey.size).toBe(1);
       expect(storage.bytesByKey.has(first.blob.storageKey)).toBe(true);
+    });
+
+    function ingest(storage: FakeStorage, bytes: Buffer, mimeType = "image/jpeg") {
+      return ingestUploadedBlob(pool, { mimeType, source: Readable.from([bytes]), maxBytes: 1024, storage });
+    }
+
+    function isoBmffHead(majorBrand: string): Buffer {
+      const box = Buffer.alloc(24);
+      box.writeUInt32BE(24, 0);
+      box.write("ftyp", 4, "latin1");
+      box.write(majorBrand, 8, "latin1");
+      return box;
+    }
+
+    it.each([
+      ["an MP3 with an ID3 tag", Buffer.from("ID3\x04\x00 audio"), "audio/mpeg"],
+      ["an MP3 that starts with a frame header", Buffer.from([0xff, 0xfb, 0x90, 0x00, 1, 2]), "audio/mpeg"],
+      ["an M4A file", isoBmffHead("M4A "), "audio/mp4"],
+      ["an MP4 audio file with the mp42 brand", isoBmffHead("mp42"), "audio/mp4"],
+      ["an MP4 audio file with the isom brand", isoBmffHead("isom"), "audio/mp4"],
+      ["a PDF", Buffer.from("%PDF-1.7 body"), "application/pdf"],
+      ["a JPEG", Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0]), "image/jpeg"],
+      ["a PNG", Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0]), "image/png"],
+      ["a HEIC image, which a blob may still be", isoBmffHead("heic"), "image/heic"],
+    ])("stores %s under the type its bytes show, whatever the declared content type", async (_label, bytes, mime) => {
+      const storage = new FakeStorage();
+      const { blob, created } = await ingest(storage, bytes, "image/jpeg");
+
+      expect(created).toBe(true);
+      expect(blob.mimeType).toBe(mime);
+      expect(storage.bytesByKey.get(blob.storageKey)).toEqual(bytes);
+    });
+
+    it.each([
+      ["a Windows executable", Buffer.from("MZ\x90\x00\x03\x00\x00\x00 executable")],
+      ["an ELF executable", Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0])],
+      ["plain text", Buffer.from("just some text")],
+      ["a plain ZIP archive", Buffer.from("PK\x03\x04\x14\x00\x00\x00\x00\x00 archive")],
+      ["an MP4 file of another brand", isoBmffHead("qt  ")],
+      ["an empty body", Buffer.alloc(0)],
+    ])("refuses %s and leaves no blob row and no bytes", async (_label, bytes) => {
+      const storage = new FakeStorage();
+
+      await expect(ingest(storage, bytes, "image/png")).rejects.toMatchObject({
+        status: 415,
+        code: "unsupported_media_type",
+      });
+
+      expect(storage.bytesByKey.size).toBe(0);
+      expect((await pool.query("SELECT id FROM blobs")).rows).toHaveLength(0);
+    });
+
+    it("leaves an earlier blob and its bytes untouched when a later upload is refused", async () => {
+      const storage = new FakeStorage();
+      const kept = await ingest(storage, Buffer.from("%PDF-1.7 kept"));
+      await expect(ingest(storage, Buffer.from("not a type a blob may have"))).rejects.toMatchObject({ status: 415 });
+
+      expect([...storage.bytesByKey.keys()]).toEqual([kept.blob.storageKey]);
+      expect((await pool.query("SELECT id FROM blobs")).rows).toEqual([{ id: kept.blob.id }]);
     });
 
     it("rejects a body over the cap and leaves no blob row", async () => {
@@ -654,7 +718,7 @@ describe("standalone blobs (issue #1401)", () => {
       expect(rows.rows[0]?.n).toBe(1);
       const persisted = await chokePoint.getItem(database.id, item.id);
       expect(persisted?.properties.photo).toEqual({ blobId: prior.id });
-      expect(storage.bytesByKey.get(prior.storageKey)).toEqual(Buffer.from("prior image bytes"));
+      expect(storage.bytesByKey.get(prior.storageKey)).toEqual(pdfBytes("prior image bytes"));
       expect(await countBlobs(blob.id)).toBe(0);
       expect(storage.deleteCalls).toEqual([]);
     });

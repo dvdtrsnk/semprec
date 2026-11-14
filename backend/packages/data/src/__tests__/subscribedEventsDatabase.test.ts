@@ -6,6 +6,7 @@ import { loadModuleCatalogs } from "@semprec/module-registry";
 import { runInTenant } from "@semprec/shared";
 import { CALENDAR_MODULE_ID } from "../calendar/calendarModuleId.js";
 import { runSubscribedEventsCutoverMigration } from "../calendar/subscribedEventsCutoverMigration.js";
+import { runSubscribedEventsRecurrenceCutoverMigration } from "../calendar/subscribedEventsRecurrenceCutoverMigration.js";
 import { createUser } from "../auth/usersStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
@@ -36,7 +37,10 @@ const EXPECTED_PROPERTIES = [
   ["allDay", "checkbox", {}],
   ["calendar", "relation", null],
   ["endsAt", "date", { includeTime: true }],
+  ["exceptionDates", "text", {}],
   ["place", "text", {}],
+  ["recurrenceId", "text", {}],
+  ["recurrenceRule", "text", {}],
   ["startsAt", "date", { includeTime: true }],
   ["timeZone", "text", {}],
   ["title", "title", {}],
@@ -337,6 +341,86 @@ describe("subscribedEvents system database (issue gh-1962)", () => {
 
       await runTenantCutoverMigrations(dataPool);
       expect((await structure(tenantId)).databases).toHaveLength(1);
+    });
+  });
+
+  describe("recurrence properties cutover for an existing tenant (issue gh-1966)", () => {
+    const RECURRENCE_KEYS = ["exceptionDates", "recurrenceId", "recurrenceRule"];
+
+    /**
+     * Turns a seeded tenant into one whose subscribed events database was created before issue gh-1966: the named
+     * recurrence properties are removed with SQL, which no write path does to a locked schema.
+     */
+    async function removeRecurrenceProperties(tenantId: string, keys: string[]): Promise<void> {
+      const subscribedEventsId = await requireDatabaseId(tenantId, SUBSCRIBED_EVENTS_MODULE_ID);
+      await withTenantTransaction(adminPool, tenantId, async (client) => {
+        await client.query("DELETE FROM properties WHERE database_id = $1 AND key = ANY($2::text[])", [
+          subscribedEventsId,
+          keys,
+        ]);
+      });
+    }
+
+    async function keysOf(tenantId: string): Promise<string[]> {
+      const rows = await propertiesOf(await requireDatabaseId(tenantId, SUBSCRIBED_EVENTS_MODULE_ID));
+      return rows.map((row) => row.key).filter((key) => RECURRENCE_KEYS.includes(key));
+    }
+
+    it("adds the three properties as the fresh seed declares them, and a second run changes nothing", async () => {
+      const seeded = await tenantWithUser("cs");
+      const upgraded = await tenantWithUser("cs");
+      await removeRecurrenceProperties(upgraded, RECURRENCE_KEYS);
+      expect(await keysOf(upgraded)).toEqual([]);
+
+      await runInTenant(upgraded, () => runSubscribedEventsRecurrenceCutoverMigration(dataPool));
+      const properties = async (tenantId: string) =>
+        propertiesOf(await requireDatabaseId(tenantId, SUBSCRIBED_EVENTS_MODULE_ID));
+      expect(await properties(upgraded)).toEqual(await properties(seeded));
+      expect(await keysOf(upgraded)).toEqual(RECURRENCE_KEYS);
+      const before = await structure(upgraded);
+
+      await runInTenant(upgraded, () => runSubscribedEventsRecurrenceCutoverMigration(dataPool));
+      expect(await structure(upgraded)).toEqual(before);
+    });
+
+    it("adds only the property that is missing and leaves the others as they are", async () => {
+      const tenantId = await tenantWithUser("cs");
+      const before = await structure(tenantId);
+      await removeRecurrenceProperties(tenantId, ["recurrenceId"]);
+
+      await runInTenant(tenantId, () => runSubscribedEventsRecurrenceCutoverMigration(dataPool));
+      const after = await structure(tenantId);
+      expect(await keysOf(tenantId)).toEqual(RECURRENCE_KEYS);
+      expect(after.properties).toHaveLength(before.properties.length);
+      expect(before.properties.filter((id) => !after.properties.includes(id))).toHaveLength(1);
+    });
+
+    it("skips a tenant without a subscribed events database", async () => {
+      const tenantId = await tenantWithUser("cs");
+      await removeSubscribedEventsDatabase(tenantId);
+      const removed = await structure(tenantId);
+      await runInTenant(tenantId, () => runSubscribedEventsRecurrenceCutoverMigration(dataPool));
+      expect(await structure(tenantId)).toEqual(removed);
+    });
+
+    it("changes only the tenant it runs in", async () => {
+      const first = await tenantWithUser("cs");
+      const second = await tenantWithUser("cs");
+      await removeRecurrenceProperties(first, RECURRENCE_KEYS);
+      await removeRecurrenceProperties(second, RECURRENCE_KEYS);
+
+      await runInTenant(first, () => runSubscribedEventsRecurrenceCutoverMigration(dataPool));
+      expect(await keysOf(first)).toEqual(RECURRENCE_KEYS);
+      expect(await keysOf(second)).toEqual([]);
+    });
+
+    it("runs through runTenantCutoverMigrations for a suspended tenant", async () => {
+      const tenantId = await tenantWithUser("cs");
+      await removeRecurrenceProperties(tenantId, RECURRENCE_KEYS);
+      await adminPool.query("UPDATE tenants SET status = 'suspended' WHERE id = $1", [tenantId]);
+
+      await runTenantCutoverMigrations(dataPool);
+      expect(await keysOf(tenantId)).toEqual(RECURRENCE_KEYS);
     });
   });
 

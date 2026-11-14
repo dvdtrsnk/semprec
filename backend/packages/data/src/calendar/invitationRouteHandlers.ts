@@ -26,6 +26,7 @@ import type { ItemRow } from "../types.js";
 import { CALENDAR_MODULE_ID } from "./calendarModuleId.js";
 import { createEventInCalendar } from "./defaultCalendarCreateHook.js";
 import { invitationEventFields } from "./invitationEventFields.js";
+import { enqueueInvitationReply } from "./invitationReplyJob.js";
 
 /**
  * Duck-typed the same way `duplicateCalendarItemRouteHandler.ts` is: matches `semprec-api`'s `AdapterRequestContext`
@@ -39,10 +40,11 @@ interface RespondToInvitationRequestContext {
 
 const invitationIdSchema = z.uuid();
 
-const RESPONSES = ["accepted", "tentative", "declined", "acknowledged"] as const;
-type InvitationResponse = (typeof RESPONSES)[number];
+/** The answers the respond route accepts; the calendar agent tool takes the same ones (`calendarAgentTools.ts`). */
+export const INVITATION_RESPONSES = ["accepted", "tentative", "declined", "acknowledged"] as const;
+type InvitationResponse = (typeof INVITATION_RESPONSES)[number];
 
-const bodySchema = z.object({ response: z.enum(RESPONSES), calendarId: z.uuid().optional() }).strict();
+const bodySchema = z.object({ response: z.enum(INVITATION_RESPONSES), calendarId: z.uuid().optional() }).strict();
 
 /** The stored fields that decide whether and how an answer applies. */
 const stateSchema = z.object({
@@ -70,6 +72,8 @@ interface RespondInput {
   response: InvitationResponse;
   calendarId: string | undefined;
   userId: string;
+  /** Who writes the Event: the user for the route, the agent of a run for the calendar tool (`calendarAgentTools.ts`). */
+  writer: WriterIdentity;
 }
 
 /**
@@ -80,14 +84,15 @@ interface RespondInput {
  * answers only an `invite` (`validation_failed` on `response`); a `cancelled` invitation is 409 `conflict`; an answer
  * equal to the stored status writes nothing.
  *
- * `accepted` and `tentative` give the invitation one Event, `meeting`, written as the user: a new one in the calendar
+ * `accepted` and `tentative` give the invitation one Event, `meeting`, written as `input.writer` (the user for the route): a new one in the calendar
  * `calendarId` or else the invitation's `suggestedCalendar` (the default calendar when it has none), linked through the
  * invitation's `event` relation; a live linked Event stays as it is and `calendarId` is not read; a trashed one is
  * restored. `declined` trashes the linked Event, if any. A failure of the Event write or its validation propagates and
  * rolls the whole transaction back, so the invitation keeps its status.
  *
- * `status` and `respondedAt` are written last, as the calendar module's owner process, and the invitation's
- * notification is then resolved (read, and a silent dismiss push follows after commit) in the same transaction. An
+ * `status` and `respondedAt` are written last, as the calendar module's owner process; the reply to the organizer is
+ * then queued (`enqueueInvitationReply`, issue gh-1953) for `accepted`, `tentative` and `declined`, and the invitation's
+ * notification is resolved (read, and a silent dismiss push follows after commit), in the same transaction. An
  * answer equal to the stored status returns before any of that.
  */
 async function respondToInvitation(client: PoolClient, input: RespondInput, now: Date): Promise<ItemRow> {
@@ -112,13 +117,19 @@ async function respondToInvitation(client: PoolClient, input: RespondInput, now:
     if (!events) throw new Error("The tenant has no Events database");
     const [linkedId] = await relatedIds(client, invitations.id, invitation.id, "event");
     const linked = linkedId === undefined ? null : await itemsStore.lockItemById(client, events.id, linkedId);
-    const options = { writer: USER_WRITER, actingUserId: input.userId, humanWriterUserId: input.userId };
+    const { writer } = input;
+    // Only a human writer is a `humanWriterUserId`: it is absent for every agent (`chokePoint/hooks.ts`).
+    const options = {
+      writer,
+      actingUserId: input.userId,
+      ...(writer.writerKind === "user" ? { humanWriterUserId: input.userId } : {}),
+    };
     if (input.response === "declined") {
       if (linked !== null && linked.deletedAt === null) {
         await itemDeleteWithClient(client, events.id, linked.id, {
           queueAffinity: createActionQueueAffinity(),
           actingUserId: input.userId,
-          writer: USER_WRITER,
+          writer,
         });
       }
     } else if (linked !== null) {
@@ -129,7 +140,7 @@ async function respondToInvitation(client: PoolClient, input: RespondInput, now:
           linked.id,
           createActionQueueAffinity(),
           input.userId,
-          USER_WRITER,
+          writer,
         );
         if (restored === null) throw new Error(`Event ${linked.id} disappeared during its restore`);
       }
@@ -153,15 +164,21 @@ async function respondToInvitation(client: PoolClient, input: RespondInput, now:
     }
   }
 
+  const respondedAt = now.toISOString();
   await updateItemWithClient(
     client,
     {
       databaseId: invitations.id,
       itemId: invitation.id,
-      propertiesPatch: { status: input.response, respondedAt: now.toISOString() },
+      propertiesPatch: { status: input.response, respondedAt },
     },
     { allowedSystemKeys: ANSWER_KEYS, systemOwnerProcess: CALENDAR_MODULE_ID, actingUserId: input.userId },
   );
+  // Every answer but `acknowledged` belongs to an invitation of kind `invite` (checked above) and is told to the
+  // organizer; the job exists only when this transaction commits.
+  if (input.response !== "acknowledged") {
+    await enqueueInvitationReply(client, { invitationId: invitation.id, response: input.response, respondedAt });
+  }
   await resolveNotificationsBySource(client, { sourceTable: "items", sourceId: invitation.id });
   const stored = await itemsStore.getItemById(client, invitations.id, invitation.id);
   if (!stored) throw new Error(`Invitation ${invitation.id} disappeared during its answer`);
@@ -174,10 +191,14 @@ async function respondToInvitation(client: PoolClient, input: RespondInput, now:
  * refused. The answer is 200 with the invitation item. `respondToInvitation` describes what an answer does and which
  * answers are refused; an `id` or `calendarId` that is not a UUID and a body of another shape are `400
  * validation_failed` on the field before the transaction starts, and so are a `calendarId` that is not one of the
- * tenant's own live calendars and an Event whose dates or times the Events rules refuse.
+ * tenant's own live calendars and an Event whose dates or times the Events rules refuse. The Event is written as
+ * `writer`, the user by default; the calendar agent tool passes the agent of the run and so records no human writer.
  */
 export function createRespondToInvitationRouteHandler(pool: Pool) {
-  return async (ctx: RespondToInvitationRequestContext): Promise<{ status: number; item: ItemRow }> => {
+  return async (
+    ctx: RespondToInvitationRequestContext,
+    writer: WriterIdentity = USER_WRITER,
+  ): Promise<{ status: number; item: ItemRow }> => {
     const id = invitationIdSchema.safeParse(ctx.params.id);
     if (!id.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
     const body = bodySchema.safeParse(ctx.body);
@@ -196,6 +217,7 @@ export function createRespondToInvitationRouteHandler(pool: Pool) {
           response: body.data.response,
           calendarId: body.data.calendarId,
           userId: ctx.identity.user.id,
+          writer,
         },
         new Date(),
       ),

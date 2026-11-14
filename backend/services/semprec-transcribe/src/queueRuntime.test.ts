@@ -217,7 +217,7 @@ describe("createTranscribeQueueRuntime", () => {
     );
   });
 
-  it("starts three runners of one slot, each with the task list of its own kind", async () => {
+  it("starts four runners of one slot, each with the task list of its own kind", async () => {
     const registry = new ModuleRegistry(() => new Set());
     const started: Array<{ tasks: string[]; concurrency: number | undefined }> = [];
 
@@ -232,6 +232,7 @@ describe("createTranscribeQueueRuntime", () => {
       { tasks: ["transcriptionJob"], concurrency: 1 },
       { tasks: ["transcriptionCreate"], concurrency: 1 },
       { tasks: ["transcriptCardRecompute", "transcriptSpeakerSuggestion"], concurrency: 1 },
+      { tasks: ["inboxAttachmentMetadata"], concurrency: 1 },
     ]);
   });
 
@@ -240,6 +241,8 @@ describe("createTranscribeQueueRuntime", () => {
     { failingStart: 2, cleanupFails: true },
     { failingStart: 3, cleanupFails: false },
     { failingStart: 3, cleanupFails: true },
+    { failingStart: 4, cleanupFails: false },
+    { failingStart: 4, cleanupFails: true },
   ])(
     "preserves a start failure and stops the started runners: $failingStart, cleanup fails: $cleanupFails",
     async ({ failingStart, cleanupFails }) => {
@@ -284,10 +287,17 @@ describe("createTranscribeQueueRuntime", () => {
     { failedStops: [1] },
     { failedStops: [2] },
     { failedStops: [0, 1] },
+    { failedStops: [3] },
     { failedStops: [0, 1, 2] },
-  ])("stops all three worker handles once and preserves failures: $failedStops", async ({ failedStops }) => {
+    { failedStops: [0, 1, 2, 3] },
+  ])("stops all four worker handles once and preserves failures: $failedStops", async ({ failedStops }) => {
     const registry = new ModuleRegistry(() => new Set());
-    const errors = [new Error("pipeline stop failed"), new Error("create stop failed"), new Error("model stop failed")];
+    const errors = [
+      new Error("pipeline stop failed"),
+      new Error("create stop failed"),
+      new Error("model stop failed"),
+      new Error("attachment metadata stop failed"),
+    ];
     const calls: number[] = [];
     let starts = 0;
     const result = await createTranscribeQueueRuntime(pool, registry, undefined, {
@@ -320,7 +330,7 @@ describe("createTranscribeQueueRuntime", () => {
       expect(thrown.errors).toEqual(failedStops.map((index) => errors[index]));
       expect(thrown.cause).toBe(errors[failedStops[0]!]);
     }
-    expect(starts).toBe(3);
-    expect(calls).toEqual([0, 1, 2]);
+    expect(starts).toBe(4);
+    expect(calls).toEqual([0, 1, 2, 3]);
   });
 });

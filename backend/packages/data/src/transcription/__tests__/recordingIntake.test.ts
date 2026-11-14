@@ -142,12 +142,14 @@ describe("recording intake", () => {
         );
       const first = await upload(event.id, "2026-01-01T10:00:00Z");
       expect(first.result.created).toBe(true);
-      expect(first.value).toMatchObject({ eventId: event.id, transcriptId: null });
+      expect(first.value).toMatchObject({ eventId: event.id, transcriptId: null, enqueued: true });
       const job = await withTransaction(runtime, (client) => findTranscriptionJobId(client, first.result.item.id));
       expect(job).not.toBeNull();
       const repeat = await upload(event.id, "2027-01-01T10:00:00Z");
       expect(repeat.result.created).toBe(false);
       expect(repeat.result.item.id).toBe(first.result.item.id);
+      // The jobs are found under their keys, not added a second time.
+      expect(repeat.value).toMatchObject({ transcriptId: null, enqueued: false });
       expect(await withTransaction(runtime, (client) => readRecordingRequest(client, first.result.item.id))).toEqual({
         eventId: event.id,
         recordedAt: "2026-01-01T10:00:00.000000Z",

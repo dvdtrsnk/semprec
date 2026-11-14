@@ -73,9 +73,32 @@ async function reserve<T>(client: PoolClient, operation: () => Promise<T>): Prom
   }
 }
 
+/**
+ * The parameters of a recording that the upload endpoint does not carry (issue gh-1978): the transcript's name, the
+ * language, one of the two speaker counts and the project the user chose for it. Each is `null` when not set, which is
+ * what every upload through the endpoint stores.
+ */
+export interface RecordingRequestParameters {
+  name: string | null;
+  language: string | null;
+  numSpeakersExact: number | null;
+  numSpeakersMin: number | null;
+  projectId: string | null;
+}
+
+/**
+ * Records the recording request of a Files item and queues its transcription. The result's `enqueued` is true when this
+ * call added a `transcriptionCreate` or a `transcriptionJob` of its own; a job that was already queued under its key
+ * (an upload or an earlier intake queued it) is found, not added, and a Files item that has its transcript gets none.
+ */
 export async function recordRecordingIntake(
   client: PoolClient,
-  input: { fileItemId: string; eventId: string | null; recordedAt: string | null },
+  input: {
+    fileItemId: string;
+    eventId: string | null;
+    recordedAt: string | null;
+    parameters?: RecordingRequestParameters;
+  },
 ) {
   requireManagedTransaction(client);
   try {
@@ -124,9 +147,20 @@ export async function recordRecordingIntake(
         eventId: existingEventId ?? oldRequest?.eventId ?? null,
       });
     }
+    const parameters = input.parameters;
     await client.query(
-      `INSERT INTO recording_requests (file_item_id, event_item_id, recorded_at) VALUES ($1, $2, $3::timestamptz) ON CONFLICT (tenant_id, file_item_id) DO NOTHING`,
-      [file.id, requested, input.recordedAt],
+      `INSERT INTO recording_requests (file_item_id, event_item_id, recorded_at, name, language, num_speakers_exact, num_speakers_min, project_item_id)
+       VALUES ($1, $2, $3::timestamptz, $4, $5, $6, $7, $8) ON CONFLICT (tenant_id, file_item_id) DO NOTHING`,
+      [
+        file.id,
+        requested,
+        input.recordedAt,
+        parameters?.name ?? null,
+        parameters?.language ?? null,
+        parameters?.numSpeakersExact ?? null,
+        parameters?.numSpeakersMin ?? null,
+        parameters?.projectId ?? null,
+      ],
     );
     const request = await readRecordingRequest(client, file.id);
     if (!request) throw new Error("Recording request disappeared");
@@ -145,15 +179,21 @@ export async function recordRecordingIntake(
         { ownerProcess: TRANSCRIPTION_OWNER_PROCESS },
       );
     }
+    let enqueued = false;
     if (!transcriptId) {
-      if (!(await findTranscriptionCreateJobId(client, file.id)))
+      if (!(await findTranscriptionCreateJobId(client, file.id))) {
         await enqueueTranscriptionCreate(client, { fileItemId: file.id });
-      if (!(await findTranscriptionJobId(client, file.id)))
+        enqueued = true;
+      }
+      if (!(await findTranscriptionJobId(client, file.id))) {
         await enqueueTranscriptionJob(client, { fileItemId: file.id });
+        enqueued = true;
+      }
     }
     const association = existingEventId ?? request.eventId ?? requested;
     return {
       transcriptId,
+      enqueued,
       eventId: association && !eventRows.get(association)?.deletedAt && eventRows.get(association) ? association : null,
     };
   } catch (error) {

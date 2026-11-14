@@ -90,7 +90,7 @@ describe("Inbox proposal tool owner", () => {
       if (attach) {
         const storage = new LocalFsBlobStorageWriter(root);
         const blobs: Array<{ blobId: string; source: "files" }> = [];
-        for (const bytes of ["first attachment", "second attachment"]) {
+        for (const bytes of ["%PDF-1.7 first attachment", "%PDF-1.7 second attachment"]) {
           const uploaded = await ingestUploadedBlob(runtime, {
             mimeType: "application/octet-stream",
             source: Readable.from([bytes]),

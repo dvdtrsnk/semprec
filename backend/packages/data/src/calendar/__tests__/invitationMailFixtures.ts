@@ -92,13 +92,26 @@ export interface InvitationMail {
   tenant(admin: Pool): Promise<MailTenant>;
   /**
    * A message arrives through the sync writer with one calendar part per text, in that order; `from` is its sender,
-   * `null` for a message that names none. Returns its Emails item id.
+   * `null` for a message that names none, and `deliveredTo` the `Delivered-To` header the provider added (none when
+   * absent). Returns its Emails item id.
    */
-  receive(world: World, messageId: string, text: string | string[], from?: string | null): Promise<string>;
+  receive(
+    world: World,
+    messageId: string,
+    text: string | string[],
+    from?: string | null,
+    deliveredTo?: string,
+  ): Promise<string>;
   /** Fires the ingest heartbeat action for `emailItemId` the way the heartbeat of the Emails database does. */
   ingest(world: World, emailItemId: string): Promise<void>;
   /** `receive` followed by `ingest`; returns the Emails item id. */
-  deliver(world: World, messageId: string, text: string | string[], from?: string | null): Promise<string>;
+  deliver(
+    world: World,
+    messageId: string,
+    text: string | string[],
+    from?: string | null,
+    deliveredTo?: string,
+  ): Promise<string>;
   /** `POST /api/calendar/invitations/:id/respond` as the session user of the tenant. */
   respond(tenant: MailTenant, invitationId: string, response: string): Promise<unknown>;
 }
@@ -118,7 +131,7 @@ export function createInvitationMail(runtime: Pool): InvitationMail {
       await runInTenant(tenantId, () => seedSystem(runtime));
       return { world: await setupMailAttachmentWorld(runtime, tenantId), userId: user.id };
     },
-    async receive(world, messageId, text, from = ORGANIZER_ADDRESS) {
+    async receive(world, messageId, text, from = ORGANIZER_ADDRESS, deliveredTo) {
       const result = await runInTenant(world.tenantId, () =>
         withTransaction(runtime, (client) =>
           ingestEmailMessage(client, {
@@ -129,6 +142,7 @@ export function createInvitationMail(runtime: Pool): InvitationMail {
             mailboxItemId: world.inbox.mailboxId,
             folderItemId: world.inbox.folderId,
             messageId,
+            ...(deliveredTo === undefined ? {} : { deliveredToHeaders: [deliveredTo] }),
             subject: `Subject of ${messageId}`,
             bodyText: `body of ${messageId}`,
             envelope: {
@@ -157,8 +171,8 @@ export function createInvitationMail(runtime: Pool): InvitationMail {
         ),
       );
     },
-    async deliver(world, messageId, text, from) {
-      const emailItemId = await mail.receive(world, messageId, text, from);
+    async deliver(world, messageId, text, from, deliveredTo) {
+      const emailItemId = await mail.receive(world, messageId, text, from, deliveredTo);
       await mail.ingest(world, emailItemId);
       return emailItemId;
     },

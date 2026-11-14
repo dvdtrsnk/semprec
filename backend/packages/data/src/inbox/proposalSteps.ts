@@ -8,6 +8,7 @@ import { readProposalTimezone } from "./proposalComputedUpdates.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { ChokePointError, ConflictError, NotFoundError, ValidationError } from "../errors.js";
 import type { WriterIdentity } from "../chokePoint/writerKind.js";
+import { removeBlobBytesAfterCommit } from "../blobs/blobBytesRelease.js";
 import { lockBlobById } from "../blobs/blobsStore.js";
 import { filesTypeForMimeType } from "../blobs/fileTypeDetection.js";
 import { FILES_MODULE_ID } from "../seed/tenDatabaseKeys.js";
@@ -312,7 +313,8 @@ async function filesTypeOptionFor(
  * Moves one attachment of the source Inbox item into Files (issue #1703). The attachment must belong to
  * that Inbox item. The Files item is created unless a live one already names the attachment's blob; in
  * that case the step resolves to the existing item and changes none of its properties or relations. The
- * attachment row is deleted in the same transaction, and the blob stays, because a Files item names it.
+ * attachment row is deleted in the same transaction, and the blob stays, because a Files item names it; the derived
+ * images of the row are released, and their bytes removed once the transaction commits.
  * The blob row lock makes a concurrent confirm that files the same bytes wait until this transaction ends.
  * If this one committed, that confirm then finds the item created here; if it rolled back, that confirm
  * creates its own. A delete that finds no row, because another confirm moved the attachment first, is a
@@ -379,13 +381,43 @@ async function executeFileFromAttachment(
     created = true;
   }
 
-  if (!(await deleteInboxAttachment(client, attachmentId))) {
+  const removed = await deleteInboxAttachment(client, attachmentId);
+  if (!removed.deleted) {
     throw new ConflictError(`Proposal step '${step.ref}': attachment '${attachmentId}' was already moved`, {
       ref: step.ref,
       field: "attachmentId",
     });
   }
+  // The preview and the reduced copy of the attachment (issue gh-1965) are not those of the Files item.
+  removeBlobBytesAfterCommit(client, removed.releasedStorageKeys);
   return { itemId: fileItemId, databaseId: filesDatabase.id, created, movedAttachmentId: attachmentId };
+}
+
+/**
+ * Moves one attachment of the Inbox item `sourceInboxItemId` into Files as a `fileFromAttachment` step does
+ * (`executeFileFromAttachment`: the item is created unless a live Files item already names the blob, the attachment row
+ * is deleted), for a caller that has no envelope of steps: the confirm of a recording card. `name` is the Files item's
+ * name when it is created. Runs in the caller's transaction. Answers the Files item and whether this call created it.
+ */
+export async function moveAttachmentIntoFiles(
+  client: PoolClient,
+  input: { attachmentId: string; name: string },
+  options: { writer: WriterIdentity; actingUserId?: string; sourceInboxItemId: string },
+): Promise<{ fileItemId: string; created: boolean }> {
+  const step: ProposalStep = {
+    ref: "file",
+    op: "fileFromAttachment",
+    role: "secondary",
+    properties: { ...input },
+  };
+  const outcome = await executeFileFromAttachment(client, step, {
+    writer: options.writer,
+    actingUserId: options.actingUserId,
+    sourceInboxItemId: options.sourceInboxItemId,
+    itemIdsByRef: new Map(),
+    recorder: createEdgeRecorder(),
+  });
+  return { fileItemId: outcome.itemId, created: outcome.created };
 }
 
 async function executeStep(client: PoolClient, step: ProposalStep, ctx: StepWriteContext): Promise<StepOutcome> {

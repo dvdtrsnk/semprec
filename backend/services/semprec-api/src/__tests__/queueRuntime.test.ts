@@ -35,6 +35,7 @@ const EXPECTED_CRONTAB_IDENTIFIERS = [
   CORE_TASK_NAMES.TENANT_PURGE,
   CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP,
   CORE_TASK_NAMES.PAGE_ORPHAN_SWEEP,
+  CORE_TASK_NAMES.CALENDAR_SUBSCRIPTION_SWEEP,
 ].sort();
 
 function fixturePath(name: string): string {
@@ -343,6 +344,58 @@ describe("createApiQueueRuntime (issue #91)", () => {
       await inTenantZero(() => enqueueJob(pool, INVITATION_TASK, invitationPayload()));
       await runInvitationJobOutsideRuntime(registry);
       expect((await invitationJob())?.last_error).toContain("No event invitation delivery is configured");
+    });
+  });
+
+  describe("the calendar's invitation reply task (issue gh-1953)", () => {
+    const REPLY_TASK = "calendarSendInvitationReply";
+    const replyPayload = () => ({
+      invitationId: randomUUID(),
+      response: "accepted",
+      respondedAt: new Date().toISOString(),
+    });
+
+    /** The job's `attempts` and `last_error`, from the queue's public view. */
+    async function replyJob(): Promise<{ attempts: number; last_error: string | null } | undefined> {
+      const { rows } = await pool.query<{ attempts: number; last_error: string | null }>(
+        "SELECT attempts, last_error FROM graphile_worker.jobs WHERE task_identifier = $1",
+        [REPLY_TASK],
+      );
+      return rows[0];
+    }
+
+    /** Runs the queued reply job once with the task list the module registry gives, outside any runtime. */
+    async function runReplyJobOutsideRuntime(registry: ModuleRegistry): Promise<void> {
+      const taskList = await mergeModuleTaskListForAffinity({}, registry, "api");
+      const handler = taskList[REPLY_TASK];
+      if (!handler) throw new Error("The api task list has no calendarSendInvitationReply handler");
+      await runOnce({ pgPool: pool }, { [REPLY_TASK]: handler });
+    }
+
+    it("hosts the task with its dependencies bound while the runtime runs, and unbinds them when it stops", async () => {
+      const registry = await loadFullModuleRegistry();
+      runtime = await createApiQueueRuntime(pool, registry);
+
+      // An unknown invitation ends the job without sending; the handler only gets that far with its dependencies bound.
+      await inTenantZero(() => enqueueJob(pool, REPLY_TASK, replyPayload()));
+      await waitFor(async () => (await jobCountFor(pool, REPLY_TASK)) === 0);
+
+      await runtime.stop();
+      runtime = undefined;
+      await inTenantZero(() => enqueueJob(pool, REPLY_TASK, replyPayload()));
+      await runReplyJobOutsideRuntime(registry);
+      const job = await replyJob();
+      expect(job?.attempts).toBe(1);
+      expect(job?.last_error).toContain("No invitation reply delivery is configured for this composition root");
+    });
+
+    it("leaves the dependencies unbound when the runner fails to start", async () => {
+      const registry = await loadFullModuleRegistry();
+      await expect(createApiQueueRuntime(pool, registry, { crontab: "not a crontab line\n" })).rejects.toThrow();
+
+      await inTenantZero(() => enqueueJob(pool, REPLY_TASK, replyPayload()));
+      await runReplyJobOutsideRuntime(registry);
+      expect((await replyJob())?.last_error).toContain("No invitation reply delivery is configured");
     });
   });
 

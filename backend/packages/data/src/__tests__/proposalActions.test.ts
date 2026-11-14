@@ -8357,6 +8357,193 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       expect(edges.rowCount).toBe(0);
     });
   });
+
+  describe("an MCP server card queues the sync of its tools (issue gh-1976)", () => {
+    const config = () => ({ processingProposalsDatabaseId: proposalsId });
+    /** A transaction in the tenant's scope, as the confirm route runs it: the job envelope takes the tenant from it. */
+    const scoped = <T>(fn: (client: PoolClient) => Promise<T>): Promise<T> =>
+      runInTenant(getTenantZeroId(), () => withTransaction(pool, fn));
+    const serverProperties = {
+      name: "Remote tool",
+      connectionConfig: { transport: "http", url: "https://mcp.example.com/mcp" },
+    };
+    let actingUserId: string;
+    let mcpServersId: string;
+
+    beforeEach(async () => {
+      mcpServersId = await databaseIdFor("mcpServers");
+      actingUserId = (
+        await createUser(pool, {
+          email: "owner@example.test",
+          passwordHash: "unused",
+          tenantId: getTenantZeroId(),
+          role: "admin",
+        })
+      ).id;
+    });
+
+    /** A card whose envelope is stored as the assistant's output; `target` defaults to the MCP servers database. */
+    async function cardWithEnvelope(envelope: Record<string, unknown>): Promise<string> {
+      const card = await createDatabaseProposal("seed");
+      const stored = { ...envelope, target: envelope.target ?? mcpServersId };
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(
+          client,
+          { databaseId: proposalsId, itemId: card.id, propertiesPatch: { proposal: stored, aiProposal: stored } },
+          { allowedSystemKeys: ["proposal", "aiProposal"] },
+        ),
+      );
+      return card.id;
+    }
+    const serverCard = () => cardWithEnvelope({ entityKind: "database", properties: serverProperties });
+
+    function confirmAs(
+      cardId: string,
+      user: string | undefined,
+      credential?: Parameters<typeof confirmProposalWithClient>[3],
+    ) {
+      return scoped((client) => confirmProposalWithClient(client, config(), cardId, credential, user));
+    }
+
+    /** The pending `mcpServerSync` jobs: their keys and business payloads. */
+    async function queuedSyncs(): Promise<Array<{ key: string | null; payload: Record<string, unknown> }>> {
+      const { rows } = await pool.query<{ key: string | null; payload: { payload: Record<string, unknown> } }>(
+        // The public `jobs` view has no payload column; graphile-worker 0.17.3 keeps the queue envelope in `_private_jobs`.
+        `SELECT j.key, j.payload FROM graphile_worker._private_jobs j
+           JOIN graphile_worker._private_tasks t ON t.id = j.task_id
+          WHERE t.identifier = 'mcpServerSync' ORDER BY j.key`,
+      );
+      return rows.map((row) => ({ key: row.key, payload: row.payload.payload }));
+    }
+    const resultsOf = (card: ItemRow) =>
+      z.array(z.object({ followUp: z.string().nullable() }).loose()).parse(card.properties.results);
+
+    it("queues one job after the commit and reports mcpSyncQueued on the result of the server", async () => {
+      const cardId = await serverCard();
+
+      const confirmed = await confirmAs(cardId, actingUserId);
+
+      const serverId = z.string().parse(confirmed.properties.resultItemId);
+      expect(await queuedSyncs()).toEqual([
+        { key: `mcp-server-sync-${serverId}`, payload: { mcpServerItemId: serverId, actingUserId } },
+      ]);
+      expect(resultsOf(confirmed)).toEqual([expect.objectContaining({ itemId: serverId, followUp: "mcpSyncQueued" })]);
+      expect(resultsOf(await readStoredCard(cardId))).toEqual(resultsOf(confirmed));
+    });
+
+    it("queues the job for a server confirmed with a credential and keeps the credential out of the payload", async () => {
+      const cardId = await serverCard();
+
+      const confirmed = await confirmAs(cardId, actingUserId, {
+        credentialType: "api_key",
+        plaintext: "sk-never-queued",
+      });
+
+      const serverId = z.string().parse(confirmed.properties.resultItemId);
+      const queued = await queuedSyncs();
+      expect(queued).toEqual([
+        { key: `mcp-server-sync-${serverId}`, payload: { mcpServerItemId: serverId, actingUserId } },
+      ]);
+      expect(JSON.stringify(queued)).not.toContain("sk-never-queued");
+      expect((await pool.query("SELECT 1 FROM external_credentials WHERE item_id = $1", [serverId])).rowCount).toBe(1);
+      expect(resultsOf(confirmed)).toEqual([expect.objectContaining({ followUp: "mcpSyncQueued" })]);
+    });
+
+    it("leaves no job, no server, no credential and no result when the confirm rolls back", async () => {
+      const cardId = await serverCard();
+      const serversBefore = (await pool.query("SELECT 1 FROM items WHERE database_id = $1", [mcpServersId])).rowCount;
+
+      await expect(
+        scoped(async (client) => {
+          await confirmProposalWithClient(
+            client,
+            config(),
+            cardId,
+            { credentialType: "api_key", plaintext: "sk-rolled-back" },
+            actingUserId,
+          );
+          throw new Error("the transaction fails after the confirm");
+        }),
+      ).rejects.toThrow("the transaction fails after the confirm");
+
+      expect(await queuedSyncs()).toEqual([]);
+      expect((await pool.query("SELECT 1 FROM items WHERE database_id = $1", [mcpServersId])).rowCount).toBe(
+        serversBefore,
+      );
+      expect((await pool.query("SELECT 1 FROM external_credentials")).rowCount).toBe(0);
+      const card = await readStoredCard(cardId);
+      expect(card.properties.status).toBe("proposed");
+      expect(card.properties.results ?? []).toEqual([]);
+    });
+
+    it("leaves no job when the confirm is refused", async () => {
+      const cardId = await cardWithEnvelope({
+        entityKind: "database",
+        properties: { name: "Remote tool", notAProperty: "x" },
+      });
+
+      await expect(confirmAs(cardId, actingUserId)).rejects.toBeInstanceOf(ValidationError);
+
+      expect(await queuedSyncs()).toEqual([]);
+    });
+
+    it("leaves one pending job when the same card is confirmed twice, with the stored results unchanged", async () => {
+      const cardId = await serverCard();
+      const first = await confirmAs(cardId, actingUserId);
+
+      const second = await confirmAs(cardId, actingUserId);
+
+      expect(second.properties.results).toEqual(first.properties.results);
+      expect(second.properties.resultItemId).toBe(first.properties.resultItemId);
+      expect((await queuedSyncs()).map((job) => job.key)).toEqual([
+        `mcp-server-sync-${z.string().parse(first.properties.resultItemId)}`,
+      ]);
+    });
+
+    it("enqueues nothing when an already confirmed card is confirmed again after its job ran", async () => {
+      const cardId = await serverCard();
+      const first = await confirmAs(cardId, actingUserId);
+      const serverId = z.string().parse(first.properties.resultItemId);
+      // The job leaves the queue as it does when it completes.
+      await pool.query("SELECT graphile_worker.remove_job($1)", [`mcp-server-sync-${serverId}`]);
+      expect(await queuedSyncs()).toEqual([]);
+
+      const replay = await confirmAs(cardId, actingUserId);
+
+      expect(replay.properties.results).toEqual(first.properties.results);
+      expect(resultsOf(replay)).toEqual([expect.objectContaining({ followUp: "mcpSyncQueued" })]);
+      expect(await queuedSyncs()).toEqual([]);
+    });
+
+    it("enqueues nothing for a confirm whose target is not the MCP servers database", async () => {
+      const card = await createDatabaseProposal("Buy milk");
+
+      const confirmed = await confirmAs(card.id, actingUserId);
+
+      expect(confirmed.properties.status).toBe("confirmed");
+      expect(await queuedSyncs()).toEqual([]);
+      expect(resultsOf(confirmed)).toEqual([expect.objectContaining({ followUp: null })]);
+    });
+
+    it("enqueues nothing without an acting user, creates the server and reports no follow-up", async () => {
+      const cardId = await serverCard();
+
+      const confirmed = await confirmAs(cardId, undefined);
+
+      expect(await queuedSyncs()).toEqual([]);
+      expect(resultsOf(confirmed)).toEqual([expect.objectContaining({ followUp: null })]);
+      const serverId = z.string().parse(confirmed.properties.resultItemId);
+      expect(
+        await withTransaction(pool, (client) => itemsStore.getItemById(client, mcpServersId, serverId)),
+      ).not.toBeNull();
+    });
+
+    async function readStoredCard(id: string): Promise<ItemRow> {
+      const card = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, id));
+      if (!card) throw new Error(`card ${id} not found`);
+      return card;
+    }
+  });
 });
 
 afterAll(async () => {

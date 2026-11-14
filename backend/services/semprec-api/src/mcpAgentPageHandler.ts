@@ -4,15 +4,18 @@ import {
   ChokePointError,
   countEffectiveMcpGrants,
   listMcpToolGrantsForProject,
+  McpConnectionError,
   type McpToolDisplayLabel,
   reclassifyMcpTool,
   setProjectMcpGrantForAgentPage,
+  suggestMcpToolLabels,
+  syncMcpServerTools,
 } from "@semprec/data";
 import type { Pool } from "pg";
 import { toPublicErrorBody } from "./adapter/errorContract.js";
 import { assertUuid } from "./adapter/requestValidation.js";
 import { PayloadTooLargeError, readJsonBody, sendJson } from "./adapter/http.js";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant, type AiGatewayClientPort } from "@semprec/shared";
 import { authenticateRequest } from "./authHandler.js";
 import { logger } from "./logger.js";
 
@@ -20,6 +23,7 @@ const MAX_BODY_BYTES = 1 * 1024 * 1024;
 
 const MCP_GRANTS_PATH = /^\/api\/projects\/([^/]+)\/mcp-grants(?:\/([^/]+))?$/;
 const MCP_TOOL_REGISTRATION_PATH = /^\/api\/mcp-tool-registrations\/([^/]+)$/;
+const MCP_SERVER_SYNC_PATH = /^\/api\/mcp-servers\/([^/]+)\/sync$/;
 
 /**
  * Handles the "Tools" block's HTTP surface on a project's AGENT page (issue #127):
@@ -30,14 +34,23 @@ const MCP_TOOL_REGISTRATION_PATH = /^\/api\/mcp-tool-registrations\/([^/]+)$/;
  * - `PATCH /api/mcp-tool-registrations/:id` — the minimal manual reclassification control,
  *   body `{ riskClass?: string, requiresApproval?: boolean, displayLabel?: { cs?, en? } | null }`
  *   (at least one required; `null` clears the label).
+ * - `POST /api/mcp-servers/:id/sync` — runs `syncMcpServerTools` inline for one MCP server of the caller's
+ *   tenant and answers `{ toolCount, syncStatus: "ok" }`. A connection failure answers 502
+ *   `{ error, reason }` with the typed `McpConnectionError` reason and nothing else of the failure; a tool-list
+ *   validation failure keeps its 400. `syncMcpServerTools` has already recorded `syncStatus: "error"` on the
+ *   server item in both cases. An unknown id, or one of another tenant, answers the same 404. After a sync that
+ *   succeeded, and before the answer, it asks the gateway for labels of the server's tools that have none
+ *   (`suggestMcpToolLabels`, issue gh-1983); that step never changes the answer, and is skipped when the listener
+ *   was created without a gateway client.
  *
- * These mutations reach `mcpGrantsAdminStore.ts`'s user-only functions only through
+ * The grant and reclassification mutations reach `mcpGrantsAdminStore.ts`'s user-only functions only through
  * `@semprec/data`'s `mcpAgentPageGrants.ts` wrappers (see that file's header) — this handler
- * never imports the admin store directly, and couldn't: it's not re-exported from the package.
+ * never imports the admin store directly, and couldn't: it's not re-exported from the package. The sync route
+ * does not touch the admin store: it calls `syncMcpServerTools` from `@semprec/data` directly.
  *
  * Gated by `authenticateRequest` (issue #143), same session middleware `authHandler.ts` uses.
  */
-export function createMcpAgentPageRequestListener(pool: Pool) {
+export function createMcpAgentPageRequestListener(pool: Pool, gateway?: AiGatewayClientPort) {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", "http://localhost");
 
@@ -140,11 +153,26 @@ export function createMcpAgentPageRequestListener(pool: Pool) {
           return;
         }
 
+        const syncMatch = url.pathname.match(MCP_SERVER_SYNC_PATH);
+        if (syncMatch && req.method === "POST") {
+          // Group 1 of MCP_SERVER_SYNC_PATH is not optional — see above.
+          const mcpServerItemId = assertUuid(syncMatch[1]!, "id");
+          const { toolCount } = await syncMcpServerTools(pool, mcpServerItemId, { actorId: identity.user.id });
+          if (gateway) await suggestMcpToolLabels(pool, gateway, mcpServerItemId);
+          sendJson(res, 200, { toolCount, syncStatus: "ok" });
+          return;
+        }
+
         sendJson(res, 404, { error: "Not found" });
       });
     } catch (err) {
       if (err instanceof PayloadTooLargeError) {
         sendJson(res, 413, { error: err.message });
+        return;
+      }
+      if (err instanceof McpConnectionError) {
+        // Fixed wording plus the typed reason: the error's own message and the server's answer stay out of the body.
+        sendJson(res, 502, { error: "Could not connect to the MCP server", reason: err.reason });
         return;
       }
       if (err instanceof ChokePointError) {

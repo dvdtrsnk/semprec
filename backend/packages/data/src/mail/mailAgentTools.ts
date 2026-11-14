@@ -6,10 +6,14 @@
 // its project and its user from the stored run, never from an argument, and answer in the shape of the other module
 // tools: a result string that holds JSON (the send tool's is the sentence of a deferred tool), and an `error` flag. Every
 // write goes through the draft operations of `draft.ts` and `mailDraftPrefill.ts`, and so through the choke point.
+// Issue gh-1956 offers the four tools over `/mcp`: a run credential runs the handlers above as its run, and a human
+// session runs the `...UserTool` handlers below as its user (`MailToolCaller`), which the manifest names as the `mcp`
+// `humanHandlerExport` of each tool.
 // Constrained by: docs/adr/2026-09-10-choke-point-api-for-state-writes.md,
 // docs/adr/2026-10-28-module-agent-tools-approval-and-grants.md,
 // docs/adr/2026-11-14-an-agents-mail-send-is-an-approval-request-of-its-own-kind-sent-as-the-user.md,
-// docs/adr/2026-11-14-the-mail-send-tool-is-declared-without-deferral-and-files-its-own-approval-request.md
+// docs/adr/2026-11-14-the-mail-send-tool-is-declared-without-deferral-and-files-its-own-approval-request.md,
+// docs/adr/2026-11-14-mail-tools-over-mcp-run-as-their-run-or-as-the-session-user.md
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { getAgentRun, type AgentRunRow } from "../agentRuns/agentRunsStore.js";
@@ -30,6 +34,7 @@ import {
 } from "./draft.js";
 import { draftBody, draftRecipients, draftSubject } from "./mailDraftFields.js";
 import { createPrefilledEmailDraft, sendingAddress } from "./mailDraftPrefill.js";
+import { requireSendAdapters, sendMailDraft, type MailDraftSendRouteDependencies } from "./mailDraftSend.js";
 import { findOpenAgentDraftOfThread, MAIL_DRAFT_MODES } from "./mailDraftsStore.js";
 import { getMailMessageMetaByItemId, resolveMergedThreadId } from "./mailMessageMetaStore.js";
 import { resolveMailModuleIds } from "./mailModuleIds.js";
@@ -104,6 +109,23 @@ export interface MailAgentToolResult {
 
 export type MailAgentTool = (runId: string, args: unknown) => Promise<MailAgentToolResult>;
 
+/** A mail tool as a human `/mcp` session runs it: as the session's user, who has no run (issue gh-1956). */
+export type MailUserTool = (userId: string, args: unknown) => Promise<MailAgentToolResult>;
+
+/** Who calls a mail tool: a run (an agent session or a run credential) or the user of a human `/mcp` session. */
+type MailToolCaller = { kind: "run"; runId: string } | { kind: "user"; userId: string };
+
+/** The body of a mail tool, written once for both callers. */
+type MailToolCore = (caller: MailToolCaller, args: unknown) => Promise<MailAgentToolResult>;
+
+function asRunTool(core: MailToolCore): MailAgentTool {
+  return (runId, args) => core({ kind: "run", runId }, args);
+}
+
+function asUserTool(core: MailToolCore): MailUserTool {
+  return (userId, args) => core({ kind: "user", userId }, args);
+}
+
 /**
  * Raised by `mail.draft.create` in a reply mode when the source message's thread already has an open agent draft
  * (issue gh-1941). It names that draft in `details.draftId`, which the refusal puts in its answer, so the agent updates
@@ -173,7 +195,8 @@ async function answering(work: () => Promise<MailAgentToolResult>): Promise<Mail
 }
 
 interface RunContext {
-  run: AgentRunRow;
+  /** The caller's run; `null` for the user of a human `/mcp` session, who has none. */
+  run: AgentRunRow | null;
   writer: MailDraftWriter;
   actorUserId: string;
   conversationId?: string;
@@ -197,6 +220,21 @@ async function runContext(client: PoolClient, runId: string): Promise<RunContext
     },
     actorUserId: run.actorUserId,
     ...(run.threadId === null ? {} : { conversationId: run.threadId }),
+  };
+}
+
+/**
+ * What a caller writes as. A run writes as the agent of its run. The user of a human `/mcp` session writes as an agent
+ * for that user with the external-client marker and no run or project, the writer of every other write of that session
+ * (docs/adr/2026-11-13-an-external-ai-client-on-mcp-is-refused-sensitive-databases.md): the marker keeps the session
+ * out of every sensitive database, and the Emails database is not one.
+ */
+async function callerContext(client: PoolClient, caller: MailToolCaller): Promise<RunContext> {
+  if (caller.kind === "run") return runContext(client, caller.runId);
+  return {
+    run: null,
+    writer: { writerKind: "agent", externalClient: true, onBehalfOfUserId: caller.userId },
+    actorUserId: caller.userId,
   };
 }
 
@@ -231,14 +269,23 @@ function cutText(text: string, max: number): string {
  * Nothing is written. It is read in one REPEATABLE READ transaction, so the answer describes one state of the thread.
  */
 export function createMailThreadGetTool(pool: Pool): MailAgentTool {
-  return async function mailThreadGet(runId, rawArgs) {
+  return asRunTool(mailThreadGet(pool));
+}
+
+/** `mail.thread.get` for the user of a human `/mcp` session (issue gh-1956): the same answer, with no run to check. */
+export function createMailThreadGetUserTool(pool: Pool): MailUserTool {
+  return asUserTool(mailThreadGet(pool));
+}
+
+function mailThreadGet(pool: Pool): MailToolCore {
+  return async function mailThreadGetCore(caller, rawArgs) {
     const args = mailThreadGetArgsSchema.safeParse(rawArgs);
     if (!args.success) return refusal(new ValidationError("Invalid arguments"));
     return answering(() =>
       withTransaction(
         pool,
         async (client) => {
-          await runContext(client, runId);
+          await callerContext(client, caller);
           const thread = await getMailThreadDetail(client, args.data.threadId, false);
           let remaining = MAX_THREAD_TEXT_LENGTH;
           const messages = [...thread.messages].reverse().map((message) => {
@@ -359,14 +406,26 @@ async function refuseSecondAgentDraft(client: PoolClient, sourceEmailId: string)
  * A refusal writes nothing.
  */
 export function createMailDraftCreateTool(pool: Pool, options: { maxFileSizeBytes?: number } = {}): MailAgentTool {
+  return asRunTool(mailDraftCreate(pool, options));
+}
+
+/**
+ * `mail.draft.create` for the user of a human `/mcp` session (issue gh-1956): the draft is written as an agent for that
+ * user with no run, so its row records `created_by` agent and no run id, and the draft belongs to no Semp thread.
+ */
+export function createMailDraftCreateUserTool(pool: Pool): MailUserTool {
+  return asUserTool(mailDraftCreate(pool, {}));
+}
+
+function mailDraftCreate(pool: Pool, options: { maxFileSizeBytes?: number }): MailToolCore {
   const queueAffinity = createActionQueueAffinity();
-  return async function mailDraftCreate(runId, rawArgs) {
+  return async function mailDraftCreateCore(caller, rawArgs) {
     const args = mailDraftCreateArgsSchema.safeParse(rawArgs);
     if (!args.success) return refusal(new ValidationError("Invalid arguments"));
     const { mode, threadId, sourceEmailId, mailboxId, to, cc, bcc, subject, body } = args.data;
     return answering(() =>
       withTransaction(pool, async (client) => {
-        const run = await runContext(client, runId);
+        const run = await callerContext(client, caller);
         const context: MailDraftWriteContext = {
           writer: run.writer,
           actingUserId: run.actorUserId,
@@ -449,23 +508,35 @@ export function createMailDraftCreateTool(pool: Pool, options: { maxFileSizeByte
  * without a thread, such as an MCP run, publishes none.
  */
 export function createMailDraftUpdateTool(pool: Pool): MailAgentTool {
+  return asRunTool(mailDraftUpdate(pool));
+}
+
+/**
+ * `mail.draft.update` for the user of a human `/mcp` session (issue gh-1956): written as an agent for that user, and
+ * never refused as the edit of a run nobody asked for, because the session's user asked.
+ */
+export function createMailDraftUpdateUserTool(pool: Pool): MailUserTool {
+  return asUserTool(mailDraftUpdate(pool));
+}
+
+function mailDraftUpdate(pool: Pool): MailToolCore {
   const queueAffinity = createActionQueueAffinity();
-  return async function mailDraftUpdate(runId, rawArgs) {
+  return async function mailDraftUpdateCore(caller, rawArgs) {
     const args = mailDraftUpdateArgsSchema.safeParse(rawArgs);
     if (!args.success) return refusal(new ValidationError("Invalid arguments"));
     return answering(() =>
       withTransaction(pool, async (client) => {
-        const run = await runContext(client, runId);
+        const run = await callerContext(client, caller);
         const { emailsDatabaseId } = await resolveMailModuleIds(client);
         const { item, draft: locked } = await lockUnsentDraft(client, emailsDatabaseId, args.data.draftId);
         // The gate of the heartbeat that drafts a reply (`answerExpectedFilter.ts`) checks the draft when the run starts;
         // the run lasts a whole agent session, so the check that holds is this one, made under the draft's locks.
-        if (locked.lastEditedBy === "user" && (await startedByHeartbeat(client, run.run))) {
+        if (locked.lastEditedBy === "user" && run.run !== null && (await startedByHeartbeat(client, run.run))) {
           throw new DraftEditedByUserError(args.data.draftId);
         }
-        if (run.conversationId !== undefined) {
+        if (run.run !== null && run.conversationId !== undefined) {
           await notifyAgentRunDelta({
-            agentRunId: runId,
+            agentRunId: run.run.id,
             delta: { kind: "mailDraftBody", draftId: item.id, body: args.data.body },
           });
         }
@@ -522,6 +593,28 @@ export function createMailDraftSendTool(pool: Pool): MailAgentTool {
         approvalRequestId: request.id,
       };
     });
+  };
+}
+
+/**
+ * `mail.draft.send { draftId }` for the user of a human `/mcp` session (issue gh-1956): sends the saved draft as the
+ * user and asks nobody, as the send route does (`sendMailDraft`, issue gh-1896). The answer is the route's body
+ * `{ emailId, threadId, sentAt, mailbox }` as JSON. The refusals are those of the route as error results: 400 for a
+ * draft without a recipient, 403 `from_address_not_registered`, 404 for a draft that is unknown, discarded or another
+ * tenant's (the same answer), 409 `mail_draft_already_sent`, `mail_draft_not_editable`, `mail_reauthorization_required`
+ * and `mail_sent_folder_missing`, 422 `mail_recipient_rejected`, and 400 `mail_auth_failed` and
+ * `mail_server_unreachable`. A failure before or during delivery leaves the draft unsent. The transports come from
+ * `dependencies`, the container of the composition root; a root that configured none fails the call with a plain error
+ * and the draft stays as it was. The dependency is read when the tool runs, so listing the tool needs none.
+ */
+export function createMailDraftSendUserTool(pool: Pool, dependencies: MailDraftSendRouteDependencies): MailUserTool {
+  return async function mailDraftSendAsUser(_userId, rawArgs) {
+    const args = mailDraftSendArgsSchema.safeParse(rawArgs);
+    if (!args.success) return refusal(new ValidationError("Invalid arguments"));
+    return answering(async () => ({
+      error: false,
+      result: JSON.stringify(await sendMailDraft(pool, args.data.draftId, requireSendAdapters(dependencies))),
+    }));
   };
 }
 

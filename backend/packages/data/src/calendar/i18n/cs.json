@@ -47,6 +47,9 @@
   "property.subscribedEvents.timeZone.name": "Časové pásmo",
   "property.subscribedEvents.allDay.name": "Celý den",
   "property.subscribedEvents.place.name": "Místo",
+  "property.subscribedEvents.recurrenceRule.name": "Pravidlo opakování",
+  "property.subscribedEvents.exceptionDates.name": "Vyloučená data",
+  "property.subscribedEvents.recurrenceId.name": "Přepsaný výskyt",
   "property.subscribedEvents.calendar.name": "Kalendář",
   "seed.calendars.project.name": "Kalendář",
   "seed.calendars.personal.name": "Osobní",
@@ -74,5 +77,15 @@
   "calendar.invitation.request.subject": "Pozvánka: {title}",
   "calendar.invitation.request.text": "Jste pozváni na událost „{title}“. Odpovědět můžete v přiložené pozvánce do kalendáře.",
   "calendar.invitation.cancel.subject": "Zrušeno: {title}",
-  "calendar.invitation.cancel.text": "Událost „{title}“ byla zrušena."
+  "calendar.invitation.cancel.text": "Událost „{title}“ byla zrušena.",
+  "calendar.invitation.reply.accepted.subject": "Přijato: {title}",
+  "calendar.invitation.reply.accepted.text": "Pozvánku „{title}“ jsem přijal(a).",
+  "calendar.invitation.reply.tentative.subject": "Předběžně přijato: {title}",
+  "calendar.invitation.reply.tentative.text": "Pozvánku „{title}“ jsem předběžně přijal(a).",
+  "calendar.invitation.reply.declined.subject": "Odmítnuto: {title}",
+  "calendar.invitation.reply.declined.text": "Pozvánku „{title}“ jsem odmítl(a).",
+  "agentTool.calendar.timeline.label": "Přečíst časovou osu kalendáře",
+  "agentTool.calendar.respondToInvitation.label": "Odpovědět na pozvánku do kalendáře",
+  "agentTool.calendar.placeTaskInEvent.label": "Přidat úkol do události",
+  "agentTool.calendar.removeTaskFromEvent.label": "Odebrat úkol z události"
 }

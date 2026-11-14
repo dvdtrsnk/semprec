@@ -23,7 +23,6 @@ import {
 } from "../db/pool.js";
 import { notifyInvalidation, type InvalidationEvent } from "../realtimeHook.js";
 import { CardinalityViolationError, ConflictError, NotFoundError, ValidationError } from "../errors.js";
-import { PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { THREADS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import * as databasesStore from "./databasesStore.js";
 import type { ItemRelationRow } from "../types.js";
@@ -32,6 +31,7 @@ import type { ChokePointDeps } from "./chokePointDeps.js";
 import * as itemsStore from "./itemsStore.js";
 import * as propertiesStore from "./propertiesStore.js";
 import * as relationsStore from "./relationsStore.js";
+import { relationTargetBlock } from "./relationTargetState.js";
 import {
   assertRelationDatabasesNotArchived,
   assertRelationPropertyWritable,
@@ -276,17 +276,17 @@ export async function assertRelationTargetLinkableWithClient(
       { field, code: "targetNotFound" },
     );
   }
-  if (target.deletedAt) {
-    throw new ValidationError(`Relation target ${input.targetItemId} is deleted`, { field, code: "targetDeleted" });
+  // The owner module is read only when `status` is `archived`, the one case `relationTargetBlock` needs it for.
+  const targetOwnerModuleId =
+    target.properties.status === "archived"
+      ? ((await databasesStore.getDatabase(client, edgeContext.targetDatabaseId))?.ownerModuleId ?? null)
+      : null;
+  const block = relationTargetBlock(target, targetOwnerModuleId);
+  if (block === "targetDeleted") {
+    throw new ValidationError(`Relation target ${input.targetItemId} is deleted`, { field, code: block });
   }
-  if (target.properties.status === "archived") {
-    const targetDatabase = await databasesStore.getDatabase(client, edgeContext.targetDatabaseId);
-    if (targetDatabase?.ownerModuleId === PROJECTS_MODULE_ID) {
-      throw new ValidationError(`Relation target ${input.targetItemId} is an archived project`, {
-        field,
-        code: "targetArchived",
-      });
-    }
+  if (block === "targetArchived") {
+    throw new ValidationError(`Relation target ${input.targetItemId} is an archived project`, { field, code: block });
   }
 
   await runRelationEdgeWriteHooks({

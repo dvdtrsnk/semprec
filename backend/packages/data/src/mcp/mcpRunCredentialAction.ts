@@ -1,5 +1,5 @@
 import type { Pool, PoolClient } from "pg";
-import { CAPABILITY_IDS, type CapabilityId } from "@semprec/shared";
+import { CAPABILITY_IDS } from "@semprec/shared";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { withTransaction } from "../db/pool.js";
@@ -24,7 +24,14 @@ export const MCP_RUN_CREDENTIAL_TTL_SECONDS = 60 * 60; // 1 hour
 
 export interface MintMcpRunCredentialInput {
   projectItemId: string;
+  /** Core capability ids, and the module capability ids `moduleCapabilityIds` allows. */
   capabilities: readonly string[];
+  /**
+   * The capability ids of the active modules (issue gh-1956). A credential's list is the upper bound of what it may do,
+   * module tools included, so a list may name a module capability only when it is one of these; any other id is
+   * unknown. Left out, only core capability ids are accepted.
+   */
+  moduleCapabilityIds?: readonly string[];
   task?: string;
   /**
    * The authenticated session user minting this credential (issue #220, AC11) — attributed to
@@ -38,19 +45,19 @@ export interface MintMcpRunCredentialInput {
 export interface MintMcpRunCredentialResult {
   token: string;
   run: AgentRunRow;
-  capabilities: CapabilityId[];
+  capabilities: string[];
   expiresAt: string;
 }
 
-function assertCapabilityIds(values: readonly string[]): CapabilityId[] {
+function assertCapabilityIds(values: readonly string[], moduleCapabilityIds: readonly string[]): string[] {
   if (values.length === 0) {
     throw new ValidationError("'capabilities' must include at least one capability id");
   }
-  const known: readonly string[] = CAPABILITY_IDS;
+  const known: readonly string[] = [...CAPABILITY_IDS, ...moduleCapabilityIds];
   for (const value of values) {
     if (!known.includes(value)) throw new ValidationError(`Unknown capability id '${value}'`);
   }
-  return values as CapabilityId[];
+  return [...values];
 }
 
 /**
@@ -74,7 +81,7 @@ export async function mintMcpRunCredential(
   client: PoolClient,
   input: MintMcpRunCredentialInput,
 ): Promise<MintMcpRunCredentialResult> {
-  const capabilities = assertCapabilityIds(input.capabilities);
+  const capabilities = assertCapabilityIds(input.capabilities, input.moduleCapabilityIds ?? []);
 
   const projectsDatabase = await getDatabaseByModuleId(client, PROJECTS_MODULE_ID);
   if (!projectsDatabase) throw new Error("The Projects system database does not exist");

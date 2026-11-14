@@ -1,5 +1,6 @@
 import { requireSingleRow, type Queryable } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
+import type { McpToolClassification } from "./mcpToolAnnotationClassification.js";
 
 /**
  * `mcp_tool_registrations` (issue #124): one row per tool a discovery sync has last seen on
@@ -10,15 +11,22 @@ import { ValidationError } from "../errors.js";
  *
  * `upsertMcpToolRegistration` is the sync-facing write (issue #125, "Synchronize tools only
  * on human request", owns calling it): it snapshots the tool's name/schema/description/active
- * state from a live MCP `tools/list` call. It never touches `requires_approval`,
- * `risk_class` or `display_label` — those are user-owned (see `mcpGrantsAdminStore.ts`) and must survive a
- * re-sync untouched.
+ * state from a live MCP `tools/list` call. It never touches `display_label`, `risk_class` or
+ * `requires_approval`, so it is the one write of this table that `index.ts` exports. `display_label` is user-owned
+ * and survives a re-sync untouched; its one other writer is `mcpToolLabelSuggestion.ts`, which fills a label only
+ * where there is none (docs/adr/2026-11-14-mcp-tool-label-suggestions-fill-only-empty-display-labels.md).
  *
- * The user-only `risk_class`/`requires_approval` mutations live in `mcpGrantsAdminStore.ts`,
- * not here, and are deliberately not re-exported from this package's `index.ts`: keeping them
+ * `risk_class` and `requires_approval` have two writers with a one-way handoff
+ * ([[2026-11-14-mcp-tool-classification-is-owned-by-the-annotation-sync-until-a-person-sets-it]]): the sync writes
+ * them while `classification_source` is `annotation`, through `upsertClassifiedMcpToolRegistration`, and a person's
+ * change (`mcpGrantsAdminStore.ts`) sets it to `manual`, after which no sync rewrites them.
+ *
+ * The user-only `risk_class`/`requires_approval` mutations live in `mcpGrantsAdminStore.ts`, and the classifying
+ * upsert lives here, and all of them are deliberately not re-exported from this package's `index.ts`: keeping them
  * off `@semprec/data`'s public surface means `agent-runtime` (already a dependent of this
  * package) has no importable path to them at all, per this issue's "agents have no write path
- * to grants" acceptance criterion.
+ * to grants" acceptance criterion. `mcpSync.ts` and the tests of this package reach the classifying upsert by its
+ * relative path.
  */
 /** User-owned localized label; each locale is optional. */
 export interface McpToolDisplayLabel {
@@ -49,6 +57,8 @@ export interface McpToolRegistrationRow {
   active: boolean;
   requires_approval: boolean;
   risk_class: string;
+  /** `annotation` while a sync derives the classification, `manual` once a person set it. */
+  classification_source: string;
   display_label: unknown;
   created_at: string;
   updated_at: string;
@@ -92,10 +102,43 @@ export interface UpsertMcpToolRegistrationInput {
   active?: boolean;
 }
 
-/** Creates or refreshes a tool's discovery snapshot. Leaves `requires_approval`/`risk_class` alone on an existing row. */
+/** The input of the classifying upsert, which is not on the package's public surface. */
+export interface UpsertClassifiedMcpToolRegistrationInput extends UpsertMcpToolRegistrationInput {
+  /**
+   * The classification derived from the tool's annotations. A new row stores it (the column defaults,
+   * `unclassified` with approval, when it is omitted); an existing row takes it only while its
+   * `classification_source` is `annotation`.
+   */
+  classification?: McpToolClassification;
+}
+
+/**
+ * Creates or refreshes a tool's discovery snapshot and never writes `risk_class` or `requires_approval`: a new row
+ * gets the column defaults and an existing row keeps both. This is the signature `@semprec/data` exports. It copies
+ * the named fields only, so a `classification` that reaches it at run time (past the type) is dropped, not written.
+ */
 export async function upsertMcpToolRegistration(
   client: Queryable,
   input: UpsertMcpToolRegistrationInput,
+): Promise<McpToolRegistration> {
+  return upsertClassifiedMcpToolRegistration(client, {
+    mcpServerItemId: input.mcpServerItemId,
+    toolName: input.toolName,
+    toolSchema: input.toolSchema,
+    description: input.description,
+    active: input.active,
+  });
+}
+
+/**
+ * The sync's write: `upsertMcpToolRegistration` plus the classification. On an existing row `risk_class` and
+ * `requires_approval` change only when `input.classification` is given and the row's `classification_source` is
+ * `annotation`; a `manual` row keeps both columns while its schema, description and `active` are still refreshed.
+ * Not exported from `index.ts`, see the header.
+ */
+export async function upsertClassifiedMcpToolRegistration(
+  client: Queryable,
+  input: UpsertClassifiedMcpToolRegistrationInput,
 ): Promise<McpToolRegistration> {
   // `JSON.stringify(undefined)` returns `undefined`, not a string, which `pg` would otherwise
   // bind as SQL NULL — turning a caller bug into an opaque `tool_schema` NOT NULL violation
@@ -105,12 +148,20 @@ export async function upsertMcpToolRegistration(
   }
 
   const { rows } = await client.query<McpToolRegistrationRow>(
-    `INSERT INTO mcp_tool_registrations (mcp_server_item_id, tool_name, tool_schema, description, active)
-     VALUES ($1, $2, $3::jsonb, $4, $5)
+    // The COALESCE fallbacks repeat the column defaults of a new row. $6/$7 are both null or both set.
+    `INSERT INTO mcp_tool_registrations
+       (mcp_server_item_id, tool_name, tool_schema, description, active, risk_class, requires_approval)
+     VALUES ($1, $2, $3::jsonb, $4, $5, COALESCE($6::text, 'unclassified'), COALESCE($7::boolean, true))
      ON CONFLICT (mcp_server_item_id, tool_name) DO UPDATE
        SET tool_schema = EXCLUDED.tool_schema,
            description = EXCLUDED.description,
            active = EXCLUDED.active,
+           risk_class = CASE
+             WHEN mcp_tool_registrations.classification_source = 'annotation' AND $6::text IS NOT NULL THEN $6::text
+             ELSE mcp_tool_registrations.risk_class END,
+           requires_approval = CASE
+             WHEN mcp_tool_registrations.classification_source = 'annotation' AND $7::boolean IS NOT NULL THEN $7::boolean
+             ELSE mcp_tool_registrations.requires_approval END,
            updated_at = now()
      RETURNING *`,
     [
@@ -119,6 +170,8 @@ export async function upsertMcpToolRegistration(
       JSON.stringify(input.toolSchema),
       input.description ?? null,
       input.active ?? true,
+      input.classification?.riskClass ?? null,
+      input.classification?.requiresApproval ?? null,
     ],
   );
   return rowToRegistration(requireSingleRow(rows, "mcp_tool_registrations upsert RETURNING"));

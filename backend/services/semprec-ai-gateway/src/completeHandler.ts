@@ -23,7 +23,9 @@ import { readCallerTenantId, runForCallerTenant } from "./callerTenant.js";
  * name for a mail thread (`mail_thread_task_name`) runs in `semprec-api` with no project in scope, and so does
  * gh-1872's project assignment of an unlinked mail thread (`mailThreadProject`, named as that issue's feature key:
  * unlike its neighbours it is camelCase) and gh-1941's decision whether a new mail message expects an answer
- * (`mailAnswerExpected`), made in `semprec-agents` with no project in scope.
+ * (`mailAnswerExpected`), made in `semprec-agents` with no project in scope; gh-1983's suggestion of the labels of
+ * the tools an MCP server advertises (`mcp_tool_label`) has none either, since an MCP server is a system source,
+ * and runs in `semprec-api` after a sync of the server's tools.
  * The route rejects any other operation outright rather than accepting an arbitrary string that
  * nothing yet knows how to interpret.
  */
@@ -41,6 +43,7 @@ const OPERATION_REQUIRES_PROJECT_ITEM = new Map<string, boolean>([
   ["mail_thread_task_name", false],
   ["mailThreadProject", false],
   ["mailAnswerExpected", false],
+  ["mcp_tool_label", false],
 ]);
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

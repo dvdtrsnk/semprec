@@ -29,6 +29,8 @@
   "heartbeat.weekday.sat": "So",
   "heartbeat.weekday.sun": "Ne",
   "inbox.originNote.prefix": "Vytvořeno ze schránky:",
+  "inbox.recordingCard.defaultName.dated": "Nahrávka {day}. {month}. {time}",
+  "inbox.recordingCard.defaultName.undated": "Nahrávka",
   "semp.thread.itemTitle": "Úprava: {itemName}",
   "collection.custom.searchPlaceholder": "Hledat ve sbírce",
   "database.areas.name": "Oblasti",

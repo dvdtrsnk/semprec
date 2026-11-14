@@ -72,9 +72,12 @@ import { computeInboxFingerprintV2, isFingerprintCurrent } from "./fingerprint.j
 import { enqueueJournalInboxRecomputeForInboxItem } from "./journalInboxCompute.js";
 import { SEMPREC_READ_ONLY_MODULE_IDS } from "../seed/inboxPipelineKeys.js";
 import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
-import { FILES_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { assertValidMcpServerProposalProperties } from "../mcp/mcpServerProposal.js";
-import { parseFileFromAttachmentProperties } from "./fileAttachmentStep.js";
+import { assertValidFileFromAttachmentStep } from "./fileAttachmentStep.js";
+import { assertValidRecordingEnvelope } from "./recordingCardValidation.js";
+import { buildRecordingCard } from "./recordingCardProducer.js";
+import { routeInboxAttachments } from "./attachmentRouting.js";
+import { hasAttachmentAwaitingMetadata, listInboxAttachments } from "./inboxAttachmentsStore.js";
 import { assertNoRefCycle, selectActiveSteps, stepError } from "./proposalStepGraph.js";
 import { appendHistoryEntry } from "./proposalHistory.js";
 import { linkSourceInboxRelation } from "./inboxCardSourceLink.js";
@@ -181,30 +184,6 @@ async function lockUnlockedProposal(
 // The proposal history block (kinds, entry schema, `appendHistoryEntry`) lives in `proposalHistory.ts`;
 // re-exported here so existing importers keep their path (issue #1485 size cap, no behaviour change).
 export { appendHistoryEntry, type ProposalHistoryEntry, type ProposalHistoryKind } from "./proposalHistory.js";
-
-/**
- * Validates a `fileFromAttachment` step (issue #1703): it names neither a `databaseKey` nor an `itemId`,
- * its properties are exactly the allowed fields, and its relations are checked as a create step's are.
- * The attachment itself is checked at confirm, where the proposal's source Inbox item is known.
- */
-async function assertValidFileFromAttachmentStep(client: PoolClient, step: ProposalStep): Promise<DatabaseRow> {
-  if (step.databaseKey !== undefined)
-    throw stepError(step, "a fileFromAttachment step cannot name a databaseKey", "databaseKey");
-  if (step.itemId !== undefined) throw stepError(step, "a fileFromAttachment step cannot name an itemId", "itemId");
-  parseFileFromAttachmentProperties(step.ref, step.properties ?? {});
-  const database = assertStepDatabaseWritable(
-    step,
-    await databasesStore.getDatabaseByModuleId(client, FILES_MODULE_ID),
-    "properties",
-  );
-  await withStepRef(step.ref, async () => {
-    const byKey = new Map(
-      (await propertiesStore.listPropertiesByDatabase(client, database.id)).map((property) => [property.key, property]),
-    );
-    await assertValidEnvelopeRelations(client, database.id, byKey, existingItemRelations(step));
-  });
-  return database;
-}
 
 /** Validates one active step as a single-step envelope would be; resolves to the database the step writes to. */
 async function assertValidStep(client: PoolClient, step: ProposalStep): Promise<DatabaseRow> {
@@ -319,6 +298,10 @@ export async function assertValidProposalEnvelope(
   client: PoolClient,
   envelope: ProposalEnvelope,
 ): Promise<DatabaseRow | null> {
+  if (envelope.entityKind === "transcription") {
+    await assertValidRecordingEnvelope(client, envelope);
+    return null;
+  }
   if (
     envelope.entityKind !== "pageContent" &&
     envelope.entityKind !== "database" &&
@@ -677,8 +660,8 @@ async function reopenRestoredSourceProposal(
 /**
  * The tick's read phase: everything up to and including the fingerprint gate, run in one
  * transaction. The outcomes that need no LLM call (deleted or empty source, a locked
- * or unchanged-fingerprint existing proposal) are written here and end the tick (`null`
- * return). A `sourceDeleted` card whose source is live again is first returned to `proposed` or
+ * or unchanged-fingerprint existing proposal, an item with a long recording, whose recording card needs no model call)
+ * are written here and end the tick (`null` return). A `sourceDeleted` card whose source is live again is first returned to `proposed` or
  * `needsClarification` (issue #1604), and the gate then applies to the card as it now stands.
  * Otherwise enters recognition for an untyped source, or resolves the `processingMethod: 'database'` target database here too — so it never
  * needs to be re-derived — and returns a snapshot for the external call and the write
@@ -738,6 +721,24 @@ async function readTickSnapshot(
     )
       return null;
   }
+
+  // An item that holds a long recording gets the recording card and no model call (issues gh-1978 and gh-1985), and one
+  // whose audio has no metadata yet gets nothing: the metadata job runs the tick again.
+  const route = routeInboxAttachments(await listInboxAttachments(client, [item.id]));
+  if (route === "notReady") return null;
+  if (route !== "compute") {
+    const { envelope, context } = await buildRecordingCard(client, item, route.recording);
+    const snapshot = { item, type, sourceTypeId, processingMethod, entityKind: "pageContent" as const };
+    const locale = (await getTenantUserLocale(client)) ?? "cs";
+    await writeTickResult(client, config, { ...snapshot, existingProposal, fingerprint, locale }, envelope, null, {
+      context,
+    });
+    return null;
+  }
+
+  // Issue gh-1970: a photo whose metadata job has not run has no reduced copy to read yet. Nothing is written, and the
+  // job's own `update` announcement to the item's heartbeats starts the tick again.
+  if (await hasAttachmentAwaitingMetadata(client, item.id)) return null;
 
   if (!type) {
     if (!v2Input.text.trim()) {
@@ -799,7 +800,9 @@ async function readTickSnapshot(
  * Revises `existing` with `envelope`, through the locked re-check — a no-op if it lost the race. Under the lock it
  * writes the assistant's parts from `envelope` (`aiProposal` with its `aiVersion`, `fingerprint`, the history entry)
  * and keeps the manual values of the locked row that still apply: `proposal` is the effective envelope and
- * `userOverrides` and `userEditedKeys` follow it (`mergeRecomputeWithManualValues`).
+ * `userOverrides` and `userEditedKeys` follow it (`mergeRecomputeWithManualValues`). A card that holds a `context`
+ * (a recording card's) loses it unless `recognitionPatch` brings a new one, so a card that stops being a recording
+ * card does not keep the context of one.
  */
 async function reviseProposal(
   client: PoolClient,
@@ -825,6 +828,7 @@ async function reviseProposal(
         proposal: merged.effective,
         referencedItemIds: referencedItemIdsOf(merged.effective),
         reason,
+        ...(locked.properties.context ? { context: null } : {}),
         ...recognitionPatch,
         ...aiProposalPatch(locked.properties, envelope),
         userOverrides: merged.userOverrides,
@@ -843,6 +847,7 @@ async function reviseProposal(
         "referencedItemIds",
         "userOverrides",
         "userEditedKeys",
+        "context",
         "status",
         "history",
       ],
@@ -965,6 +970,7 @@ async function writeTickResult(
         "aiProposal",
         "aiVersion",
         "referencedItemIds",
+        "context",
         "history",
         "status",
       ],

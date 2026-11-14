@@ -569,6 +569,43 @@ describe("POST /internal/complete", () => {
     expect(rows).toEqual([]);
   });
 
+  it("dispatches mcp_tool_label with a null projectItemId and records an unattributed audit row", async () => {
+    const provider = new FakeProvider();
+    startServer(provider);
+    await listen();
+
+    const res = await post("/internal/complete", {
+      ...VALID_BODY,
+      operation: "mcp_tool_label",
+      projectItemId: null,
+    });
+
+    expect(res.status).toBe(200);
+    expect(provider.calls).toHaveLength(1);
+    const { rows } = await pool.query<{ project_item_id: string | null; operation: string }>(
+      "SELECT project_item_id, operation FROM ai_gateway_calls",
+    );
+    expect(rows).toEqual([{ project_item_id: null, operation: "mcp_tool_label" }]);
+  });
+
+  it.each([
+    ["a project item id", "11111111-1111-1111-1111-111111111111"],
+    ["no projectItemId at all", undefined],
+  ])("rejects mcp_tool_label with %s with 400 validation_failed and no side effects", async (_label, projectItemId) => {
+    const provider = new FakeProvider();
+    startServer(provider);
+    await listen();
+
+    const res = await post("/internal/complete", { ...VALID_BODY, operation: "mcp_tool_label", projectItemId });
+
+    expect(res.status).toBe(400);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ code: "validation_failed", details: { field: "projectItemId" } });
+    expect(provider.calls).toHaveLength(0);
+    const { rows } = await pool.query<{ operation: string }>("SELECT operation FROM ai_gateway_calls");
+    expect(rows).toEqual([]);
+  });
+
   it("rejects a temperature outside [0, 1] with 400 validation_failed", async () => {
     const provider = new FakeProvider();
     startServer(provider);

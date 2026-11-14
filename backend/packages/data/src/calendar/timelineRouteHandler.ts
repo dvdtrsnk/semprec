@@ -6,7 +6,7 @@ import { isCalendarDate } from "./eventValidationHook.js";
 import { readCalendarTimeline } from "./timelineRead.js";
 
 /** The longest range one request may ask for, both days included. A month grid needs at most 42 days. */
-const MAX_RANGE_DAYS = 93;
+export const MAX_RANGE_DAYS = 93;
 
 /** The request context of `GET /api/calendar/timeline`: its query string is read from the request URL. */
 interface CalendarTimelineRouteRequestContext {

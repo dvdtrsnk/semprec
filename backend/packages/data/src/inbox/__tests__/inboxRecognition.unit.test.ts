@@ -35,6 +35,21 @@ describe("Inbox recognition", () => {
       catalog,
     );
   });
+  it("keeps a type that targets mcpServers and offers it, while a journal type stays excluded", () => {
+    const mcp: RecognitionType = { ...catalog[0]!, id: "mcp", targetDatabaseKey: "mcpServers" };
+    const journal: RecognitionType = { ...catalog[0]!, id: "journal", targetDatabaseKey: "journal" };
+    const types = [...catalog, mcp, journal];
+    expect(validRecognitionTypes(types).map((type) => type.id)).toEqual(["task", "thought", "mcp"]);
+    expect(filterRecognitionCandidates([{ typeId: "mcp", confidence: 0.9 }], types)).toEqual([
+      { typeId: "mcp", confidence: 0.9 },
+    ]);
+    expect(filterRecognitionCandidates([{ typeId: "journal", confidence: 0.9 }], types)).toEqual([]);
+    expect(clarificationTypes([{ typeId: "mcp", confidence: 0.9 }], types)[0]).toEqual({
+      typeId: "mcp",
+      label: "Task",
+      targetDatabaseKey: "mcpServers",
+    });
+  });
   it("pads distinct type candidates without including direct targets", () => {
     expect(
       clarificationTypes(

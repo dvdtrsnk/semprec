@@ -102,7 +102,9 @@ export async function createDispatcher(
   // Resolved per call, so a module activated or deactivated since the last request is reflected.
   const heartbeatRuleKinds = () => resolveModuleRuleKinds(options.moduleRegistry);
   const callerDependencies = options.customRouteDependencies ?? createCustomRouteDependencies();
-  const dispatchCustomRoute = mountCustomRoutes(pool, customRouteDefinitions, {
+  // Issue gh-1956: the container the custom routes get is also what the module tools of a human `/mcp` session are built
+  // with, so the draft send tool sends through the transports of the send route.
+  const routeDependencies: CustomRouteDependencies = {
     ...callerDependencies,
     heartbeatRuleKinds,
     // Issue gh-1750: one limiter for as long as this dispatcher serves, so every request of the password
@@ -128,7 +130,8 @@ export async function createDispatcher(
         },
       },
     },
-  });
+  };
+  const dispatchCustomRoute = mountCustomRoutes(pool, customRouteDefinitions, routeDependencies);
   // The sole neutral `GenericApplicationPort` implementation (issue #219): one instance per
   // injected `Pool`, threaded into every generic resource route family below so there is no
   // second write path — a route never constructs its own `createChokePoint(pool)`.
@@ -154,7 +157,13 @@ export async function createDispatcher(
   const mcpGateway = createGenericOperationGateway(pool, collectionMetadataResolver);
   const registeredModuleCapabilities = await options.moduleRegistry.getCapabilities();
   const mcpGrantedCapabilities = new Set(CAPABILITY_IDS.filter((id) => registeredModuleCapabilities.includes(id)));
-  const mcpListener = await createMcpRequestListener(pool, mcpGateway, mcpGrantedCapabilities, options.moduleRegistry);
+  const mcpListener = await createMcpRequestListener(
+    pool,
+    mcpGateway,
+    mcpGrantedCapabilities,
+    options.moduleRegistry,
+    routeDependencies,
+  );
   // `page.insert` over HTTP also accepts a scoped run credential, through the same gateway and capability set as `/mcp`.
   const pageInsertListener = createPageInsertRequestListener(
     pool,
@@ -168,9 +177,9 @@ export async function createDispatcher(
     mcpGateway,
     mcpGrantedCapabilities,
   );
-  const mcpAgentPageListener = createMcpAgentPageRequestListener(pool);
+  const mcpAgentPageListener = createMcpAgentPageRequestListener(pool, routeDependencies.aiGateway);
   const approvalRequestsListener = createApprovalRequestsRequestListener(pool);
-  const agentRunListener = createAgentRunRequestListener(pool);
+  const agentRunListener = createAgentRunRequestListener(pool, options.moduleRegistry);
   const authListener = createAuthRequestListener(pool, {
     passwordResetMailer: options.passwordResetMailer,
     appBaseUrl: options.appBaseUrl,

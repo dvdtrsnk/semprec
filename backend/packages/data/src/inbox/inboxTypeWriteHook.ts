@@ -3,13 +3,38 @@
 // `targetDatabase` is checked here, inside the write's own transaction, whichever writer makes it
 // (REST, an agent tool, `/mcp`). A refusal rolls the write back. See
 // docs/adr/2026-10-09-item-create-domain-hooks.md.
+import type { PoolClient } from "pg";
 import type { ItemCreateHook, ItemUpdateHook } from "../chokePoint/hooks.js";
+import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
+import { ValidationError } from "../errors.js";
 import { INBOX_ITEM_TYPES_MODULE_ID } from "../seed/inboxPipelineKeys.js";
-import { assertValidProcessingConfig } from "./inboxTypesStore.js";
+import { INBOX_TYPE_MODULE_TARGET_DATABASES, assertValidProcessingConfig } from "./inboxTypesStore.js";
 
-export const inboxTypeItemCreateHook: ItemCreateHook = async ({ database, properties }) => {
+/**
+ * Judges the pair as it would be stored: the rules of `assertValidProcessingConfig`, then, for a target of
+ * `INBOX_TYPE_MODULE_TARGET_DATABASES`, that the tenant has that database (issue #1973). A type may not target a
+ * database whose module is not delivered to the tenant. The lookup runs on the write's own client, so it is
+ * scoped to the writing tenant and sees the same transaction.
+ */
+async function assertValidTypeTarget(
+  client: PoolClient,
+  resolvedMethod: unknown,
+  resolvedTarget: unknown,
+): Promise<void> {
+  assertValidProcessingConfig(resolvedMethod, resolvedTarget);
+  if (resolvedMethod !== "database") return;
+  const moduleTarget = INBOX_TYPE_MODULE_TARGET_DATABASES.find((moduleId) => moduleId === resolvedTarget);
+  if (moduleTarget === undefined) return;
+  if (!(await getDatabaseByModuleId(client, moduleTarget))) {
+    throw new ValidationError(`'targetDatabase' '${moduleTarget}' is not a database of this tenant`, {
+      field: "targetDatabase",
+    });
+  }
+}
+
+export const inboxTypeItemCreateHook: ItemCreateHook = async ({ client, database, properties }) => {
   if (database.ownerModuleId !== INBOX_ITEM_TYPES_MODULE_ID) return;
-  assertValidProcessingConfig(properties.processingMethod, properties.targetDatabase);
+  await assertValidTypeTarget(client, properties.processingMethod, properties.targetDatabase);
 };
 
 /**
@@ -18,8 +43,8 @@ export const inboxTypeItemCreateHook: ItemCreateHook = async ({ database, proper
  * its other fields, such as its name; a write that touches `processingMethod` or `targetDatabase` is judged
  * on the pair as it would then be stored.
  */
-export const inboxTypeItemUpdateHook: ItemUpdateHook = async ({ database, item, propertiesPatch }) => {
+export const inboxTypeItemUpdateHook: ItemUpdateHook = async ({ client, database, item, propertiesPatch }) => {
   if (database.ownerModuleId !== INBOX_ITEM_TYPES_MODULE_ID) return;
   if (!Object.hasOwn(propertiesPatch, "processingMethod") && !Object.hasOwn(propertiesPatch, "targetDatabase")) return;
-  assertValidProcessingConfig(item.properties.processingMethod, item.properties.targetDatabase);
+  await assertValidTypeTarget(client, item.properties.processingMethod, item.properties.targetDatabase);
 };

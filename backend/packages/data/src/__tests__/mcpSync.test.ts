@@ -1,6 +1,9 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
-import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@semprec/queue";
+import { AiGatewayFailedError, type AiGatewayClientPort, type AiGatewayCompletionInput } from "@semprec/shared";
+import { getTenantZeroId, getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
 import {
   DEFAULT_CONTRACT_TOOLS,
   allowLoopbackOutboundForTests,
@@ -16,13 +19,23 @@ import { withTransaction } from "../db/pool.js";
 import { createUser } from "../auth/usersStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
-import { listAllTools, syncMcpServerTools } from "../mcp/mcpSync.js";
+import {
+  enqueueMcpServerSync,
+  handleMcpServerSyncTask,
+  listAllTools,
+  mcpServerSyncJobKey,
+  syncMcpServerTools,
+} from "../mcp/mcpSync.js";
 import type { connectMcpServer as ConnectMcpServerFn, McpClientHandle } from "../mcp/mcpConnectionFactory.js";
 import { listMcpToolRegistrationsForServer } from "../mcp/mcpToolRegistrationsStore.js";
 import { setMcpToolRequiresApproval, setMcpToolRiskClass } from "../mcp/mcpGrantsAdminStore.js";
 import type { McpConnectionConfig } from "../mcp/mcpConnectionConfig.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { logger } from "../mcp/logger.js";
+import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
+import { createActionQueueAffinity, createActionRegistry } from "../scheduler/actions.js";
+import { createCoreTaskList } from "../worker.js";
+import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 
 /**
  * `connectMock.impl` is what the mocked `connectMcpServer` actually calls — defaults to the real
@@ -112,9 +125,8 @@ describe("MCP tool sync (issue #125)", () => {
     restoreOutboundPolicy = allowLoopbackOutboundForTests();
   });
 
-  afterAll(async () => {
+  afterAll(() => {
     restoreOutboundPolicy();
-    await pool?.end();
   });
 
   describe.each([
@@ -333,6 +345,84 @@ describe("MCP tool sync (issue #125)", () => {
     await expect(syncMcpServerTools(pool, "00000000-0000-0000-0000-000000000000")).rejects.toThrow(NotFoundError);
   });
 
+  describe("a server item that goes to the Trash while its tools are listed (issue gh-1984)", () => {
+    /** Trashes the server item through the choke point and returns the row as the Trash left it. */
+    async function trashServer(itemId: string) {
+      await withTransaction(pool, (client) =>
+        itemDeleteWithClient(client, mcpServersId, itemId, { queueAffinity: createActionQueueAffinity() }),
+      );
+      return getServerItem(itemId);
+    }
+
+    it("writes no registration and no status, announces nothing and still closes the connection", async () => {
+      const contract = startStdioContractServer();
+      try {
+        const item = await createMcpServerItem(contract.connectionConfig);
+        const closes = vi.fn();
+        let trashed: Awaited<ReturnType<typeof getServerItem>> | undefined;
+        connectMock.impl = async (...args: Parameters<typeof ConnectMcpServerFn>) => {
+          const handle = await connectMock.actual(...args);
+          trashed = await trashServer(item.id);
+          return {
+            ...handle,
+            close: async () => {
+              closes();
+              await handle.close();
+            },
+          };
+        };
+        const announcements: InvalidationEvent[] = [];
+        setInvalidationHook((event) => announcements.push(event));
+        // A sync that stops because its server item is gone is no failure to log: the item has no status to record.
+        const loggerErrorSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
+
+        try {
+          await expect(syncMcpServerTools(pool, item.id)).rejects.toThrow(NotFoundError);
+          expect(loggerErrorSpy).not.toHaveBeenCalled();
+        } finally {
+          setInvalidationHook(() => {});
+          loggerErrorSpy.mockRestore();
+        }
+
+        expect(await listMcpToolRegistrationsForServer(pool, item.id)).toEqual([]);
+        expect(await getServerItem(item.id)).toEqual(trashed);
+        expect(announcements.filter((event) => event.scope === "mcpServers")).toEqual([]);
+        expect(closes).toHaveBeenCalledOnce();
+      } finally {
+        await contract.stop();
+      }
+    });
+
+    it("records no failure on the trashed item when the sync itself failed", async () => {
+      const contract = startStdioContractServer([
+        { name: "dup", description: "one", inputSchema: { type: "object", properties: {} } },
+        { name: "dup", description: "two", inputSchema: { type: "object", properties: {} } },
+      ]);
+      try {
+        const item = await createMcpServerItem(contract.connectionConfig);
+        let trashed: Awaited<ReturnType<typeof getServerItem>> | undefined;
+        connectMock.impl = async (...args: Parameters<typeof ConnectMcpServerFn>) => {
+          const handle = await connectMock.actual(...args);
+          trashed = await trashServer(item.id);
+          return handle;
+        };
+
+        const loggerErrorSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
+        try {
+          await expect(syncMcpServerTools(pool, item.id)).rejects.toThrow(ValidationError);
+          expect(loggerErrorSpy).not.toHaveBeenCalled();
+        } finally {
+          loggerErrorSpy.mockRestore();
+        }
+
+        expect(trashed?.deletedAt).not.toBeNull();
+        expect(await getServerItem(item.id)).toEqual(trashed);
+      } finally {
+        await contract.stop();
+      }
+    });
+  });
+
   describe("tool schema policy (issue #696)", () => {
     it("rejects a catastrophic-backtracking pattern, records a fixed error, and writes no registration", async () => {
       const contract = startStdioContractServer([
@@ -470,4 +560,378 @@ describe("listAllTools (pagination)", () => {
 
     await expect(listAllTools(client)).rejects.toThrow(ValidationError);
   });
+});
+
+describe("mcpServerSync job (issue gh-1976)", () => {
+  interface JobRow {
+    task_identifier: string;
+    key: string | null;
+    max_attempts: number;
+    attempts: number;
+    last_error: string | null;
+  }
+
+  let actingUserId: string;
+  let announcements: InvalidationEvent[];
+
+  /** The pending or failed `mcpServerSync` jobs, read through graphile-worker's public `jobs` view. */
+  async function syncJobs(): Promise<JobRow[]> {
+    const { rows } = await pool.query<JobRow>(
+      `SELECT task_identifier, key, max_attempts, attempts, last_error
+         FROM graphile_worker.jobs WHERE task_identifier = $1 ORDER BY key`,
+      [CORE_TASK_NAMES.MCP_SERVER_SYNC],
+    );
+    return rows;
+  }
+
+  /**
+   * The business payload of the pending `mcpServerSync` jobs. The public `jobs` view has no payload column, so this
+   * reads the private table, as the other job tests do (graphile-worker 0.17.3: `_private_jobs.payload` holds the
+   * queue envelope, whose `payload` is what `enqueueJob` was given).
+   */
+  async function syncJobPayloads(): Promise<Record<string, unknown>[]> {
+    const { rows } = await pool.query<{ payload: { payload: Record<string, unknown> } }>(
+      `SELECT j.payload FROM graphile_worker._private_jobs j
+         JOIN graphile_worker._private_tasks t ON t.id = j.task_id
+        WHERE t.identifier = $1 ORDER BY j.key`,
+      [CORE_TASK_NAMES.MCP_SERVER_SYNC],
+    );
+    return rows.map((row) => row.payload.payload);
+  }
+
+  /** Enqueues in a transaction of tenant zero that commits. */
+  function enqueue(mcpServerItemId: string): Promise<void> {
+    return inTenantZero(() =>
+      withTransaction(pool, (client) => enqueueMcpServerSync(client, { mcpServerItemId, actingUserId })),
+    );
+  }
+
+  /** Runs every due job through the core task list, as the `api` worker does. */
+  async function drainQueue(): Promise<void> {
+    await runOnce({ pgPool: pool, taskList: createCoreTaskList(pool, createActionRegistry()) });
+  }
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    viewTypeRegistry = createViewTypeRegistry();
+    await resetDatabase(pool);
+    await seedSystem(pool, viewTypeRegistry);
+    mcpServersId = await databaseIdFor("mcpServers");
+    actingUserId = (
+      await createUser(pool, {
+        email: "admin@example.test",
+        passwordHash: "unused",
+        tenantId: getTenantZeroId(),
+        role: "admin",
+      })
+    ).id;
+    connectMock.impl = connectMock.actual;
+    announcements = [];
+    setInvalidationHook((event) => announcements.push(event));
+  });
+
+  let restoreOutboundPolicy: () => void;
+  beforeAll(() => {
+    restoreOutboundPolicy = allowLoopbackOutboundForTests();
+  });
+
+  afterEach(() => {
+    setInvalidationHook(() => {});
+  });
+
+  afterAll(() => {
+    restoreOutboundPolicy();
+  });
+
+  it("enqueues one job under the key mcp-server-sync-<id> with a single attempt and a payload without any credential", async () => {
+    const item = await createMcpServerItem(
+      { transport: "http", url: "https://mcp.example.com/mcp" },
+      "sk-super-secret-credential",
+    );
+
+    await enqueue(item.id);
+
+    const jobs = await syncJobs();
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]).toMatchObject({
+      task_identifier: "mcpServerSync",
+      key: `mcp-server-sync-${item.id}`,
+      max_attempts: 1,
+      attempts: 0,
+    });
+    const payloads = await syncJobPayloads();
+    expect(payloads).toEqual([{ mcpServerItemId: item.id, actingUserId }]);
+    expect(JSON.stringify(payloads)).not.toContain("sk-super-secret-credential");
+    expect(mcpServerSyncJobKey(item.id)).toBe(`mcp-server-sync-${item.id}`);
+  });
+
+  it("collapses a second enqueue for the same server onto the pending job and keeps one job per server", async () => {
+    const first = await createMcpServerItem({ transport: "http", url: "https://mcp.example.com/one" });
+    const second = await createMcpServerItem({ transport: "http", url: "https://mcp.example.com/two" });
+
+    await enqueue(first.id);
+    await enqueue(first.id);
+    await enqueue(second.id);
+
+    expect((await syncJobs()).map((job) => job.key)).toEqual(
+      [`mcp-server-sync-${first.id}`, `mcp-server-sync-${second.id}`].sort(),
+    );
+  });
+
+  it("leaves no job when the transaction of the enqueue rolls back", async () => {
+    const item = await createMcpServerItem({ transport: "http", url: "https://mcp.example.com/mcp" });
+
+    await expect(
+      inTenantZero(() =>
+        withTransaction(pool, async (client) => {
+          await enqueueMcpServerSync(client, { mcpServerItemId: item.id, actingUserId });
+          throw new Error("rolled back");
+        }),
+      ),
+    ).rejects.toThrow("rolled back");
+
+    expect(await syncJobs()).toEqual([]);
+  });
+
+  it("registers the tools of a reachable server, sets syncStatus ok and announces the item change", async () => {
+    const contract = await startHttpContractServer();
+    try {
+      const item = await createMcpServerItem(contract.connectionConfig, "sk-credential");
+      await enqueue(item.id);
+      announcements.length = 0;
+
+      await drainQueue();
+
+      const registrations = await listMcpToolRegistrationsForServer(pool, item.id);
+      expect(registrations.map((r) => [r.toolName, r.active])).toEqual([["search_web", true]]);
+      const updated = await getServerItem(item.id);
+      expect(updated.properties.syncStatus).toBe("ok");
+      expect(updated.properties.syncError).toBeNull();
+      expect(announcements).toContainEqual(
+        expect.objectContaining({ scope: "item", databaseId: mcpServersId, itemId: item.id, op: "update" }),
+      );
+      expect(announcements).toContainEqual(expect.objectContaining({ scope: "mcpServers" }));
+      // The job completed and left the queue.
+      expect(await syncJobs()).toEqual([]);
+      // The sync connected as the user whose confirmation queued it.
+      const { rows: accesses } = await pool.query<{ actor_id: string | null; purpose: string }>(
+        "SELECT actor_id, purpose FROM credential_access_log WHERE item_id = $1",
+        [item.id],
+      );
+      expect(accesses).toEqual([{ actor_id: actingUserId, purpose: "mcp_tool_sync" }]);
+    } finally {
+      await contract.stop();
+    }
+  });
+
+  describe("tool label suggestions (issue gh-1983)", () => {
+    const gatewayCalls: AiGatewayCompletionInput[] = [];
+
+    function gatewayAnswering(answer: () => unknown): AiGatewayClientPort {
+      gatewayCalls.length = 0;
+      return {
+        complete: async (input) => {
+          gatewayCalls.push(input);
+          return { content: answer(), usage: { inputTokens: 1, outputTokens: 1 } };
+        },
+      };
+    }
+
+    /** Runs every due job through a core task list that was built with `gateway`, as the api worker does. */
+    async function drainQueueWithGateway(gateway: AiGatewayClientPort): Promise<void> {
+      // `aiGateway` is the twelfth parameter of `createCoreTaskList`; the ones before it keep their defaults.
+      const taskList = createCoreTaskList(
+        pool,
+        createActionRegistry(),
+        undefined, // libraryMetadataFetcher
+        undefined, // mailSyncAdapters
+        undefined, // mailBlobStorage
+        undefined, // legacyRawMimeFetcher
+        undefined, // moduleRegistry
+        undefined, // pushSenders
+        undefined, // genericOperationApprovalReplay
+        undefined, // filesBlobStorage
+        undefined, // tenantBlobStorageDirs
+        gateway,
+      );
+      await runOnce({ pgPool: pool, taskList });
+    }
+
+    async function storedLabels(id: string): Promise<Record<string, unknown>> {
+      const registrations = await listMcpToolRegistrationsForServer(pool, id);
+      return Object.fromEntries(
+        registrations.map((registration) => [registration.toolName, registration.displayLabel]),
+      );
+    }
+
+    it("labels the registered tools after a successful queued sync, through the gateway operation of no project", async () => {
+      const contract = await startHttpContractServer();
+      try {
+        const item = await createMcpServerItem(contract.connectionConfig);
+        await enqueue(item.id);
+        const gateway = gatewayAnswering(() => ({
+          labels: [{ toolName: "search_web", cs: "Hledat na webu", en: "Search the web" }],
+        }));
+
+        await drainQueueWithGateway(gateway);
+
+        expect(await storedLabels(item.id)).toEqual({ search_web: { cs: "Hledat na webu", en: "Search the web" } });
+        expect(gatewayCalls).toHaveLength(1);
+        expect(gatewayCalls[0]).toMatchObject({ operation: "mcp_tool_label", projectItemId: null });
+        expect((await getServerItem(item.id)).properties.syncStatus).toBe("ok");
+        expect(await syncJobs()).toEqual([]);
+      } finally {
+        await contract.stop();
+      }
+    });
+
+    it.each(["budget_exceeded", "timeout", "invalid_response"] as const)(
+      "ends the job normally, with the tools registered and no label, when the gateway fails with %s",
+      async (reason) => {
+        const contract = await startHttpContractServer();
+        try {
+          const item = await createMcpServerItem(contract.connectionConfig);
+          await enqueue(item.id);
+          const gateway = gatewayAnswering(() => {
+            throw new AiGatewayFailedError(reason);
+          });
+
+          await drainQueueWithGateway(gateway);
+
+          expect(gatewayCalls).toHaveLength(1);
+          expect(await storedLabels(item.id)).toEqual({ search_web: null });
+          expect((await getServerItem(item.id)).properties.syncStatus).toBe("ok");
+          // Completed rather than failed: no row is left in the queue.
+          expect(await syncJobs()).toEqual([]);
+        } finally {
+          await contract.stop();
+        }
+      },
+    );
+
+    it("asks the gateway nothing when the sync fails", async () => {
+      const contract = await startHttpContractServer();
+      const { connectionConfig } = contract;
+      await contract.stop();
+      const item = await createMcpServerItem(connectionConfig);
+      await enqueue(item.id);
+      const gateway = gatewayAnswering(() => ({ labels: [] }));
+
+      await drainQueueWithGateway(gateway);
+
+      expect(gatewayCalls).toHaveLength(0);
+      expect((await getServerItem(item.id)).properties.syncStatus).toBe("error");
+    });
+
+    it("syncs and leaves the labels empty when the task list was built without a gateway", async () => {
+      const contract = await startHttpContractServer();
+      try {
+        const item = await createMcpServerItem(contract.connectionConfig);
+        await enqueue(item.id);
+
+        await drainQueue();
+
+        expect(await storedLabels(item.id)).toEqual({ search_web: null });
+        expect((await getServerItem(item.id)).properties.syncStatus).toBe("ok");
+      } finally {
+        await contract.stop();
+      }
+    });
+  });
+
+  it("records syncStatus error with a safe message for an unreachable server, ends without an error and is not retried", async () => {
+    const contract = await startHttpContractServer();
+    const { connectionConfig } = contract;
+    await contract.stop();
+    const item = await createMcpServerItem(connectionConfig);
+    await enqueue(item.id);
+
+    await drainQueue();
+
+    const updated = await getServerItem(item.id);
+    expect(updated.properties.syncStatus).toBe("error");
+    expect(updated.properties.syncError).toEqual(expect.any(String));
+    expect(await listMcpToolRegistrationsForServer(pool, item.id)).toEqual([]);
+    // Completed rather than failed: no row is left to be retried.
+    expect(await syncJobs()).toEqual([]);
+  });
+
+  it("swallows the tool-list validation failure it has recorded on the item", async () => {
+    const contract = await startHttpContractServer();
+    try {
+      contract.setTools([
+        { name: "dup", description: "one", inputSchema: { type: "object", properties: {} } },
+        { name: "dup", description: "two", inputSchema: { type: "object", properties: {} } },
+      ]);
+      const item = await createMcpServerItem(contract.connectionConfig);
+
+      await expect(handleMcpServerSyncTask(pool, { mcpServerItemId: item.id, actingUserId })).resolves.toBeUndefined();
+
+      expect((await getServerItem(item.id)).properties.syncStatus).toBe("error");
+      expect(await listMcpToolRegistrationsForServer(pool, item.id)).toEqual([]);
+    } finally {
+      await contract.stop();
+    }
+  });
+
+  it("is a no-op for a server item that does not exist", async () => {
+    await expect(
+      handleMcpServerSyncTask(pool, { mcpServerItemId: randomUUID(), actingUserId }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("is a no-op for a server item that is in the Trash", async () => {
+    const item = await createMcpServerItem({ transport: "http", url: "https://mcp.example.com/mcp" });
+    await withTransaction(pool, (client) =>
+      itemDeleteWithClient(client, mcpServersId, item.id, { queueAffinity: createActionQueueAffinity() }),
+    );
+    const connect = vi.fn(connectMock.actual);
+    connectMock.impl = connect;
+
+    await expect(handleMcpServerSyncTask(pool, { mcpServerItemId: item.id, actingUserId })).resolves.toBeUndefined();
+
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it("lets an unexpected error reach the queue, which does not retry it", async () => {
+    const item = await createMcpServerItem({ transport: "http", url: "https://mcp.example.com/mcp" });
+    connectMock.impl = () => Promise.reject(new Error("unexpected failure"));
+    await enqueue(item.id);
+
+    await expect(handleMcpServerSyncTask(pool, { mcpServerItemId: item.id, actingUserId })).rejects.toThrow(
+      "unexpected failure",
+    );
+    await drainQueue();
+
+    // The one allowed attempt is used up: the job stays as a failed one and has no next run.
+    const [job] = await syncJobs();
+    expect(job).toMatchObject({ attempts: 1, max_attempts: 1, last_error: expect.stringContaining("unexpected") });
+    // The sync recorded a fixed message and not the error's own text.
+    const updated = await getServerItem(item.id);
+    expect(updated.properties.syncError).toBe("MCP tool sync failed for an unexpected reason");
+  });
+
+  it.each(["mcpServerItemId", "actingUserId"])(
+    "fails a job whose payload lacks the string field %s and connects nowhere",
+    async (missing) => {
+      const connect = vi.fn(connectMock.actual);
+      connectMock.impl = connect;
+      const payload: Record<string, unknown> = { mcpServerItemId: randomUUID(), actingUserId };
+      delete payload[missing];
+      await inTenantZero(() =>
+        enqueueJob(pool, CORE_TASK_NAMES.MCP_SERVER_SYNC, payload, { maxAttempts: 1, jobKey: `missing-${missing}` }),
+      );
+
+      await drainQueue();
+
+      const [job] = await syncJobs();
+      expect(job).toMatchObject({ last_error: `Job payload missing string field '${missing}'` });
+      expect(connect).not.toHaveBeenCalled();
+    },
+  );
+});
+
+// Closed once, after every describe of this file has used the pool.
+afterAll(async () => {
+  await pool?.end();
 });

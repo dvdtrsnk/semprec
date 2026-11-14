@@ -593,6 +593,18 @@ export interface CalendarTimelineInFullShape extends CalendarTimeline {
   items: CalendarTimelineEntry[];
 }
 
+/** The range of a timeline read and, for a caller that may not see sleep data, the switch that leaves it out. */
+interface CalendarTimelineInput {
+  from: string;
+  to: string;
+  /**
+   * `false` leaves the sleep nights out and reads none of the sleep databases (they are sensitive,
+   * docs/adr/2026-11-14-the-calendar-timeline-tool-leaves-out-sleep-nights-the-caller-may-not-read.md). Absent is
+   * `true`: the routes answer the user, who has no per-database grant.
+   */
+  includeSleep?: boolean;
+}
+
 /**
  * Everything on the calendar from `from` to `to`, both days included (issue #1717): the items of every source
  * in `CALENDAR_TIMELINE_SOURCES`, merged and ordered by day (an entry's `date`, a trace's `day`, a sleep night's
@@ -611,15 +623,15 @@ export interface CalendarTimelineInFullShape extends CalendarTimeline {
  */
 export function readCalendarTimeline(
   client: PoolClient,
-  input: { from: string; to: string; shape: "full" },
+  input: CalendarTimelineInput & { shape: "full" },
 ): Promise<CalendarTimelineInFullShape>;
 export function readCalendarTimeline(
   client: PoolClient,
-  input: { from: string; to: string; shape: "full" | "compact" },
+  input: CalendarTimelineInput & { shape: "full" | "compact" },
 ): Promise<CalendarTimeline>;
 export async function readCalendarTimeline(
   client: PoolClient,
-  input: { from: string; to: string; shape: "full" | "compact" },
+  input: CalendarTimelineInput & { shape: "full" | "compact" },
 ): Promise<CalendarTimeline> {
   const clock = await getCalendarClock(client);
   const at = new Date();
@@ -630,6 +642,7 @@ export async function readCalendarTimeline(
     today: clock.today(at),
     now: clock.now(at),
     at,
+    includeSleep: input.includeSleep ?? true,
   };
   const read: CalendarTimelineEntry[] = [];
   for (const source of CALENDAR_TIMELINE_SOURCES) read.push(...(await source.readItems(client, context)));

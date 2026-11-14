@@ -1,19 +1,28 @@
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
+import { CORE_TASK_NAMES, cancelJob, enqueueJob } from "@semprec/queue";
+import type { AiGatewayClientPort } from "@semprec/shared";
 import { withTransaction } from "../db/pool.js";
 import { updateItemWithClient } from "../chokePoint/itemWrites.js";
-import { getItemById } from "../chokePoint/itemsStore.js";
+import { getItemById, lockItemById } from "../chokePoint/itemsStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import { NotFoundError, ValidationError } from "../errors.js";
+import type { DatabaseRow } from "../types.js";
 import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
 import { connectMcpServer, type McpClientHandle } from "./mcpConnectionFactory.js";
 import { McpConnectionError } from "./mcpConnectionError.js";
 import { publishMcpServersInvalidation } from "./mcpServersInvalidation.js";
-import { deactivateMcpToolRegistrationsNotIn, upsertMcpToolRegistration } from "./mcpToolRegistrationsStore.js";
+import {
+  deactivateMcpToolRegistrationsNotIn,
+  upsertClassifiedMcpToolRegistration,
+} from "./mcpToolRegistrationsStore.js";
+import { classifyMcpToolFromAnnotations, type McpToolAnnotationHints } from "./mcpToolAnnotationClassification.js";
+import { suggestMcpToolLabels } from "./mcpToolLabelSuggestion.js";
 import { assertAcceptableMcpToolSchema } from "./mcpToolSchemaPolicy.js";
 import { logger } from "./logger.js";
 
 /**
- * The human-only "Synchronize tools" action (issue #125): opens a connection through the
+ * The "Synchronize tools" action (issue #125), run by a human or, once a human confirmed an MCP server card, by its
+ * queued `mcpServerSync` job (issue gh-1976, `handleMcpServerSyncTask` below): opens a connection through the
  * factory from #231, calls MCP `tools/list`, strictly validates the response, and
  * transactionally materializes registrations (`mcpToolRegistrationsStore.ts`, issue #124).
  *
@@ -23,9 +32,11 @@ import { logger } from "./logger.js";
  * `syncMcpServerTools` — only an authenticated human-facing caller is meant to invoke it. It IS
  * exported from this package's public `index.ts` surface (unlike `mcpGrantsAdminStore.ts`'s
  * mutations): reconciling `mcp_tool_registrations.active`/schema is the sync-facing write
- * `upsertMcpToolRegistration` already documents itself as being safe for any consumer to reach,
- * and doing so here doesn't touch the `risk_class`/`requires_approval`/`granted` columns that
- * issue #124 carves out as user-only.
+ * and doing so here doesn't touch the `granted` or `display_label` columns that issue #124 carves out as user-only.
+ * It writes `risk_class`/`requires_approval` only for a registration whose `classification_source` is `annotation`,
+ * through `upsertClassifiedMcpToolRegistration`, which is imported here by its relative path and is not on the
+ * package's public surface; the exported `upsertMcpToolRegistration` has no way to write them
+ * ([[2026-11-14-mcp-tool-classification-is-owned-by-the-annotation-sync-until-a-person-sets-it]]).
  */
 
 /** The only keys this action is allowed to write on an `mcpServers` item — all three are `owner: 'system'`, and this sync action is their declared owning process (seedMcpModule.ts). */
@@ -45,12 +56,15 @@ interface ParsedListedTool {
   name: string;
   description: string | null;
   inputSchema: unknown;
+  /** The annotation hints the server advertised, or null when it advertised no annotations object. */
+  annotationHints: McpToolAnnotationHints | null;
 }
 
 interface RawListedTool {
   name: string;
   description?: string;
   inputSchema: unknown;
+  annotations?: unknown;
 }
 
 /** Guards against a misbehaving server whose `nextCursor` never terminates — comfortably above any real tool catalog. */
@@ -71,6 +85,27 @@ export async function listAllTools(client: McpClientHandle["client"]): Promise<R
     cursor = result.nextCursor;
   }
   throw new ValidationError("MCP server's tools/list response never terminated pagination");
+}
+
+/**
+ * Keeps the three boolean hints of a listed tool's `annotations` and drops everything else, including a hint that is
+ * not a boolean. Anything that is not an object is no annotations at all (null), which is not the same as an empty
+ * object: a present object with no hint of its own still takes the MCP defaults in `classifyMcpToolFromAnnotations`.
+ */
+function pickAnnotationHints(annotations: unknown): McpToolAnnotationHints | null {
+  if (typeof annotations !== "object" || annotations === null || Array.isArray(annotations)) return null;
+  const booleanHint = (key: keyof McpToolAnnotationHints): boolean | undefined => {
+    const value: unknown = Reflect.get(annotations, key);
+    return typeof value === "boolean" ? value : undefined;
+  };
+  const hints: McpToolAnnotationHints = {};
+  const readOnlyHint = booleanHint("readOnlyHint");
+  const destructiveHint = booleanHint("destructiveHint");
+  const openWorldHint = booleanHint("openWorldHint");
+  if (readOnlyHint !== undefined) hints.readOnlyHint = readOnlyHint;
+  if (destructiveHint !== undefined) hints.destructiveHint = destructiveHint;
+  if (openWorldHint !== undefined) hints.openWorldHint = openWorldHint;
+  return hints;
 }
 
 /**
@@ -102,7 +137,12 @@ function validateListedTools(tools: readonly RawListedTool[]): ParsedListedTool[
     }
     seenNames.add(name);
     assertAcceptableMcpToolSchema(tool.inputSchema);
-    parsed.push({ name, description: tool.description ?? null, inputSchema: tool.inputSchema });
+    parsed.push({
+      name,
+      description: tool.description ?? null,
+      inputSchema: tool.inputSchema,
+      annotationHints: pickAnnotationHints(tool.annotations),
+    });
   }
   return parsed;
 }
@@ -119,17 +159,25 @@ function safeSyncErrorMessage(err: unknown): string {
   return "MCP tool sync failed for an unexpected reason";
 }
 
+/** Locks the server item and returns whether it exists and is not in the Trash, in the caller's transaction. */
+async function lockLiveServer(client: PoolClient, mcpServersDatabaseId: string, mcpServerItemId: string) {
+  const server = await lockItemById(client, mcpServersDatabaseId, mcpServerItemId);
+  return server !== null && server.deletedAt === null;
+}
+
 /**
- * Runs one explicit, human-triggered sync pass for `mcpServerItemId`: connects (#231), calls
+ * Runs one sync pass for `mcpServerItemId`, started by a human through the sync route or by the
+ * `mcpServerSync` job a human's confirmation queued: connects (#231), calls
  * `tools/list`, validates it, then in a single transaction upserts every advertised tool
- * (new names get the default `requires_approval`/`risk_class` from `mcp_tool_registrations`'
- * own column defaults; an existing tool's human-set classification is left untouched — see
- * `upsertMcpToolRegistration`), deactivates any previously-active registration the server no
+ * (`requires_approval`/`risk_class` come from the tool's annotations, `classifyMcpToolFromAnnotations`; an existing
+ * tool whose classification a person set keeps it — see `upsertClassifiedMcpToolRegistration`), deactivates any previously-active registration the server no
  * longer advertises (`deactivateMcpToolRegistrationsNotIn` — audit identity survives, only
  * `active` flips), and records `syncStatus: 'ok'`/`lastSynced`/`syncError: null` on the server
  * item. A connection or validation failure instead records `syncStatus: 'error'` with a safe
  * message and leaves `mcp_tool_registrations` exactly as it was — prior registrations remain
- * authoritative. A successful pass announces one `mcpServers` invalidation once its transaction has
+ * authoritative. A server item that is gone or in the Trash raises `NotFoundError` before the connection is made, and again
+ * when the registrations would be written if it went to the Trash while the tools were being listed; nothing is written
+ * for it then, and no status is recorded on it. A successful pass announces one `mcpServers` invalidation once its transaction has
  * committed (`publishMcpServersInvalidation`); a failed one announces nothing. The connection is always
  * closed, on both the success and failure path.
  */
@@ -156,13 +204,19 @@ export async function syncMcpServerTools(
     const parsedTools = validateListedTools(tools);
 
     await withTransaction(pool, async (client) => {
+      // The connection was made and the tools were listed outside any transaction: the server item can have gone to
+      // the Trash meanwhile (the undo of its confirmation, gh-1984). Nothing is written for it then.
+      if (!(await lockLiveServer(client, mcpServersDatabaseId, mcpServerItemId))) {
+        throw new NotFoundError(`No MCP server item '${mcpServerItemId}'`);
+      }
       for (const tool of parsedTools) {
-        await upsertMcpToolRegistration(client, {
+        await upsertClassifiedMcpToolRegistration(client, {
           mcpServerItemId,
           toolName: tool.name,
           toolSchema: tool.inputSchema,
           description: tool.description,
           active: true,
+          classification: classifyMcpToolFromAnnotations(tool.annotationHints),
         });
       }
       await deactivateMcpToolRegistrationsNotIn(
@@ -188,8 +242,10 @@ export async function syncMcpServerTools(
   } catch (err) {
     const syncError = safeSyncErrorMessage(err);
     try {
-      await withTransaction(pool, (client) =>
-        updateItemWithClient(
+      await withTransaction(pool, async (client) => {
+        // A server item that is gone or in the Trash has no status to record.
+        if (!(await lockLiveServer(client, mcpServersDatabaseId, mcpServerItemId))) return;
+        await updateItemWithClient(
           client,
           {
             databaseId: mcpServersDatabaseId,
@@ -197,8 +253,8 @@ export async function syncMcpServerTools(
             propertiesPatch: { syncStatus: "error", lastSynced: new Date().toISOString(), syncError },
           },
           { allowedSystemKeys: MCP_SERVER_SYNC_ALLOWED_KEYS },
-        ),
-      );
+        );
+      });
     } catch (recordingErr) {
       // The original sync failure (`err`, thrown below) is what the caller needs to see — a
       // secondary failure while merely trying to *record* it must never replace or hide it.
@@ -221,4 +277,81 @@ export async function syncMcpServerTools(
   // exactly as it did before this connection was ever wrapped in error-recording logic.
   await handle.close();
   return { toolCount };
+}
+
+/** The stable job key of the sync of one MCP server item: a second enqueue for the same server collapses onto the pending job. */
+export function mcpServerSyncJobKey(mcpServerItemId: string): string {
+  return `mcp-server-sync-${mcpServerItemId}`;
+}
+
+/**
+ * The payload of an `mcpServerSync` job: the server item and the user whose confirmation created it, who is the
+ * `actorId` of the sync's connection. It carries no credential: the sync reads the stored one at connect time.
+ */
+export interface McpServerSyncPayload {
+  mcpServerItemId: string;
+  actingUserId: string;
+}
+
+/**
+ * Enqueues the `mcpServerSync` job of one MCP server item on the caller's open transaction, so the job exists exactly
+ * when that transaction commits and a rollback leaves none. `maxAttempts: 1`: a failed sync is recorded on the item
+ * (`syncStatus: error`) and the user retries it through `POST /api/mcp-servers/:id/sync`, so the queue does not.
+ */
+export async function enqueueMcpServerSync(client: PoolClient, payload: McpServerSyncPayload): Promise<void> {
+  await enqueueJob(
+    client,
+    CORE_TASK_NAMES.MCP_SERVER_SYNC,
+    { mcpServerItemId: payload.mcpServerItemId, actingUserId: payload.actingUserId },
+    { jobKey: mcpServerSyncJobKey(payload.mcpServerItemId), maxAttempts: 1 },
+  );
+}
+
+/**
+ * The inverse of `enqueueMcpServerSync` (issue gh-1984), on the caller's open transaction: removes the pending sync job of
+ * the server item, so the removal commits or rolls back with that transaction. A job no worker has started is deleted; one
+ * a worker is running is detached from its key and not retried (`cancelJob`), and its run ends as a no-op once it finds
+ * the server item in the Trash (`syncMcpServerTools`). A server item that has no job removes nothing.
+ */
+export async function cancelMcpServerSync(client: PoolClient, mcpServerItemId: string): Promise<void> {
+  await cancelJob(client, mcpServerSyncJobKey(mcpServerItemId));
+}
+
+/**
+ * The enqueue of a confirm: queues the sync of `itemId` when `targetDatabase` is the MCP servers database and the confirm
+ * has an acting user (the job's payload requires one, as nobody else could be named as the actor of the connection), and
+ * returns the id of the queued item, or null when nothing was queued.
+ */
+export async function enqueueMcpServerSyncForConfirm(
+  client: PoolClient,
+  targetDatabase: DatabaseRow | null,
+  itemId: string,
+  actingUserId: string | undefined,
+): Promise<string | null> {
+  if (targetDatabase?.ownerModuleId !== MCP_SERVERS_MODULE_ID || actingUserId === undefined) return null;
+  await enqueueMcpServerSync(client, { mcpServerItemId: itemId, actingUserId });
+  return itemId;
+}
+
+/**
+ * The handler of the `mcpServerSync` job: runs `syncMcpServerTools` for the server as `actingUserId`, and after a sync
+ * that succeeded asks `gateway` for labels of the tools that have none (`suggestMcpToolLabels`, issue gh-1983), which
+ * never fails the job; without a `gateway` that step is skipped. A sync that
+ * failed with an `McpConnectionError` or a tool-list `ValidationError` has tried to record `syncStatus: error` and a
+ * safe `syncError` on the item (a failure of that write is logged by the sync), so the job ends normally and is not
+ * retried, and no label is suggested. A `NotFoundError`, which the sync raises for a server item that does not exist or
+ * is in the Trash, is a no-op. Any other error is unexpected and reaches the queue.
+ */
+export async function handleMcpServerSyncTask(
+  pool: Pool,
+  payload: McpServerSyncPayload,
+  gateway?: AiGatewayClientPort,
+): Promise<void> {
+  try {
+    await syncMcpServerTools(pool, payload.mcpServerItemId, { actorId: payload.actingUserId });
+  } catch (err) {
+    if (err instanceof McpConnectionError || err instanceof ValidationError || err instanceof NotFoundError) return;
+    throw err;
+  }
+  if (gateway) await suggestMcpToolLabels(pool, gateway, payload.mcpServerItemId);
 }

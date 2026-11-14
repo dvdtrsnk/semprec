@@ -16,7 +16,14 @@ import {
   type MailDraftWriteContext,
 } from "./draft.js";
 import { attachFileToDraft, detachFileFromDraft } from "./mailDraftAttachments.js";
-import { sendMailDraft, type SentMailDraft } from "./mailDraftSend.js";
+import {
+  requireSendAdapters,
+  sendMailDraft,
+  type MailDraftSendRouteDependencies,
+  type SentMailDraft,
+} from "./mailDraftSend.js";
+
+export type { MailDraftSendRouteDependencies };
 import { createPrefilledEmailDraft, isPrefilledDraftMode } from "./mailDraftPrefill.js";
 import {
   draftAddress as address,
@@ -25,7 +32,6 @@ import {
   draftSubject as subject,
 } from "./mailDraftFields.js";
 import { MAIL_DRAFT_MODES } from "./mailDraftsStore.js";
-import type { MailSendAdapterFactory } from "./send.js";
 
 /**
  * The create body as it is first read: every field a prefilled mode computes is optional here. A `new` draft takes
@@ -269,31 +275,6 @@ export function createMailDraftAttachmentRemoveRouteHandler(pool: Pool) {
     );
     return { status: 200, body: draft };
   };
-}
-
-/**
- * The members of the composition root's custom-route container the send route reads
- * (docs/adr/2026-10-29-custom-route-composition-root-dependencies.md). `semprec-api`'s `CustomRouteDependencies` is
- * assignable to it.
- */
-export interface MailDraftSendRouteDependencies {
-  mailServerClients?: {
-    /** The transports and the attachment storage `sendDraftEmail` takes; `createDispatcher` of `semprec-api` supplies them. */
-    send?: MailSendAdapterFactory;
-  };
-}
-
-/**
- * The send adapters the composition root configured. A root that configured none fails the request with a plain error
- * and not a `ChokePointError`, as docs/adr/2026-10-29-custom-route-composition-root-dependencies.md decides for a member
- * that is not set: the adapter logs it and answers a generic 500, and the draft stays as it was.
- */
-function requireSendAdapters(dependencies: MailDraftSendRouteDependencies): MailSendAdapterFactory {
-  const send = dependencies.mailServerClients?.send;
-  if (send === undefined) {
-    throw new Error('custom route dependency "mailServerClients.send" is not configured by the composition root');
-  }
-  return send;
 }
 
 /**

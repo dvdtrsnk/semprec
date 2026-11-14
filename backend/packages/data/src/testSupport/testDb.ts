@@ -26,6 +26,7 @@ export {
   withTenantTransaction,
 } from "./tenantFixtures.js";
 export { createTestModuleItem, createTestProjectItem } from "./projectFixtures.js";
+export { recordingTransport, sendAdapters, transportFor } from "./mailSendFakes.js";
 export { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
 export { stubDnsLookup, type DnsLookupStub } from "./dnsLookupStub.js";
 export { writePageTextBlocks } from "./pageFixtures.js";
@@ -117,6 +118,7 @@ export { upsertMailMessageMeta } from "../mail/mailMessageMetaStore.js";
 export { createInboxItemWithClient } from "../inbox/inboxStore.js";
 export {
   confirmProposalWithClient,
+  reopenProposalWithClient,
   reviseProposalWithClient,
   updateProposalValuesWithClient,
 } from "../inbox/proposalActions.js";

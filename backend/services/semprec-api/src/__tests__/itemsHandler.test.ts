@@ -7,6 +7,7 @@ import {
   today,
   insertInboxAttachments,
   listInboxAttachments,
+  recordInboxAttachmentMetadata,
 } from "@semprec/data";
 import { z } from "zod";
 import * as Y from "yjs";
@@ -1643,6 +1644,14 @@ describe("item routes (issue #241)", () => {
         const own = await listInboxAttachments(client, [source.id]);
         const other = await listInboxAttachments(client, [foreign.id]);
         if (!own[0] || !other[0]) throw new Error("Missing test attachments");
+        // A tick waits for an image whose metadata job has not run (issue gh-1970); these photos count as unreadable.
+        for (const row of [own[0], other[0]])
+          await recordInboxAttachmentMetadata(client, {
+            attachmentId: row.attachmentId,
+            metadata: { pages: null, error: "mediaUnreadable" },
+            thumbnail: null,
+            reduced: null,
+          });
         return { own: own[0].attachmentId, foreign: other[0].attachmentId, blobId: ownBlob.id };
       });
       const tick = createSemprecTickAction(pool, async () => ({ properties: { name: "Task" } }));

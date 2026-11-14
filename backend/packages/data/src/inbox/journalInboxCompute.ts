@@ -15,6 +15,7 @@ import {
 import { AREAS_MODULE_ID, JOURNAL_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { indexItem } from "../search/itemSearchIndexer.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
+import { listInboxAttachments, type InboxAttachmentSource } from "./inboxAttachmentsStore.js";
 import { parseStoredProposalEnvelope, selectActiveSteps, type ProposalEntityKind } from "./inboxTickAction.js";
 
 /**
@@ -46,6 +47,25 @@ export interface JournalInboxProposalSummary {
   followUps: JournalInboxFollowUp[];
 }
 
+/**
+ * One attachment of an Inbox item as the day's cache holds it (issue gh-1969): ids and facts, never bytes. `blobId` names
+ * the original file; the preview is `thumbnailBlobId`, which is `null` until the metadata job has made one and for a
+ * file without a picture, and is never the original. `name` is the file name an upload recorded in the blob's storage key,
+ * and `null` when the blob was stored without one: a blob made by `POST /api/blobs`, which is what a capture attaches,
+ * has no file name in its key, so the `name` of an attachment captured that way is `null` until a store records one. `pageCount` is the page count of the metadata job, which does not count pages today (a PDF
+ * records `pages: null`), and `null` until the job has run.
+ */
+export interface JournalInboxAttachmentSummary {
+  attachmentId: string;
+  blobId: string;
+  name: string | null;
+  mimeType: string;
+  byteSize: number;
+  pageCount: number | null;
+  thumbnailBlobId: string | null;
+  source: InboxAttachmentSource;
+}
+
 /** One Inbox item's derived, display-ready shape — canonical keys/enum values only (issue #106's "keep canonical stored keys English"); locale labels are resolved client-side. */
 export interface JournalInboxItemSummary {
   id: string;
@@ -62,6 +82,8 @@ export interface JournalInboxItemSummary {
   processing: string | null;
   /** The summary of a `proposed` card (issue #1489); null for every other card state. */
   proposalSummary: JournalInboxProposalSummary | null;
+  /** The item's attachments in their order (issue gh-1969); `[]` when it has none. */
+  attachments: JournalInboxAttachmentSummary[];
 }
 
 interface InboxPipelineDatabases {
@@ -267,6 +289,26 @@ async function computeJournalInboxItems(
     ? await relationsStore.getRelationDefinitionByPropertyId(client, sourceInboxProperty.id)
     : null;
 
+  // One read for the whole day; the rows come ordered by item and then position (issue gh-1969).
+  const attachmentsByItem = new Map<string, JournalInboxAttachmentSummary[]>();
+  for (const attachment of await listInboxAttachments(
+    client,
+    items.map((item) => item.id),
+  )) {
+    const forItem = attachmentsByItem.get(attachment.inboxItemId) ?? [];
+    forItem.push({
+      attachmentId: attachment.attachmentId,
+      blobId: attachment.blobId,
+      name: attachment.name,
+      mimeType: attachment.mimeType,
+      byteSize: Number(attachment.byteSize),
+      pageCount: attachment.metadata?.pages ?? null,
+      thumbnailBlobId: attachment.thumbnailBlobId,
+      source: attachment.source,
+    });
+    attachmentsByItem.set(attachment.inboxItemId, forItem);
+  }
+
   const summaries: JournalInboxItemSummary[] = [];
   for (const item of items) {
     let type: JournalInboxItemSummary["type"] = null;
@@ -315,6 +357,7 @@ async function computeJournalInboxItems(
       status,
       processing: processingOf(card, status),
       proposalSummary: card && status === "proposed" ? await buildProposalSummary(client, databases, card) : null,
+      attachments: attachmentsByItem.get(item.id) ?? [],
     });
   }
 

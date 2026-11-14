@@ -35,6 +35,9 @@ import {
 import { insertItemOrigins } from "./itemOriginsStore.js";
 import { requireRelationPropertyId, resolveItemOriginSource } from "./proposalItemOrigin.js";
 import { MAIL_THREAD_CARD_KIND, assertValidMailThreadCard, confirmMailThreadCard } from "./mailThreadCard.js";
+import { assertRecordingEnvelopeFitsCard } from "./recordingCardValidation.js";
+import { confirmRecordingCard } from "./recordingCardConfirm.js";
+import type { RecordingCardProperties } from "./recordingCardEnvelope.js";
 export {
   updateProposalValuesWithClient,
   type UpdateProposalValuesInput,
@@ -62,6 +65,7 @@ import { addSpeakersAsEventParticipants } from "../transcription/transcriptEvent
 import { transcriptSpeakerCardContextSchema } from "../transcription/transcriptSpeakerCardContext.js";
 import { TRANSCRIPT_SPEAKERS_PROPERTY_KEY } from "../transcription/transcriptionSpeakerEdges.js";
 import { storeCredential, type CredentialType } from "../credentials/externalCredentialsStore.js";
+import { enqueueMcpServerSyncForConfirm } from "../mcp/mcpSync.js";
 import { ChokePointError, ConflictError, NotFoundError, ValidationError } from "../errors.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
 import type { WriterIdentity } from "../chokePoint/writerKind.js";
@@ -156,6 +160,8 @@ export interface EnvelopeForCard {
   targetDatabase: DatabaseRow | null;
   /** The Threads item of a `kind = 'mailThread'` card's `sourceThread` edge; absent for any other card. */
   mailThreadItemId?: string;
+  /** What a `transcription` envelope's card resolved (issue gh-1978): its source Inbox item and the validated parameters; absent for any other envelope. */
+  recording?: { sourceInboxItemId: string; properties: RecordingCardProperties };
 }
 
 /** An unknown stored kind is displayed, never executed: this release cannot validate or run it. */
@@ -286,6 +292,10 @@ export async function assertValidEnvelopeForCard(
   if (proposal.properties.kind === MAIL_THREAD_CARD_KIND)
     return assertValidMailThreadCard(client, config, proposal, envelope);
   const targetDatabase = await assertValidProposalEnvelope(client, envelope);
+  if (envelope.entityKind === "transcription") {
+    const { sourceInboxItemId, properties } = await assertRecordingEnvelopeFitsCard(client, config, proposal, envelope);
+    return { transcriptCardEdge: null, targetDatabase, recording: { sourceInboxItemId, properties } };
+  }
   if (proposal.properties.kind !== "transcript") {
     if (envelope.entityKind === "relation") {
       throw new ValidationError("entityKind 'relation' is only valid on a transcript proposal", {
@@ -424,6 +434,13 @@ export async function assertValidEnvelopeForCard(
  * (e.g. a local `stdio` command with no auth), so a proposal with no `credential` argument at
  * all is confirmed normally, item-only.
  *
+ * An MCP server confirm also enqueues the `mcpServerSync` job of the new item (issue gh-1976,
+ * `enqueueMcpServerSync`), with or without a credential, right after the credential is stored and in this same
+ * transaction: the job exists once the transaction commits and a rollback leaves none. The result of the step that
+ * created the server then reports `followUp: "mcpSyncQueued"`; a replay of a card that is already `confirmed` returns
+ * its stored results and enqueues nothing. A confirm without `actingUserId` enqueues no job, and its results report
+ * `followUp: null`.
+ *
  * For `'relation'` (issue #184) the write is the generic relation write behind
  * `PUT /api/items/:id/relations/:propertyKey/:targetItemId`, from the card's source item to
  * `envelope.target`, and the result is that existing item. When `envelope.target` is a synthetic occurrence id
@@ -509,12 +526,14 @@ export async function confirmProposalWithClient(
       }
       throw error;
     }
-    const { transcriptCardEdge, targetDatabase, mailThreadItemId } = validated;
+    const { transcriptCardEdge, targetDatabase, mailThreadItemId, recording } = validated;
     await assertRequiredFieldsHaveValues(client, proposal, envelope);
     const written = await normalizeEnvelopeForWrite(client, proposal, envelope, targetDatabase);
 
     let resultItemId: string;
     let resultLabel: string;
+    /** The `ref` of the result whose `followUp` is `transcriptionQueued`: set only by a confirm whose enqueue the intake made. */
+    let transcriptionQueuedRef: string | null = null;
     let stepResults: Array<{ ref: string; itemId: string; databaseId: string }> = [];
     let blockIds: string[] = [];
     const addedRelations: Array<{
@@ -528,6 +547,8 @@ export async function confirmProposalWithClient(
     const reusedFileRefs = new Set<string>();
     /** The item a `'relation'` envelope linked: its `target`, or the item its synthetic occurrence id became. */
     let linkedTargetId: string | null = null;
+    /** The MCP server item whose `mcpServerSync` job this confirm enqueued; its result reports `mcpSyncQueued`. */
+    let queuedMcpSyncItemId: string | null = null;
     if (mailThreadItemId !== undefined) {
       if (credential) {
         throw new ValidationError("A credential may only be supplied when confirming an MCP server proposal", {
@@ -538,6 +559,26 @@ export async function confirmProposalWithClient(
       resultItemId = task.id;
       stepResults = [{ ref: "primary", itemId: task.id, databaseId: task.databaseId }];
       resultLabel = await resolveResultLabel(client, task.databaseId, task);
+    } else if (envelope.entityKind === "transcription") {
+      if (credential) {
+        throw new ValidationError("A credential may only be supplied when confirming an MCP server proposal", {
+          field: "credential",
+        });
+      }
+      if (!recording) throw new Error(`Recording proposal ${proposal.id} was validated without its source`);
+      const started = await confirmRecordingCard(
+        client,
+        config,
+        proposal,
+        envelope.target,
+        recording,
+        CONFIRMING_USER_WRITER,
+        actingUserId,
+      );
+      resultItemId = started.fileItemId;
+      resultLabel = recording.properties.name;
+      stepResults = [{ ref: "primary", itemId: started.fileItemId, databaseId: started.filesDatabaseId }];
+      if (started.transcriptionQueued) transcriptionQueuedRef = "primary";
     } else if (envelope.entityKind === "database") {
       if (credential) {
         if (targetDatabase?.ownerModuleId !== MCP_SERVERS_MODULE_ID) {
@@ -586,6 +627,10 @@ export async function confirmProposalWithClient(
           plaintext: credential.plaintext,
         });
       }
+      // The server item and its credential are written: queue the load of its tools, which runs once this transaction
+      // has committed. With or without a credential (a server that authorizes in the browser has none). Without an
+      // acting user the sync has nobody to attribute its connection to, so nothing is queued.
+      queuedMcpSyncItemId = await enqueueMcpServerSyncForConfirm(client, targetDatabase, created.id, actingUserId);
       // A 'database' envelope on a transcript card is its create-Event shape, or a new person for a speaker card.
       // The Event gets its envelope relations and its participants before the transcript's own edge (issue #1818).
       // A multi-step envelope's relations live on its steps and were written by them.
@@ -794,7 +839,12 @@ export async function confirmProposalWithClient(
         role: step?.role ?? "primary",
         date,
         linkLabels,
-        followUp: null,
+        followUp:
+          written.ref === transcriptionQueuedRef
+            ? "transcriptionQueued"
+            : item.id === queuedMcpSyncItemId
+              ? "mcpSyncQueued"
+              : null,
         updatedAt: item.updatedAt,
         blockIds: written.ref === "primary" ? blockIds : [],
       });

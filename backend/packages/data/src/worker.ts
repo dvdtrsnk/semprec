@@ -1,3 +1,4 @@
+import { handleCalendarSubscriptionSweepTask } from "./calendar/calendarSubscriptionSweep.js";
 import { handleMailLinkPersonEmailsTask } from "./mail/linkPersonEmailsJob.js";
 import type { Pool } from "pg";
 import { AGENT_TASK_NAMES, CORE_TASK_NAMES, registerTask, type Task, type TaskList } from "@semprec/queue";
@@ -66,6 +67,7 @@ import { handleItemTrashPurgeSweepTask } from "./trash/purgeExpiredTrash.js";
 import { handleObservabilityCheckSystemTask } from "./observability/observabilityCheckSystem.js";
 import { handleMailOauthStatesSweepTask } from "./mail/mailOauthStatesSweep.js";
 import { handleMcpRunCredentialExpirySweepTask } from "./mcp/mcpRunCredentialExpiry.js";
+import { handleMcpServerSyncTask } from "./mcp/mcpSync.js";
 import { handleSempProblemsPruneTask } from "./semp/sempProblemsPrune.js";
 import { handleSempThreadTitle } from "./semp/sempThreadTitle.js";
 import { handleAgentRunEventsRetentionTask } from "./agentRuns/agentRunEventsRetention.js";
@@ -123,6 +125,7 @@ export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
 * * * * * ${CORE_TASK_NAMES.TENANT_PURGE}
 0 1 * * * ${CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_SWEEP}
 5 4 * * * ${CORE_TASK_NAMES.PAGE_ORPHAN_SWEEP}
+25 * * * * ${CORE_TASK_NAMES.CALENDAR_SUBSCRIPTION_SWEEP}
 `;
 
 /**
@@ -137,6 +140,10 @@ export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
  *
  * `mailSendTransports` (issue gh-1913) are the transports an approved mail send of an agent leaves through,
  * with the attachment storage of this list; a list built without them ends such a request without sending.
+ *
+ * `aiGateway` is the client of the AI gateway for the tasks that ask it for a model answer: the title of a Semp
+ * thread and, after the sync of an MCP server's tools (issue gh-1983), the labels of those tools. A list built
+ * without it skips both.
  */
 export function createCoreTaskList(
   pool: Pool,
@@ -153,7 +160,7 @@ export function createCoreTaskList(
     files: resolveBlobStorageDir("FILES_STORAGE_DIR"),
     mailAttachments: resolveBlobStorageDir("MAIL_ATTACHMENTS_DIR"),
   },
-  titleGateway?: AiGatewayClientPort,
+  aiGateway?: AiGatewayClientPort,
   mailSendTransports?: MailTransportFactory,
 ): TaskList {
   const handlers: TaskList = {
@@ -220,6 +227,9 @@ export function createCoreTaskList(
         { job: { id: helpers.job.id } },
         filesBlobStorage,
       );
+    },
+    [CORE_TASK_NAMES.CALENDAR_SUBSCRIPTION_SWEEP]: async () => {
+      await handleCalendarSubscriptionSweepTask(pool);
     },
     [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: async () => {
       await handleMailAccountSyncSweepTask(pool);
@@ -335,6 +345,18 @@ export function createCoreTaskList(
     [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: async () => {
       await handleMcpRunCredentialExpirySweepTask(pool);
     },
+    // Issue gh-1976: loads the tools of an MCP server item the confirmation of an Inbox card created; issue gh-1983:
+    // then asks the gateway for labels of the tools that have none.
+    [CORE_TASK_NAMES.MCP_SERVER_SYNC]: async (payload) => {
+      await handleMcpServerSyncTask(
+        pool,
+        {
+          mcpServerItemId: requireString(payload, "mcpServerItemId"),
+          actingUserId: requireString(payload, "actingUserId"),
+        },
+        aiGateway,
+      );
+    },
     [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: async () => {
       await handleMailOauthStatesSweepTask(pool);
     },
@@ -345,7 +367,7 @@ export function createCoreTaskList(
       await handleSempProblemsPruneTask(pool);
     },
     [CORE_TASK_NAMES.SEMP_THREAD_TITLE]: async (payload) => {
-      if (titleGateway) await handleSempThreadTitle(pool, requireString(payload, "threadId"), titleGateway);
+      if (aiGateway) await handleSempThreadTitle(pool, requireString(payload, "threadId"), aiGateway);
     },
     [CORE_TASK_NAMES.QUEUE_FAILED_JOBS_PRUNE]: async () => {
       await handleQueueFailedJobsPruneTask(pool);

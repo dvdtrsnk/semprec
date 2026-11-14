@@ -123,7 +123,7 @@ describe("Semp reference turn reads", () => {
       const upload = await runInTenant(tenant, () =>
         ingestUploadedBlob(runtime, {
           mimeType: "image/png",
-          source: Readable.from([Buffer.from("image fixture")]),
+          source: Readable.from([Buffer.from("%PDF-1.7 image fixture")]),
           maxBytes: 100,
           storage,
         }),

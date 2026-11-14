@@ -47,6 +47,9 @@
   "property.subscribedEvents.timeZone.name": "Time zone",
   "property.subscribedEvents.allDay.name": "All day",
   "property.subscribedEvents.place.name": "Place",
+  "property.subscribedEvents.recurrenceRule.name": "Recurrence rule",
+  "property.subscribedEvents.exceptionDates.name": "Excluded dates",
+  "property.subscribedEvents.recurrenceId.name": "Overridden occurrence",
   "property.subscribedEvents.calendar.name": "Calendar",
   "seed.calendars.project.name": "Calendar",
   "seed.calendars.personal.name": "Personal",
@@ -74,5 +77,15 @@
   "calendar.invitation.request.subject": "Invitation: {title}",
   "calendar.invitation.request.text": "You are invited to \"{title}\". Open the attached calendar invitation to reply.",
   "calendar.invitation.cancel.subject": "Cancelled: {title}",
-  "calendar.invitation.cancel.text": "\"{title}\" has been cancelled."
+  "calendar.invitation.cancel.text": "\"{title}\" has been cancelled.",
+  "calendar.invitation.reply.accepted.subject": "Accepted: {title}",
+  "calendar.invitation.reply.accepted.text": "I have accepted the invitation \"{title}\".",
+  "calendar.invitation.reply.tentative.subject": "Tentative: {title}",
+  "calendar.invitation.reply.tentative.text": "I have tentatively accepted the invitation \"{title}\".",
+  "calendar.invitation.reply.declined.subject": "Declined: {title}",
+  "calendar.invitation.reply.declined.text": "I have declined the invitation \"{title}\".",
+  "agentTool.calendar.timeline.label": "Read the calendar timeline",
+  "agentTool.calendar.respondToInvitation.label": "Answer a calendar invitation",
+  "agentTool.calendar.placeTaskInEvent.label": "Put a task into an event",
+  "agentTool.calendar.removeTaskFromEvent.label": "Take a task out of an event"
 }

@@ -1,4 +1,6 @@
 import { runInboxMarkdownFormatCutoverMigration } from "../inbox/inboxMarkdownFormatCutoverMigration.js";
+import { runInboxCapturePropertiesCutoverMigration } from "../inbox/inboxCapturePropertiesCutoverMigration.js";
+import { runInboxTypeTargetOptionsCutoverMigration } from "../inbox/inboxTypeTargetOptionsCutoverMigration.js";
 import { runAreasUnplannedCutoverMigration } from "../seed/areasUnplannedCutoverMigration.js";
 import { runProjectsCompletedAtCutoverMigration } from "../seed/projectsCompletedAtCutoverMigration.js";
 import { runSelectOptionColorsCutoverMigration } from "../seed/selectOptionColorsCutoverMigration.js";
@@ -27,6 +29,7 @@ import { runEventTranscriptCardinalityCutoverMigration } from "../transcription/
 import { runTranscriptionRequeueHeartbeatCutoverMigration } from "../transcription/transcriptionRequeueHeartbeatCutoverMigration.js";
 import { runTranscriptionTriggerEventsCutoverMigration } from "../transcription/transcriptionTriggerEventsCutoverMigration.js";
 import { runEventsCalendarPropertiesCutoverMigration } from "../calendar/eventsCalendarPropertiesCutoverMigration.js";
+import { runEventsDateIncludeTimeContractCutoverMigration } from "../calendar/eventsDateIncludeTimeContractCutoverMigration.js";
 import { runEventsIcalIdentityCutoverMigration } from "../calendar/eventsIcalIdentityCutoverMigration.js";
 import { runCalendarsCutoverMigration } from "../calendar/calendarsCutoverMigration.js";
 import { runInvitationIngestHeartbeatCutoverMigration } from "../calendar/invitationIngestHeartbeatCutoverMigration.js";
@@ -72,6 +75,7 @@ import { runEventsOccurrenceCutoverMigration } from "../calendar/eventsOccurrenc
 import { runCalendarSubscriptionUrlCutoverMigration } from "../calendar/calendarSubscriptionUrlCutoverMigration.js";
 import { runSempProblemsBackfillCutoverMigration } from "../semp/sempProblemsBackfillCutoverMigration.js";
 import { runSubscribedEventsCutoverMigration } from "../calendar/subscribedEventsCutoverMigration.js";
+import { runSubscribedEventsRecurrenceCutoverMigration } from "../calendar/subscribedEventsRecurrenceCutoverMigration.js";
 
 /**
  * Runs the data-driven post-migration cutovers — the ones that read and write tenant rows — once
@@ -226,6 +230,28 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     // calendars cutover (#1600) above and stands after the entries of the sources it declares as blockers (#1958 above), before the
     // area-note cutover that stays last.
     await runSubscribedEventsCutoverMigration(pool);
+    // Issue gh-1964: the `captureChannel`, `sourceApp` and `addedAt` properties of Inbox. It needs no other step's result.
+    // It declares #1961 and #1962 as blockers, whose entries stand above (gh-1962) or need none (#1961), and stands before
+    // the entry of gh-1966, which names this source as a shared-file ordering blocker, before the entry of gh-1973, which
+    // names it as well, and before the area-note cutover that stays last.
+    await runInboxCapturePropertiesCutoverMigration(pool);
+    // Issue gh-1966: the `recurrenceRule`, `exceptionDates` and `recurrenceId` properties of the `subscribedEvents`
+    // database, for a tenant that had the database before this source. It needs the database of the step above, which
+    // already creates the properties for a tenant that gets the database in the same run, and stands after the entries of
+    // the sources it declares as blockers (#2004 and #2005 have none; the entry of #1964, a shared-file ordering blocker,
+    // stands above). It stands before the entry of gh-1971, which names #1966 as a
+    // shared-file ordering blocker, and the area-note cutover that stays last.
+    await runSubscribedEventsRecurrenceCutoverMigration(pool);
+    // Issue gh-1971: removes `includeTime` from the Events `date` property, the contract step after the date conversion
+    // of gh-1797 (a data migration of the module manifest, not a cutover entry). It touches only the Events `date`
+    // config, needs no other step's result and stands after the entry of gh-1962 it follows in the seed order, before the
+    // area-note cutover that stays last. The source declares #1966 as a shared-file ordering blocker; when that source
+    // lands later with an entry, its entry goes before this one.
+    await runEventsDateIncludeTimeContractCutoverMigration(pool);
+    // Issue gh-1973: the `mcpServers` option of the Inbox item types `targetDatabase` select. It needs no other step's
+    // result. It declares #1971 as a shared-file ordering blocker, whose entry stands above. Stands before the
+    // area-note cutover that stays last.
+    await runInboxTypeTargetOptionsCutoverMigration(pool);
     // Last: it converts each area in its own transaction and reports failed areas only after every area ran.
     await runAreaNoteCutoverMigration(pool);
   });

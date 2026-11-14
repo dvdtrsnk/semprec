@@ -57,13 +57,18 @@ const CARD_WRITE_KEYS = ["status", "userOverrides", "userEditedKeys", "history",
 /**
  * The type as a chosen one: an Inbox item type that is live and `active`, held in a shared row lock for the rest of
  * the transaction so that archiving or deleting it waits for this write. A type another transaction holds for update
- * is a 409 instead of a wait, the way the tick's write phase treats it (`tryLockInboxType`).
+ * is a 409 instead of a wait, the way the tick's write phase treats it (`tryLockInboxType`). Also the check of the
+ * capture route (`createCaptureInboxItemRouteHandler`, issue gh-1961).
  */
-async function lockActiveType(client: PoolClient, config: SemprecTickActionConfig, typeId: string): Promise<ItemRow> {
-  if (!(await tryLockInboxType(client, config.inboxItemTypesDatabaseId, typeId))) {
+export async function lockActiveInboxType(
+  client: PoolClient,
+  inboxItemTypesDatabaseId: string,
+  typeId: string,
+): Promise<ItemRow> {
+  if (!(await tryLockInboxType(client, inboxItemTypesDatabaseId, typeId))) {
     throw new ConflictError("Inbox item type is busy", { field: "typeId" });
   }
-  const type = await itemsStore.getItemById(client, config.inboxItemTypesDatabaseId, typeId);
+  const type = await itemsStore.getItemById(client, inboxItemTypesDatabaseId, typeId);
   if (!type || type.deletedAt !== null || type.properties.status !== "active") {
     throw new ValidationError("'typeId' must be an active Inbox item type", { field: "typeId" });
   }
@@ -210,7 +215,7 @@ export async function changeInboxItemTypeWithClient(
   input: ChangeInboxItemTypeInput,
 ): Promise<ChangeInboxItemTypeResult> {
   await lockInboxSource(client, input.itemId);
-  const type = await lockActiveType(client, config, input.typeId);
+  const type = await lockActiveInboxType(client, config.inboxItemTypesDatabaseId, input.typeId);
   const cardConfiguration = await resolveInboxTypeCardConfiguration(client, config.processingProposalsDatabaseId);
   const cards = await reserveInboxTypeCards(client, input.itemId, cardConfiguration);
   if (

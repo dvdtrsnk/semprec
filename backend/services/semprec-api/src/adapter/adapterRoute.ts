@@ -1,4 +1,4 @@
-import type { ConfirmationResult, KeptItem, ProposalWarning } from "@semprec/data";
+import type { CaptureAttachmentResponse, ConfirmationResult, KeptItem, ProposalWarning } from "@semprec/data";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
@@ -66,7 +66,8 @@ export interface AdapterRequestContext {
  * for a custom route (#239) whose response isn't shaped like an item at all (a list, a report, a
  * plain confirmation) — a raw JSON `body` sent as-is. Either way, status mapping and error
  * serialization stay the adapter's job, never the handler's. An item result may carry typed `results`, `warnings`
- * (issue #1928) and `keptItems` (issue #1943), each added to the item envelope as a top-level field when present.
+ * (issue #1928), `keptItems` (issue #1943) and `attachments` (issue gh-1963), each added to the item envelope as a
+ * top-level field when present.
  */
 export type AdapterHandlerResult =
   | {
@@ -75,6 +76,7 @@ export type AdapterHandlerResult =
       results?: ConfirmationResult[];
       warnings?: ProposalWarning[];
       keptItems?: KeptItem[];
+      attachments?: CaptureAttachmentResponse[];
     }
   | { status: number; body: unknown };
 
@@ -121,6 +123,7 @@ export function createAdapterRequestListener(
                 ...(handled.results === undefined ? {} : { results: handled.results }),
                 ...(handled.warnings === undefined ? {} : { warnings: handled.warnings }),
                 ...(handled.keptItems === undefined ? {} : { keptItems: handled.keptItems }),
+                ...(handled.attachments === undefined ? {} : { attachments: handled.attachments }),
               },
             }
           : handled;

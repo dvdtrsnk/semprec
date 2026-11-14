@@ -1,6 +1,9 @@
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { crc32, deflateSync } from "node:zlib";
 import { z } from "zod";
 
 /**
@@ -331,4 +334,101 @@ export async function probeNormalizedAudio(
   const header = bytes.indexOf("OpusHead");
   if (header === -1) throw new Error(`'${path}' has no Opus identification header`);
   return { codecName: stream.codec_name, channels: stream.channels, inputSampleRate: bytes.readUInt32LE(header + 12) };
+}
+
+/**
+ * A silent M4A voice note (AAC in a seekable MP4 file, so its container carries an exact duration) of exactly
+ * `seconds` seconds. `creationTime` becomes the container's `creation_time` tag, left out when omitted. Silence at
+ * 8 kHz mono keeps a 23-minute recording quick to encode.
+ */
+export async function generateM4aFixture(seconds: number, options: { creationTime?: string } = {}): Promise<Buffer> {
+  const directory = await mkdtemp(join(tmpdir(), "semprec-m4a-fixture-"));
+  try {
+    const path = join(directory, "note.m4a");
+    const metadata = options.creationTime ? ["-metadata", `creation_time=${options.creationTime}`] : [];
+    await runToBuffer("ffmpeg", [
+      "-y",
+      "-loglevel",
+      "error",
+      "-f",
+      "lavfi",
+      "-i",
+      `anullsrc=r=8000:cl=mono:d=${seconds}`,
+      ...metadata,
+      "-c:a",
+      "aac",
+      "-b:a",
+      "16k",
+      "-f",
+      "ipod",
+      path,
+    ]);
+    return await readFile(path);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+/**
+ * A still picture of `width` x `height` pixels from ffmpeg's `testsrc`, as a JPEG or a PNG. `exifOrientation` (JPEG
+ * only) adds an EXIF `Orientation` tag, which ffmpeg applies when it reads the file: 6 asks for a quarter turn, so a
+ * file stored 300 x 200 is shown 200 x 300.
+ */
+export async function generateImageFixture(options: {
+  width: number;
+  height: number;
+  format: "jpeg" | "png";
+  exifOrientation?: number;
+}): Promise<Buffer> {
+  const bytes = await runToBuffer("ffmpeg", [
+    "-y",
+    "-loglevel",
+    "error",
+    "-f",
+    "lavfi",
+    "-i",
+    `testsrc=size=${options.width}x${options.height}`,
+    "-frames:v",
+    "1",
+    "-f",
+    options.format === "jpeg" ? "mjpeg" : "image2pipe",
+    ...(options.format === "png" ? ["-c:v", "png"] : []),
+    "pipe:1",
+  ]);
+  if (options.exifOrientation === undefined) return bytes;
+  // An APP1 segment holding a one-entry little-endian TIFF directory: tag 0x0112 (Orientation), type SHORT, one value.
+  const tiff = Buffer.concat([
+    Buffer.from("II*\0", "latin1"),
+    Buffer.from([8, 0, 0, 0, 1, 0, 0x12, 0x01, 3, 0, 1, 0, 0, 0, options.exifOrientation, 0, 0, 0, 0, 0, 0, 0]),
+  ]);
+  const body = Buffer.concat([Buffer.from("Exif\0\0", "latin1"), tiff]);
+  const segment = Buffer.concat([Buffer.from([0xff, 0xe1, (body.length + 2) >> 8, (body.length + 2) & 0xff]), body]);
+  return Buffer.concat([bytes.subarray(0, 2), segment, bytes.subarray(2)]);
+}
+
+/**
+ * A grayscale PNG that declares a `width` x `height` canvas and is a few hundred KB however large it is: its image data
+ * is a zlib stream of zero rows, which `ffprobe` and `ffmpeg` can only read by allocating the whole decoded frame.
+ */
+export function generateHugeCanvasPng(width: number, height: number): Buffer {
+  const chunk = (type: string, data: Buffer): Buffer => {
+    const body = Buffer.concat([Buffer.from(type, "latin1"), data]);
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([length, body, crc]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header.set([8, 0, 0, 0, 0], 8); // 8-bit grayscale, no interlace
+  const row = Buffer.alloc(width + 1); // filter type 0, then `width` zero pixels
+  const rows = Buffer.concat(Array.from({ length: height }, () => row));
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", header),
+    chunk("IDAT", deflateSync(rows, { level: 9 })),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
 }

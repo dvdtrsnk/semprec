@@ -50,6 +50,7 @@ import { TRASH_ROUTES } from "./routeMatrix/trash.js";
 import { PROJECT_HEARTBEATS_ROUTES } from "./routeMatrix/projectHeartbeats.js";
 import { PROJECT_AGENT_SUMMARY_ROUTES } from "./routeMatrix/projectAgentSummary.js";
 import { INBOX_ITEMS_ROUTES } from "./routeMatrix/inboxItems.js";
+import { MCP_SERVERS_ROUTES } from "./routeMatrix/mcpServers.js";
 
 /**
  * The single documented artifact issue #143 asks for: every route delivered through auth-v1,
@@ -174,4 +175,5 @@ export const ROUTE_MATRIX: RouteMatrixEntry[] = [
   ...PROJECT_HEARTBEATS_ROUTES,
   ...PROJECT_AGENT_SUMMARY_ROUTES,
   ...INBOX_ITEMS_ROUTES,
+  ...MCP_SERVERS_ROUTES,
 ];

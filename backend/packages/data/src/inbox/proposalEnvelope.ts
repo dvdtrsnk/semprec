@@ -7,12 +7,14 @@ import { z } from "zod";
  * relation property named by `properties.propertyKey`, with `properties.metadata` (optional) as
  * the edge's metadata — never computed by the Inbox tick. A transcript card reaches the
  * Event-link shape only through a human `revise`; its speaker-mapping shape (issue #185) is
- * proposed by the transcription pipeline.
+ * proposed by the transcription pipeline. `'transcription'` (issue gh-1978) proposes transcribing the audio attachment
+ * `target` of the card's source Inbox item with the recording parameters in `properties`; the Inbox tick produces it
+ * from the attachment without a model call (`recordingCardProducer.ts`).
  */
-export type ProposalEntityKind = "pageContent" | "database" | "relation";
+export type ProposalEntityKind = "pageContent" | "database" | "relation" | "transcription";
 
-/** The entity kinds the Inbox tick itself computes, one per `processingMethod`. */
-export type ComputedProposalEntityKind = Exclude<ProposalEntityKind, "relation">;
+/** The entity kinds the Inbox tick's model computation produces, one per `processingMethod`. */
+export type ComputedProposalEntityKind = Exclude<ProposalEntityKind, "relation" | "transcription">;
 
 /** A relation target inside a step: an existing item id, or the `ref` of another step of the same proposal. */
 const stepRelationTargetSchema = z.union([z.string().min(1), z.object({ ref: z.string().min(1) })]);
@@ -70,7 +72,7 @@ export const pageContentV2Schema = z
 export type PageContentV2 = z.infer<typeof pageContentV2Schema>;
 
 export const proposalEnvelopeSchema = z.object({
-  entityKind: z.enum(["pageContent", "database", "relation"]),
+  entityKind: z.enum(["pageContent", "database", "relation", "transcription"]),
   target: z.string().min(1),
   properties: z.record(z.string(), z.unknown()),
   /**

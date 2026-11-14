@@ -14,6 +14,8 @@ const INVITATION_KEYS = [
   "endsAt",
   "allDay",
   "place",
+  "organizerName",
+  "organizerEmail",
   "status",
   "kind",
   "uid",

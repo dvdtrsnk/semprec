@@ -17,7 +17,11 @@ import type { BlobStorageWriter } from "../../mail/blobStorage.js";
 import { purgeExpiredTrash } from "../../trash/purgeExpiredTrash.js";
 import type { ItemRow } from "../../types.js";
 import { createInboxItemWithClient } from "../inboxStore.js";
-import { insertInboxAttachments as insertWithClient, listInboxAttachments } from "../inboxAttachmentsStore.js";
+import {
+  insertInboxAttachments as insertWithClient,
+  listInboxAttachments,
+  recordInboxAttachmentMetadata as recordWithClient,
+} from "../inboxAttachmentsStore.js";
 import { LocalFsBlobStorageWriter } from "../../mail/blobStorage.js";
 import { ingestUploadedBlob } from "../../blobs/fileUploadStore.js";
 import { createApiCoreTaskList } from "../../worker.js";
@@ -167,7 +171,7 @@ describe("Inbox attachments as counted blob references (issue #1564)", () => {
       const blob = await runInTenant(getTenantZeroId(), () =>
         ingestUploadedBlob(runtime, {
           mimeType: "image/png",
-          source: Readable.from([Buffer.from("standalone content")]),
+          source: Readable.from([Buffer.from("%PDF-1.7 standalone content")]),
           maxBytes: 1024,
           storage: files,
         }),
@@ -236,7 +240,7 @@ describe("Inbox attachments as counted blob references (issue #1564)", () => {
             { allowedSystemKeys: ["name"] },
           ),
         );
-        const content = Buffer.from("shared attachment bytes");
+        const content = Buffer.from("%PDF-1.7 shared attachment bytes");
         const upload = () =>
           runInTenant(getTenantZeroId(), () =>
             ingestUploadedBlob(runtime, {
@@ -430,7 +434,7 @@ describe("Inbox attachments as counted blob references (issue #1564)", () => {
       const upload = await runInTenant(getTenantZeroId(), () =>
         ingestUploadedBlob(runtime, {
           mimeType: "image/png",
-          source: Readable.from([Buffer.from("rollback bytes")]),
+          source: Readable.from([Buffer.from("%PDF-1.7 rollback bytes")]),
           maxBytes: 1024,
           storage: files,
         }),
@@ -667,5 +671,77 @@ describe("Inbox attachments as counted blob references (issue #1564)", () => {
     expect((await listInboxAttachments(pool, [live.id])).map((row) => row.blobId)).toEqual([blob.id]);
     expect(await getBlob(pool, blob.id)).not.toBeNull();
     expect(deleteMock).not.toHaveBeenCalled();
+  });
+
+  describe("the preview and the reduced copy of an attachment (issue gh-1965)", () => {
+    const derivedKeys = (label: string) => ({
+      thumbnail: `t/inbox-attachments/${label}-thumbnail.jpg`,
+      reduced: `t/inbox-attachments/${label}-reduced.jpg`,
+    });
+
+    async function recordDerived(attachmentId: string, label: string, hashSeed = label) {
+      const keys = derivedKeys(label);
+      const image = (storageKey: string, kind: string) => ({
+        mimeType: "image/jpeg",
+        byteSize: 10,
+        storageKey,
+        contentHash: Buffer.from(`${hashSeed}-${kind}`).toString("hex").padEnd(64, "0").slice(0, 64),
+      });
+      await withTransaction(pool, (client) =>
+        recordWithClient(client, {
+          attachmentId,
+          metadata: { width: 10, height: 10, pages: null },
+          thumbnail: image(keys.thumbnail, "thumbnail"),
+          reduced: image(keys.reduced, "reduced"),
+        }),
+      );
+    }
+
+    async function photoAttachment(itemId: string, label: string) {
+      const blob = await createBlob(pool, { mimeType: "image/jpeg", byteSize: 3, storageKey: `t/blobs/${label}` });
+      await insertInboxAttachments(pool, itemId, [{ blobId: blob.id, source: "camera" }]);
+      const row = (await listInboxAttachments(pool, [itemId])).find((candidate) => candidate.blobId === blob.id);
+      if (!row) throw new Error("Missing attachment");
+      return row;
+    }
+
+    it("frees both derived blobs and removes all three files when the Inbox item is permanently deleted", async () => {
+      const item = await createInboxItem("photo capture");
+      const attachment = await photoAttachment(item.id, "purged-photo");
+      await recordDerived(attachment.attachmentId, "purged");
+      const stored = (await listInboxAttachments(pool, [item.id]))[0];
+      await chokePoint.softDeleteItem(item.databaseId, item.id);
+      await ageDeletion(item.id, item.databaseId);
+
+      const { storage, deleteMock } = fakeStorage();
+      expect(await purgeExpiredTrash(pool, storage)).toBe(1);
+
+      expect(await getBlob(pool, stored?.thumbnailBlobId ?? "")).toBeNull();
+      expect(await getBlob(pool, stored?.reducedBlobId ?? "")).toBeNull();
+      expect(await getBlob(pool, attachment.blobId)).toBeNull();
+      expect(deleteMock.mock.calls.map(([key]) => key).sort()).toEqual(
+        [derivedKeys("purged").reduced, derivedKeys("purged").thumbnail, "t/blobs/purged-photo"].sort(),
+      );
+    });
+
+    it("keeps a derived blob that an attachment of another live Inbox item still names", async () => {
+      const purged = await createInboxItem("deleted photo");
+      const live = await createInboxItem("live photo");
+      const purgedAttachment = await photoAttachment(purged.id, "shared-purged");
+      const liveAttachment = await photoAttachment(live.id, "shared-live");
+      // The same rendering on both attachments: their images have the same bytes, so one blob row holds each.
+      await recordDerived(purgedAttachment.attachmentId, "shared", "same");
+      await recordDerived(liveAttachment.attachmentId, "shared", "same");
+      const liveRow = (await listInboxAttachments(pool, [live.id]))[0];
+      await chokePoint.softDeleteItem(purged.databaseId, purged.id);
+      await ageDeletion(purged.id, purged.databaseId);
+
+      const { storage, deleteMock } = fakeStorage();
+      expect(await purgeExpiredTrash(pool, storage)).toBe(1);
+
+      expect(await getBlob(pool, liveRow?.thumbnailBlobId ?? "")).not.toBeNull();
+      expect(await getBlob(pool, liveRow?.reducedBlobId ?? "")).not.toBeNull();
+      expect(deleteMock.mock.calls).toEqual([["t/blobs/shared-purged"]]);
+    });
   });
 });

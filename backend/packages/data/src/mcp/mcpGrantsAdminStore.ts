@@ -12,48 +12,54 @@ import { rowToGrant, type ProjectMcpGrant, type ProjectMcpGrantRow } from "./mcp
 /**
  * The user-only mutations issue #124's acceptance criteria carve out from
  * `mcp_tool_registrations`/`project_mcp_grants`: granting/revoking a project's access to a
- * tool, and setting a tool's `risk_class`/`requires_approval`/`display_label`. Automatic risk classification
- * and approval execution are explicitly out of scope for this issue — these are the only
- * writers of those columns.
+ * tool, and setting a tool's `risk_class`/`requires_approval`/`display_label`. These are the only human
+ * writers of those columns. A tool sync is the other writer of `risk_class`/`requires_approval`: it derives a default
+ * from the server's annotations (`upsertClassifiedMcpToolRegistration`) only for a registration whose
+ * `classification_source` is `annotation`, and the risk class and approval mutations here set it to `manual`, which
+ * ends that for good
+ * ([[2026-11-14-mcp-tool-classification-is-owned-by-the-annotation-sync-until-a-person-sets-it]]). `display_label`
+ * has one other writer: `mcpToolLabelSuggestion.ts` fills a label only where there is none, and never overwrites one
+ * (docs/adr/2026-11-14-mcp-tool-label-suggestions-fill-only-empty-display-labels.md).
  *
  * This module is intentionally **not** re-exported from this package's `index.ts`. Every other
- * function these mutations depend on (the reads, the sync-facing `upsertMcpToolRegistration`)
- * is exported there and safe for any `@semprec/data` consumer — including `agent-runtime`,
- * which already depends on this package — to import. These three are not: per the issue's
- * "agents, including proposal confirmation, have no write path to grants" criterion, only an
- * authenticated human-facing route handler should ever call them, and it must do so via this
+ * function these mutations depend on (the reads, the exported `upsertMcpToolRegistration`, which never writes
+ * `risk_class` or `requires_approval`) is exported there and safe for any `@semprec/data` consumer — including
+ * `agent-runtime`, which already depends on this package — to import. These three are not, and neither is the
+ * classifying upsert of the sync: per the issue's
+ * "agents, including proposal confirmation, have no write path to grants" criterion, only
+ * an authenticated human-facing route handler should ever call them, and it must do so via this
  * file's relative path from inside `@semprec/data`, never through the package's public export
  * surface. Keeping them off that surface is what makes them mechanically unreachable from
  * `agent-runtime` rather than merely documented as off-limits.
  */
 
-/** User-only mutation: sets a tool's risk classification. */
+/** User-only mutation: sets a tool's risk classification and marks the registration's classification as `manual`, so no sync rewrites it. */
 export async function setMcpToolRiskClass(
   client: Queryable,
   id: string,
   riskClass: string,
 ): Promise<McpToolRegistration> {
-  const { rows } = await client.query<McpToolRegistrationRow>(
-    `UPDATE mcp_tool_registrations SET risk_class = $2, updated_at = now() WHERE id = $1 RETURNING *`,
+  const result = await client.query<McpToolRegistrationRow>(
+    `UPDATE mcp_tool_registrations SET risk_class = $2, classification_source = 'manual', updated_at = now() WHERE id = $1 RETURNING *`,
     [id, riskClass],
   );
-  const row = rows[0];
-  if (!row) throw new NotFoundError(`No mcp_tool_registrations row with id '${id}'`);
+  const row = result.rows[0];
+  if (result.rowCount === 0 || !row) throw new NotFoundError(`No mcp_tool_registrations row with id '${id}'`);
   return rowToRegistration(row);
 }
 
-/** User-only mutation: toggles whether invoking this tool requires approval. */
+/** User-only mutation: toggles whether invoking this tool requires approval and marks the registration's classification as `manual`, so no sync rewrites it. */
 export async function setMcpToolRequiresApproval(
   client: Queryable,
   id: string,
   requiresApproval: boolean,
 ): Promise<McpToolRegistration> {
-  const { rows } = await client.query<McpToolRegistrationRow>(
-    `UPDATE mcp_tool_registrations SET requires_approval = $2, updated_at = now() WHERE id = $1 RETURNING *`,
+  const result = await client.query<McpToolRegistrationRow>(
+    `UPDATE mcp_tool_registrations SET requires_approval = $2, classification_source = 'manual', updated_at = now() WHERE id = $1 RETURNING *`,
     [id, requiresApproval],
   );
-  const row = rows[0];
-  if (!row) throw new NotFoundError(`No mcp_tool_registrations row with id '${id}'`);
+  const row = result.rows[0];
+  if (result.rowCount === 0 || !row) throw new NotFoundError(`No mcp_tool_registrations row with id '${id}'`);
   return rowToRegistration(row);
 }
 

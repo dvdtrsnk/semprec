@@ -843,7 +843,7 @@ describe("ingestUploadedFile (issue #670)", () => {
     async (lateParticipant, injectPreCancel, injectPostCancel) => {
       const filesId = await filesDatabaseId();
       const storage = new FakeBlobStorageWriter();
-      const bytes = Buffer.from("cancel blocked filing");
+      const bytes = Buffer.from("%PDF-1.7 cancel blocked filing");
       const standalone = await ingestUploadedBlob(pool, {
         mimeType: "image/png",
         source: Readable.from([bytes]),
@@ -1100,7 +1100,7 @@ describe("ingestUploadedFile (issue #670)", () => {
     async (firstName, secondName, outcome) => {
       const filesId = await filesDatabaseId();
       const storage = new FakeBlobStorageWriter();
-      const bytes = Buffer.from("standalone race bytes");
+      const bytes = Buffer.from("%PDF-1.7 standalone race bytes");
       const standalone = await ingestUploadedBlob(pool, {
         mimeType: "image/png",
         source: Readable.from([bytes]),
@@ -1232,7 +1232,7 @@ describe("ingestUploadedFile (issue #670)", () => {
   it("fails closed and cleans its bytes if the reused blob disappears before the filing lock", async () => {
     const filesId = await filesDatabaseId();
     const storage = new FakeBlobStorageWriter();
-    const bytes = Buffer.from("blob deleted before filing lock");
+    const bytes = Buffer.from("%PDF-1.7 blob deleted before filing lock");
     const standalone = await ingestUploadedBlob(pool, {
       mimeType: "image/png",
       source: Readable.from([bytes]),

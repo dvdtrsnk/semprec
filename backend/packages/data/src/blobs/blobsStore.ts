@@ -80,6 +80,38 @@ export async function lockBlobById(client: Queryable, id: string): Promise<boole
   return rows.length > 0;
 }
 
+/**
+ * SQL for the mime type a blob has when something is attached to it: the type the upload owner verified from the
+ * bytes when it recognised them, else the stored `mime_type`. `application/octet-stream` is the detector's "unknown",
+ * so it never hides a stored type. A dedup hit keeps its first row's `mime_type`
+ * ([[2026-11-04-blob-content-classification-preserves-legacy-metadata]]), which can be a sender's header such as
+ * `application/octet-stream` on a mail attachment whose bytes an upload has since shown to be an MP3.
+ */
+export function effectiveBlobMimeTypeSql(alias: string): string {
+  return `COALESCE(NULLIF(${alias}.detected_mime_type, 'application/octet-stream'), ${alias}.mime_type)`;
+}
+
+/** A blob read to be referenced, with the mime type it has as an attachment (`effectiveBlobMimeTypeSql`). */
+export interface ReferencedBlob {
+  id: string;
+  mimeType: string;
+}
+
+/**
+ * Reads the blobs `ids` names in the tenant in scope and holds `FOR KEY SHARE` on each until the transaction ends, in
+ * id order, the lock of [[2026-11-01-blob-reference-writes-coordinate-with-collection]]. A blob of another tenant or
+ * one that does not exist is absent from the result. The lock keeps `deleteBlobIfUnreferenced`, which takes the row
+ * for update, from deleting a blob between the read and the `inbox_attachments` insert that references it.
+ */
+export async function lockBlobsForReference(client: Queryable, ids: string[]): Promise<ReferencedBlob[]> {
+  const { rows } = await client.query<{ id: string; mime_type: string }>(
+    `SELECT b.id, ${effectiveBlobMimeTypeSql("b")} AS mime_type FROM blobs b
+      WHERE b.tenant_id = app_tenant_default() AND b.id = ANY($1::uuid[]) ORDER BY b.id FOR KEY SHARE`,
+    [ids],
+  );
+  return rows.map((row) => ({ id: row.id, mimeType: row.mime_type }));
+}
+
 /** Reads only content classification previously recorded by the upload owner. */
 export async function getDetectedBlobMimeType(client: Queryable, id: string): Promise<string | null> {
   const { rows } = await client.query<{ detected_mime_type: string | null }>(
@@ -143,7 +175,7 @@ export async function findOrCreateBlob(client: Queryable, input: CreateBlobInput
  * Deletes blob `id` only when nothing references it any more — no item visible to the caller (live
  * or trashed, in any of its databases, archived ones included) whose `properties.file.blobId` or
  * `properties.<key>.blobId` of any `image` property names it, no mail attachment and no
- * `inbox_attachments` row — because `findOrCreateBlob`'s content-hash dedup shares one blob between
+ * `inbox_attachments` row that names it as its blob, its preview or its reduced copy — because `findOrCreateBlob`'s content-hash dedup shares one blob between
  * identical uploads. Used by the trash purge (issue #675) in its own transaction, after the
  * referencing item is gone. Returns the
  * deleted row's `storage_key` so the caller can remove the bytes after the commit, or null when the
@@ -180,7 +212,10 @@ export async function deleteBlobIfUnreferenced(client: Queryable, id: string): P
            AND lower(i.properties -> p.key ->> 'blobId') = lower($2::text)
        )
        AND NOT EXISTS (SELECT 1 FROM mail_attachments WHERE tenant_id = app_tenant_default() AND blob_id = $1)
-       AND NOT EXISTS (SELECT 1 FROM inbox_attachments WHERE tenant_id = app_tenant_default() AND blob_id = $1)
+       AND NOT EXISTS (
+         SELECT 1 FROM inbox_attachments
+         WHERE tenant_id = app_tenant_default() AND (blob_id = $1 OR thumbnail_blob_id = $1 OR reduced_blob_id = $1)
+       )
        AND NOT EXISTS (SELECT 1 FROM semp_message_speech WHERE tenant_id = app_tenant_default() AND blob_id = $1)
      RETURNING storage_key`,
     [id, id, await visibleDatabaseIds(client)],

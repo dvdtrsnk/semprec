@@ -4,6 +4,7 @@ import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import type { ItemRow } from "../types.js";
 import { appendHistoryEntry, type ProposalHistoryEntry } from "./proposalHistory.js";
 import type { ProposalEnvelope } from "./proposalEnvelope.js";
+import { RECORDING_PROPERTY_KEYS } from "./recordingCardEnvelope.js";
 import {
   composeEffectiveEnvelope,
   parseUserOverrides,
@@ -43,7 +44,9 @@ export async function retainValuesForRevise(
     parseUserOverrides(proposal.properties.userOverrides, proposal.id),
     envelope.entityKind === "database"
       ? (await propertiesStore.listPropertiesByDatabase(client, envelope.target)).map((property) => property.key)
-      : Object.keys(envelope.properties),
+      : envelope.entityKind === "transcription"
+        ? RECORDING_PROPERTY_KEYS
+        : Object.keys(envelope.properties),
   );
   // `proposal` stays the effective envelope: the values that stay are laid over the new assistant envelope.
   return { ...retained, effective: composeEffectiveEnvelope(envelope, retained.userOverrides) };

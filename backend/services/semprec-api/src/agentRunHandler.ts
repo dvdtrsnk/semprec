@@ -30,6 +30,7 @@ import {
   type AgentRunRow,
 } from "@semprec/data";
 import type { Pool, PoolClient } from "pg";
+import type { ModuleRegistry } from "@semprec/module-registry";
 import { toPublicErrorBody } from "./adapter/errorContract.js";
 import { assertUuid } from "./adapter/requestValidation.js";
 import { PayloadTooLargeError, readJsonBody, sendJson } from "./adapter/http.js";
@@ -210,14 +211,16 @@ async function queueRetryOfHeartbeatRun(client: PoolClient, run: AgentRunRow): P
  * `POST /api/agent-runs/mcp-credentials` (issue #220, AC34/44/47) mints a restricted, single-run
  * `agent_run` plus an opaque credential for it (`mintMcpRunCredential`) — the piece that lets an
  * MCP actor (`POST /mcp`) later prove which run it acts for, and be restricted to an explicit
- * capability subset, instead of every session sharing the fixed process-wide grant. The minted
+ * capability subset, instead of every session sharing the fixed process-wide grant. The subset may name core capability
+ * ids and, with `moduleRegistry`, the capability ids of the active modules (issue gh-1956): the list bounds the module
+ * tools of `/mcp` as it bounds the generic operations. The minted
  * token is returned exactly once, in this response; only its hash is ever persisted.
  *
  * Both routes are gated by `authenticateRequest` (issue #143), same session middleware
  * `authHandler.ts` uses — minting a credential still requires an already-authenticated human
  * session, same as every other write this handler makes.
  */
-export function createAgentRunRequestListener(pool: Pool) {
+export function createAgentRunRequestListener(pool: Pool, moduleRegistry?: ModuleRegistry) {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", "http://localhost");
 
@@ -243,8 +246,11 @@ export function createAgentRunRequestListener(pool: Pool) {
           }
 
           const input = parseMintMcpCredentialBody(body);
+          // Issue gh-1956: a credential's list may name the capability of an active module, so it can bound the module
+          // tools it exposes; resolved per request, so a module activated since startup is accepted.
+          const moduleCapabilityIds = moduleRegistry === undefined ? [] : await moduleRegistry.getCapabilities();
           const minted = await withTransaction(pool, (client) =>
-            mintMcpRunCredential(client, { ...input, userId: identity.user.id }),
+            mintMcpRunCredential(client, { ...input, moduleCapabilityIds, userId: identity.user.id }),
           );
           sendJson(res, 201, {
             runId: minted.run.id,

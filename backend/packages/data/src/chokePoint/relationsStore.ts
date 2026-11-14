@@ -381,6 +381,42 @@ export async function listRelationEdgesForItemOnDefinitions(
   return rows.map(mapItemRelationRow);
 }
 
+/** The relation definitions whose edges `countRelationEdgesToTargets` counts, by the stored side the target items sit on. */
+export interface RelationEdgeTargetSides {
+  /** Definitions whose targets are stored as `item_b` (the caller's property is side A). */
+  targetOnSideB: readonly string[];
+  /** Definitions whose targets are stored as `item_a` (the caller's property is side B). */
+  targetOnSideA: readonly string[];
+}
+
+/**
+ * How many edges point at each of `targetItemIds`, counted over the given relation definitions with one grouped query
+ * (issue gh-1959). An edge is counted on the side its definition names as the target side. An id with no edge is
+ * absent from the map, so a caller reads a missing id as zero.
+ */
+export async function countRelationEdgesToTargets(
+  client: PoolClient,
+  sides: RelationEdgeTargetSides,
+  targetItemIds: readonly string[],
+): Promise<Map<string, number>> {
+  const counts = new Map<string, number>();
+  if (targetItemIds.length === 0 || (sides.targetOnSideA.length === 0 && sides.targetOnSideB.length === 0)) {
+    return counts;
+  }
+  const { rows } = await client.query<{ target_id: string; edge_count: number }>(
+    `SELECT target_id, count(*)::int AS edge_count FROM (
+       SELECT item_b AS target_id FROM item_relations WHERE relation_definition_id = ANY($1::uuid[])
+       UNION ALL
+       SELECT item_a AS target_id FROM item_relations WHERE relation_definition_id = ANY($2::uuid[])
+     ) edges
+     WHERE target_id = ANY($3::uuid[])
+     GROUP BY target_id`,
+    [sides.targetOnSideB, sides.targetOnSideA, targetItemIds],
+  );
+  for (const row of rows) counts.set(row.target_id, row.edge_count);
+  return counts;
+}
+
 /**
  * The items among `itemIds` that a relation may still point at (issue #1404): not in the trash and
  * in a database that is not archived, each with its database id. An id absent from the result is

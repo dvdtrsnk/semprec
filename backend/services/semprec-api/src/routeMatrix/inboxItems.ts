@@ -11,4 +11,12 @@ export const INBOX_ITEMS_ROUTES: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
+  {
+    name: "capture inbox item",
+    method: "POST",
+    path: "/api/inbox/items",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
 ];

@@ -9,8 +9,25 @@ import { NEXT_OCCURRENCE_REFRESH_ACTION_ID } from "./nextOccurrenceRefreshAction
 export { createCalendarTimelineRouteHandler } from "./timelineRouteHandler.js";
 export { createCalendarAgendaRouteHandler } from "./agendaRouteHandler.js";
 export { calendarSendEventInvitationPayloadSchema, handleCalendarSendEventInvitation } from "./eventInvitationJob.js";
+export { calendarSendInvitationReplyPayloadSchema, handleCalendarSendInvitationReply } from "./invitationReplyJob.js";
 export { createCalendarCancellationImpactRouteHandler } from "./cancellationImpactRouteHandler.js";
 export { createRespondToInvitationRouteHandler } from "./invitationRouteHandlers.js";
+export {
+  calendarTimelineArgsSchema,
+  createCalendarTimelineTool,
+  createCalendarTimelineUserTool,
+} from "./calendarTimelineTool.js";
+export {
+  calendarPlaceTaskInEventArgsSchema,
+  calendarRemoveTaskFromEventArgsSchema,
+  calendarRespondToInvitationArgsSchema,
+  createCalendarPlaceTaskInEventTool,
+  createCalendarPlaceTaskInEventUserTool,
+  createCalendarRemoveTaskFromEventTool,
+  createCalendarRemoveTaskFromEventUserTool,
+  createCalendarRespondToInvitationTool,
+  createCalendarRespondToInvitationUserTool,
+} from "./calendarAgentTools.js";
 
 /**
  * Manifest of the calendar module. The later calendar issues (invitations, reminders, recurrence, agent
@@ -38,10 +55,27 @@ export { createRespondToInvitationRouteHandler } from "./invitationRouteHandlers
  * through its `event` relation. It writes with the system writer kind, only for an update that comes from the
  * invitation's stored organizer, and only a field that still equals the invitation's previous mapped value
  * (`invitationEventFields`); it never clears the title.
+ *
+ * Agent tool (issue gh-1952): `calendar.timeline` needs the capability `calendar.read` and no approval, because it only
+ * reads: it answers what `GET /api/calendar/timeline` answers in the full shape for a range of at most 93 days
+ * (`calendarTimelineTool.ts`). Like the write tools it declares `mcp`, so a run credential whose list names
+ * `calendar.read` and a human session reach it over `/mcp`. It does not leave out the items of hidden calendars.
+ *
+ * Agent tools (issue gh-1957): `calendar.respondToInvitation`, `calendar.placeTaskInEvent` and
+ * `calendar.removeTaskFromEvent` need the capability `calendar.write`. Each is declared with `requiresApproval`, so a
+ * call by an agent session or by a run credential over `/mcp` files a `moduleTool` approval request and the handler
+ * (`calendarAgentTools.ts`) runs once, after the user approved it. `calendar.respondToInvitation` keeps the requirement
+ * for good, because the answer sends an email to the organizer; the other two may be relaxed by changing their
+ * declarations (docs/adr/2026-11-12-module-agent-tools-that-require-approval-run-through-a-moduletool-request.md). Each
+ * also declares `mcp`, which the run credential's capability list and a human session need: a credential reaches the
+ * tools when its own list names `calendar.write` and its run's project holds it, and a human session runs the
+ * `...UserTool` handler as its user without an approval
+ * (docs/adr/2026-11-14-calendar-tools-over-mcp-are-gated-for-a-run-credential-and-run-as-the-user-for-a-session.md). The
+ * tools see hidden calendars: hiding is a display preference.
  */
 export const manifest: ModuleManifest = {
   id: CALENDAR_MODULE_ID,
-  version: "1.1.0",
+  version: "1.2.0",
   name: "Calendar",
   removable: false,
   systemProject: true,
@@ -51,8 +85,50 @@ export const manifest: ModuleManifest = {
     // Read-only events of subscribed calendars (issue gh-1962); every property is system-owned by this module.
     { key: SUBSCRIBED_EVENTS_MODULE_ID, name: "Subscribed events" },
   ],
-  capabilities: [],
-  agentTools: [],
+  capabilities: ["calendar.read", "calendar.write"],
+  agentTools: [
+    // Issue gh-1952. It only reads, so it needs no approval
+    // (docs/adr/2026-10-28-module-agent-tools-approval-and-grants.md).
+    {
+      name: "calendar.timeline",
+      handlerExport: "createCalendarTimelineTool",
+      argumentSchemaExport: "calendarTimelineArgsSchema",
+      capability: "calendar.read",
+      approval: "none",
+      riskClass: "read",
+      mcp: { humanHandlerExport: "createCalendarTimelineUserTool" },
+    },
+    {
+      name: "calendar.respondToInvitation",
+      handlerExport: "createCalendarRespondToInvitationTool",
+      argumentSchemaExport: "calendarRespondToInvitationArgsSchema",
+      capability: "calendar.write",
+      approval: "always",
+      riskClass: "outbound",
+      requiresApproval: true,
+      mcp: { humanHandlerExport: "createCalendarRespondToInvitationUserTool" },
+    },
+    {
+      name: "calendar.placeTaskInEvent",
+      handlerExport: "createCalendarPlaceTaskInEventTool",
+      argumentSchemaExport: "calendarPlaceTaskInEventArgsSchema",
+      capability: "calendar.write",
+      approval: "always",
+      riskClass: "write",
+      requiresApproval: true,
+      mcp: { humanHandlerExport: "createCalendarPlaceTaskInEventUserTool" },
+    },
+    {
+      name: "calendar.removeTaskFromEvent",
+      handlerExport: "createCalendarRemoveTaskFromEventTool",
+      argumentSchemaExport: "calendarRemoveTaskFromEventArgsSchema",
+      capability: "calendar.write",
+      approval: "always",
+      riskClass: "write",
+      requiresApproval: true,
+      mcp: { humanHandlerExport: "createCalendarRemoveTaskFromEventUserTool" },
+    },
+  ],
   // Moves the stored `nextOccurrenceDate` of recurring Events on as days pass (issue gh-1905).
   // Also reads the calendar part of a new email into a pending invitation (issue gh-1929), applies the organizer's
   // update (issue gh-2007) or cancellation (issue gh-2006) of a known invitation, and applies the reply of an invited
@@ -109,6 +185,14 @@ export const manifest: ModuleManifest = {
       name: "calendarSendEventInvitation",
       payloadSchemaExport: "calendarSendEventInvitationPayloadSchema",
       handlerExport: "handleCalendarSendEventInvitation",
+      queueAffinity: "api",
+    },
+    {
+      // Sends the iMIP REPLY to the organizer after the user answered an invitation (issue gh-1953); the respond route
+      // (`invitationRouteHandlers.ts`) enqueues it in the answer's transaction.
+      name: "calendarSendInvitationReply",
+      payloadSchemaExport: "calendarSendInvitationReplyPayloadSchema",
+      handlerExport: "handleCalendarSendInvitationReply",
       queueAffinity: "api",
     },
   ],

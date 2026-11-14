@@ -456,21 +456,71 @@ describe("files and blobs routes (issue #158)", () => {
     });
 
     it("normalises Content-Type parameters and returns the same blob with 200 for identical bytes", async () => {
-      const first = (await (await uploadBlob("same image")).json()) as { blobId: string };
-      const res = await uploadBlob("same image", "Image/PNG; charset=binary");
+      const first = (await (await uploadBlob(PNG_IMAGE)).json()) as { blobId: string };
+      const res = await uploadBlob(PNG_IMAGE, "Image/PNG; charset=binary");
       expect(res.status).toBe(200);
       expect(((await res.json()) as { blobId: string; mimeType: string }).blobId).toBe(first.blobId);
       // The duplicate's bytes are removed after the commit, without the response waiting for it.
       await vi.waitFor(async () => expect(await storedFileCount()).toBe(1));
     });
 
-    it("detects a mismatched PDF and falls back for unknown bytes despite an image header", async () => {
+    async function blobRowCount(): Promise<number> {
+      return (await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM blobs")).rows[0]?.n ?? 0;
+    }
+
+    it("stores a PDF sent with an image header under the type its bytes show", async () => {
       const pdf = await uploadBlob("%PDF-1.7 test", "image/jpeg");
       expect(pdf.status).toBe(201);
       expect(await pdf.json()).toMatchObject({ mimeType: "application/pdf" });
-      const unknown = await uploadBlob("unrecognised content", "image/png");
-      expect(unknown.status).toBe(201);
-      expect(await unknown.json()).toMatchObject({ mimeType: "application/octet-stream" });
+    });
+
+    it.each([
+      ["an MP3 with an ID3 tag", Buffer.from("ID3\x04\x00 spoken words"), "audio/mpeg"],
+      [
+        "an M4A recording",
+        Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from("ftypM4A \0\0\0\0M4A mp42")]),
+        "audio/mp4",
+      ],
+      [
+        "an MP4 audio file",
+        Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from("ftypisom\0\0\0\0isommp42")]),
+        "audio/mp4",
+      ],
+    ])("stores %s labeled image/jpeg under its audio type", async (_label, bytes, mimeType) => {
+      const res = await uploadBlob(bytes, "image/jpeg");
+      expect(res.status).toBe(201);
+      expect(await res.json()).toMatchObject({ mimeType, byteSize: bytes.length });
+      expect((await pool.query<{ mime_type: string }>("SELECT mime_type FROM blobs")).rows).toEqual([
+        { mime_type: mimeType },
+      ]);
+    });
+
+    it("still accepts a HEIC image, which a capture then refuses", async () => {
+      const heic = Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from("ftypheic\0\0\0\0heicmif1")]);
+      const res = await uploadBlob(heic, "image/heic");
+      expect(res.status).toBe(201);
+      expect(await res.json()).toMatchObject({ mimeType: "image/heic" });
+    });
+
+    it.each([
+      ["a Windows executable", Buffer.from("MZ\x90\x00\x03\x00\x00\x00 program"), "application/x-msdownload"],
+      ["an executable labeled as an image", Buffer.from("MZ\x90\x00\x03\x00\x00\x00 program"), "image/png"],
+      ["an ELF executable", Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0]), "application/octet-stream"],
+      ["bytes of no known type", Buffer.from("unrecognised content"), "image/png"],
+      ["an empty body", Buffer.alloc(0), "image/png"],
+    ])("answers 415 for %s and keeps no bytes and no blob row", async (_label, bytes, contentType) => {
+      const res = await uploadBlob(bytes, contentType);
+      expect(res.status).toBe(415);
+      expect(await res.json()).toEqual({ error: { code: "unsupported_media_type" } });
+      await vi.waitFor(async () => expect(await storedFileCount()).toBe(0));
+      expect(await blobRowCount()).toBe(0);
+    });
+
+    it("keeps an earlier blob and its bytes when a later upload is refused", async () => {
+      expect((await uploadBlob(PNG_IMAGE)).status).toBe(201);
+      expect((await uploadBlob("unrecognised content")).status).toBe(415);
+      await vi.waitFor(async () => expect(await storedFileCount()).toBe(1));
+      expect(await blobRowCount()).toBe(1);
     });
 
     it("returns existing historical metadata unchanged on a deduplication hit", async () => {

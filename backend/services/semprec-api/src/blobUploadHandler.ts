@@ -32,8 +32,11 @@ function requireMediaType(contentType: string): string {
  * `POST /api/blobs`: streams a body into a standalone blob without creating a Files item.
  * Same shape as `createFilesRequestListener`: bespoke listener so the body is
  * streamed, not buffered; authenticated through `authenticateRequest`; `maxFileSizeMb` enforced
- * from `Content-Length` first and always by the streaming counter. The content type is validated
- * before any byte is read, so a rejected request leaves nothing in storage.
+ * from `Content-Length` first and always by the streaming counter. The `Content-Type` header must be a
+ * well-formed media type, checked before any byte is read, but it does not decide what is stored: the
+ * stored mime type comes from the first bytes (`ingestUploadedBlob`). Bytes of a type outside the allowed
+ * list (the Inbox attachment types and HEIC) answer 415 `unsupported_media_type` once the bytes just
+ * written have been removed again, so a rejected request leaves nothing in storage.
  */
 export function createBlobUploadRequestListener(pool: Pool, options: BlobUploadRequestListenerOptions) {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {

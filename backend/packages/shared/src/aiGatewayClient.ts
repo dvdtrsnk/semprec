@@ -33,7 +33,7 @@ export interface AiGatewayCompletionInput {
    * `null` only for an operation the gateway attributes to no project
    * (`'transcript_summary'`, `'transcript_speaker_suggestion'`, `'transcript_event_pick'`, `'transcript_event_match'`,
    * `'transcript_card_recompute'`, `'semp_thread_title'`, `'mail_thread_task_name'`, `'mailThreadProject'`,
-   * `'mailAnswerExpected'`).
+   * `'mailAnswerExpected'`, `'mcp_tool_label'`).
    * Required for `'agent_guidance_drift'`, `'agent_behavior_drift'`, `'inbox_proposal'` and `'inbox_attachment_extraction'`.
    */
   projectItemId: string | null;
@@ -41,7 +41,7 @@ export interface AiGatewayCompletionInput {
    * Caller identifier for audit/attribution: `'agent_guidance_drift'`, `'agent_behavior_drift'`, `'inbox_proposal'`,
    * `'inbox_attachment_extraction'`, `'transcript_summary'`, `'transcript_speaker_suggestion'`,
    * `'transcript_event_pick'`, `'transcript_event_match'`, `'transcript_card_recompute'`, `'semp_thread_title'`,
-   * `'mail_thread_task_name'`, `'mailThreadProject'` or `'mailAnswerExpected'`.
+   * `'mail_thread_task_name'`, `'mailThreadProject'`, `'mailAnswerExpected'` or `'mcp_tool_label'`.
    */
   operation: string;
   temperature: number;

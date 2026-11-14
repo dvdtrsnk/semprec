@@ -124,9 +124,15 @@ export const CORE_TASK_NAMES = {
   // Issue gh-1942: asks the unmapped speakers of one transcript again after its Event or the Event's participants
   // changed, on the same short-model-task runner of `semprec-transcribe`.
   TRANSCRIPT_SPEAKER_SUGGESTION: "transcriptSpeakerSuggestion",
+  // Issue gh-1965: computes the size, preview and reduced copy of one Inbox photo, or the length and kind of one Inbox
+  // audio note, with `ffprobe`/`ffmpeg` in `semprec-transcribe`, under the job key `inbox-attachment-metadata:<attachmentId>`.
+  INBOX_ATTACHMENT_METADATA: "inboxAttachmentMetadata",
   VALUE_LINKS_PROPAGATE: "valueLinksPropagate",
   // Issue #643: the hourly sweep that closes every MCP-triggered run whose run-credential expired.
   MCP_RUN_CREDENTIAL_EXPIRY_SWEEP: "mcpRunCredentialExpirySweep",
+  // Issue gh-1976: loads the tools of one MCP server item the confirmation of an Inbox card created, under the job key
+  // `mcp-server-sync-<mcpServerItemId>`. It runs the same sync as the human route and is not retried.
+  MCP_SERVER_SYNC: "mcpServerSync",
   // Issue #1483: the sweep that deletes expired and used mailbox OAuth states.
   MAIL_OAUTH_STATES_SWEEP: "mailOauthStatesSweep",
   // Issue #692: the daily sweep that deletes pre-checkpoint agent_run_events rows past retention.
@@ -161,6 +167,9 @@ export const CORE_TASK_NAMES = {
   // Issue gh-1879: sends the silent push that makes the phone read the reminders feed again, enqueued by every write that
   // can change a fire time under the job key `reminders-resync:<tenantId>` with a 30-second debounce.
   REMINDERS_RESYNC: "remindersResync",
+  // Issue gh-1960: the hourly sweep that requests the feed of every subscription calendar, once per run, with the validators
+  // of the last feed a consumer took over.
+  CALENDAR_SUBSCRIPTION_SWEEP: "calendarSubscriptionSweep",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 
@@ -209,8 +218,10 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.TRANSCRIPTION_CREATE]: "transcribe",
   [CORE_TASK_NAMES.TRANSCRIPT_CARD_RECOMPUTE]: "transcribe",
   [CORE_TASK_NAMES.TRANSCRIPT_SPEAKER_SUGGESTION]: "transcribe",
+  [CORE_TASK_NAMES.INBOX_ATTACHMENT_METADATA]: "transcribe",
   [CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE]: "api",
   [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: "api",
+  [CORE_TASK_NAMES.MCP_SERVER_SYNC]: "api",
   [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: "api",
   [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: "api",
   [CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE]: "api",
@@ -227,6 +238,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.TASK_HOST_EVENT_ENDED]: "api",
   [CORE_TASK_NAMES.AI_BUDGET_RESET]: "api",
   [CORE_TASK_NAMES.REMINDERS_RESYNC]: "api",
+  [CORE_TASK_NAMES.CALENDAR_SUBSCRIPTION_SWEEP]: "api",
 };
 
 /**
@@ -287,8 +299,10 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.TRANSCRIPTION_CREATE]: "tenant",
   [CORE_TASK_NAMES.TRANSCRIPT_CARD_RECOMPUTE]: "tenant",
   [CORE_TASK_NAMES.TRANSCRIPT_SPEAKER_SUGGESTION]: "tenant",
+  [CORE_TASK_NAMES.INBOX_ATTACHMENT_METADATA]: "tenant",
   [CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE]: "tenant",
   [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: "system",
+  [CORE_TASK_NAMES.MCP_SERVER_SYNC]: "tenant",
   [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: "system",
   [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: "system",
   [CORE_TASK_NAMES.SEMP_PROBLEMS_PRUNE]: "system",
@@ -305,6 +319,7 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.TASK_HOST_EVENT_ENDED]: "tenant",
   [CORE_TASK_NAMES.AI_BUDGET_RESET]: "tenant",
   [CORE_TASK_NAMES.REMINDERS_RESYNC]: "tenant",
+  [CORE_TASK_NAMES.CALENDAR_SUBSCRIPTION_SWEEP]: "system",
   [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: "tenant",
   [AGENT_TASK_NAMES.AGENT_RUN]: "tenant",
   [AGENT_TASK_NAMES.DELEGATED_AGENT_RUN]: "tenant",
@@ -465,6 +480,18 @@ export async function enqueueJob(
     options.jobKeyMode ?? "replace",
     options.priority ?? 0,
   ]);
+}
+
+/**
+ * The inverse of `enqueueJob` for a keyed job, through `graphile_worker.remove_job`: on a `PoolClient` that is inside a
+ * transaction the removal commits or rolls back with whatever else that transaction does. A job no worker has locked
+ * is deleted. A job a worker is running keeps running, but its key is cleared and its attempts are used up, so a
+ * failure of that run is not retried (graphile-worker 0.17.3, `sql/000018.sql`; `registerTask` completes such a run
+ * instead of failing it). A key that names no job removes nothing. The caller builds `jobKey` from ids of its own
+ * tenant, as the producer of the job did: the job table is not partitioned by tenant.
+ */
+export async function cancelJob(client: Queryable, jobKey: string): Promise<void> {
+  await client.query("SELECT graphile_worker.remove_job($1)", [jobKey]);
 }
 
 /** The bound values of one `graphile_worker.add_job` call, in parameter order. */

@@ -29,6 +29,8 @@
   "heartbeat.weekday.sat": "Sat",
   "heartbeat.weekday.sun": "Sun",
   "inbox.originNote.prefix": "Created from Inbox:",
+  "inbox.recordingCard.defaultName.dated": "Recording {day}. {month}. {time}",
+  "inbox.recordingCard.defaultName.undated": "Recording",
   "semp.thread.itemTitle": "Edit: {itemName}",
   "collection.custom.searchPlaceholder": "Search collection",
   "database.areas.name": "Areas",

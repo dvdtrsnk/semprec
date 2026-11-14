@@ -20,6 +20,7 @@ import {
   failGatewayCall,
   finishAgentRun,
   hashPassword,
+  loadFullModuleRegistry,
   login,
   getAgentRun,
   recordTokenGatewayCall,
@@ -281,6 +282,55 @@ describe("createAgentRunRequestListener", () => {
       const body = (await res.json()) as { runId: string };
       const run = await withTransaction(pool, (client) => getAgentRun(client, body.runId));
       expect(run?.actorUserId).toBe(tenantUser.id);
+    });
+
+    // Issue gh-1956: a credential's list is the upper bound of the module tools it exposes, so the mint accepts the
+    // capability ids of the active modules, and only when it knows the registry.
+    describe("module capability ids (issue gh-1956)", () => {
+      let moduleServer: Server;
+      let moduleBaseUrl: string;
+
+      beforeEach(async () => {
+        moduleServer = createServer(createAgentRunRequestListener(pool, await loadFullModuleRegistry()));
+        await new Promise<void>((resolve) => moduleServer.listen(0, resolve));
+        const address = moduleServer.address();
+        if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+        moduleBaseUrl = `http://127.0.0.1:${address.port}`;
+      });
+
+      afterEach(async () => {
+        await new Promise<void>((resolve) => moduleServer.close(() => resolve()));
+      });
+
+      async function mintAt(url: string, capabilities: string[]): Promise<Response> {
+        return fetch(`${url}/api/agent-runs/mcp-credentials`, {
+          method: "POST",
+          headers: { ...(await authHeader()), "Content-Type": "application/json" },
+          body: JSON.stringify({ projectItemId: await createTestProjectItem(pool), capabilities }),
+        });
+      }
+
+      it("mints a credential that lists the capability of an active module", async () => {
+        const res = await mintAt(moduleBaseUrl, ["core.item.read", "mail.draft"]);
+
+        expect(res.status).toBe(201);
+        expect(((await res.json()) as { capabilities: string[] }).capabilities).toEqual([
+          "core.item.read",
+          "mail.draft",
+        ]);
+      });
+
+      it("refuses a capability no active module declares, with nothing minted", async () => {
+        const res = await mintAt(moduleBaseUrl, ["core.item.read", "mail.nope"]);
+
+        expect(res.status).toBe(400);
+        const { rows } = await pool.query<{ n: string }>("SELECT count(*)::text AS n FROM agent_run_mcp_credentials");
+        expect(rows[0]?.n).toBe("0");
+      });
+
+      it("refuses a module capability when the listener knows no module registry", async () => {
+        expect((await mintAt(baseUrl, ["mail.draft"])).status).toBe(400);
+      });
     });
 
     describe("project guard", () => {
