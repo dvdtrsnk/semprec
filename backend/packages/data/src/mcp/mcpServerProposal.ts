@@ -1,5 +1,5 @@
 import { ValidationError } from "../errors.js";
-import { assertStorableMcpConnectionConfig } from "./mcpConnectionConfig.js";
+import { assertStorableMcpConnectionConfig, mcpConnectionConfigSchema } from "./mcpConnectionConfig.js";
 
 /**
  * Names a proposal for an `mcpServers` item (issue #123) could plausibly carry a secret
@@ -114,4 +114,18 @@ export function assertValidMcpServerProposalProperties(properties: Record<string
     assertNoCredentialShapedUrlParams(properties.connectionConfig);
     assertStorableMcpConnectionConfig(properties.connectionConfig);
   }
+}
+
+/**
+ * The properties of an MCP server card as the item is stored: a remote (`http` or `sse`) connection is
+ * `{ transport, url }` and nothing else, so a field the transport hides (a `command`) is dropped. A `stdio`
+ * connection, a card with no connection yet (a bare `name`) and a connection that does not parse are returned as they
+ * are: confirm refuses `stdio` before it gets here (`assertCardIsNotStdioMcpServer`) and the envelope validation
+ * judges the rest.
+ */
+export function normalizeMcpServerProperties(properties: Record<string, unknown>): Record<string, unknown> {
+  const connection = mcpConnectionConfigSchema.safeParse(properties.connectionConfig);
+  if (!connection.success || connection.data.transport === "stdio") return properties;
+  const { transport, url } = connection.data;
+  return { ...properties, connectionConfig: { transport, url } };
 }

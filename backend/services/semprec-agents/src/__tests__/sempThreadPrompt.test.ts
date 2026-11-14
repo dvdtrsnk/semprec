@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
-import { closeIdleThreadSessions, SempConversation } from "@semprec/agent-runtime";
+import { closeIdleThreadSessions, createGenericOperationAgentTools, SempConversation } from "@semprec/agent-runtime";
 import {
   GENERIC_OPERATION_NAMES,
   OPERATION_METADATA,
@@ -13,8 +13,11 @@ import {
 import {
   createSempChatThread,
   createChokePoint,
+  createCollectionMetadataResolver,
   createAgentRun,
+  createSemprecTickAction,
   createHeartbeat,
+  createInboxProposalReviseTool,
   createUser,
   enqueueSempMessage,
   getDatabaseByModuleId,
@@ -27,7 +30,16 @@ import {
   sendSempMessage,
   withTransaction,
 } from "@semprec/data";
-import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import {
+  confirmProposalWithClient,
+  createInboxItemWithClient,
+  createRuntimeRolePool,
+  createTestTenant,
+  getTestPool,
+  resetDatabase,
+  reviseProposalWithClient,
+  updateProposalValuesWithClient,
+} from "@semprec/data/testSupport";
 import { createAgentSessionFactoryForRun } from "../agentSessionComposition.js";
 import type { GatewayModel } from "../modelComposition.js";
 import { createSempMessageTask } from "../sempMessageTask.js";
@@ -566,5 +578,313 @@ describe("Semp thread live prompt", () => {
         { cause: failure?.error },
       );
     if (failure) throw failure.error;
+  });
+  describe("the card of an Inbox item thread (issue #1938)", () => {
+    interface ItemThread {
+      sourceId: string;
+      cardId: string;
+      proposalsId: string;
+      tasksId: string;
+      turn: { threadId: string; assistantMessageId: string };
+    }
+    const isRecord = (value: unknown): value is Record<string, unknown> =>
+      typeof value === "object" && value !== null && !Array.isArray(value);
+
+    /** The text of the last user message of a model call, and the card data in it when it carries any. */
+    function lastUserTurn(messages: unknown): { text: string; card: Record<string, unknown> | null } {
+      if (!Array.isArray(messages)) throw new Error("The model call has no messages");
+      const users = messages.filter(
+        (message): message is Record<string, unknown> => isRecord(message) && message.role === "user",
+      );
+      const content = users.at(-1)?.content;
+      const text =
+        typeof content === "string"
+          ? content
+          : Array.isArray(content)
+            ? content.map((part) => (isRecord(part) && typeof part.text === "string" ? part.text : "")).join("")
+            : null;
+      if (text === null) throw new Error("No user message in the model call");
+      const match = /<inbox-card-data>\n(.*)\n<\/inbox-card-data>/s.exec(text);
+      const card: unknown = match?.[1] ? JSON.parse(match[1]) : null;
+      if (card !== null && !isRecord(card)) throw new Error("The card data is not an object");
+      return { text, card };
+    }
+
+    /** An Inbox item whose card the tick made, revised into a Tasks proposal and edited by the user, with a message queued in its item thread. */
+    async function createItemThread(text = "Buy milk, please"): Promise<ItemThread> {
+      return runInTenant(tenant, async () => {
+        const dbs = await withTransaction(runtime, async (client) => ({
+          inbox: await getDatabaseByModuleId(client, "inbox"),
+          types: await getDatabaseByModuleId(client, "inboxItemTypes"),
+          proposals: await getDatabaseByModuleId(client, "processingProposals"),
+          tasks: await getDatabaseByModuleId(client, "tasks"),
+        }));
+        if (!dbs.inbox?.ownerProjectItemId || !dbs.types || !dbs.proposals || !dbs.tasks)
+          throw new Error("Missing Inbox setup");
+        const inboxDatabaseId = dbs.inbox.id;
+        const source = await withTransaction(runtime, (client) =>
+          createInboxItemWithClient(client, { inboxDatabaseId, date: "2026-11-06", time: "12:30", text }),
+        );
+        await createSemprecTickAction(runtime, async () => ({ properties: {}, candidates: [] }))(
+          {
+            inboxDatabaseId: dbs.inbox.id,
+            inboxItemTypesDatabaseId: dbs.types.id,
+            processingProposalsDatabaseId: dbs.proposals.id,
+          },
+          { heartbeatId: randomUUID(), projectItemId: dbs.inbox.ownerProjectItemId, itemId: source.id },
+        );
+        const cards = await runtime.query<{ id: string }>(
+          `SELECT card.id FROM items card JOIN item_relations edge ON edge.item_a = card.id OR edge.item_b = card.id
+            WHERE card.database_id = $1 AND card.deleted_at IS NULL AND (edge.item_a = $2 OR edge.item_b = $2)`,
+          [dbs.proposals.id, source.id],
+        );
+        const cardId = cards.rows[0]?.id;
+        if (cards.rows.length !== 1 || !cardId) throw new Error("Missing tick-produced card");
+        const config = { processingProposalsDatabaseId: dbs.proposals.id };
+        const tasksId = dbs.tasks.id;
+        await withTransaction(runtime, async (client) => {
+          await reviseProposalWithClient(client, config, cardId, {
+            message: "Filed under Tasks",
+            entityKind: "database",
+            target: tasksId,
+            properties: { name: "Buy milk" },
+          });
+          await updateProposalValuesWithClient(client, config, cardId, { set: { primary: { name: "Koupit mléko" } } });
+        });
+        const turn = await withTransaction(runtime, (client) =>
+          sendSempMessage(client, {
+            subject: { inboxItemId: source.id, proposalId: cardId },
+            text: "It belongs to another project",
+            context: [],
+            hasContext: false,
+          }),
+        );
+        return { sourceId: source.id, cardId, proposalsId: dbs.proposals.id, tasksId, turn };
+      });
+    }
+
+    function gatewayCapturing(prompts: Array<ReturnType<typeof lastUserTurn>>, replies = 1): GatewayModel {
+      const faux = fauxProvider();
+      faux.setResponses(
+        Array.from({ length: replies }, (_, index) => (context) => {
+          prompts.push(lastUserTurn(context.messages));
+          return fauxAssistantMessage(`reply ${index}`);
+        }),
+      );
+      return {
+        model: faux.getModel(),
+        streamFn: (model, context, options) => faux.provider.streamSimple(model, context, options),
+        isBudgetRefusal: () => false,
+      };
+    }
+
+    const runTurn = (task: ReturnType<typeof createSempMessageTask>, turn: ItemThread["turn"]) =>
+      runInTenant(tenant, () =>
+        task({ threadId: turn.threadId, assistantMessageId: turn.assistantMessageId }, { job: { id: "card-test" } }),
+      );
+
+    it("puts the source, the effective envelope, the edited keys and the history of an open card into the turn's prompt, and into no stored text", async () => {
+      const fixture = await createItemThread();
+      const prompts: Array<ReturnType<typeof lastUserTurn>> = [];
+      const task = createSempMessageTask(
+        runtime,
+        await loadFullModuleRegistry(),
+        gatewayCapturing(prompts),
+        createInFlightAgentRuns(),
+      );
+
+      await runTurn(task, fixture.turn);
+
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]?.card).toMatchObject({
+        proposalId: fixture.cardId,
+        status: "proposed",
+        source: { text: "Buy milk, please", date: "2026-11-06", time: "12:30" },
+        envelope: { properties: { name: "Koupit mléko" } },
+        userEditedKeys: ["primary.name"],
+      });
+      expect(prompts[0]?.card?.history).toMatchObject([{ kind: null }, { kind: null }, { kind: "userEdit" }]);
+      expect(prompts[0]?.text).toContain("It belongs to another project");
+      const stored = await runInTenant(tenant, () =>
+        runtime.query<{ text: string }>(
+          `SELECT e.payload->>'text' AS text FROM agent_run_events e JOIN agent_runs r ON r.id = e.agent_run_id AND r.tenant_id = e.tenant_id
+            WHERE r.thread_id = $1 AND e.kind = 'user_message'`,
+          [fixture.turn.threadId],
+        ),
+      );
+      expect(stored.rows).toEqual([{ text: "It belongs to another project" }]);
+      const runs = await runInTenant(tenant, () =>
+        runtime.query<{ task: string }>("SELECT task FROM agent_runs WHERE thread_id = $1", [fixture.turn.threadId]),
+      );
+      expect(runs.rows.every((row) => !row.task.includes("inbox-card-data"))).toBe(true);
+      await closeIdleThreadSessions(runtime);
+    });
+
+    it("reads the card again for the next turn of the same thread, after the card changed", async () => {
+      const fixture = await createItemThread();
+      const prompts: Array<ReturnType<typeof lastUserTurn>> = [];
+      const task = createSempMessageTask(
+        runtime,
+        await loadFullModuleRegistry(),
+        gatewayCapturing(prompts, 2),
+        createInFlightAgentRuns(),
+      );
+      await runTurn(task, fixture.turn);
+      await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) =>
+          reviseProposalWithClient(client, { processingProposalsDatabaseId: fixture.proposalsId }, fixture.cardId, {
+            message: "Chat correction",
+            entityKind: "database",
+            target: fixture.tasksId,
+            properties: { name: "Buy milk", description: "Oat milk" },
+          }),
+        ),
+      );
+      const second = await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) =>
+          sendSempMessage(client, {
+            threadId: fixture.turn.threadId,
+            text: "And now?",
+            context: [],
+            hasContext: false,
+          }),
+        ),
+      );
+
+      await runTurn(task, second);
+
+      expect(prompts).toHaveLength(2);
+      expect(prompts[0]?.card).toMatchObject({ envelope: { properties: { name: "Koupit mléko" } } });
+      expect(prompts[1]?.card).toMatchObject({
+        envelope: { properties: { name: "Koupit mléko", description: "Oat milk" } },
+      });
+      await closeIdleThreadSessions(runtime);
+    });
+
+    it("lists the items a confirmed card created, without an envelope, and an edit of the created task goes through the item tool and the choke point", async () => {
+      const fixture = await createItemThread();
+      // The message was queued while the card was open; the card is confirmed before the turn starts.
+      await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) =>
+          confirmProposalWithClient(client, { processingProposalsDatabaseId: fixture.proposalsId }, fixture.cardId),
+        ),
+      );
+      const created = await runInTenant(tenant, () =>
+        runtime.query<{ id: string; updated_at: Date }>(
+          "SELECT id, updated_at FROM items WHERE database_id = $1 AND deleted_at IS NULL",
+          [fixture.tasksId],
+        ),
+      );
+      const prompts: Array<ReturnType<typeof lastUserTurn>> = [];
+      const registry = await loadFullModuleRegistry();
+      const task = createSempMessageTask(runtime, registry, gatewayCapturing(prompts), createInFlightAgentRuns());
+
+      await runTurn(task, fixture.turn);
+
+      expect(created.rows).toHaveLength(1);
+      expect(prompts[0]?.card).toMatchObject({
+        status: "confirmed",
+        createdItems: [{ itemId: created.rows[0]?.id, databaseKey: "tasks", label: "Koupit mléko" }],
+      });
+      expect(prompts[0]?.card).not.toHaveProperty("envelope");
+      // The item tools edit the created task as any other item; the card itself stays as it was.
+      const run = await runInTenant(tenant, () =>
+        runtime.query<{ agent_run_id: string }>("SELECT agent_run_id FROM semp_messages WHERE id = $1", [
+          fixture.turn.assistantMessageId,
+        ]),
+      );
+      const runId = run.rows[0]?.agent_run_id;
+      if (!runId) throw new Error("The turn has no run");
+      const tools = createGenericOperationAgentTools(
+        runtime,
+        registry,
+        await createCollectionMetadataResolver(registry),
+      );
+      const patched = await runInTenant(tenant, () =>
+        tools["item.patch"](runId, {
+          itemId: created.rows[0]?.id,
+          properties: { name: "Koupit ovesné mléko" },
+          ifVersion: created.rows[0]?.updated_at.toISOString(),
+        }),
+      );
+      expect(patched, patched.result).toMatchObject({ error: false });
+      const after = await runInTenant(tenant, () =>
+        runtime.query<{ name: string }>("SELECT properties->>'name' AS name FROM items WHERE id = $1", [
+          created.rows[0]?.id,
+        ]),
+      );
+      expect(after.rows).toEqual([{ name: "Koupit ovesné mléko" }]);
+      // The revise tool still refuses the confirmed card, and the card stays exactly as it was.
+      const card = () =>
+        runInTenant(tenant, () =>
+          runtime.query<{ properties: unknown; updated_at: Date }>(
+            "SELECT properties, updated_at FROM items WHERE id = $1",
+            [fixture.cardId],
+          ),
+        );
+      const cardBefore = await card();
+      // A thread of a confirmed card takes no new message, so the finished turn's reply is reopened to put the call
+      // inside a running reply: the refusal then comes from the card's status, not from a missing running reply.
+      await runInTenant(tenant, () =>
+        runtime.query("UPDATE semp_messages SET status = 'running' WHERE id = $1", [fixture.turn.assistantMessageId]),
+      );
+      const refused = await runInTenant(tenant, () =>
+        createInboxProposalReviseTool(runtime)(runId, {
+          proposalId: fixture.cardId,
+          ifVersion: cardBefore.rows[0]?.updated_at.toISOString(),
+          properties: { name: "Koupit bio mléko" },
+        }),
+      );
+      expect(refused.error).toBe(true);
+      expect(JSON.parse(refused.result)).toMatchObject({ status: 400, error: "validation_failed", field: "status" });
+      expect((await card()).rows).toEqual(cardBefore.rows);
+      expect(cardBefore.rows[0]?.properties).toMatchObject({ status: "confirmed" });
+      await runInTenant(tenant, () =>
+        runtime.query("UPDATE semp_messages SET status = 'done' WHERE id = $1", [fixture.turn.assistantMessageId]),
+      );
+      await closeIdleThreadSessions(runtime);
+    });
+
+    it("adds no card context to a turn of an item thread whose item has no card, or to a chat thread", async () => {
+      const prompts: Array<ReturnType<typeof lastUserTurn>> = [];
+      const task = createSempMessageTask(
+        runtime,
+        await loadFullModuleRegistry(),
+        gatewayCapturing(prompts, 2),
+        createInFlightAgentRuns(),
+      );
+      const noCard = await runInTenant(tenant, async () => {
+        const inbox = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "inbox"));
+        if (!inbox) throw new Error("Missing Inbox");
+        const source = await withTransaction(runtime, (client) =>
+          createInboxItemWithClient(client, {
+            inboxDatabaseId: inbox.id,
+            date: "2026-11-06",
+            time: "12:30",
+            text: "Idea",
+          }),
+        );
+        return withTransaction(runtime, (client) =>
+          sendSempMessage(client, {
+            subject: { inboxItemId: source.id },
+            text: "What is this?",
+            context: [],
+            hasContext: false,
+          }),
+        );
+      });
+      const chat = await runInTenant(tenant, () =>
+        withTransaction(runtime, (client) =>
+          sendSempMessage(client, { text: "Hello", context: [], hasContext: false }),
+        ),
+      );
+
+      await runTurn(task, noCard);
+      await runTurn(task, chat);
+
+      expect(prompts.map((prompt) => prompt.card)).toEqual([null, null]);
+      expect(prompts.map((prompt) => prompt.text.includes("inbox-card-data"))).toEqual([false, false]);
+      await closeIdleThreadSessions(runtime);
+    });
   });
 });

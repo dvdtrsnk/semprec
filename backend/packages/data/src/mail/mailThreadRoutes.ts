@@ -8,10 +8,11 @@ import { parseMailSearchQuery } from "./search.js";
 import { hasInvalidMailSearchDate, listMailThreads, parseMailThreadListCursor } from "./mailThreadListQuery.js";
 import { getMailThreadDetail } from "./mailThreadDetail.js";
 import { resolveMailModuleIds } from "./mailModuleIds.js";
-import { READ_PROPERTY_KEY } from "./messageFlags.js";
+import { FLAGGED_PROPERTY_KEY, READ_PROPERTY_KEY } from "./messageFlags.js";
 import {
   announceMailThreadChanged,
   listMailThreadActionMessages,
+  readMailThreadFlagged,
   readMailThreadUnread,
   resolveMailThreadForAction,
 } from "./mailThreadActions.js";
@@ -169,6 +170,72 @@ export function createMailThreadReadRouteHandler(pool: Pool) {
       const unread = await readMailThreadUnread(client, threadId);
       announceMailThreadChanged(client, threadId);
       return { status: 200, body: { threadId, unread } };
+    });
+  };
+}
+
+const flagBodySchema = z.object({ flagged: z.boolean() }).strict();
+
+/**
+ * `POST /api/mail/threads/:threadId/flag` with the body `{ flagged: boolean }` (issue gh-1893): flags or unflags
+ * the conversation in one transaction and answers `{ threadId, flagged }`, the thread id after the translation of a
+ * merged id (issue #1493) and whether the thread is flagged once the writes are done (`readMailThreadFlagged`, the
+ * value the thread detail reports). A thread id that is no UUID and a body that is anything but that object are 400s;
+ * an unknown id, another tenant's id and a thread without a live message are the same 404.
+ *
+ * `flagged: true` sets `flagged` on the copies of the last incoming message (`listMailThreadActionMessages`): that
+ * message in every mailbox it was delivered to. A thread without an incoming message has nothing to flag, so the call
+ * writes nothing and answers the state the thread already had. `flagged: false` clears `flagged` on every live copy of the thread,
+ * the user's own mail, Sent and Drafts included. The server loads the versions, so a request carries none and the
+ * last write wins.
+ *
+ * Like the read route, the transaction starts with the tenant's mail-thread guard (`resolveMailThreadForAction`).
+ * Each copy is locked, in item id order, and written only when the locked row's `flagged` differs from the requested
+ * value; the write is `updateItemWithClient` as the session's user, so the Emails flag hook records the desired state
+ * and queues the mailbox sync (issue #1494). After the commit the route sends one `mailThread` invalidation, also when
+ * every copy already matched; a rolled-back request sends none.
+ */
+export function createMailThreadFlagRouteHandler(pool: Pool) {
+  const queueAffinity = createActionQueueAffinity();
+  return async (ctx: {
+    params: Record<string, string>;
+    body: unknown;
+    identity: { user: { id: string } };
+  }): Promise<{ status: number; body: { threadId: string; flagged: boolean } }> => {
+    const requested = z.uuid().safeParse(ctx.params.threadId);
+    if (!requested.success) throw new ValidationError("Invalid threadId", { field: "threadId" });
+    const body = flagBodySchema.safeParse(ctx.body);
+    if (!body.success) throw new ValidationError("The body must be { flagged: boolean }", { field: "flagged" });
+    const { flagged } = body.data;
+    const userId = ctx.identity.user.id;
+
+    return withTransaction(pool, async (client) => {
+      const threadId = await resolveMailThreadForAction(client, requested.data);
+      const { messages, lastIncomingMessageId } = await listMailThreadActionMessages(client, threadId);
+      if (messages.length === 0) throw new NotFoundError("Thread not found");
+      const { emailsDatabaseId } = await resolveMailModuleIds(client);
+      const targets = messages.filter(
+        (message) => !flagged || (message.incoming && message.messageId === lastIncomingMessageId),
+      );
+      // The guard `resolveMailThreadForAction` took serializes this request with a reconcile pass and with every
+      // other thread action, so the copies, locked in item id order, are never locked against another order.
+      for (const target of targets) {
+        const locked = await lockItemForObservedMailFlags(client, emailsDatabaseId, target.itemId);
+        if (
+          locked === null ||
+          locked.deletedAt !== null ||
+          (locked.properties[FLAGGED_PROPERTY_KEY] === true) === flagged
+        )
+          continue;
+        await updateItemWithClient(
+          client,
+          { databaseId: emailsDatabaseId, itemId: target.itemId, propertiesPatch: { [FLAGGED_PROPERTY_KEY]: flagged } },
+          { queueAffinity, writer: { writerKind: "user" }, actingUserId: userId, humanWriterUserId: userId },
+        );
+      }
+      const threadFlagged = await readMailThreadFlagged(client, threadId);
+      announceMailThreadChanged(client, threadId);
+      return { status: 200, body: { threadId, flagged: threadFlagged } };
     });
   };
 }

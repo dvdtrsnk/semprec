@@ -1,9 +1,11 @@
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "./libraryModuleKeys.js";
+import { EMAILS_MODULE_ID } from "./emailModuleKeys.js";
 import type { AreaFilterTemplate, ModuleDatabaseDescriptor, ModuleManifest } from "@semprec/module-registry";
 import { TEMPORAL_SWITCHER_VIEW_TYPE } from "../views/temporalSwitcherViewType.js";
 import { SYSTEM_SETTINGS_MODULE_ID } from "../systemSettings.js";
 import { SYSTEM_DATABASES_EDITOR_SCHEMAS } from "./systemDatabasesEditorSchemas.js";
 import { TASKS_DAY_ROLLOVER_ACTION_ID } from "../tasks/tasksDayRolloverAction.js";
+import { JOURNAL_WEEKLY_CLEANUP_ACTION_ID } from "../journal/journalWeeklyCleanupKeys.js";
 import {
   FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
   TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
@@ -271,6 +273,8 @@ export const manifest: ModuleManifest = {
           PEOPLE_MODULE_ID,
           JOURNAL_MODULE_ID,
         ],
+        // The mail of a person is listed as threads (`mail/threadRelatedCount.ts`), not as the Emails collection.
+        omit: [EMAILS_MODULE_ID],
       },
       name: "People",
       searchFields: ["name", "relationship", "contact", "emails", "phones", "companies"],
@@ -384,6 +388,7 @@ export const manifest: ModuleManifest = {
     FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
     TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
     TASKS_DAY_ROLLOVER_ACTION_ID,
+    JOURNAL_WEEKLY_CLEANUP_ACTION_ID,
   ],
   migrations: ["0004_ten_databases.sql"],
   dataMigrations: [

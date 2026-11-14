@@ -1773,7 +1773,13 @@ describe("item routes (issue #241)", () => {
         callerItemId: source.id,
         targetItemId: type.id,
       });
-      const tick = createSemprecTickAction(pool, async () => ({ properties: { name: "From Inbox" } }));
+      // The Files editor schema requires the file (issue #1928), so the card carries a blob that exists.
+      const blob = await withTransaction(pool, (client) =>
+        createBlob(client, { mimeType: "application/pdf", byteSize: 12, storageKey: `blobs/${randomUUID()}` }),
+      );
+      const tick = createSemprecTickAction(pool, async () => ({
+        properties: { name: "From Inbox", file: { blobId: blob.id } },
+      }));
       await tick(
         { inboxDatabaseId, inboxItemTypesDatabaseId, processingProposalsDatabaseId },
         { heartbeatId: "hb", projectItemId: "proj", itemId: source.id },

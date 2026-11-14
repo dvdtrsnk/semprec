@@ -297,6 +297,32 @@ export async function sumSettledSempMessageTokens(
   return { input: Number(row.input), output: Number(row.output) };
 }
 
+/**
+ * The AI spend of each of the runs `agentRunIds`, in one statement however many ids there are (issue gh-1909):
+ * the sum of `cost_usd` over the run's calls, a reserved call counting at its estimate and a failed call at 0
+ * (`failGatewayCall` zeroes its cost), which is the `totalCostUsd` of `getAgentRunUsage` (issue #1822). Only calls
+ * recorded with the run's own id count, so the calls of runs it delegated to are not included. The result holds an
+ * entry for every id given: a run without such calls, and a run of another tenant whose calls row-level security
+ * hides, cost `0`.
+ */
+export async function getAgentRunCosts(
+  client: Pool | PoolClient,
+  agentRunIds: readonly string[],
+): Promise<Map<string, number>> {
+  const costs = new Map<string, number>(agentRunIds.map((id) => [id, 0]));
+  if (agentRunIds.length === 0) return costs;
+  // The sum arrives as a decimal string, so the conversion to a number happens once per run.
+  const { rows } = await client.query<{ agent_run_id: string; cost_usd: string }>(
+    `SELECT agent_run_id, SUM(cost_usd)::text AS cost_usd
+     FROM ai_gateway_calls
+     WHERE agent_run_id = ANY($1::uuid[])
+     GROUP BY agent_run_id`,
+    [agentRunIds],
+  );
+  for (const row of rows) costs.set(row.agent_run_id, Number(row.cost_usd));
+  return costs;
+}
+
 export interface GatewaySpend {
   spentToday: number;
   spentMonth: number;

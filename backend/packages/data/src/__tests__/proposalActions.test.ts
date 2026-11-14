@@ -18,7 +18,7 @@ import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { createPool, withTransaction } from "../db/pool.js";
 import { runMigrations } from "../db/migrate.js";
-import { ConflictError, ValidationError } from "../errors.js";
+import { ConflictError, NotFoundError, ValidationError } from "../errors.js";
 import { randomUUID } from "node:crypto";
 import { createItemWithClient, prepareUserItemPatch, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
@@ -38,7 +38,9 @@ import {
 import {
   confirmProposalWithClient,
   rejectProposalWithClient,
+  reviseProposalFromThreadWithClient,
   reviseProposalWithClient,
+  updateProposalValuesWithClient,
 } from "../inbox/proposalActions.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
@@ -52,6 +54,8 @@ import { proposalBlockId } from "../inbox/proposalPageContent.js";
 import { listPageChanges } from "../docs/pageChanges.js";
 import { matchTranscriptToEvent } from "../transcription/transcriptEventMatch.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
+import type { ItemRow } from "../types.js";
+import { createBlob } from "../blobs/blobsStore.js";
 
 let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
@@ -389,6 +393,16 @@ function resultBlockIds(confirmed: { properties: Record<string, unknown> }): str
     .array(z.object({ role: z.string(), blockIds: z.array(z.string()) }))
     .parse(confirmed.properties.results);
   return results.find((result) => result.role === "primary")?.blockIds ?? [];
+}
+
+/** The `file` value of a Files item (a blob that exists): the Files editor schema requires it, so a Files card needs one to confirm (issue #1928). */
+async function newFileValue(client: PoolClient): Promise<{ blobId: string }> {
+  const blob = await createBlob(client, {
+    mimeType: "application/pdf",
+    byteSize: 12,
+    storageKey: `blobs/${randomUUID()}`,
+  });
+  return { blobId: blob.id };
 }
 
 describe("Processing proposal confirm/reject/revise (issue #105)", () => {
@@ -951,6 +965,18 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       locale: "en",
     });
     const proposal = await createDatabaseProposal("English capture\nSecond line", "files");
+    const file = await withTransaction(pool, (client) => newFileValue(client));
+    await withTransaction(pool, async (client) => {
+      const envelope = {
+        ...z.record(z.string(), z.unknown()).parse(proposal.properties.proposal),
+        properties: { name: "English capture\nSecond line", file },
+      };
+      await updateItemWithClient(
+        client,
+        { databaseId: proposalsId, itemId: proposal.id, propertiesPatch: { proposal: envelope } },
+        { allowedSystemKeys: ["proposal"] },
+      );
+    });
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
     let failure: { error: unknown } | undefined;
     try {
@@ -3639,8 +3665,9 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     });
 
     it("returns the Inbox flag on a Files query after a real confirmation", async () => {
+      const file = await withTransaction(pool, (client) => newFileValue(client));
       const card = await cardWithSteps("files", [
-        { ref: "file", op: "create", databaseKey: "files", role: "primary", properties: { name: "From Inbox" } },
+        { ref: "file", op: "create", databaseKey: "files", role: "primary", properties: { name: "From Inbox", file } },
       ]);
       const confirmed = await confirm(card);
       const createdId = z.string().parse(confirmed.properties.resultItemId);
@@ -4294,6 +4321,93 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       expect(error).toMatchObject({ code: "version_conflict", details: { current } });
       expect(await readCard(cardId)).toEqual(current);
     });
+
+    describe("revise by the assistant of an item thread (issue #1906)", () => {
+      const thread = { author: "ai", threadId: randomUUID(), messageId: randomUUID() } as const;
+
+      function reviseAs(
+        cardId: string,
+        input: Parameters<typeof reviseProposalWithClient>[3],
+        revisedBy: Parameters<typeof reviseProposalWithClient>[5],
+      ) {
+        return withTransaction(pool, (client) =>
+          reviseProposalWithClient(
+            client,
+            { processingProposalsDatabaseId: proposalsId },
+            cardId,
+            input,
+            undefined,
+            revisedBy,
+          ),
+        );
+      }
+
+      it("writes an ai threadRevision entry with the thread and message ids, and the same envelope a user revise stores", async () => {
+        const card = await createDatabaseProposal("Buy milk");
+        const input = { entityKind: "database", target: tasksId, properties: { name: "Buy bread" } } as const;
+
+        const revised = await reviseAs(card.id, { ...input, message: "It is bread" }, thread);
+
+        const history = revised.properties.history as Array<Record<string, unknown>>;
+        expect(history[history.length - 1]).toEqual({
+          author: "ai",
+          message: "It is bread",
+          at: expect.any(String),
+          kind: "threadRevision",
+          threadId: thread.threadId,
+          messageId: thread.messageId,
+        });
+        const byUser = await createDatabaseProposal("Buy milk");
+        const revisedByUser = await revise(byUser.id, { ...input, message: "It is bread" });
+        expect(revised.properties.proposal).toEqual(revisedByUser.properties.proposal);
+        expect(revised.properties.status).toBe(revisedByUser.properties.status);
+      });
+
+      it("records 'Revised by assistant.' when the assistant revises without a message", async () => {
+        const card = await createDatabaseProposal("Buy milk");
+
+        const revised = await reviseAs(
+          card.id,
+          { entityKind: "database", target: tasksId, properties: { name: "Buy bread" } },
+          thread,
+        );
+
+        const history = revised.properties.history as Array<Record<string, unknown>>;
+        expect(history[history.length - 1]).toMatchObject({ author: "ai", message: "Revised by assistant." });
+      });
+
+      it("writes the ai entry for a message alone on a transcript card as well", async () => {
+        const cardId = await createTranscriptCard();
+
+        const revised = await reviseAs(cardId, { message: "Use the planning meeting instead" }, thread);
+
+        const history = revised.properties.history as Array<Record<string, unknown>>;
+        expect(history[history.length - 1]).toMatchObject({
+          author: "ai",
+          message: "Use the planning meeting instead",
+          kind: "threadRevision",
+          threadId: thread.threadId,
+          messageId: thread.messageId,
+        });
+      });
+
+      it("keeps the refusal of a locked card for the assistant and writes nothing", async () => {
+        const card = await createDatabaseProposal("Buy milk");
+        await withTransaction(pool, (client) =>
+          rejectProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, card.id),
+        );
+        const before = await readCard(card.id);
+
+        const error = await reviseAs(
+          card.id,
+          { entityKind: "database", target: tasksId, properties: { name: "Buy bread" } },
+          thread,
+        ).catch((e: unknown) => e);
+
+        expect(error).toMatchObject({ code: "validation_failed", details: { field: "status" } });
+        expect(await readCard(card.id)).toEqual(before);
+      });
+    });
   });
 
   describe("invalidReason on revise (issue #1482)", () => {
@@ -4432,6 +4546,2293 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
 
       expect(revised.properties.status).toBe("proposed");
       expect(revised.properties.invalidReason).toBeNull();
+    });
+  });
+
+  describe("editing proposal values (issue #1892)", () => {
+    type Step = NonNullable<ProposalEnvelope["operations"]>[number];
+    const config = () => ({ processingProposalsDatabaseId: proposalsId });
+    const editWithWarnings = (
+      cardId: string,
+      set: Record<string, Record<string, unknown>>,
+      ifVersion?: string,
+    ): Promise<Awaited<ReturnType<typeof updateProposalValuesWithClient>>> =>
+      withTransaction(pool, (client) =>
+        updateProposalValuesWithClient(client, config(), cardId, {
+          set,
+          ...(ifVersion === undefined ? {} : { ifVersion }),
+        }),
+      );
+    const edit = async (
+      cardId: string,
+      set: Record<string, Record<string, unknown>>,
+      ifVersion?: string,
+    ): Promise<ItemRow> => (await editWithWarnings(cardId, set, ifVersion)).item;
+    const readCard = async (id: string) => {
+      const card = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, id));
+      if (!card) throw new Error(`card ${id} not found`);
+      return card;
+    };
+    /** Runs `attempt`, expects the refusal `error` and proves it wrote nothing: the card's properties and `updatedAt` are as they were. */
+    async function expectRefusedUnchanged(cardId: string, attempt: () => Promise<unknown>) {
+      const before = await readCard(cardId);
+      const error = await attempt().then(
+        () => null,
+        (err: unknown) => err,
+      );
+      const after = await readCard(cardId);
+      expect(after.properties).toEqual(before.properties);
+      expect(after.updatedAt).toBe(before.updatedAt);
+      return error;
+    }
+    const setStatus = (cardId: string, patch: Record<string, unknown>) =>
+      withTransaction(pool, (client) =>
+        updateItemWithClient(
+          client,
+          { databaseId: proposalsId, itemId: cardId, propertiesPatch: patch },
+          { allowedSystemKeys: Object.keys(patch) },
+        ),
+      );
+    /** Stores a multi-step envelope as the assistant's output of a fresh card, the way the tick will. */
+    async function cardWithSteps(steps: Step[]): Promise<string> {
+      const card = await createDatabaseProposal("seed");
+      const primary = steps.find((step) => step.role === "primary")!;
+      const envelope = {
+        entityKind: "database",
+        target: await databaseIdFor("companies"),
+        properties: primary.properties ?? {},
+        operations: steps,
+      };
+      await setStatus(card.id, { proposal: envelope, aiProposal: envelope });
+      return card.id;
+    }
+    const companyAndPerson: Step[] = [
+      { ref: "company", op: "create", databaseKey: "companies", role: "primary", properties: { name: "Acme" } },
+      {
+        ref: "person",
+        op: "create",
+        databaseKey: "people",
+        role: "secondary",
+        properties: { name: "Jane" },
+        relations: { companies: [{ ref: "company" }] },
+      },
+    ];
+    const taskEnvelope = (name: string) => ({ entityKind: "database", target: tasksId, properties: { name } });
+
+    it("stores the typed title in proposal, lists it as edited and adds a userEdit history entry", async () => {
+      const card = await createDatabaseProposal("Send the invoice");
+      const before = await readCard(card.id);
+
+      const edited = await edit(card.id, { primary: { name: "Poslat fakturu Alze" } });
+
+      expect(edited.properties.proposal).toEqual(taskEnvelope("Poslat fakturu Alze"));
+      expect(edited.properties.userOverrides).toEqual({ primary: { name: "Poslat fakturu Alze" } });
+      expect(edited.properties.userEditedKeys).toEqual(["primary.name"]);
+      expect(edited.properties.aiProposal).toEqual(taskEnvelope("Send the invoice"));
+      expect(edited.properties.aiVersion).toBe(before.properties.aiVersion);
+      expect(edited.properties.status).toBe("proposed");
+      const history = z.array(z.record(z.string(), z.unknown())).parse(edited.properties.history);
+      expect(history).toHaveLength(2);
+      expect(history[1]).toMatchObject({ author: "user", kind: "userEdit", keys: ["primary.name"] });
+    });
+
+    it("drops the key from userEditedKeys and userOverrides when the title is set back to the assistant's", async () => {
+      const card = await createDatabaseProposal("Send the invoice");
+      await edit(card.id, { primary: { name: "Poslat fakturu Alze" } });
+
+      const reverted = await edit(card.id, { primary: { name: "Send the invoice" } });
+
+      expect(reverted.properties.userEditedKeys).toEqual([]);
+      expect(reverted.properties.userOverrides).toEqual({});
+      expect(reverted.properties.proposal).toEqual(taskEnvelope("Send the invoice"));
+      const history = z.array(z.record(z.string(), z.unknown())).parse(reverted.properties.history);
+      expect(history[2]).toMatchObject({ kind: "userEdit", keys: ["primary.name"] });
+    });
+
+    it("merges a second edit with the first and keeps the earlier override", async () => {
+      const card = await createDatabaseProposal("Send the invoice");
+      await edit(card.id, { primary: { name: "Poslat fakturu Alze" } });
+
+      const second = await edit(card.id, { primary: { flagged: true } });
+
+      expect(second.properties.userOverrides).toEqual({ primary: { name: "Poslat fakturu Alze", flagged: true } });
+      expect(second.properties.userEditedKeys).toEqual(["primary.flagged", "primary.name"]);
+      expect(second.properties.proposal).toEqual({
+        ...taskEnvelope("Poslat fakturu Alze"),
+        properties: { name: "Poslat fakturu Alze", flagged: true },
+      });
+      const history = z.array(z.record(z.string(), z.unknown())).parse(second.properties.history);
+      expect(history[2]).toMatchObject({ keys: ["primary.flagged"] });
+    });
+
+    it("confirms the effective envelope: the created item carries the typed value", async () => {
+      const card = await createDatabaseProposal("Send the invoice");
+      await edit(card.id, { primary: { name: "Poslat fakturu Alze" } });
+
+      const confirmed = await withTransaction(pool, (client) => confirmProposalWithClient(client, config(), card.id));
+
+      expect(confirmed.properties.resultLabel).toBe("Poslat fakturu Alze");
+      const created = await withTransaction(pool, (client) =>
+        itemsStore.getItemById(client, tasksId, z.string().parse(confirmed.properties.resultItemId)),
+      );
+      expect(created!.properties.name).toBe("Poslat fakturu Alze");
+    });
+
+    it("accepts a current ifVersion", async () => {
+      const card = await createDatabaseProposal("Send the invoice");
+
+      const edited = await edit(card.id, { primary: { name: "Edited" } }, (await readCard(card.id)).updatedAt);
+
+      expect(edited.properties.userEditedKeys).toEqual(["primary.name"]);
+    });
+
+    it("answers a stale ifVersion with a ConflictError carrying the current card, and writes nothing", async () => {
+      const card = await createDatabaseProposal("Send the invoice");
+      const stale = (await readCard(card.id)).updatedAt;
+      await edit(card.id, { primary: { name: "First edit" } });
+      const current = await readCard(card.id);
+
+      const error = await expectRefusedUnchanged(card.id, () => edit(card.id, { primary: { name: "Second" } }, stale));
+
+      expect(error).toBeInstanceOf(ConflictError);
+      expect(error).toMatchObject({ status: 409, code: "version_conflict" });
+      expect(error).toHaveProperty("details.current.id", card.id);
+      expect(error).toHaveProperty("details.current.updatedAt", current.updatedAt);
+      expect(current.properties.userOverrides).toEqual({ primary: { name: "First edit" } });
+    });
+
+    it.each(["confirm", "reject"] as const)(
+      "refuses a card that was %sed with a ValidationError and writes nothing",
+      async (action) => {
+        const card = await createDatabaseProposal("Send the invoice");
+        await withTransaction(pool, (client) =>
+          action === "confirm"
+            ? confirmProposalWithClient(client, config(), card.id)
+            : rejectProposalWithClient(client, config(), card.id),
+        );
+
+        const error = await expectRefusedUnchanged(card.id, () => edit(card.id, { primary: { name: "Late" } }));
+
+        expect(error).toBeInstanceOf(ValidationError);
+        expect(error).toHaveProperty("details", { field: "status" });
+        expect((error as Error).message).toContain("locked");
+      },
+    );
+
+    it.each(["computing", "computeFailed"])("refuses a card in the status %s", async (status) => {
+      const card = await createDatabaseProposal("Send the invoice");
+      await setStatus(card.id, { status });
+
+      const error = await expectRefusedUnchanged(card.id, () => edit(card.id, { primary: { name: "Early" } }));
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toHaveProperty("details", { field: "status" });
+    });
+
+    it("moves a needsClarification card that holds an envelope to proposed", async () => {
+      const card = await createDatabaseProposal("Send the invoice");
+      await setStatus(card.id, { status: "needsClarification" });
+
+      const edited = await edit(card.id, { primary: { name: "Chosen" } });
+
+      expect(edited.properties.status).toBe("proposed");
+      expect(edited.properties.userEditedKeys).toEqual(["primary.name"]);
+    });
+
+    it("refuses a needsClarification card with no envelope to edit and writes nothing", async () => {
+      const untyped = await withTransaction(pool, (client) =>
+        createInboxItemWithClient(client, {
+          inboxDatabaseId: inboxId,
+          date: "2026-08-28",
+          time: "09:00",
+          text: "Something without a type",
+        }),
+      );
+      await runTick(untyped.id, async () => ({ properties: {}, candidates: [] }));
+      const card = (await findProposalForItem(untyped.id))!;
+      expect(card.properties.status).toBe("needsClarification");
+
+      const error = await expectRefusedUnchanged(card.id, () => edit(card.id, { primary: { name: "Chosen" } }));
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toHaveProperty("details", { field: "proposal" });
+    });
+
+    it("moves a fixable invalid card to proposed and clears its invalidReason in the same write", async () => {
+      const card = await createDatabaseProposal("Send the invoice");
+      await setStatus(card.id, {
+        status: "invalid",
+        invalidReason: { code: "targetArchived", field: "project", itemId: randomUUID(), label: "Website" },
+      });
+
+      const edited = await edit(card.id, { primary: { name: "Fixed" } });
+
+      expect(edited.properties.status).toBe("proposed");
+      expect(edited.properties.invalidReason).toBeNull();
+    });
+
+    it("refuses an invalid card whose source was deleted and writes nothing", async () => {
+      const card = await createDatabaseProposal("Send the invoice");
+      await setStatus(card.id, {
+        status: "invalid",
+        invalidReason: { code: "sourceDeleted", field: "", itemId: randomUUID(), label: "Send the invoice" },
+      });
+
+      const error = await expectRefusedUnchanged(card.id, () => edit(card.id, { primary: { name: "Edited" } }));
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toHaveProperty("details", { field: "status" });
+      expect((error as Error).message).toContain("source Inbox item was deleted");
+    });
+
+    it("materializes aiProposal from proposal on a legacy card and leaves aiVersion absent", async () => {
+      const card = await createDatabaseProposal("Send the invoice");
+      // A card written before aiProposal and aiVersion existed: no current writer can produce that state.
+      await pool.query("UPDATE items SET properties = properties - 'aiProposal' - 'aiVersion' WHERE id = $1", [
+        card.id,
+      ]);
+
+      const edited = await edit(card.id, { primary: { name: "Typed" } });
+
+      expect(edited.properties.aiProposal).toEqual(taskEnvelope("Send the invoice"));
+      expect(edited.properties.proposal).toEqual(taskEnvelope("Typed"));
+      expect(edited.properties.userEditedKeys).toEqual(["primary.name"]);
+      expect(edited.properties).not.toHaveProperty("aiVersion");
+    });
+
+    it("compares against the assistant's aiProposal, not against the effective proposal of an earlier edit", async () => {
+      const card = await createDatabaseProposal("Send the invoice");
+      await edit(card.id, { primary: { name: "Typed" } });
+
+      // Setting the stored effective value again is still an edit: the assistant's value is another one.
+      const again = await edit(card.id, { primary: { name: "Typed" } });
+
+      expect(again.properties.userEditedKeys).toEqual(["primary.name"]);
+    });
+
+    it("refuses an unknown ref, naming it, and writes nothing", async () => {
+      const card = await createDatabaseProposal("Send the invoice");
+
+      const error = await expectRefusedUnchanged(card.id, () => edit(card.id, { second: { name: "Typed" } }));
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as Error).message).toContain("'second'");
+      expect(error).toHaveProperty("details", { ref: "second", field: "second" });
+    });
+
+    it("refuses a key that is not a property of the target database, naming it, and writes nothing", async () => {
+      const card = await createDatabaseProposal("Send the invoice");
+
+      const error = await expectRefusedUnchanged(card.id, () => edit(card.id, { primary: { colour: "red" } }));
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as Error).message).toContain("'colour'");
+      expect(error).toHaveProperty("details", { field: "colour" });
+    });
+
+    it("refuses a system-owned key through the confirm validation and writes nothing", async () => {
+      const card = await createDatabaseProposal("Send the invoice");
+
+      const error = await expectRefusedUnchanged(card.id, () => edit(card.id, { primary: { time: "10:00" } }));
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toHaveProperty("details", { field: "time" });
+    });
+
+    it("refuses an empty set and a set whose refs hold no values, and writes nothing", async () => {
+      const card = await createDatabaseProposal("Send the invoice");
+
+      const sets: Array<Record<string, Record<string, unknown>>> = [{}, { primary: {} }];
+      for (const set of sets) {
+        const error = await expectRefusedUnchanged(card.id, () => edit(card.id, set));
+        expect(error).toBeInstanceOf(ValidationError);
+        expect(error).toHaveProperty("details", { field: "set" });
+      }
+    });
+
+    it("answers an unknown proposal id with NotFoundError", async () => {
+      await expect(edit(randomUUID(), { primary: { name: "Typed" } })).rejects.toBeInstanceOf(NotFoundError);
+    });
+
+    describe("an MCP server card", () => {
+      async function createMcpCard() {
+        const card = await createDatabaseProposal("Connect a server");
+        const envelope = {
+          entityKind: "database",
+          target: await databaseIdFor("mcpServers"),
+          properties: { name: "Remote tool" },
+        };
+        await setStatus(card.id, { proposal: envelope, aiProposal: envelope });
+        return card.id;
+      }
+
+      it("edits a plain field", async () => {
+        const card = await createMcpCard();
+
+        const edited = await edit(card, { primary: { name: "Renamed tool" } });
+
+        expect(edited.properties.userEditedKeys).toEqual(["primary.name"]);
+      });
+
+      it.each(["credential", "token", "apiKey"])(
+        "refuses the credential key '%s' with a ValidationError and writes nothing",
+        async (key) => {
+          const card = await createMcpCard();
+
+          const error = await expectRefusedUnchanged(card, () => edit(card, { primary: { [key]: "shh" } }));
+
+          expect(error).toBeInstanceOf(ValidationError);
+          expect(error).toHaveProperty("details", { field: key });
+        },
+      );
+
+      it("refuses a stdio connectionConfig with a ValidationError and writes nothing", async () => {
+        const card = await createMcpCard();
+
+        const error = await expectRefusedUnchanged(card, () =>
+          edit(card, { primary: { connectionConfig: { transport: "stdio", command: "my-mcp-server" } } }),
+        );
+
+        expect(error).toBeInstanceOf(ValidationError);
+        expect(error).toHaveProperty("details", { field: "connectionConfig" });
+      });
+    });
+
+    describe("a multi-step card", () => {
+      it("edits a secondary step's field and leaves the primary step and the top-level properties alone", async () => {
+        const card = await cardWithSteps(companyAndPerson);
+
+        const edited = await edit(card, { person: { name: "Janet" } });
+
+        const effective = parseStoredProposalEnvelope(edited.properties.proposal, card);
+        expect(effective).toMatchObject({ properties: { name: "Acme" } });
+        expect(effective && "operations" in effective ? effective.operations : null).toEqual([
+          companyAndPerson[0],
+          { ...companyAndPerson[1], properties: { name: "Janet" } },
+        ]);
+        expect(edited.properties.userEditedKeys).toEqual(["person.name"]);
+        expect(edited.properties.userOverrides).toEqual({ person: { name: "Janet" } });
+      });
+
+      it("mirrors an edit of the primary step into the top-level properties", async () => {
+        const card = await cardWithSteps(companyAndPerson);
+
+        const edited = await edit(card, { company: { name: "Acme Corp" } });
+
+        expect(edited.properties.proposal).toMatchObject({
+          properties: { name: "Acme Corp" },
+          operations: [{ ref: "company", properties: { name: "Acme Corp" } }, { ref: "person" }],
+        });
+        expect(edited.properties.userEditedKeys).toEqual(["company.name"]);
+      });
+
+      it("refuses the ref 'primary' when no step has it, naming it", async () => {
+        const card = await cardWithSteps(companyAndPerson);
+
+        const error = await expectRefusedUnchanged(card, () => edit(card, { primary: { name: "Typed" } }));
+
+        expect(error).toBeInstanceOf(ValidationError);
+        expect((error as Error).message).toContain("'primary'");
+      });
+
+      it("refuses a key of a step that the step's database does not have, naming the step and the key", async () => {
+        const card = await cardWithSteps(companyAndPerson);
+
+        const error = await expectRefusedUnchanged(card, () => edit(card, { person: { colour: "red" } }));
+
+        expect(error).toBeInstanceOf(ValidationError);
+        expect(error).toHaveProperty("details", { ref: "person", field: "colour" });
+      });
+
+      describe("a step the proposal does not carry out", () => {
+        const mcpStep = (extra: Partial<Step>): Step => ({
+          ref: "server",
+          op: "create",
+          databaseKey: "mcpServers",
+          role: "secondary",
+          properties: { name: "Remote tool" },
+          ...extra,
+        });
+        const skipped: Array<[string, Partial<Step>]> = [
+          ["a disabled step", { enabled: false }],
+          ["an optional step that no active step refers to", { optional: true }],
+        ];
+
+        it.each(skipped)(
+          "refuses a credential typed into %s, naming its ref, and writes nothing",
+          async (_label, extra) => {
+            const card = await cardWithSteps([companyAndPerson[0]!, mcpStep(extra)]);
+
+            const error = await expectRefusedUnchanged(card, () => edit(card, { server: { authToken: "secret" } }));
+
+            expect(error).toBeInstanceOf(ValidationError);
+            expect(error).toHaveProperty("details", { ref: "server", field: "server" });
+            const stored = await readCard(card);
+            expect(JSON.stringify(stored.properties)).not.toContain("secret");
+          },
+        );
+
+        it.each(skipped)("refuses an unknown key typed into %s and writes nothing", async (_label, extra) => {
+          const card = await cardWithSteps([companyAndPerson[0]!, mcpStep(extra)]);
+
+          const error = await expectRefusedUnchanged(card, () => edit(card, { server: { colour: "red" } }));
+
+          expect(error).toBeInstanceOf(ValidationError);
+          expect((error as Error).message).toContain("'server'");
+        });
+
+        it("refuses the skipped step even when the same request also edits an active one, and writes nothing", async () => {
+          const card = await cardWithSteps([companyAndPerson[0]!, mcpStep({ enabled: false })]);
+
+          const error = await expectRefusedUnchanged(card, () =>
+            edit(card, { company: { name: "Acme Corp" }, server: { name: "Renamed" } }),
+          );
+
+          expect(error).toBeInstanceOf(ValidationError);
+        });
+
+        it("still refuses a credential typed into the same step while it is active", async () => {
+          const card = await cardWithSteps([companyAndPerson[0]!, mcpStep({})]);
+
+          const error = await expectRefusedUnchanged(card, () => edit(card, { server: { authToken: "secret" } }));
+
+          expect(error).toBeInstanceOf(ValidationError);
+          expect(error).toHaveProperty("details.ref", "server");
+        });
+      });
+
+      it("confirms every step with the typed values", async () => {
+        const card = await cardWithSteps(companyAndPerson);
+        await edit(card, { person: { name: "Janet" }, company: { name: "Acme Corp" } });
+
+        const confirmed = await withTransaction(pool, (client) => confirmProposalWithClient(client, config(), card));
+
+        expect(confirmed.properties.resultLabel).toBe("Acme Corp");
+        const people = await pool.query<{ name: string }>(
+          "SELECT properties->>'name' AS name FROM items WHERE database_id = $1",
+          [await databaseIdFor("people")],
+        );
+        expect(people.rows).toEqual([{ name: "Janet" }]);
+      });
+    });
+
+    describe("a page content card", () => {
+      it("replaces a field the assistant's envelope holds", async () => {
+        const { proposal } = await createPageContentProposal("A thought");
+
+        const edited = await edit(proposal.id, { primary: { flavour: "heading" } });
+
+        expect(edited.properties.proposal).toMatchObject({ properties: { flavour: "heading" } });
+        expect(edited.properties.userEditedKeys).toEqual(["primary.flavour"]);
+      });
+
+      it("refuses a field the envelope does not hold, naming it, and writes nothing", async () => {
+        const { proposal } = await createPageContentProposal("A thought");
+
+        const error = await expectRefusedUnchanged(proposal.id, () =>
+          edit(proposal.id, { primary: { colour: "red" } }),
+        );
+
+        expect(error).toBeInstanceOf(ValidationError);
+        expect(error).toHaveProperty("details", { ref: "primary", field: "colour" });
+      });
+    });
+
+    it("refuses a card with an entityKind this release does not know", async () => {
+      const card = await createDatabaseProposal("Send the invoice");
+      const future = { entityKind: "futureKind", target: tasksId, properties: { name: "x" } };
+      await setStatus(card.id, { proposal: future, aiProposal: future });
+
+      const error = await expectRefusedUnchanged(card.id, () => edit(card.id, { primary: { name: "Typed" } }));
+
+      expect(error).toBeInstanceOf(ConflictError);
+      expect(error).toHaveProperty("details.entityKind", "futureKind");
+    });
+
+    it("waits for a concurrent confirm that holds the card's row lock, then refuses the confirmed card", async () => {
+      const card = await createDatabaseProposal("Send the invoice");
+
+      const [holder, contender] = await runPreconditionOverlap(
+        (client) => confirmProposalWithClient(client, config(), card.id),
+        (client) => updateProposalValuesWithClient(client, config(), card.id, { set: { primary: { name: "Late" } } }),
+        async (pid, observer) => {
+          const held = await observer.query<{ held: boolean }>(
+            `SELECT EXISTS (SELECT 1 FROM items i JOIN pg_locks l ON l.transactionid::text = i.xmax::text
+               WHERE i.id = $1 AND l.pid = $2 AND l.locktype = 'transactionid' AND l.granted) AS held`,
+            [card.id, pid],
+          );
+          expect(held.rows[0]?.held).toBe(true);
+        },
+        ([confirmOutcome, editOutcome]) => {
+          expect(confirmOutcome.status).toBe("fulfilled");
+          expect(editOutcome.status).toBe("rejected");
+          if (editOutcome.status === "rejected") expect(editOutcome.reason).toBeInstanceOf(ValidationError);
+        },
+      );
+
+      expect(holder.status).toBe("fulfilled");
+      expect(contender.status).toBe("rejected");
+      const after = await readCard(card.id);
+      expect(after.properties.status).toBe("confirmed");
+      expect(after.properties.userEditedKeys).toBeUndefined();
+    });
+
+    describe("revising a card that has manual values (issue #1924)", () => {
+      const revise = (
+        cardId: string,
+        input: Omit<Extract<Parameters<typeof reviseProposalWithClient>[3], { target: string }>, "message">,
+      ) =>
+        withTransaction(pool, (client) =>
+          reviseProposalWithClient(client, config(), cardId, { message: "Chat correction", ...input }),
+        );
+      const historyOf = (card: { properties: Record<string, unknown> }) =>
+        z.array(z.record(z.string(), z.unknown())).parse(card.properties.history);
+      /** Stores overrides no edit can produce (a key the target database does not have), the state left by a property that was removed. */
+      const storeOverrides = (cardId: string, overrides: Record<string, Record<string, unknown>>, keys: string[]) =>
+        setStatus(cardId, { userOverrides: overrides, userEditedKeys: keys });
+
+      it("clears the overrides and adds a reset entry when the card is revised to another destination", async () => {
+        const card = await createDatabaseProposal("Send the invoice");
+        await edit(card.id, { primary: { name: "Poslat fakturu Alze" } });
+        const eventsId = await databaseIdFor("events");
+
+        const revised = await revise(card.id, {
+          entityKind: "database",
+          target: eventsId,
+          properties: { name: "Invoice meeting" },
+        });
+
+        expect(revised.properties.userOverrides).toEqual({});
+        expect(revised.properties.userEditedKeys).toEqual([]);
+        expect(revised.properties.proposal).toEqual({
+          entityKind: "database",
+          target: eventsId,
+          properties: { name: "Invoice meeting" },
+        });
+        const history = historyOf(revised);
+        expect(history.map((entry) => entry.kind)).toEqual([undefined, "userEdit", undefined, "reset"]);
+        expect(history[2]).toMatchObject({ author: "user", message: "Chat correction" });
+        expect(history[3]).toMatchObject({ author: "user", keys: ["primary.name"] });
+        expect(history[3]!.message).toContain("destination changed");
+        expect(history[3]!.message).toContain("primary.name");
+      });
+
+      it("clears the overrides when only the entityKind changes", async () => {
+        const { proposal } = await createPageContentProposal("A thought");
+        await edit(proposal.id, { primary: { flavour: "heading" } });
+
+        const revised = await revise(proposal.id, {
+          entityKind: "database",
+          target: tasksId,
+          properties: { name: "A thought" },
+        });
+
+        expect(revised.properties.userOverrides).toEqual({});
+        expect(revised.properties.userEditedKeys).toEqual([]);
+        expect(historyOf(revised).at(-1)).toMatchObject({ kind: "reset", keys: ["primary.flavour"] });
+      });
+
+      it("keeps only the override whose key is a property of the same target and reports the other as dropped", async () => {
+        const card = await createDatabaseProposal("Send the invoice");
+        await storeOverrides(card.id, { primary: { name: "Typed", colour: "red" } }, [
+          "primary.colour",
+          "primary.name",
+        ]);
+
+        const revised = await revise(card.id, {
+          entityKind: "database",
+          target: tasksId,
+          properties: { name: "Send the invoice today" },
+        });
+
+        expect(revised.properties.userOverrides).toEqual({ primary: { name: "Typed" } });
+        expect(revised.properties.userEditedKeys).toEqual(["primary.name"]);
+        const history = historyOf(revised);
+        expect(history.at(-1)).toMatchObject({ kind: "reset", keys: ["primary.colour"] });
+        expect(history.at(-1)!.message).toContain("do not fit the new proposal");
+        expect(history.at(-1)!.message).toContain("primary.colour");
+        expect(revised.properties.proposal).toEqual({
+          entityKind: "database",
+          target: tasksId,
+          properties: { name: "Typed" },
+        });
+        expect(revised.properties.aiProposal).toEqual(taskEnvelope("Send the invoice today"));
+        expect(history.at(-2)).toMatchObject({ message: "Chat correction" });
+      });
+
+      it("keeps the overrides of the same target and adds no reset entry when every key is still a property", async () => {
+        const card = await createDatabaseProposal("Send the invoice");
+        await edit(card.id, { primary: { name: "Poslat fakturu Alze", flagged: true } });
+
+        const revised = await revise(card.id, {
+          entityKind: "database",
+          target: tasksId,
+          properties: { name: "Send the invoice today" },
+        });
+
+        expect(revised.properties.userOverrides).toEqual({ primary: { name: "Poslat fakturu Alze", flagged: true } });
+        expect(revised.properties.userEditedKeys).toEqual(["primary.flagged", "primary.name"]);
+        expect(historyOf(revised).map((entry) => entry.kind)).toEqual([undefined, "userEdit", undefined]);
+      });
+
+      it("stores the kept values in the effective proposal, so a confirm and a later edit of another key keep them", async () => {
+        const card = await createDatabaseProposal("Send the invoice");
+        await edit(card.id, { primary: { name: "Poslat fakturu Alze", flagged: true } });
+
+        const revised = await revise(card.id, {
+          entityKind: "database",
+          target: tasksId,
+          properties: { name: "Send the invoice today" },
+        });
+
+        expect(revised.properties.aiProposal).toEqual(taskEnvelope("Send the invoice today"));
+        expect(revised.properties.proposal).toEqual({
+          ...taskEnvelope("Poslat fakturu Alze"),
+          properties: { name: "Poslat fakturu Alze", flagged: true },
+        });
+
+        const edited = await edit(card.id, { primary: { flagged: false } });
+        expect(edited.properties.proposal).toMatchObject({ properties: { name: "Poslat fakturu Alze" } });
+
+        const confirmed = await withTransaction(pool, (client) => confirmProposalWithClient(client, config(), card.id));
+        expect(confirmed.properties.resultLabel).toBe("Poslat fakturu Alze");
+      });
+
+      it("adds no reset entry for a card with nothing edited, even when the destination changes", async () => {
+        const card = await createDatabaseProposal("Send the invoice");
+        const sameTarget = await revise(card.id, {
+          entityKind: "database",
+          target: tasksId,
+          properties: { name: "Send the invoice today" },
+        });
+        expect(sameTarget.properties.userOverrides).toEqual({});
+        expect(sameTarget.properties.userEditedKeys).toEqual([]);
+        expect(historyOf(sameTarget).map((entry) => entry.kind)).toEqual([undefined, undefined]);
+
+        const otherTarget = await revise(card.id, {
+          entityKind: "database",
+          target: await databaseIdFor("events"),
+          properties: { name: "Invoice meeting" },
+        });
+        expect(otherTarget.properties.userEditedKeys).toEqual([]);
+        expect(historyOf(otherTarget).map((entry) => entry.kind)).toEqual([undefined, undefined, undefined]);
+      });
+
+      it("does not count a kept value that now equals the new assistant value, and reports nothing dropped", async () => {
+        const card = await createDatabaseProposal("Send the invoice");
+        await edit(card.id, { primary: { name: "Poslat fakturu Alze" } });
+
+        const revised = await revise(card.id, {
+          entityKind: "database",
+          target: tasksId,
+          properties: { name: "Poslat fakturu Alze" },
+        });
+
+        expect(revised.properties.userOverrides).toEqual({});
+        expect(revised.properties.userEditedKeys).toEqual([]);
+        expect(historyOf(revised).map((entry) => entry.kind)).toEqual([undefined, "userEdit", undefined]);
+      });
+
+      it("matches a pageContent revise against the keys of the new envelope's properties", async () => {
+        const { proposal, targetPageId } = await createPageContentProposal("A thought");
+        await edit(proposal.id, { primary: { flavour: "heading" } });
+        await storeOverrides(proposal.id, { primary: { flavour: "heading", fields: { content: "typed" } } }, [
+          "primary.fields",
+          "primary.flavour",
+        ]);
+
+        const revised = await revise(proposal.id, {
+          entityKind: "pageContent",
+          target: targetPageId,
+          properties: { flavour: "paragraph" },
+        });
+
+        expect(revised.properties.userOverrides).toEqual({ primary: { flavour: "heading" } });
+        expect(revised.properties.userEditedKeys).toEqual(["primary.flavour"]);
+        expect(historyOf(revised).at(-1)).toMatchObject({ kind: "reset", keys: ["primary.fields"] });
+        expect(revised.properties.proposal).toMatchObject({ properties: { flavour: "heading" } });
+        expect(revised.properties.aiProposal).toMatchObject({ properties: { flavour: "paragraph" } });
+      });
+
+      it("drops the overrides of the steps of a multi-step card that a single-step revise no longer has", async () => {
+        const card = await cardWithSteps(companyAndPerson);
+        await edit(card, { company: { name: "Acme Corp" }, person: { name: "Janet" } });
+
+        const revised = await revise(card, {
+          entityKind: "database",
+          target: await databaseIdFor("companies"),
+          properties: { name: "Acme Corp" },
+        });
+
+        expect(revised.properties.userOverrides).toEqual({});
+        expect(revised.properties.userEditedKeys).toEqual([]);
+        expect(historyOf(revised).at(-1)).toMatchObject({ kind: "reset", keys: ["company.name", "person.name"] });
+        expect(historyOf(revised).at(-1)!.message).toContain("do not fit the new proposal");
+        expect(historyOf(revised).at(-1)!.message).not.toContain("no such fields");
+      });
+
+      it("leaves a card with no previous envelope without overrides and without a reset entry", async () => {
+        const untyped = await withTransaction(pool, (client) =>
+          createInboxItemWithClient(client, {
+            inboxDatabaseId: inboxId,
+            date: "2026-08-28",
+            time: "09:00",
+            text: "Something without a type",
+          }),
+        );
+        await runTick(untyped.id, async () => ({ properties: {}, candidates: [] }));
+        const card = (await findProposalForItem(untyped.id))!;
+
+        const revised = await revise(card.id, {
+          entityKind: "database",
+          target: tasksId,
+          properties: { name: "Chosen" },
+        });
+
+        expect(revised.properties.userOverrides).toEqual({});
+        expect(revised.properties.userEditedKeys).toEqual([]);
+        expect(historyOf(revised).filter((entry) => entry.kind === "reset")).toEqual([]);
+      });
+
+      it("still revises a card whose stored envelope is malformed, and reports no reset", async () => {
+        const card = await createDatabaseProposal("Send the invoice");
+        // A stored envelope no writer produces; the revise is how such a card is repaired.
+        await setStatus(card.id, { proposal: { broken: true }, aiProposal: null });
+
+        const revised = await revise(card.id, {
+          entityKind: "database",
+          target: tasksId,
+          properties: { name: "Repaired" },
+        });
+
+        expect(revised.properties.proposal).toEqual(taskEnvelope("Repaired"));
+        expect(revised.properties.userEditedKeys).toEqual([]);
+        expect(historyOf(revised).filter((entry) => entry.kind === "reset")).toEqual([]);
+      });
+
+      it("leaves the overrides and the history untouched when the envelope validation refuses the revise", async () => {
+        const card = await createDatabaseProposal("Send the invoice");
+        await edit(card.id, { primary: { name: "Poslat fakturu Alze" } });
+
+        const eventsId = await databaseIdFor("events");
+        const error = await expectRefusedUnchanged(card.id, () =>
+          revise(card.id, { entityKind: "database", target: eventsId, properties: { colour: "red" } }),
+        );
+
+        expect(error).toBeInstanceOf(ValidationError);
+        expect((await readCard(card.id)).properties.userEditedKeys).toEqual(["primary.name"]);
+      });
+    });
+
+    describe("revising from an item thread (issue #1938)", () => {
+      const thread = { threadId: randomUUID(), messageId: randomUUID() };
+      const historyOf = (card: { properties: Record<string, unknown> }) =>
+        z.array(z.record(z.string(), z.unknown())).parse(card.properties.history);
+      /** The Inbox item a card was made from: the subject of its item thread. */
+      async function sourceOf(cardId: string): Promise<string> {
+        return withTransaction(pool, async (client) => {
+          const property = await propertiesStore.getPropertyByKey(client, proposalsId, "sourceInbox");
+          const definition = await relationsStore.getRelationDefinitionByPropertyId(client, property!.id);
+          const edges = await relationsStore.listRelationsForItem(client, definition!.id, cardId);
+          return relationsStore.otherSide(edges[0]!, cardId);
+        });
+      }
+      const reviseFromThread = (
+        cardId: string,
+        subjectItemId: string,
+        input: Omit<
+          Parameters<typeof reviseProposalFromThreadWithClient>[2],
+          "proposalId" | "subjectItemId" | "threadId" | "messageId"
+        >,
+      ) =>
+        withTransaction(pool, (client) =>
+          reviseProposalFromThreadWithClient(client, config(), {
+            proposalId: cardId,
+            subjectItemId,
+            ...thread,
+            ...input,
+          }),
+        );
+      /** A card the user has edited: the title typed over the assistant's. */
+      async function editedCard() {
+        const card = await createDatabaseProposal("Send the invoice");
+        await edit(card.id, { primary: { name: "Poslat fakturu Alze" } });
+        return { cardId: card.id, sourceId: await sourceOf(card.id) };
+      }
+      const itemCounts = async () =>
+        (
+          await pool.query<{ database_id: string; count: number }>(
+            "SELECT database_id, count(*)::int AS count FROM items WHERE database_id = ANY($1::uuid[]) GROUP BY database_id",
+            [[tasksId, await databaseIdFor("events")]],
+          )
+        ).rows;
+
+      it("turns a Task card into an Event proposal, records the thread and message, and creates nothing in a target database", async () => {
+        const card = await createDatabaseProposal("Meet the accountant");
+        const eventsId = await databaseIdFor("events");
+        const before = await itemCounts();
+
+        const revised = await reviseFromThread(card.id, await sourceOf(card.id), {
+          entityKind: "database",
+          target: eventsId,
+          properties: { name: "Meet the accountant", type: "meeting", date: "2026-11-20" },
+          message: "It is an event, not a task",
+        });
+
+        expect(revised.properties.proposal).toEqual({
+          entityKind: "database",
+          target: eventsId,
+          properties: { name: "Meet the accountant", type: "meeting", date: "2026-11-20" },
+        });
+        expect(revised.properties.aiProposal).toEqual(revised.properties.proposal);
+        expect(revised.properties.status).toBe("proposed");
+        expect(historyOf(revised).at(-1)).toMatchObject({
+          author: "ai",
+          kind: "threadRevision",
+          message: "It is an event, not a task",
+          ...thread,
+        });
+        expect(await itemCounts()).toEqual(before);
+      });
+
+      it("increments aiVersion and keeps the destination of the card when the call names none", async () => {
+        const card = await createDatabaseProposal("Send the invoice");
+        const before = await readCard(card.id);
+
+        const revised = await reviseFromThread(card.id, await sourceOf(card.id), {
+          properties: { name: "Send the invoice today" },
+        });
+
+        expect(revised.properties.proposal).toEqual(taskEnvelope("Send the invoice today"));
+        expect(revised.properties.aiVersion).toBe(Number(before.properties.aiVersion) + 1);
+        expect(historyOf(revised).at(-1)).toMatchObject({ author: "ai", message: "Revised by assistant." });
+      });
+
+      it("stores the new value of an edited title as the user's and leaves it in userEditedKeys", async () => {
+        const { cardId, sourceId } = await editedCard();
+
+        const revised = await reviseFromThread(cardId, sourceId, { properties: { name: "Poslat fakturu Alze zítra" } });
+
+        expect(revised.properties.proposal).toEqual(taskEnvelope("Poslat fakturu Alze zítra"));
+        expect(revised.properties.userOverrides).toEqual({ primary: { name: "Poslat fakturu Alze zítra" } });
+        expect(revised.properties.userEditedKeys).toEqual(["primary.name"]);
+        // The assistant's own value stays, so the card still shows the title as the user's.
+        expect(revised.properties.aiProposal).toEqual(taskEnvelope("Send the invoice"));
+      });
+
+      it("leaves an edited title that the instruction did not touch as it was and protected", async () => {
+        const { cardId, sourceId } = await editedCard();
+
+        const revised = await reviseFromThread(cardId, sourceId, {
+          properties: { name: "Poslat fakturu Alze", description: "Due on Friday" },
+        });
+
+        expect(revised.properties.proposal).toEqual({
+          ...taskEnvelope("Poslat fakturu Alze"),
+          properties: { name: "Poslat fakturu Alze", description: "Due on Friday" },
+        });
+        expect(revised.properties.userOverrides).toEqual({ primary: { name: "Poslat fakturu Alze" } });
+        expect(revised.properties.userEditedKeys).toEqual(["primary.name"]);
+        expect(revised.properties.aiProposal).toEqual({
+          ...taskEnvelope("Send the invoice"),
+          properties: { name: "Send the invoice", description: "Due on Friday" },
+        });
+      });
+
+      it("stops treating the title as edited when the instruction sets it back to the assistant's own value", async () => {
+        const { cardId, sourceId } = await editedCard();
+
+        const revised = await reviseFromThread(cardId, sourceId, { properties: { name: "Send the invoice" } });
+
+        expect(revised.properties.userOverrides).toEqual({});
+        expect(revised.properties.userEditedKeys).toEqual([]);
+        expect(revised.properties.proposal).toEqual(taskEnvelope("Send the invoice"));
+      });
+
+      it("drops the manual values and adds a reset entry when the instruction changes the target database", async () => {
+        const { cardId, sourceId } = await editedCard();
+        const eventsId = await databaseIdFor("events");
+
+        const revised = await reviseFromThread(cardId, sourceId, {
+          entityKind: "database",
+          target: eventsId,
+          properties: { name: "Invoice meeting", type: "meeting", date: "2026-11-20" },
+        });
+
+        expect(revised.properties.userOverrides).toEqual({});
+        expect(revised.properties.userEditedKeys).toEqual([]);
+        expect(revised.properties.proposal).toMatchObject({
+          target: eventsId,
+          properties: { name: "Invoice meeting" },
+        });
+        const history = historyOf(revised);
+        expect(history.at(-2)).toMatchObject({ author: "ai", kind: "threadRevision" });
+        expect(history.at(-1)).toMatchObject({ kind: "reset", keys: ["primary.name"] });
+      });
+
+      it("keeps an edited key that the revised envelope leaves out, as it keeps one the instruction did not touch", async () => {
+        const card = await createDatabaseProposal("Send the invoice");
+        await edit(card.id, { primary: { description: "Typed note" } });
+
+        const revised = await reviseFromThread(card.id, await sourceOf(card.id), {
+          properties: { name: "Send the invoice, today" },
+        });
+
+        expect(revised.properties.userOverrides).toEqual({ primary: { description: "Typed note" } });
+        expect(revised.properties.userEditedKeys).toEqual(["primary.description"]);
+        expect(revised.properties.proposal).toEqual({
+          ...taskEnvelope("Send the invoice, today"),
+          properties: { name: "Send the invoice, today", description: "Typed note" },
+        });
+        expect(historyOf(revised).map((entry) => entry.kind)).not.toContain("reset");
+      });
+
+      it("refuses a revision whose ifVersion is not the card's current version, and writes nothing", async () => {
+        const card = await createDatabaseProposal("Send the invoice");
+        const sourceId = await sourceOf(card.id);
+        const seen = (await readCard(card.id)).updatedAt;
+        await edit(card.id, { primary: { name: "Poslat fakturu Alze" } });
+        const before = await readCard(card.id);
+
+        const stale = await reviseFromThread(card.id, sourceId, {
+          properties: { name: "Send the invoice" },
+          ifVersion: seen,
+        }).catch((error: unknown) => error);
+
+        expect(stale).toBeInstanceOf(ConflictError);
+        expect(await readCard(card.id)).toEqual(before);
+
+        const current = await reviseFromThread(card.id, sourceId, {
+          properties: { name: "Poslat fakturu Alze" },
+          ifVersion: before.updatedAt,
+        });
+        expect(current.properties.userOverrides).toEqual({ primary: { name: "Poslat fakturu Alze" } });
+      });
+
+      it("refuses a card whose source is another Inbox item exactly as it refuses a missing card, and writes nothing", async () => {
+        const own = await createDatabaseProposal("Send the invoice");
+        const other = await createDatabaseProposal("Buy milk");
+        const ownSource = await sourceOf(own.id);
+        const before = await readCard(other.id);
+        const input = { properties: { name: "Changed from the other thread" } };
+
+        const foreign = await reviseFromThread(other.id, ownSource, input).catch((error: unknown) => error);
+        const missing = await reviseFromThread(randomUUID(), ownSource, input).catch((error: unknown) => error);
+
+        expect(foreign).toBeInstanceOf(NotFoundError);
+        expect(missing).toBeInstanceOf(NotFoundError);
+        expect((foreign as NotFoundError).message).toBe(`Processing proposal ${other.id} not found`);
+        expect((missing as NotFoundError).message).toMatch(/^Processing proposal .* not found$/);
+        expect(await readCard(other.id)).toEqual(before);
+      });
+
+      it("refuses a subject that is not an Inbox item of the card, such as the card itself or a random id", async () => {
+        const card = await createDatabaseProposal("Send the invoice");
+        const before = await readCard(card.id);
+
+        for (const subject of [card.id, randomUUID()]) {
+          const error = await reviseFromThread(card.id, subject, { properties: { name: "x" } }).catch(
+            (err: unknown) => err,
+          );
+          expect(error).toBeInstanceOf(NotFoundError);
+        }
+        expect(await readCard(card.id)).toEqual(before);
+      });
+
+      it.each(["confirmed", "rejected"] as const)("refuses a %s card and writes nothing", async (decision) => {
+        const card = await createDatabaseProposal("Send the invoice");
+        const sourceId = await sourceOf(card.id);
+        await withTransaction(pool, (client) =>
+          decision === "confirmed"
+            ? confirmProposalWithClient(client, config(), card.id)
+            : rejectProposalWithClient(client, config(), card.id),
+        );
+        const counts = await itemCounts();
+
+        const error = await expectRefusedUnchanged(card.id, () =>
+          reviseFromThread(card.id, sourceId, { properties: { name: "Too late" } }),
+        );
+
+        expect(error).toBeInstanceOf(ValidationError);
+        expect(error).toMatchObject({ details: { field: "status" } });
+        expect(await itemCounts()).toEqual(counts);
+      });
+
+      it("refuses a card whose source Inbox item was deleted and writes nothing", async () => {
+        const card = await createDatabaseProposal("Send the invoice");
+        const sourceId = await sourceOf(card.id);
+        await setStatus(card.id, {
+          status: "invalid",
+          invalidReason: { code: "sourceDeleted", field: "", itemId: sourceId, label: "Send the invoice" },
+        });
+
+        const error = await expectRefusedUnchanged(card.id, () =>
+          reviseFromThread(card.id, sourceId, { properties: { name: "x" } }),
+        );
+
+        expect(error).toBeInstanceOf(ValidationError);
+        expect(error).toMatchObject({ details: { field: "status" } });
+      });
+
+      it("lets a fixable invalid card leave invalid with its reason cleared", async () => {
+        const card = await createDatabaseProposal("Send the invoice");
+        await setStatus(card.id, {
+          status: "invalid",
+          invalidReason: { code: "targetDeleted", field: "project", itemId: randomUUID(), label: "Project" },
+        });
+
+        const revised = await reviseFromThread(card.id, await sourceOf(card.id), { properties: { name: "Fixed" } });
+
+        expect(revised.properties.status).toBe("proposed");
+        expect(revised.properties.invalidReason).toBeNull();
+      });
+
+      it("refuses an invalid envelope without writing anything", async () => {
+        const { cardId, sourceId } = await editedCard();
+
+        const error = await expectRefusedUnchanged(cardId, () =>
+          reviseFromThread(cardId, sourceId, { properties: { notAKey: "x" } }),
+        );
+
+        expect(error).toBeInstanceOf(ValidationError);
+      });
+
+      it("refuses a target that is not a writable database without writing anything", async () => {
+        const card = await createDatabaseProposal("Send the invoice");
+        const sourceId = await sourceOf(card.id);
+
+        const error = await expectRefusedUnchanged(card.id, () =>
+          reviseFromThread(card.id, sourceId, { entityKind: "database", target: inboxId, properties: {} }),
+        );
+
+        expect(error).toBeInstanceOf(ValidationError);
+      });
+
+      it("applies the credential guard of an MCP server card and writes nothing", async () => {
+        const card = await createDatabaseProposal("Connect a server");
+        const envelope = {
+          entityKind: "database",
+          target: await databaseIdFor("mcpServers"),
+          properties: { name: "Remote tool" },
+        };
+        await setStatus(card.id, { proposal: envelope, aiProposal: envelope });
+        const sourceId = await sourceOf(card.id);
+
+        const error = await expectRefusedUnchanged(card.id, () =>
+          reviseFromThread(card.id, sourceId, { properties: { name: "Remote tool", apiKey: "shh" } }),
+        );
+        const revised = await reviseFromThread(card.id, sourceId, { properties: { name: "Renamed tool" } });
+
+        expect(error).toBeInstanceOf(ValidationError);
+        expect(error).toHaveProperty("details", { field: "apiKey" });
+        expect(revised.properties.proposal).toMatchObject({ properties: { name: "Renamed tool" } });
+      });
+
+      describe("a card that has no proposal yet", () => {
+        async function createClarificationCard() {
+          const item = await withTransaction(pool, (client) =>
+            createInboxItemWithClient(client, {
+              inboxDatabaseId: inboxId,
+              date: "2026-08-28",
+              time: "09:00",
+              text: "no type",
+            }),
+          );
+          await runTick(item.id, async () => ({ properties: {}, candidates: [] }));
+          const card = (await findProposalForItem(item.id))!;
+          expect(card.properties.status).toBe("needsClarification");
+          return { cardId: card.id, sourceId: item.id };
+        }
+
+        it("gives it its first envelope when the call names the whole destination", async () => {
+          const { cardId, sourceId } = await createClarificationCard();
+
+          const revised = await reviseFromThread(cardId, sourceId, {
+            entityKind: "database",
+            target: tasksId,
+            properties: { name: "Buy milk" },
+          });
+
+          expect(revised.properties.status).toBe("proposed");
+          expect(revised.properties.proposal).toEqual(taskEnvelope("Buy milk"));
+          expect(revised.properties.aiProposal).toEqual(taskEnvelope("Buy milk"));
+        });
+
+        it.each([
+          ["neither", {}, "entityKind"],
+          ["no target", { entityKind: "database" as const }, "target"],
+          ["no entity kind", { target: "tasks" }, "entityKind"],
+        ])("refuses a call with %s, naming the missing field, and writes nothing", async (_label, named, field) => {
+          const { cardId, sourceId } = await createClarificationCard();
+          const target = "target" in named ? tasksId : undefined;
+
+          const error = await expectRefusedUnchanged(cardId, () =>
+            reviseFromThread(cardId, sourceId, {
+              ...("entityKind" in named ? { entityKind: named.entityKind } : {}),
+              ...(target === undefined ? {} : { target }),
+              properties: { name: "Buy milk" },
+            }),
+          );
+
+          expect(error).toBeInstanceOf(ValidationError);
+          expect(error).toHaveProperty("details", { field });
+        });
+      });
+
+      it("refuses a card whose stored envelope has a kind this release does not know", async () => {
+        const card = await createDatabaseProposal("Send the invoice");
+        const sourceId = await sourceOf(card.id);
+        const unknown = { entityKind: "widget", target: tasksId, properties: {} };
+        await setStatus(card.id, { proposal: unknown, aiProposal: unknown });
+
+        const error = await expectRefusedUnchanged(card.id, () =>
+          reviseFromThread(card.id, sourceId, { properties: { name: "x" } }),
+        );
+
+        expect(error).toBeInstanceOf(ConflictError);
+        expect(error).toHaveProperty("details", { field: "entityKind", entityKind: "widget" });
+      });
+
+      it("waits for a removal of the card's source link that is still open, and then refuses the card", async () => {
+        const card = await createDatabaseProposal("Send the invoice");
+        const sourceId = await sourceOf(card.id);
+        const before = await readCard(card.id);
+        let release: () => void = () => {};
+        const released = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        let removed: () => void = () => {};
+        const removalDone = new Promise<void>((resolve) => {
+          removed = resolve;
+        });
+        const removal = withTransaction(pool, async (client) => {
+          const property = await propertiesStore.getPropertyByKey(client, proposalsId, "sourceInbox");
+          const deleted = await deleteRelationWithClient(
+            client,
+            { relationPropertyId: property!.id, callerItemId: card.id, targetItemId: sourceId },
+            { ownerProcess: "processingProposals" },
+          );
+          expect(deleted).not.toBeNull();
+          removed();
+          await released;
+        });
+        await removalDone;
+
+        const attempt = reviseFromThread(card.id, sourceId, { properties: { name: "Late" } }).catch(
+          (error: unknown) => error,
+        );
+        // The call waits on the edge row that the open removal holds, in the statement that reads it.
+        const deadline = Date.now() + 10_000;
+        let waiting = false;
+        while (!waiting && Date.now() < deadline) {
+          const activity = await pool.query<{ waiting: boolean }>(
+            `SELECT EXISTS (
+               SELECT 1 FROM pg_stat_activity
+                WHERE wait_event_type = 'Lock' AND query LIKE 'SELECT id FROM item_relations%' AND pid <> pg_backend_pid()
+             ) AS waiting`,
+          );
+          waiting = activity.rows[0]?.waiting === true;
+          if (!waiting) await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        release();
+        await removal;
+
+        expect(waiting).toBe(true);
+        expect(await attempt).toBeInstanceOf(NotFoundError);
+        expect(await readCard(card.id)).toEqual(before);
+      });
+    });
+
+    describe("the editor schema's rules (issue #1928)", () => {
+      const confirmCard = (cardId: string): Promise<ItemRow> =>
+        withTransaction(pool, (client) => confirmProposalWithClient(client, config(), cardId));
+      const taskCount = async (): Promise<number> =>
+        Number(
+          (await pool.query<{ n: string }>("SELECT count(*) AS n FROM items WHERE database_id = $1", [tasksId])).rows[0]
+            ?.n,
+        );
+      /** A task card whose assistant envelope carries `properties`. */
+      async function taskCard(properties: Record<string, unknown>): Promise<string> {
+        const card = await createDatabaseProposal("seed");
+        const envelope = { entityKind: "database", target: tasksId, properties };
+        await setStatus(card.id, { proposal: envelope, aiProposal: envelope });
+        return card.id;
+      }
+      /** A card for a Files item, which the Files schema requires to hold a file. */
+      async function fileCard(withFile: boolean): Promise<string> {
+        const card = await createDatabaseProposal("seed", "files");
+        const properties = withFile
+          ? { name: "Scan", file: await withTransaction(pool, (client) => newFileValue(client)) }
+          : { name: "Scan" };
+        const envelope = { entityKind: "database", target: await databaseIdFor("files"), properties };
+        await setStatus(card.id, { proposal: envelope, aiProposal: envelope });
+        return card.id;
+      }
+
+      describe("confirm", () => {
+        it.each([
+          ["has no name", {}],
+          ["has an empty name", { name: "" }],
+          ["has a whitespace-only name", { name: "  \t " }],
+        ])("refuses a task that %s, naming the field, and creates no item", async (_label, properties) => {
+          const card = await taskCard(properties);
+          const tasksBefore = await taskCount();
+
+          const error = await expectRefusedUnchanged(card, () => confirmCard(card));
+
+          expect(error).toBeInstanceOf(ValidationError);
+          expect((error as Error).message).toBe("Required field 'name' has no value");
+          expect(error).toHaveProperty("details", { field: "name" });
+          expect(await taskCount()).toBe(tasksBefore);
+          expect((await readCard(card)).properties.status).toBe("proposed");
+        });
+
+        it("refuses a card whose name was cleared by an edit, which the edit saved", async () => {
+          const card = await taskCard({ name: "Send the invoice" });
+          await edit(card, { primary: { name: "" } });
+
+          const error = await expectRefusedUnchanged(card, () => confirmCard(card));
+
+          expect(error).toHaveProperty("details", { field: "name" });
+        });
+
+        it("fails on stored userOverrides that are malformed, as a server error and not as a validation error", async () => {
+          const card = await taskCard({ name: "Send the invoice" });
+          await setStatus(card, { userOverrides: "not an object" });
+
+          const error = await expectRefusedUnchanged(card, () => confirmCard(card));
+
+          expect(error).not.toBeInstanceOf(ValidationError);
+          expect((error as Error).message).toContain("Malformed userOverrides");
+        });
+
+        it("confirms a task whose name is set", async () => {
+          const card = await taskCard({ name: "Send the invoice" });
+
+          const confirmed = await confirmCard(card);
+
+          expect(confirmed.properties.status).toBe("confirmed");
+        });
+
+        it("refuses a file card without a file and confirms it once the file is there", async () => {
+          const missing = await fileCard(false);
+          const error = await expectRefusedUnchanged(missing, () => confirmCard(missing));
+          expect(error).toHaveProperty("details", { field: "file" });
+
+          const confirmed = await confirmCard(await fileCard(true));
+          expect(confirmed.properties.status).toBe("confirmed");
+        });
+
+        it("does not require the follow-up date of a file card whose follow-up task is switched off", async () => {
+          const card = await fileCard(true);
+          await edit(card, { primary: { followupTask: false } });
+
+          const confirmed = await confirmCard(card);
+
+          expect(confirmed.properties.status).toBe("confirmed");
+        });
+
+        it("does not require the follow-up date of a card whose follow-up switch was never touched", async () => {
+          const card = await taskCard({ name: "Send the invoice" });
+
+          expect((await confirmCard(card)).properties.status).toBe("confirmed");
+        });
+
+        it("requires the follow-up date once the follow-up task is switched on, and confirms when it is set", async () => {
+          const card = await taskCard({ name: "Send the invoice" });
+          await edit(card, { primary: { followupTask: true } });
+
+          const error = await expectRefusedUnchanged(card, () => confirmCard(card));
+          expect(error).toHaveProperty("details", { field: "followDate" });
+
+          await edit(card, { primary: { followDate: "2026-12-01" } });
+          expect((await confirmCard(card)).properties.status).toBe("confirmed");
+        });
+
+        it("names the step and the field of a multi-step card that lacks a required value", async () => {
+          const card = await cardWithSteps([
+            { ...companyAndPerson[0]!, properties: { name: "" } },
+            companyAndPerson[1]!,
+          ]);
+
+          const error = await expectRefusedUnchanged(card, () => confirmCard(card));
+
+          expect(error).toHaveProperty("details", { ref: "company", field: "name" });
+        });
+
+        it("names the primary step of a multi-step card whose other step is switched off", async () => {
+          const card = await cardWithSteps([
+            { ...companyAndPerson[0]!, properties: { name: "" } },
+            { ...companyAndPerson[1]!, enabled: false },
+          ]);
+
+          const error = await expectRefusedUnchanged(card, () => confirmCard(card));
+
+          expect(error).toHaveProperty("details", { ref: "company", field: "name" });
+        });
+
+        it("names the same step again once the other step is switched on", async () => {
+          const card = await cardWithSteps([
+            { ...companyAndPerson[0]!, properties: { name: "" } },
+            { ...companyAndPerson[1]!, enabled: false },
+          ]);
+          await withTransaction(pool, (client) =>
+            updateProposalValuesWithClient(client, config(), card, { steps: { person: { enabled: true } } }),
+          );
+
+          const error = await expectRefusedUnchanged(card, () => confirmCard(card));
+
+          expect(error).toHaveProperty("details", { ref: "company", field: "name" });
+        });
+
+        it("does not check a clarify card, whose destination no module maps to a card kind", async () => {
+          const card = await createDatabaseProposal("Connect a server");
+          const envelope = {
+            entityKind: "database",
+            target: await databaseIdFor("mcpServers"),
+            properties: {
+              name: "Remote tool",
+              active: false,
+              connectionConfig: { transport: "http", url: "https://mcp.example.com/mcp" },
+            },
+          };
+          await setStatus(card.id, { proposal: envelope, aiProposal: envelope });
+
+          expect((await confirmCard(card.id)).properties.status).toBe("confirmed");
+        });
+      });
+
+      describe("pseudo fields", () => {
+        it("stores a pseudo field in userOverrides, keeps it out of the envelope and counts it as edited", async () => {
+          const card = await taskCard({ name: "Send the invoice" });
+
+          const edited = await edit(card, { primary: { allDay: true } });
+
+          expect(edited.properties.userOverrides).toEqual({ primary: { allDay: true } });
+          expect(edited.properties.userEditedKeys).toEqual(["primary.allDay"]);
+          expect(edited.properties.proposal).toEqual(taskEnvelope("Send the invoice"));
+        });
+
+        it("never writes a pseudo field to the item a confirm creates", async () => {
+          const card = await taskCard({ name: "Send the invoice" });
+          await edit(card, { primary: { allDay: true, followupTask: false } });
+
+          const confirmed = await confirmCard(card);
+
+          const itemId = z.string().parse(confirmed.properties.resultItemId);
+          const created = await withTransaction(pool, (client) => itemsStore.getItemById(client, tasksId, itemId));
+          expect(created?.properties).toMatchObject({ name: "Send the invoice" });
+          expect(created?.properties).not.toHaveProperty("allDay");
+          expect(created?.properties).not.toHaveProperty("followupTask");
+        });
+
+        it("keeps a stored pseudo field beside a later edit of a real field", async () => {
+          const card = await taskCard({ name: "Send the invoice" });
+          const edited = await edit(card, { primary: { allDay: true } });
+          expect(edited.properties.userEditedKeys).toEqual(["primary.allDay"]);
+
+          const second = await edit(card, { primary: { name: "Send it" } });
+
+          expect(second.properties.userOverrides).toEqual({ primary: { allDay: true, name: "Send it" } });
+          expect(second.properties.userEditedKeys).toEqual(["primary.allDay", "primary.name"]);
+        });
+
+        it("refuses a key of another card's schema as an unknown property and writes nothing", async () => {
+          const card = await cardWithSteps(companyAndPerson);
+
+          const error = await expectRefusedUnchanged(card, () => edit(card, { company: { allDay: true } }));
+
+          expect(error).toBeInstanceOf(ValidationError);
+          expect(error).toHaveProperty("details", { ref: "company", field: "allDay" });
+        });
+
+        it("refuses a pseudo key on a clarify card, which has no editor schema, and writes nothing", async () => {
+          const card = await createDatabaseProposal("Connect a server");
+          const envelope = {
+            entityKind: "database",
+            target: await databaseIdFor("mcpServers"),
+            properties: { name: "Remote tool" },
+          };
+          await setStatus(card.id, { proposal: envelope, aiProposal: envelope });
+
+          const error = await expectRefusedUnchanged(card.id, () => edit(card.id, { primary: { followupTask: true } }));
+
+          expect(error).toBeInstanceOf(ValidationError);
+          expect(error).toHaveProperty("details", { field: "followupTask" });
+        });
+      });
+
+      describe("hidden fields", () => {
+        it("stops counting an edited follow-up date once the follow-up task is switched off, and counts it again when it is back on", async () => {
+          const card = await taskCard({ name: "Send the invoice" });
+          const on = await edit(card, { primary: { followupTask: true, followDate: "2026-12-01" } });
+          expect(on.properties.userEditedKeys).toEqual(["primary.followDate", "primary.followupTask"]);
+
+          const off = await edit(card, { primary: { followupTask: false } });
+          expect(off.properties.userEditedKeys).toEqual(["primary.followupTask"]);
+          expect(off.properties.userOverrides).toEqual({ primary: { followupTask: false, followDate: "2026-12-01" } });
+
+          const back = await edit(card, { primary: { followupTask: true } });
+          expect(back.properties.userEditedKeys).toEqual(["primary.followDate", "primary.followupTask"]);
+        });
+
+        it("counts every edited key of a clarify card, which has no editor schema", async () => {
+          const card = await createDatabaseProposal("Connect a server");
+          const envelope = {
+            entityKind: "database",
+            target: await databaseIdFor("mcpServers"),
+            properties: { name: "Remote tool" },
+          };
+          await setStatus(card.id, { proposal: envelope, aiProposal: envelope });
+
+          const edited = await edit(card.id, { primary: { name: "Renamed tool" } });
+
+          expect(edited.properties.userEditedKeys).toEqual(["primary.name"]);
+        });
+      });
+
+      describe("warnings", () => {
+        it("saves a card whose required name was cleared and answers a required warning for it", async () => {
+          const card = await taskCard({ name: "Send the invoice" });
+
+          const { item, warnings } = await editWithWarnings(card, { primary: { name: "" } });
+
+          expect(warnings).toEqual([{ field: "name", code: "required" }]);
+          expect(item.properties.proposal).toEqual(taskEnvelope(""));
+          expect(item.properties.userOverrides).toEqual({ primary: { name: "" } });
+          expect(item.properties.userEditedKeys).toEqual(["primary.name"]);
+          expect(item.properties.status).toBe("proposed");
+        });
+
+        it("answers no warning for a card that has every required value", async () => {
+          const card = await taskCard({ name: "Send the invoice" });
+
+          const { warnings } = await editWithWarnings(card, { primary: { name: "Send it" } });
+
+          expect(warnings).toEqual([]);
+        });
+
+        it("warns about the follow-up date when the follow-up task is on, and stops when it is set", async () => {
+          const card = await taskCard({ name: "Send the invoice" });
+
+          const on = await editWithWarnings(card, { primary: { followupTask: true } });
+          expect(on.warnings).toEqual([{ field: "followDate", code: "required" }]);
+
+          const set = await editWithWarnings(card, { primary: { followDate: "2026-12-01" } });
+          expect(set.warnings).toEqual([]);
+        });
+
+        it("does not warn about a required field that a condition hides", async () => {
+          const card = await taskCard({ name: "Send the invoice" });
+
+          const { warnings } = await editWithWarnings(card, { primary: { followupTask: false } });
+
+          expect(warnings).toEqual([]);
+        });
+
+        it("names the step of a multi-step card in the warning", async () => {
+          const card = await cardWithSteps(companyAndPerson);
+
+          const { warnings } = await editWithWarnings(card, { company: { name: " " } });
+
+          expect(warnings).toEqual([{ ref: "company", field: "name", code: "required" }]);
+        });
+
+        it("names the primary step in the warning of a multi-step card whose other step is switched off", async () => {
+          const card = await cardWithSteps([companyAndPerson[0]!, { ...companyAndPerson[1]!, enabled: false }]);
+
+          const { warnings } = await editWithWarnings(card, { company: { name: " " } });
+
+          expect(warnings).toEqual([{ ref: "company", field: "name", code: "required" }]);
+        });
+
+        it("refuses a card whose stored target is not an id with a validation error naming the target", async () => {
+          const card = await createDatabaseProposal("seed");
+          const envelope = { entityKind: "database", target: "not-an-id", properties: { name: "Send the invoice" } };
+          await setStatus(card.id, { proposal: envelope, aiProposal: envelope });
+
+          const error = await expectRefusedUnchanged(card.id, () => edit(card.id, { primary: { name: "Send it" } }));
+
+          expect(error).toBeInstanceOf(ValidationError);
+          expect(error).toHaveProperty("details", { field: "target" });
+        });
+
+        it("answers no warning for a clarify card, which has no editor schema", async () => {
+          const card = await createDatabaseProposal("Connect a server");
+          const envelope = {
+            entityKind: "database",
+            target: await databaseIdFor("mcpServers"),
+            properties: { name: "Remote tool" },
+          };
+          await setStatus(card.id, { proposal: envelope, aiProposal: envelope });
+
+          const { warnings } = await editWithWarnings(card.id, { primary: { name: "" } });
+
+          expect(warnings).toEqual([]);
+        });
+      });
+    });
+    describe("what confirm writes is what the editor shows (issue #1934)", () => {
+      const confirmCard = (cardId: string): Promise<ItemRow> =>
+        withTransaction(pool, (client) => confirmProposalWithClient(client, config(), cardId));
+      /** A card for an item of `moduleId` whose assistant envelope carries `properties`. */
+      async function cardFor(moduleId: string, properties: Record<string, unknown>): Promise<string> {
+        const card = await createDatabaseProposal("seed");
+        const envelope = { entityKind: "database", target: await databaseIdFor(moduleId), properties };
+        await setStatus(card.id, { proposal: envelope, aiProposal: envelope });
+        return card.id;
+      }
+      /** Confirms the card and reads the item it created back from the database. */
+      async function confirmedItem(cardId: string, moduleId: string): Promise<ItemRow> {
+        const confirmed = await confirmCard(cardId);
+        const itemId = z.string().parse(confirmed.properties.resultItemId);
+        const databaseId = await databaseIdFor(moduleId);
+        const created = await withTransaction(pool, (client) => itemsStore.getItemById(client, databaseId, itemId));
+        if (!created) throw new Error(`created item ${itemId} not found`);
+        return created;
+      }
+      const TIMES = { timeFrom: "09:00", timeTo: "10:00" };
+
+      describe("a task", () => {
+        it("stores empty times when the card is all-day, though the envelope carried them", async () => {
+          const card = await cardFor("tasks", { name: "Call", date: "2026-12-01", ...TIMES });
+          await edit(card, { primary: { allDay: true } });
+
+          const task = await confirmedItem(card, "tasks");
+
+          expect(task.properties).toMatchObject({ name: "Call", date: "2026-12-01" });
+          expect(task.properties.timeFrom ?? null).toBeNull();
+          expect(task.properties.timeTo ?? null).toBeNull();
+          expect(task.properties.time ?? null).toBeNull();
+        });
+
+        it("stores the calendar date when the card is all-day and its date carries a time of day", async () => {
+          const card = await cardFor("tasks", { name: "Call", date: "2026-12-01T10:00" });
+          await edit(card, { primary: { allDay: true } });
+
+          const task = await confirmedItem(card, "tasks");
+
+          expect(task.properties).toMatchObject({ name: "Call", date: "2026-12-01" });
+          expect(task.properties.timeFrom ?? null).toBeNull();
+          expect(task.properties.timeTo ?? null).toBeNull();
+        });
+
+        it("stores the times when the card is not all-day", async () => {
+          const card = await cardFor("tasks", { name: "Call", date: "2026-12-01", ...TIMES });
+          await edit(card, { primary: { allDay: false } });
+
+          const task = await confirmedItem(card, "tasks");
+
+          expect(task.properties).toMatchObject({ ...TIMES, date: "2026-12-01" });
+        });
+
+        it("stores the times when allDay was never set", async () => {
+          const card = await cardFor("tasks", { name: "Call", date: "2026-12-01", ...TIMES });
+
+          const task = await confirmedItem(card, "tasks");
+
+          expect(task.properties).toMatchObject(TIMES);
+        });
+
+        it("stores the same properties for an all-day card whose envelope carried no times as for a card without allDay", async () => {
+          const plain = await cardFor("tasks", { name: "Call", date: "2026-12-01" });
+          const allDay = await cardFor("tasks", { name: "Call", date: "2026-12-01" });
+          await edit(allDay, { primary: { allDay: true } });
+
+          const plainTask = await confirmedItem(plain, "tasks");
+          const allDayTask = await confirmedItem(allDay, "tasks");
+
+          expect(Object.keys(allDayTask.properties).sort()).toEqual(Object.keys(plainTask.properties).sort());
+          expect(allDayTask.properties).toEqual({ ...plainTask.properties });
+        });
+
+        it("drops the times of the primary step of a multi-step card and leaves another step alone", async () => {
+          const card = await createDatabaseProposal("seed");
+          const operations: Step[] = [
+            {
+              ref: "task",
+              op: "create",
+              databaseKey: "tasks",
+              role: "primary",
+              properties: { name: "Call", date: "2026-12-01", ...TIMES },
+            },
+            {
+              ref: "followup",
+              op: "create",
+              databaseKey: "tasks",
+              role: "secondary",
+              properties: { name: "Follow up", date: "2026-12-01", ...TIMES },
+            },
+          ];
+          const envelope = {
+            entityKind: "database",
+            target: tasksId,
+            properties: operations[0]!.properties,
+            operations,
+          };
+          await setStatus(card.id, { proposal: envelope, aiProposal: envelope });
+          await edit(card.id, { task: { allDay: true } });
+
+          const confirmed = await confirmCard(card.id);
+
+          const created = z
+            .array(z.object({ ref: z.string(), itemId: z.string() }))
+            .parse(confirmed.properties.results);
+          const byRef = Object.fromEntries(created.map((result) => [result.ref, result.itemId]));
+          const read = (ref: string) =>
+            withTransaction(pool, (client) => itemsStore.getItemById(client, tasksId, byRef[ref]!));
+          expect((await read("task"))?.properties.timeFrom ?? null).toBeNull();
+          expect((await read("task"))?.properties.timeTo ?? null).toBeNull();
+          expect((await read("followup"))?.properties).toMatchObject(TIMES);
+        });
+      });
+
+      describe("an event", () => {
+        it("stores null times when the card is all-day, though the envelope carried them", async () => {
+          const card = await cardFor("events", { name: "Review", date: "2026-12-01", ...TIMES });
+          await edit(card, { primary: { allDay: true } });
+
+          const event = await confirmedItem(card, "events");
+
+          expect(event.properties).toMatchObject({ name: "Review", date: "2026-12-01", timeFrom: null, timeTo: null });
+        });
+
+        it("stores null times for an all-day card whose envelope carried none", async () => {
+          const card = await cardFor("events", { name: "Review", date: "2026-12-01" });
+          await edit(card, { primary: { allDay: true } });
+
+          const event = await confirmedItem(card, "events");
+
+          expect(event.properties).toMatchObject({ timeFrom: null, timeTo: null });
+        });
+
+        it("stores the calendar date and null times when the card is all-day and its date carries a wall-clock time", async () => {
+          const card = await cardFor("events", { name: "Review", date: "2026-12-01T10:00" });
+          await edit(card, { primary: { allDay: true } });
+
+          const event = await confirmedItem(card, "events");
+
+          expect(event.properties).toMatchObject({ date: "2026-12-01", timeFrom: null, timeTo: null });
+          expect(event.properties.time ?? null).toBeNull();
+        });
+
+        it("stores the date in the tenant zone and null times when the card is all-day and its date is an instant", async () => {
+          // 23:30 UTC is 00:30 the next day in the default tenant zone, Europe/Prague.
+          const card = await cardFor("events", { name: "Review", date: "2026-12-01T23:30:00Z", ...TIMES });
+          await edit(card, { primary: { allDay: true } });
+
+          const event = await confirmedItem(card, "events");
+
+          expect(event.properties).toMatchObject({ date: "2026-12-02", timeFrom: null, timeTo: null });
+          expect(event.properties.time ?? null).toBeNull();
+        });
+
+        it("stores the time of day of the date when the card is not all-day", async () => {
+          const card = await cardFor("events", { name: "Review", date: "2026-12-01T10:00" });
+          await edit(card, { primary: { allDay: false } });
+
+          const event = await confirmedItem(card, "events");
+
+          expect(event.properties).toMatchObject({ date: "2026-12-01", timeFrom: "10:00", timeTo: "11:00" });
+        });
+
+        it("stores the times when the card is not all-day", async () => {
+          const card = await cardFor("events", { name: "Review", date: "2026-12-01", ...TIMES });
+          await edit(card, { primary: { allDay: false } });
+
+          const event = await confirmedItem(card, "events");
+
+          expect(event.properties).toMatchObject(TIMES);
+        });
+
+        it("stores no times for an Event card that was never marked all-day and has none", async () => {
+          const card = await cardFor("events", { name: "Review", date: "2026-12-01" });
+
+          const event = await confirmedItem(card, "events");
+
+          expect(event.properties.timeFrom ?? null).toBeNull();
+        });
+      });
+
+      describe("a project", () => {
+        it("stores no date when its status is longTerm", async () => {
+          const card = await cardFor("projects", { name: "Garden", status: "longTerm", date: "2026-12-31" });
+
+          const project = await confirmedItem(card, "projects");
+
+          expect(project.properties).toMatchObject({ name: "Garden", status: "longTerm" });
+          expect(project.properties.date ?? null).toBeNull();
+        });
+
+        it("stores no date once an edit made the status longTerm", async () => {
+          const card = await cardFor("projects", { name: "Garden", status: "inProgress", date: "2026-12-31" });
+          await edit(card, { primary: { status: "longTerm" } });
+
+          const project = await confirmedItem(card, "projects");
+
+          expect(project.properties.date ?? null).toBeNull();
+        });
+
+        it("stores the date for any other status", async () => {
+          const card = await cardFor("projects", { name: "Garden", status: "inProgress", date: "2026-12-31" });
+
+          const project = await confirmedItem(card, "projects");
+
+          expect(project.properties).toMatchObject({ date: "2026-12-31" });
+        });
+
+        it("stores the date of a project that has no status, which shows its date", async () => {
+          const card = await cardFor("projects", { name: "Garden", date: "2026-12-31" });
+
+          const project = await confirmedItem(card, "projects");
+
+          expect(project.properties).toMatchObject({ date: "2026-12-31" });
+        });
+      });
+
+      it("leaves a card with no editor schema as it is", async () => {
+        const card = await createDatabaseProposal("seed");
+        const envelope = {
+          entityKind: "database",
+          target: await databaseIdFor("mcpServers"),
+          properties: { name: "Remote tool", active: false },
+        };
+        await setStatus(card.id, { proposal: envelope, aiProposal: envelope });
+
+        const server = await confirmedItem(card.id, "mcpServers");
+
+        expect(server.properties).toEqual({ name: "Remote tool", active: false });
+      });
+
+      it("refuses a stdio MCP server card with a validation error on transport and writes nothing", async () => {
+        const card = await createDatabaseProposal("seed");
+        // Raw write: a proposal that holds a stdio connection cannot be created through the API (it is refused as a card).
+        const envelope = {
+          entityKind: "database",
+          target: await databaseIdFor("mcpServers"),
+          properties: { name: "Local tool", connectionConfig: { transport: "stdio", command: "my-mcp-server" } },
+        };
+        await setStatus(card.id, { proposal: envelope, aiProposal: envelope });
+        const serversBefore = await pool.query("SELECT 1 FROM items WHERE database_id = $1", [
+          await databaseIdFor("mcpServers"),
+        ]);
+
+        const error = await expectRefusedUnchanged(card.id, () => confirmCard(card.id));
+
+        expect(error).toBeInstanceOf(ValidationError);
+        expect(error).toHaveProperty("details", { field: "transport" });
+        const serversAfter = await pool.query("SELECT 1 FROM items WHERE database_id = $1", [
+          await databaseIdFor("mcpServers"),
+        ]);
+        expect(serversAfter.rowCount).toBe(serversBefore.rowCount);
+      });
+
+      it("leaves the refusal of a connectionConfig on another destination to the envelope validation", async () => {
+        const card = await cardFor("tasks", {
+          name: "Call",
+          connectionConfig: { transport: "stdio", command: "my-mcp-server" },
+        });
+
+        const error = await expectRefusedUnchanged(card, () => confirmCard(card));
+
+        expect(error).toBeInstanceOf(ValidationError);
+        expect(error).toHaveProperty("details", { field: "connectionConfig" });
+      });
+    });
+    describe("relation lists and step switches (issue #1920)", () => {
+      const confirmCard = (cardId: string): Promise<ItemRow> =>
+        withTransaction(pool, (client) => confirmProposalWithClient(client, config(), cardId));
+      const countIn = async (moduleId: string): Promise<number> =>
+        Number(
+          (
+            await pool.query<{ n: string }>("SELECT count(*) AS n FROM items WHERE database_id = $1", [
+              await databaseIdFor(moduleId),
+            ])
+          ).rows[0]?.n,
+        );
+      const itemIn = async (moduleId: string, properties: Record<string, unknown>): Promise<string> => {
+        const databaseId = await databaseIdFor(moduleId);
+        return withTransaction(
+          pool,
+          async (client) => (await createItemWithClient(client, { databaseId, properties })).id,
+        );
+      };
+      const edgeExists = async (a: string, b: string): Promise<boolean> =>
+        (
+          await pool.query(
+            "SELECT 1 FROM item_relations WHERE (item_a = $1 AND item_b = $2) OR (item_a = $2 AND item_b = $1)",
+            [a, b],
+          )
+        ).rows.length === 1;
+      const editParts = async (
+        cardId: string,
+        parts: Pick<Parameters<typeof updateProposalValuesWithClient>[3], "set" | "relations" | "steps">,
+      ): Promise<ItemRow> =>
+        (await withTransaction(pool, (client) => updateProposalValuesWithClient(client, config(), cardId, parts))).item;
+      /** A card whose assistant envelope is `envelope`, as the tick stores it. */
+      async function storeCard(envelope: Record<string, unknown>): Promise<string> {
+        const card = await createDatabaseProposal("seed");
+        await setStatus(card.id, { proposal: envelope, aiProposal: envelope });
+        return card.id;
+      }
+      const followupTask: Step = {
+        ref: "followup",
+        op: "create",
+        databaseKey: "tasks",
+        role: "secondary",
+        properties: { name: "Follow up" },
+      };
+      /** A company with an optional follow-up task step that nothing refers to. */
+      const companyWithFollowup = async (extra: Partial<Step> = {}): Promise<string> =>
+        storeCard({
+          entityKind: "database",
+          target: await databaseIdFor("companies"),
+          properties: { name: "Acme" },
+          operations: [
+            { ref: "company", op: "create", databaseKey: "companies", role: "primary", properties: { name: "Acme" } },
+            { ...followupTask, ...extra },
+          ],
+        });
+      const effectiveSteps = (card: ItemRow): Step[] => {
+        const envelope = parseStoredProposalEnvelope(card.properties.proposal, card.id);
+        return envelope && "operations" in envelope ? (envelope.operations ?? []) : [];
+      };
+
+      describe("step switches", () => {
+        it("switches a step off: the effective envelope drops it, the key is counted, and confirm does not run it", async () => {
+          const card = await companyWithFollowup();
+
+          const edited = await editParts(card, { steps: { followup: { enabled: false } } });
+
+          expect(edited.properties.userEditedKeys).toEqual(["followup.enabled"]);
+          expect(edited.properties.userOverrides).toEqual({ followup: { enabled: false } });
+          expect(effectiveSteps(edited).find((step) => step.ref === "followup")?.enabled).toBe(false);
+          const history = z.array(z.record(z.string(), z.unknown())).parse(edited.properties.history);
+          expect(history.at(-1)).toMatchObject({ author: "user", kind: "userEdit", keys: ["followup.enabled"] });
+          await confirmCard(card);
+          expect(await countIn("companies")).toBe(1);
+          expect(await countIn("tasks")).toBe(0);
+        });
+
+        it("runs the step on confirm when it was never switched off", async () => {
+          const card = await companyWithFollowup();
+
+          await confirmCard(card);
+
+          expect(await countIn("tasks")).toBe(1);
+        });
+
+        it("drops the key and the override again when the step is switched back on", async () => {
+          const card = await companyWithFollowup();
+          await editParts(card, { steps: { followup: { enabled: false } } });
+
+          const back = await editParts(card, { steps: { followup: { enabled: true } } });
+
+          expect(back.properties.userEditedKeys).toEqual([]);
+          expect(back.properties.userOverrides).toEqual({});
+          expect(effectiveSteps(back).find((step) => step.ref === "followup")).toEqual(followupTask);
+          await confirmCard(card);
+          expect(await countIn("tasks")).toBe(1);
+        });
+
+        it("switches on a step the assistant proposed switched off, and counts the switch", async () => {
+          const card = await companyWithFollowup({ enabled: false });
+
+          const edited = await editParts(card, { steps: { followup: { enabled: true } } });
+
+          expect(edited.properties.userEditedKeys).toEqual(["followup.enabled"]);
+          await confirmCard(card);
+          expect(await countIn("tasks")).toBe(1);
+        });
+
+        it("does not count the fields of a step once it is switched off, and counts them again when it is back on", async () => {
+          const card = await companyWithFollowup();
+          const typed = await editParts(card, { set: { followup: { name: "Call them" } } });
+          expect(typed.properties.userEditedKeys).toEqual(["followup.name"]);
+
+          const off = await editParts(card, { steps: { followup: { enabled: false } } });
+          expect(off.properties.userEditedKeys).toEqual(["followup.enabled"]);
+          expect(off.properties.userOverrides).toEqual({ followup: { name: "Call them", enabled: false } });
+
+          const back = await editParts(card, { steps: { followup: { enabled: true } } });
+          expect(back.properties.userEditedKeys).toEqual(["followup.name"]);
+        });
+
+        it("accepts a value for a step that the same request switches on", async () => {
+          const card = await companyWithFollowup({ enabled: false });
+
+          const edited = await editParts(card, {
+            set: { followup: { name: "Call them" } },
+            steps: { followup: { enabled: true } },
+          });
+
+          expect(edited.properties.userEditedKeys).toEqual(["followup.enabled", "followup.name"]);
+        });
+
+        it("refuses a value for a step that the same request switches off, naming the step, and writes nothing", async () => {
+          const card = await companyWithFollowup();
+
+          const error = await expectRefusedUnchanged(card, () =>
+            editParts(card, { set: { followup: { name: "Call them" } }, steps: { followup: { enabled: false } } }),
+          );
+
+          expect(error).toBeInstanceOf(ValidationError);
+          expect(error).toHaveProperty("details", { ref: "followup", field: "followup" });
+        });
+
+        it("refuses to switch off the primary step of a multi-step card, whatever its ref, and writes nothing", async () => {
+          const card = await companyWithFollowup();
+
+          const error = await expectRefusedUnchanged(card, () =>
+            editParts(card, { steps: { company: { enabled: false } } }),
+          );
+
+          expect(error).toBeInstanceOf(ValidationError);
+          expect(error).toHaveProperty("details", { ref: "company", field: "enabled" });
+        });
+
+        it("refuses to switch off the step of a single-step card, and switching it on is no edit", async () => {
+          const card = await storeCard(taskEnvelope("Send the invoice"));
+
+          const error = await expectRefusedUnchanged(card, () =>
+            editParts(card, { steps: { primary: { enabled: false } } }),
+          );
+          expect(error).toBeInstanceOf(ValidationError);
+          expect(error).toHaveProperty("details", { ref: "primary", field: "enabled" });
+
+          const on = await editParts(card, { steps: { primary: { enabled: true } } });
+          expect(on.properties.userEditedKeys).toEqual([]);
+          expect(on.properties.userOverrides).toEqual({});
+        });
+
+        it("refuses a switch for a step the card does not have, naming it, and writes nothing", async () => {
+          const card = await companyWithFollowup();
+
+          const error = await expectRefusedUnchanged(card, () =>
+            editParts(card, { steps: { nowhere: { enabled: false } } }),
+          );
+
+          expect(error).toBeInstanceOf(ValidationError);
+          expect(error).toHaveProperty("details", { ref: "nowhere", field: "nowhere" });
+        });
+      });
+
+      describe("relation lists", () => {
+        const taskWithProject = async (projectIds: string[]): Promise<string> =>
+          storeCard({
+            entityKind: "database",
+            target: await databaseIdFor("tasks"),
+            properties: { name: "Send the invoice" },
+            ...(projectIds.length > 0 ? { relations: { project: projectIds } } : {}),
+          });
+
+        it("replaces a relation list on a single-step card: the effective envelope carries it, the key is counted, and confirm writes the edge", async () => {
+          const project = await itemIn("projects", { name: "Invoices" });
+          const card = await taskWithProject([]);
+
+          const edited = await editParts(card, { relations: { primary: { project: [project] } } });
+
+          expect(edited.properties.proposal).toEqual({
+            ...taskEnvelope("Send the invoice"),
+            relations: { project: [project] },
+          });
+          expect(edited.properties.aiProposal).toEqual(taskEnvelope("Send the invoice"));
+          expect(edited.properties.userOverrides).toEqual({ primary: { relations: { project: [project] } } });
+          expect(edited.properties.userEditedKeys).toEqual(["primary.relations.project"]);
+          const history = z.array(z.record(z.string(), z.unknown())).parse(edited.properties.history);
+          expect(history.at(-1)).toMatchObject({ kind: "userEdit", keys: ["primary.relations.project"] });
+          const confirmed = await confirmCard(card);
+          expect(await edgeExists(z.string().parse(confirmed.properties.resultItemId), project)).toBe(true);
+        });
+
+        it("replaces the whole list, so a target the user removed is not written", async () => {
+          const kept = await itemIn("projects", { name: "Kept" });
+          const removed = await itemIn("projects", { name: "Removed" });
+          const card = await taskWithProject([removed]);
+
+          const edited = await editParts(card, { relations: { primary: { project: [kept] } } });
+
+          expect(edited.properties.proposal).toMatchObject({ relations: { project: [kept] } });
+          const confirmed = await confirmCard(card);
+          const taskId = z.string().parse(confirmed.properties.resultItemId);
+          expect(await edgeExists(taskId, kept)).toBe(true);
+          expect(await edgeExists(taskId, removed)).toBe(false);
+        });
+
+        it("saves an emptied list when the assistant had a target, and counts it", async () => {
+          const project = await itemIn("projects", { name: "Invoices" });
+          const card = await taskWithProject([project]);
+
+          const edited = await editParts(card, { relations: { primary: { project: [] } } });
+
+          expect(edited.properties.proposal).toMatchObject({ relations: { project: [] } });
+          expect(edited.properties.userEditedKeys).toEqual(["primary.relations.project"]);
+        });
+
+        it("does not count a list that holds the assistant's targets, in any order, and drops it", async () => {
+          const first = await itemIn("companies", { name: "Acme" });
+          const second = await itemIn("companies", { name: "Beta" });
+          const card = await storeCard({
+            entityKind: "database",
+            target: await databaseIdFor("people"),
+            properties: { name: "Jane" },
+            relations: { companies: [first, second] },
+          });
+
+          const unchanged = await editParts(card, { relations: { primary: { companies: [second, first] } } });
+
+          expect(unchanged.properties.userEditedKeys).toEqual([]);
+          expect(unchanged.properties.userOverrides).toEqual({});
+        });
+
+        it("drops a list again when it is set back to what the assistant had, here nothing", async () => {
+          const project = await itemIn("projects", { name: "Invoices" });
+          const card = await taskWithProject([]);
+          await editParts(card, { relations: { primary: { project: [project] } } });
+
+          const cleared = await editParts(card, { relations: { primary: { project: [] } } });
+
+          expect(cleared.properties.userEditedKeys).toEqual([]);
+          expect(cleared.properties.userOverrides).toEqual({});
+          expect(cleared.properties.proposal).toEqual(taskEnvelope("Send the invoice"));
+        });
+
+        it("keeps the lists of other relation keys when one key is replaced", async () => {
+          const project = await itemIn("projects", { name: "Invoices" });
+          const person = await itemIn("people", { name: "Jane" });
+          const card = await taskWithProject([]);
+          await editParts(card, { relations: { primary: { project: [project] } } });
+
+          const second = await editParts(card, { relations: { primary: { people: [person] } } });
+
+          expect(second.properties.userOverrides).toEqual({
+            primary: { relations: { project: [project], people: [person] } },
+          });
+          expect(second.properties.userEditedKeys).toEqual(["primary.relations.people", "primary.relations.project"]);
+        });
+
+        it("saves a list together with a value of the same step in one write", async () => {
+          const project = await itemIn("projects", { name: "Invoices" });
+          const card = await taskWithProject([]);
+
+          const edited = await editParts(card, {
+            set: { primary: { name: "Poslat fakturu" } },
+            relations: { primary: { project: [project] } },
+          });
+
+          expect(edited.properties.userEditedKeys).toEqual(["primary.name", "primary.relations.project"]);
+          expect(edited.properties.proposal).toEqual({
+            ...taskEnvelope("Poslat fakturu"),
+            relations: { project: [project] },
+          });
+        });
+
+        it("replaces the relation of a secondary step, dropping its reference to another step", async () => {
+          const company = await itemIn("companies", { name: "Existing" });
+          const card = await cardWithSteps(companyAndPerson);
+
+          const edited = await editParts(card, { relations: { person: { companies: [company] } } });
+
+          expect(effectiveSteps(edited).find((step) => step.ref === "person")?.relations).toEqual({
+            companies: [company],
+          });
+          expect(edited.properties.userEditedKeys).toEqual(["person.relations.companies"]);
+        });
+
+        it("replaces a relation of an update step in both copies its validation compares", async () => {
+          const oldArea = await itemIn("areas", { name: "Old" });
+          const newArea = await itemIn("areas", { name: "New" });
+          const otherArea = await itemIn("areas", { name: "Other" });
+          const project = await itemIn("projects", { name: "Move" });
+          const projectsDb = await databaseIdFor("projects");
+          await withTransaction(pool, async (client) => {
+            const property = await propertiesStore.getPropertyByKey(client, projectsDb, "area");
+            await createRelationWithClient(client, {
+              relationPropertyId: property!.id,
+              callerItemId: project,
+              targetItemId: oldArea,
+            });
+          });
+          const card = await storeCard({
+            entityKind: "database",
+            target: projectsDb,
+            properties: { name: "Move" },
+            operations: [
+              {
+                ref: "project",
+                op: "update",
+                itemId: project,
+                role: "primary",
+                properties: { name: "Move" },
+                relations: { area: [newArea] },
+                before: { properties: { name: "Move" }, relations: { area: [oldArea] } },
+                after: { properties: { name: "Move" }, relations: { area: [newArea] } },
+              },
+            ],
+          });
+
+          const edited = await editParts(card, { relations: { project: { area: [otherArea] } } });
+
+          expect(effectiveSteps(edited)[0]).toMatchObject({
+            relations: { area: [otherArea] },
+            after: { properties: { name: "Move" }, relations: { area: [otherArea] } },
+          });
+          expect(edited.properties.userEditedKeys).toEqual(["project.relations.area"]);
+          await confirmCard(card);
+          expect(await edgeExists(project, oldArea)).toBe(false);
+          expect(await edgeExists(project, otherArea)).toBe(true);
+        });
+
+        it("refuses a target that does not exist with the error a confirm of the same envelope raises, and writes nothing", async () => {
+          const missing = randomUUID();
+          const card = await taskWithProject([]);
+
+          const refused = await expectRefusedUnchanged(card, () =>
+            editParts(card, { relations: { primary: { project: [missing] } } }),
+          );
+          const stored = await taskWithProject([missing]);
+          const confirmError = await expectRefusedUnchanged(stored, () => confirmCard(stored));
+
+          expect(refused).toBeInstanceOf(ValidationError);
+          expect(refused).toHaveProperty("details", { field: "project", code: "targetNotFound" });
+          expect(confirmError).toBeInstanceOf(ValidationError);
+          expect((refused as ValidationError).details).toEqual((confirmError as ValidationError).details);
+          expect((refused as ValidationError).message).toBe((confirmError as ValidationError).message);
+        });
+
+        it("refuses a relation the target database does not have with the error a confirm raises, and writes nothing", async () => {
+          const project = await itemIn("projects", { name: "Invoices" });
+          const card = await taskWithProject([]);
+
+          const refused = await expectRefusedUnchanged(card, () =>
+            editParts(card, { relations: { primary: { notARelation: [project] } } }),
+          );
+          const stored = await storeCard({
+            entityKind: "database",
+            target: await databaseIdFor("tasks"),
+            properties: { name: "Send the invoice" },
+            relations: { notARelation: [project] },
+          });
+          const confirmError = await expectRefusedUnchanged(stored, () => confirmCard(stored));
+
+          expect(refused).toBeInstanceOf(ValidationError);
+          expect(refused).toHaveProperty("details", { field: "notARelation" });
+          expect((refused as ValidationError).details).toEqual((confirmError as ValidationError).details);
+        });
+
+        it.each(["constructor", "toString", "hasOwnProperty"])(
+          "refuses the relation key '%s', which is named like an Object member, as it refuses any unknown key",
+          async (key) => {
+            const project = await itemIn("projects", { name: "Invoices" });
+            const card = await taskWithProject([]);
+            const lists = { [key]: [project] };
+
+            const refused = await expectRefusedUnchanged(card, () =>
+              editParts(card, { relations: { primary: lists } }),
+            );
+            const stored = await storeCard({
+              entityKind: "database",
+              target: await databaseIdFor("tasks"),
+              properties: { name: "Send the invoice" },
+              relations: lists,
+            });
+            const confirmError = await expectRefusedUnchanged(stored, () => confirmCard(stored));
+
+            expect(refused).toBeInstanceOf(ValidationError);
+            expect(refused).toHaveProperty("details", { field: key });
+            expect((refused as ValidationError).details).toEqual((confirmError as ValidationError).details);
+          },
+        );
+
+        it("refuses a relation list on a card that cannot carry relations, writing nothing", async () => {
+          const { proposal: card } = await createPageContentProposal();
+          const project = await itemIn("projects", { name: "Invoices" });
+
+          const error = await expectRefusedUnchanged(card.id, () =>
+            editParts(card.id, { relations: { primary: { project: [project] } } }),
+          );
+
+          expect(error).toBeInstanceOf(ValidationError);
+          expect(error).toHaveProperty("details", { field: "relations" });
+        });
+
+        it("refuses a list for a step the card does not have, naming it, and writes nothing", async () => {
+          const project = await itemIn("projects", { name: "Invoices" });
+          const card = await companyWithFollowup();
+
+          const error = await expectRefusedUnchanged(card, () =>
+            editParts(card, { relations: { nowhere: { project: [project] } } }),
+          );
+
+          expect(error).toBeInstanceOf(ValidationError);
+          expect(error).toHaveProperty("details", { ref: "nowhere", field: "nowhere" });
+        });
+
+        it("refuses a list for a step the card has switched off, naming the step, and writes nothing", async () => {
+          const project = await itemIn("projects", { name: "Invoices" });
+          const card = await companyWithFollowup();
+          await editParts(card, { steps: { followup: { enabled: false } } });
+
+          const error = await expectRefusedUnchanged(card, () =>
+            editParts(card, { relations: { followup: { project: [project] } } }),
+          );
+
+          expect(error).toBeInstanceOf(ValidationError);
+          expect(error).toHaveProperty("details", { ref: "followup", field: "followup" });
+        });
+      });
+
+      describe("the request", () => {
+        it.each(["relations", "enabled"])(
+          "refuses '%s' as a value in set, naming the step and the key",
+          async (key) => {
+            const card = await companyWithFollowup();
+
+            const error = await expectRefusedUnchanged(card, () => edit(card, { company: { [key]: [] } }));
+
+            expect(error).toBeInstanceOf(ValidationError);
+            expect(error).toHaveProperty("details", { ref: "company", field: key });
+          },
+        );
+
+        it("edits with relations or steps alone, and with an empty set beside them", async () => {
+          const project = await itemIn("projects", { name: "Invoices" });
+          const card = await storeCard(taskEnvelope("Send the invoice"));
+
+          const edited = await editParts(card, { set: {}, relations: { primary: { project: [project] } } });
+
+          expect(edited.properties.userEditedKeys).toEqual(["primary.relations.project"]);
+        });
+
+        it.each([
+          ["no part", {}, "set"],
+          ["an empty set", { set: {} }, "set"],
+          ["an empty relations", { relations: {} }, "relations"],
+          ["an empty steps", { steps: {} }, "steps"],
+          ["an empty list map for a ref", { relations: { primary: {} } }, "relations"],
+        ])("refuses %s, naming the part, and writes nothing", async (_label, parts, field) => {
+          const card = await storeCard(taskEnvelope("Send the invoice"));
+
+          const error = await expectRefusedUnchanged(card, () => editParts(card, parts));
+
+          expect(error).toBeInstanceOf(ValidationError);
+          expect(error).toHaveProperty("details", { field });
+        });
+
+        it("fails every part when one is refused: the values of the request are not written either", async () => {
+          const card = await storeCard(taskEnvelope("Send the invoice"));
+
+          const error = await expectRefusedUnchanged(card, () =>
+            editParts(card, {
+              set: { primary: { name: "Typed" } },
+              relations: { primary: { project: [randomUUID()] } },
+            }),
+          );
+
+          expect(error).toBeInstanceOf(ValidationError);
+          expect((await readCard(card)).properties.userEditedKeys).toBeUndefined();
+        });
+      });
     });
   });
 

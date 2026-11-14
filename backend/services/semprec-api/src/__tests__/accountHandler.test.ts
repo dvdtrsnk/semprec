@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { PassThrough, type Readable } from "node:stream";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import { z } from "zod";
+import { runInTenant } from "@semprec/shared";
 import { CORE_TASK_NAMES, runOnce, type TaskList } from "@semprec/queue";
 import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
 import {
@@ -14,15 +16,23 @@ import {
   getTenantZeroId,
   getTestPool,
   resetDatabase,
+  setTenantAiBudget,
 } from "@semprec/data/testSupport";
 import {
   createActionRegistry,
   createCoreTaskList,
+  createItemWithClient,
   createUser,
   hashPassword,
   loadFullModuleRegistry,
   LocalFsBlobStorageWriter,
   login,
+  provisionTenant,
+  raiseProblem,
+  recordTokenGatewayCall,
+  resolveMailModuleIds,
+  updateItemWithClient,
+  withTransaction,
   type BlobStorageWriter,
   type PasswordResetMailer,
 } from "@semprec/data";
@@ -473,5 +483,330 @@ describe("account deletion route (issue #1049)", () => {
       body: JSON.stringify({ password: PASSWORD }),
     });
     expect(res.status).toBe(401);
+  });
+});
+
+const accountSummarySchema = z.strictObject({
+  activeSessions: z.number().int(),
+  mailAccountCount: z.number().int(),
+  mailAccountsNeedingReauth: z.array(z.strictObject({ id: z.string(), name: z.string() })),
+  trashItems: z.number().int(),
+  trashDatabases: z.number().int(),
+  problemCount: z.number().int(),
+  aiCostMonthUsd: z.number(),
+});
+type AccountSummaryBody = z.infer<typeof accountSummarySchema>;
+
+describe("account summary route (issue gh-1903)", () => {
+  let adminPool: Pool;
+  let pool: Pool;
+  let server: Server;
+  let baseUrl: string;
+
+  interface Member {
+    userId: string;
+    email: string;
+    password: string;
+    headers: { Authorization: string };
+  }
+
+  /** A tenant provisioned like a real one, with a budget row so the Semp status does not list a missing budget. */
+  async function newTenant(): Promise<string> {
+    const tenantId = await createTestTenant(adminPool);
+    await provisionTenant(pool, tenantId);
+    await setTenantAiBudget(adminPool, tenantId);
+    return tenantId;
+  }
+
+  async function signUp(tenantId: string): Promise<Member> {
+    const email = `${randomUUID()}@example.com`;
+    const user = await createUser(adminPool, { email, passwordHash: await hashPassword(PASSWORD), tenantId });
+    return { userId: user.id, email, password: PASSWORD, headers: await signIn(email) };
+  }
+
+  /** Another session of the same user, as a second device signs in. */
+  async function signIn(email: string): Promise<{ Authorization: string }> {
+    const { token } = await login(adminPool, { email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
+    return { Authorization: `Bearer ${token}` };
+  }
+
+  async function request(
+    headers: Record<string, string>,
+    method: string,
+    path: string,
+    body?: unknown,
+  ): Promise<{ status: number; body: unknown }> {
+    const res = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: body === undefined ? headers : { ...headers, "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    return { status: res.status, body: await res.json() };
+  }
+
+  /** A 2xx answer's body, for the writes that build the fixture through the real routes. */
+  async function requestOk(headers: Record<string, string>, method: string, path: string, body?: unknown) {
+    const answer = await request(headers, method, path, body);
+    if (answer.status < 200 || answer.status >= 300) {
+      throw new Error(`${method} ${path} answered ${answer.status}: ${JSON.stringify(answer.body)}`);
+    }
+    return answer.body;
+  }
+
+  async function readSummary(headers: Record<string, string>): Promise<AccountSummaryBody> {
+    return accountSummarySchema.parse(await requestOk(headers, "GET", "/api/account/summary"));
+  }
+
+  const idBody = z.object({ id: z.string() });
+
+  async function createDatabase(headers: Record<string, string>, name: string): Promise<string> {
+    return idBody.parse(await requestOk(headers, "POST", "/api/databases", { name })).id;
+  }
+
+  /** `count` items of a new database, each moved to the trash on its own: each is the root of its deletion. */
+  async function trashItems(headers: Record<string, string>, count: number): Promise<string[]> {
+    const databaseId = await createDatabase(headers, `Trash source ${randomUUID()}`);
+    const ids: string[] = [];
+    for (let n = 0; n < count; n += 1) {
+      const id = idBody.parse(
+        await requestOk(headers, "POST", `/api/databases/${databaseId}/items`, { properties: {} }),
+      ).id;
+      await requestOk(headers, "DELETE", `/api/items/${id}`);
+      ids.push(id);
+    }
+    return ids;
+  }
+
+  /** `count` empty user databases, each archived through the delete route. */
+  async function archiveDatabases(headers: Record<string, string>, count: number): Promise<string[]> {
+    const ids: string[] = [];
+    for (let n = 0; n < count; n += 1) {
+      const id = await createDatabase(headers, `Archived ${randomUUID()}`);
+      await requestOk(headers, "DELETE", `/api/databases/${id}`);
+      ids.push(id);
+    }
+    return ids;
+  }
+
+  /** A Mailboxes item named `name`; `syncStatus` is written the way the sync job writes it. */
+  function createMailbox(tenantId: string, name: string, syncStatus?: "needsReauthorization"): Promise<string> {
+    return runInTenant(tenantId, () =>
+      withTransaction(pool, async (client) => {
+        const { mailboxesDatabaseId } = await resolveMailModuleIds(client);
+        const mailbox = await createItemWithClient(client, {
+          databaseId: mailboxesDatabaseId,
+          properties: { name, provider: "generic" },
+        });
+        if (syncStatus !== undefined) {
+          await updateItemWithClient(
+            client,
+            { databaseId: mailboxesDatabaseId, itemId: mailbox.id, propertiesPatch: { syncStatus } },
+            { allowedSystemKeys: ["syncStatus"] },
+          );
+        }
+        return mailbox.id;
+      }),
+    );
+  }
+
+  /** One active Semp problem of the tenant, raised through the writer the producers use. */
+  function raiseSempProblem(tenantId: string, userId: string): Promise<string> {
+    return runInTenant(tenantId, () =>
+      withTransaction(pool, async (client) => {
+        const sourceId = randomUUID();
+        const raised = await raiseProblem(client, {
+          userId,
+          category: "agents",
+          kind: "agentHeartbeat",
+          severity: "warning",
+          sourceTable: "project_heartbeats",
+          sourceId,
+          dedupeKey: `agents:heartbeat:${sourceId}`,
+        });
+        return raised.problemId;
+      }),
+    );
+  }
+
+  beforeAll(async () => {
+    adminPool = getTestPool();
+    pool = await createRuntimeRolePool(adminPool, "semprec_data");
+  });
+
+  afterAll(async () => {
+    await pool?.end();
+    await adminPool?.end();
+  });
+
+  beforeEach(async () => {
+    await resetDatabase(adminPool);
+    const dispatch = await createDispatcher(pool, {
+      passwordResetMailer: noopMailer,
+      appBaseUrl: "https://app.example.test",
+      setupToken: "account-summary-setup-token",
+      moduleRegistry,
+      blobStorage: new LocalFsBlobStorageWriter(join(tmpdir(), `semprec-test-account-summary-${randomUUID()}`)),
+      maxFileSizeBytes: 10 * 1024 * 1024,
+    });
+    server = createServer(dispatch);
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+    baseUrl = `http://127.0.0.1:${address.port}`;
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it("counts 4 active sessions without the revoked one, 5 trashed root items and 2 archived databases", async () => {
+    const tenantId = await newTenant();
+    const member = await signUp(tenantId);
+    for (let device = 0; device < 3; device += 1) await signIn(member.email);
+    const toRevoke = await signIn(member.email);
+    const current = z
+      .object({ sessions: z.array(z.object({ id: z.string(), current: z.boolean() })) })
+      .parse(await requestOk(toRevoke, "GET", "/api/auth/sessions"))
+      .sessions.find((session) => session.current);
+    if (!current) throw new Error("the session list names no current session");
+    await requestOk(member.headers, "POST", `/api/auth/sessions/${current.id}/revoke`, {});
+    const trashed = await trashItems(member.headers, 5);
+    const archived = await archiveDatabases(member.headers, 2);
+
+    const summary = await readSummary(member.headers);
+
+    expect(summary).toEqual({
+      activeSessions: 4,
+      mailAccountCount: 0,
+      mailAccountsNeedingReauth: [],
+      trashItems: 5,
+      trashDatabases: 2,
+      problemCount: 0,
+      aiCostMonthUsd: 0,
+    });
+    // The fixture is real: the owners' lists hold the very rows the counts stand for.
+    const trashList = z
+      .object({ items: z.array(z.object({ item: idBody })) })
+      .parse(await requestOk(member.headers, "GET", "/api/trash/items?limit=200"));
+    expect(trashList.items.map((row) => row.item.id).sort()).toEqual([...trashed].sort());
+    const databaseList = z
+      .object({ databases: z.array(idBody) })
+      .parse(await requestOk(member.headers, "GET", "/api/trash/databases"));
+    expect(databaseList.databases.map((row) => row.id).sort()).toEqual([...archived].sort());
+  });
+
+  it("answers the figures the owners' own routes answer for the same data", async () => {
+    const tenantId = await newTenant();
+    const member = await signUp(tenantId);
+    await signIn(member.email);
+    await createMailbox(tenantId, "Private account");
+    const signedOut = await createMailbox(tenantId, "Work account", "needsReauthorization");
+    await raiseSempProblem(tenantId, member.userId);
+    await runInTenant(tenantId, () =>
+      recordTokenGatewayCall(pool, {
+        provider: "anthropic",
+        model: "summary-test",
+        inputTokens: 1,
+        outputTokens: 1,
+        costUsd: 2.5,
+      }),
+    );
+    await trashItems(member.headers, 2);
+    await archiveDatabases(member.headers, 1);
+
+    const summary = await readSummary(member.headers);
+
+    const sessions = z
+      .object({ sessions: z.array(idBody) })
+      .parse(await requestOk(member.headers, "GET", "/api/auth/sessions")).sessions;
+    const mail = z
+      .object({
+        accounts: z.number(),
+        accountsNeedingReauth: z.array(z.object({ id: z.string(), name: z.string() })),
+      })
+      .parse(await requestOk(member.headers, "GET", "/api/mail/summary"));
+    const trashItemsTotal = z
+      .object({ totalCount: z.number() })
+      .parse(await requestOk(member.headers, "GET", "/api/trash/items")).totalCount;
+    const trashDatabasesTotal = z
+      .object({ totalCount: z.number() })
+      .parse(await requestOk(member.headers, "GET", "/api/trash/databases")).totalCount;
+    const semp = z
+      .object({ activeCount: z.number() })
+      .parse(await requestOk(member.headers, "GET", "/api/semp-status/summary"));
+    const usage = z
+      .object({ spentMonthUsd: z.number() })
+      .parse(await requestOk(member.headers, "GET", "/api/ai-usage/summary"));
+    expect(summary).toEqual({
+      activeSessions: sessions.length,
+      mailAccountCount: mail.accounts,
+      mailAccountsNeedingReauth: mail.accountsNeedingReauth,
+      trashItems: trashItemsTotal,
+      trashDatabases: trashDatabasesTotal,
+      problemCount: semp.activeCount,
+      aiCostMonthUsd: usage.spentMonthUsd,
+    });
+    // The equal figures are not all zero: the data above is what they count.
+    expect(summary).toEqual({
+      activeSessions: 2,
+      mailAccountCount: 2,
+      mailAccountsNeedingReauth: [{ id: signedOut, name: "Work account" }],
+      trashItems: 2,
+      trashDatabases: 1,
+      problemCount: 1,
+      aiCostMonthUsd: 2.5,
+    });
+  });
+
+  it("keeps each tenant's figures apart: neither sees the other's sessions, trash, accounts, problems or spend", async () => {
+    const tenantA = await newTenant();
+    const tenantB = await newTenant();
+    const a = await signUp(tenantA);
+    const b = await signUp(tenantB);
+    await signIn(b.email);
+    await signIn(b.email);
+    await trashItems(a.headers, 1);
+    await trashItems(b.headers, 3);
+    await archiveDatabases(b.headers, 2);
+    const signedOutOfA = await createMailbox(tenantA, "Signed out of A", "needsReauthorization");
+    const signedOutOfB = await createMailbox(tenantB, "Signed out of B", "needsReauthorization");
+    await createMailbox(tenantB, "Second of B");
+    await raiseSempProblem(tenantB, b.userId);
+    await runInTenant(tenantB, () =>
+      recordTokenGatewayCall(pool, {
+        provider: "anthropic",
+        model: "summary-test",
+        inputTokens: 1,
+        outputTokens: 1,
+        costUsd: 4,
+      }),
+    );
+
+    expect(await readSummary(a.headers)).toEqual({
+      activeSessions: 1,
+      mailAccountCount: 1,
+      mailAccountsNeedingReauth: [{ id: signedOutOfA, name: "Signed out of A" }],
+      trashItems: 1,
+      trashDatabases: 0,
+      problemCount: 0,
+      aiCostMonthUsd: 0,
+    });
+    expect(await readSummary(b.headers)).toEqual({
+      activeSessions: 3,
+      mailAccountCount: 2,
+      mailAccountsNeedingReauth: [{ id: signedOutOfB, name: "Signed out of B" }],
+      trashItems: 3,
+      trashDatabases: 2,
+      problemCount: 1,
+      aiCostMonthUsd: 4,
+    });
+  });
+
+  it("rejects a request without a session, and one with a token that names no session, with 401", async () => {
+    const anonymous = await request({}, "GET", "/api/account/summary");
+    const unknownToken = await request({ Authorization: "Bearer not-a-session-token" }, "GET", "/api/account/summary");
+
+    expect(anonymous.status).toBe(401);
+    expect(unknownToken.status).toBe(401);
   });
 });

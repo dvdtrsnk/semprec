@@ -6,6 +6,7 @@ import {
   deleteOwnAccount,
   enqueueTenantSearchReindex,
   getDownloadableTenantExport,
+  getProfileAccountSummary,
   getSelfPersonId,
   getUserById,
   isSupportedLocale,
@@ -47,6 +48,15 @@ export function createAccountRoutes(pool: Pool, options: AppOptions): RouteDefin
       method: "GET",
       path: "/api/account/exports",
       handler: async () => ({ status: 200, body: { exports: await listTenantExports(pool) } }),
+    },
+    {
+      // Issue gh-1903: the figures of the profile screen in one read. The user is the session's, never a request's.
+      method: "GET",
+      path: "/api/account/summary",
+      handler: async (ctx) => ({
+        status: 200,
+        body: await getProfileAccountSummary(pool, { userId: ctx.identity.user.id }),
+      }),
     },
     {
       method: "POST",

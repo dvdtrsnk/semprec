@@ -18,9 +18,10 @@ import { readCallerTenantId, runForCallerTenant } from "./callerTenant.js";
  * a Projects item. #85's guidance-drift check always is; #183's transcript summary runs in
  * `semprec-transcribe` with no project in scope, so it sends `projectItemId: null` and its
  * `ai_gateway_calls` row carries none; #185's speaker-mapping suggestion and #1848's Event
- * recommendation (`transcript_event_match`) run in the same process, the same way. The route
- * rejects any other operation outright rather than accepting an arbitrary string that nothing yet
- * knows how to interpret.
+ * recommendation (`transcript_event_match`) run in the same process, the same way; gh-1900's task
+ * name for a mail thread (`mail_thread_task_name`) runs in `semprec-api` with no project in scope.
+ * The route rejects any other operation outright rather than accepting an arbitrary string that
+ * nothing yet knows how to interpret.
  */
 const OPERATION_REQUIRES_PROJECT_ITEM = new Map<string, boolean>([
   ["agent_guidance_drift", true],
@@ -32,6 +33,7 @@ const OPERATION_REQUIRES_PROJECT_ITEM = new Map<string, boolean>([
   ["transcript_event_match", false],
   ["transcript_speaker_suggestion", false],
   ["semp_thread_title", false],
+  ["mail_thread_task_name", false],
 ]);
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

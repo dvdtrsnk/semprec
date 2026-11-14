@@ -9,6 +9,7 @@ import { withTransaction } from "../db/pool.js";
 import { ForbiddenError } from "../errors.js";
 import { getOrCreateJournalItem } from "../journal/journalStore.js";
 import { createMailThread } from "../mail/mailMessageMetaStore.js";
+import { personMailThreadsRelatedRow } from "../mail/threadRelatedCount.js";
 import { createCollectionMetadataResolver, type CollectionMetadataResolver } from "../manifest/collectionMetadata.js";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 import { registerRelatedRowContributor } from "../index.js";
@@ -741,8 +742,9 @@ describe("relation.related (issue #1839)", () => {
       for (const remove of unregister.splice(0)) remove();
     });
 
-    it("has none registered", () => {
-      expect(relatedRowContributorsFor("people")).toEqual([]);
+    it("has the mail thread count of people (issue gh-1874) and no other registered", () => {
+      expect(relatedRowContributorsFor("people")).toEqual([personMailThreadsRelatedRow]);
+      expect(relatedRowContributorsFor("projects")).toEqual([]);
     });
 
     it("lists a row a module registers for a record type, in order and under the other rules, and stops after unregister", async () => {

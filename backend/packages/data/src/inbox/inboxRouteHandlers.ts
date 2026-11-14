@@ -1,5 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
+import { currentTenantScope } from "@semprec/shared";
 import { withTransaction } from "../db/pool.js";
 import { getDatabaseByKey, getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import {
@@ -7,14 +8,19 @@ import {
   readConfirmationResults,
   rejectProposalWithClient,
   reviseProposalWithClient,
+  updateProposalValuesWithClient,
   type ConfirmationResult,
   type ConfirmProposalCredentialInput,
   type ReviseProposalInput,
+  type UpdateProposalValuesInput,
+  type UpdateProposalValuesResult,
 } from "./proposalActions.js";
 import type { ProposalEntityKind } from "./proposalEnvelope.js";
+import { hashIdempotentRequest, readIdempotencyKeyHeader, runIdempotent } from "./idempotentResponsesStore.js";
 import { listActiveInboxTypes, type InboxTypeSummary } from "./inboxTypesStore.js";
 import { countOpenInboxCards, listInboxCards } from "./inboxCardsStore.js";
 import { resolveEditorSchema, type ResolvedEditorSchema } from "./editorSchema.js";
+import type { ProposalWarning } from "./editorSchema.js";
 import { INBOX_ITEM_TYPES_MODULE_ID, PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 import { CREDENTIAL_TYPES, type CredentialType } from "../credentials/externalCredentialsStore.js";
 import {
@@ -26,7 +32,9 @@ import {
 } from "../manifest/catalogResolution.js";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
+import { UUID_RE } from "../docs/pageOwnerDatabase.js";
 import { NotFoundError, ValidationError } from "../errors.js";
+import { containsNul, MAX_REVISE_MESSAGE_LENGTH } from "./reviseInputChecks.js";
 import type { ItemRow } from "../types.js";
 
 /**
@@ -38,12 +46,15 @@ import type { ItemRow } from "../types.js";
 interface CustomRouteRequestContext {
   params: Record<string, string>;
   body: unknown;
-  /** The authenticated caller; only the confirm and revise routes read it. */
+  /** The authenticated caller; only the confirm, revise and update-values routes read it. */
   identity?: { user: { id: string } };
+  /** The request, which carries the `Idempotency-Key` header the update-values route reads. */
+  req?: { headers: Record<string, string | string[] | undefined> };
 }
 
 type CustomRouteResult =
-  { status: number; item: ItemRow; results?: ConfirmationResult[] } | { status: number; body: unknown };
+  | { status: number; item: ItemRow; results?: ConfirmationResult[]; warnings?: ProposalWarning[] }
+  | { status: number; body: unknown };
 
 function requireParam(params: Record<string, string>, name: string): string {
   const value = params[name];
@@ -172,9 +183,6 @@ export function createRejectProposalRouteHandler(pool: Pool) {
   };
 }
 
-/** The longest `message` the revise route accepts, in UTF-16 code units: it becomes one entry of the card's stored history. */
-const MAX_REVISE_MESSAGE_LENGTH = 2000;
-
 const REVISE_BODY_KEYS: readonly string[] = ["entityKind", "target", "properties", "message", "ifVersion"];
 
 const PROPOSAL_ENTITY_KINDS: readonly ProposalEntityKind[] = ["pageContent", "database", "relation"];
@@ -192,28 +200,6 @@ function requireNonEmptyString(value: unknown, field: string): string {
     throw new ValidationError(`'${field}' must not contain NUL characters`, { field });
   }
   return value;
-}
-
-/**
- * Whether a JSON value holds U+0000 in any string or object key. The walk is iterative and visits every node of the
- * request body once, so a deeply nested body cannot exhaust the stack; the body's own size cap bounds its length.
- */
-function containsNul(root: unknown): boolean {
-  const pending: unknown[] = [root];
-  while (pending.length > 0) {
-    const value = pending.pop();
-    if (typeof value === "string") {
-      if (value.includes("\u0000")) return true;
-    } else if (Array.isArray(value)) {
-      for (const entry of value as unknown[]) pending.push(entry);
-    } else if (typeof value === "object" && value !== null) {
-      for (const [key, entry] of Object.entries(value)) {
-        if (key.includes("\u0000")) return true;
-        pending.push(entry);
-      }
-    }
-  }
-  return false;
 }
 
 /**
@@ -298,6 +284,149 @@ export function createReviseProposalRouteHandler(pool: Pool) {
       return reviseProposalWithClient(client, { processingProposalsDatabaseId }, proposalId, input, actingUserId);
     });
     return { status: 200, item };
+  };
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The most target ids one relation list of a values request may hold. */
+const MAX_RELATION_TARGETS = 200;
+
+/** `value` as a JSON object of JSON objects, one per ref: the shape of `set`, `relations` and `steps` before their own entries are checked. */
+function parseRefMap(value: unknown, part: "set" | "relations" | "steps"): Array<[string, Record<string, unknown>]> {
+  if (!isPlainObject(value)) throw new ValidationError(`'${part}' must be a JSON object`, { field: part });
+  return Object.entries(value).map(([ref, entries]): [string, Record<string, unknown>] => {
+    if (!isPlainObject(entries)) {
+      throw new ValidationError(`'${part}.${ref}' must be a JSON object`, { field: part, ref });
+    }
+    return [ref, entries];
+  });
+}
+
+/** One relation list: a JSON array of at most `MAX_RELATION_TARGETS` item ids, each a UUID string. The target's existence and the relation itself are the envelope validation's question. */
+function parseRelationTargets(ref: string, key: string, value: unknown): string[] {
+  const where = { field: "relations", ref, key };
+  if (!Array.isArray(value)) throw new ValidationError(`'relations.${ref}.${key}' must be a JSON array`, where);
+  if (value.length > MAX_RELATION_TARGETS) {
+    throw new ValidationError(`'relations.${ref}.${key}' may list at most ${MAX_RELATION_TARGETS} items`, where);
+  }
+  return value.map((id: unknown) => {
+    if (typeof id !== "string" || !UUID_RE.test(id)) {
+      throw new ValidationError(`'relations.${ref}.${key}' must hold item ids`, where);
+    }
+    return id;
+  });
+}
+
+/**
+ * `{ set?, relations?, steps?, ifVersion? }` (issues #1892 and #1920): `set` a JSON object of JSON objects, `relations`
+ * ref -> relation property key -> a list of item ids, `steps` ref -> `{ enabled: boolean }`, `ifVersion` a string when
+ * present, and at least one of `set`, `relations` and `steps`. The values of `set` stay unchecked here and so do the
+ * refs, the relation keys and the targets; the envelope validation judges them.
+ */
+function parseUpdateValuesBody(body: unknown): UpdateProposalValuesInput {
+  if (!isPlainObject(body)) throw new ValidationError("Request body must be a JSON object");
+  const { set, relations, steps, ifVersion } = body;
+  if (set === undefined && relations === undefined && steps === undefined) {
+    throw new ValidationError("The request must hold at least one of 'set', 'relations' and 'steps'", { field: "set" });
+  }
+  if (ifVersion !== undefined && typeof ifVersion !== "string") {
+    throw new ValidationError("'ifVersion' must be a string", { field: "ifVersion" });
+  }
+  const parsedRelations =
+    relations === undefined
+      ? undefined
+      : Object.fromEntries(
+          parseRefMap(relations, "relations").map(([ref, lists]) => [
+            ref,
+            Object.fromEntries(Object.entries(lists).map(([key, ids]) => [key, parseRelationTargets(ref, key, ids)])),
+          ]),
+        );
+  const parsedSteps =
+    steps === undefined
+      ? undefined
+      : Object.fromEntries(
+          parseRefMap(steps, "steps").map(([ref, step]) => {
+            if (Object.keys(step).length !== 1 || typeof step.enabled !== "boolean") {
+              throw new ValidationError(`'steps.${ref}' must be { "enabled": true | false }`, { field: "steps", ref });
+            }
+            return [ref, { enabled: step.enabled }];
+          }),
+        );
+  return {
+    ...(set === undefined ? {} : { set: Object.fromEntries(parseRefMap(set, "set")) }),
+    ...(parsedRelations === undefined ? {} : { relations: parsedRelations }),
+    ...(parsedSteps === undefined ? {} : { steps: parsedSteps }),
+    ...(ifVersion === undefined ? {} : { ifVersion }),
+  };
+}
+
+/** The card of a stored update-values response, as `updateProposalValuesWithClient` returned it. */
+const storedCardSchema = z.object({
+  id: z.string(),
+  databaseId: z.string(),
+  properties: z.record(z.string(), z.unknown()),
+  computed: z.record(z.string(), z.unknown()),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  deletedAt: z.string().nullable(),
+  fromInbox: z.boolean().optional(),
+});
+
+/** The body of a stored update-values response: the card the first call answered and its required-field warnings. */
+const storedUpdateSchema = z.object({
+  item: storedCardSchema,
+  warnings: z.array(z.object({ ref: z.string().optional(), field: z.string(), code: z.literal("required") })),
+});
+
+/** The route template under which update-values responses are stored (`idempotent_responses.route`). */
+const UPDATE_VALUES_ROUTE = "PATCH /api/proposals/:id/values";
+
+/**
+ * `PATCH /api/proposals/:id/values` (issue #1892): the user's edit of the values on a proposal card. Thin mapping
+ * only: the lock, the merge into `userOverrides`, the validation and the history entry live in
+ * `updateProposalValuesWithClient`, which runs in the one transaction opened here. The same request may also
+ * replace relation lists and switch steps on or off (issue #1920). Answers the updated card, as
+ * the confirm route does, with its `warnings` (issue #1928): one `{ ref?, field, code: "required" }` per visible
+ * required field the card still lacks, an empty list when none.
+ *
+ * With an `Idempotency-Key` header (issue gh-1894) the update runs through `runIdempotent`: a repeat of the key by
+ * the same user with the same card and body answers the card and the warnings the first call answered and applies
+ * nothing, and the key with another card or body is `400 validation_failed`. Without the header the route runs as
+ * it always did.
+ */
+export function createUpdateProposalValuesRouteHandler(pool: Pool) {
+  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+    const proposalId = requireParam(ctx.params, "id");
+    const input = parseUpdateValuesBody(ctx.body);
+    const idempotencyKey = readIdempotencyKeyHeader(ctx.req?.headers);
+    const update = async (client: PoolClient): Promise<UpdateProposalValuesResult> => {
+      const processingProposalsDatabaseId = await resolveDatabaseIdByModuleId(client, PROCESSING_PROPOSALS_MODULE_ID);
+      return updateProposalValuesWithClient(client, { processingProposalsDatabaseId }, proposalId, input);
+    };
+    if (idempotencyKey === undefined) {
+      const { item, warnings } = await withTransaction(pool, update);
+      return { status: 200, item, warnings };
+    }
+    const userId = ctx.identity?.user.id;
+    if (userId === undefined) throw new Error("An idempotent update of proposal values needs the authenticated user");
+    const response = await withTransaction(pool, (client) =>
+      runIdempotent(
+        client,
+        {
+          tenantScope: currentTenantScope(),
+          userId,
+          key: idempotencyKey,
+          route: UPDATE_VALUES_ROUTE,
+          requestHash: hashIdempotentRequest({ proposalId, body: ctx.body }),
+        },
+        async () => ({ status: 200, body: await update(client) }),
+      ),
+    );
+    const stored = storedUpdateSchema.parse(response.body);
+    return { status: response.status, item: stored.item, warnings: stored.warnings };
   };
 }
 

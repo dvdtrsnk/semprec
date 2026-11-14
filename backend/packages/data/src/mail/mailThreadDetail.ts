@@ -236,7 +236,8 @@ async function listThreadTasks(client: PoolClient, threadId: string) {
  * unknown id, another tenant's id and a thread with no live message answer the same 404. The header
  * is the list query's row for this thread in its detail-only mode: the list's aggregate rules over
  * every live copy, drafts included (the list itself leaves drafts out), so a draft-only thread is
- * shown too. `tasks` are the tasks linked to the thread (`listThreadTasks`, issue gh-1692), each with a
+ * shown too, with the same `project` and `company` (`{ id, name }` or `null`, also `null` for one in the
+ * Trash) and `links` (issue gh-1897). `tasks` are the tasks linked to the thread (`listThreadTasks`, issue gh-1692), each with a
  * string `status` and its project and people marked `state: 'active'` or `state: 'trashed'` (issue
  * sp-9cf1be65); a trashed task is not listed. Header,
  * messages and tasks are read in the caller's transaction, so with REPEATABLE READ all come from one
@@ -275,6 +276,9 @@ export async function getMailThreadDetail(client: PoolClient, threadId: string, 
     flagged: header.flagged,
     mailboxes: header.mailboxes,
     senderPerson: header.senderPerson,
+    project: header.project,
+    company: header.company,
+    links: header.links,
     messages,
     tasks: await listThreadTasks(client, targetId),
   };

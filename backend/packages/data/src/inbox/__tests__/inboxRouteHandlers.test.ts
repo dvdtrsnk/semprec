@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { setInvalidationHook, type InvalidationEvent } from "../../realtimeHook.js";
 import { createTenantZeroUser, getTenantZeroId, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
@@ -28,9 +28,11 @@ import {
   createInboxTypesRouteHandler,
   createRejectProposalRouteHandler,
   createReviseProposalRouteHandler,
+  createUpdateProposalValuesRouteHandler,
 } from "../inboxRouteHandlers.js";
 import { matchTranscriptToEvent } from "../../transcription/transcriptEventMatch.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../../transcription/transcriptionJob.js";
+import { hashIdempotentRequest } from "../idempotentResponsesStore.js";
 import { confirmProposalWithClient, rejectProposalWithClient, reviseProposalWithClient } from "../proposalActions.js";
 import { proposeSpeakerMappings } from "../../transcription/transcriptSpeakerSuggestion.js";
 import { ConflictError, NotFoundError, ValidationError } from "../../errors.js";
@@ -55,6 +57,19 @@ async function databaseIdFor(moduleId: string): Promise<string> {
  * `AdapterHandler` for are covered separately by `customRouteMount.test.ts` and
  * `routeMatrix.test.ts` in `semprec-api`.
  */
+
+/** The `file` value of a Files item (a blob that exists): the Files editor schema requires it, so a Files card needs one to confirm (issue #1928). */
+async function newFileValue(client: PoolClient): Promise<{ blobId: string }> {
+  const blob = await createBlob(client, {
+    mimeType: "application/pdf",
+    byteSize: 12,
+    storageKey: `blobs/${randomUUID()}`,
+  });
+  return { blobId: blob.id };
+}
+
+const PROJECT_ID = "00000000-0000-4000-8000-0000000000a1";
+
 describe("inbox custom route handlers (issue #239)", () => {
   let inboxId: string;
   let typesId: string;
@@ -399,13 +414,14 @@ describe("inbox custom route handlers (issue #239)", () => {
           databaseId: projects.id,
           properties: { name: "Project" },
         });
+        const file = await newFileValue(client);
         const operations = [
           {
             ref: "file",
             op: "create",
             databaseKey: "files",
             role: "primary",
-            properties: { name: "Document" },
+            properties: { name: "Document", file },
             relations: { projects: [project.id] },
           },
           {
@@ -423,7 +439,12 @@ describe("inbox custom route handlers (issue #239)", () => {
             databaseId: proposalsId,
             itemId: proposalId,
             propertiesPatch: {
-              proposal: { entityKind: "database", target: files.id, properties: { name: "Document" }, operations },
+              proposal: {
+                entityKind: "database",
+                target: files.id,
+                properties: { name: "Document", file },
+                operations,
+              },
             },
           },
           { allowedSystemKeys: ["proposal"] },
@@ -660,6 +681,7 @@ describe("inbox custom route handlers (issue #239)", () => {
         const tasks = await getDatabaseByModuleId(client, "tasks");
         if (!files || !tasks) throw new Error("Files or Tasks missing");
         const task = await createItemWithClient(client, { databaseId: tasks.id, properties: { name: "Before" } });
+        const file = await newFileValue(client);
         await updateItemWithClient(
           client,
           {
@@ -669,14 +691,14 @@ describe("inbox custom route handlers (issue #239)", () => {
               proposal: {
                 entityKind: "database",
                 target: files.id,
-                properties: { name: "Document" },
+                properties: { name: "Document", file },
                 operations: [
                   {
                     ref: "file",
                     op: "create",
                     databaseKey: "files",
                     role: "primary",
-                    properties: { name: "Document" },
+                    properties: { name: "Document", file },
                   },
                   {
                     ref: "task",
@@ -798,6 +820,36 @@ describe("inbox custom route handlers (issue #239)", () => {
       if (failures.length > 1) throw new AggregateError(failures, "Transcript test and settlement failed");
     });
 
+    it("refuses a task card without a name with a ValidationError naming the field, and creates no task", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+      const tasks = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "tasks"));
+      if (!tasks) throw new Error("Tasks database missing");
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(
+          client,
+          {
+            databaseId: proposalsId,
+            itemId: proposalId,
+            propertiesPatch: { proposal: { entityKind: "database", target: tasks.id, properties: {} } },
+          },
+          { allowedSystemKeys: ["proposal"] },
+        ),
+      );
+      const countTasks = async () =>
+        (await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [tasks.id]))
+          .rows[0]?.n;
+      const before = await countTasks();
+
+      const error = await createConfirmProposalRouteHandler(pool)({ params: { id: proposalId }, body: {} }).then(
+        () => null,
+        (err: unknown) => err,
+      );
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toMatchObject({ status: 400, details: { field: "name" } });
+      expect(await countTasks()).toBe(before);
+    });
+
     it("does not report an MCP sync enqueue for a server confirm", async () => {
       const proposalId = await createDatabaseProposal("Server");
       await withTransaction(pool, async (client) => {
@@ -887,6 +939,7 @@ describe("inbox custom route handlers (issue #239)", () => {
       const proposalId = await createDatabaseProposal("Seed");
       const files = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "files"));
       if (!files) throw new Error("Files database missing");
+      const file = await withTransaction(pool, (client) => newFileValue(client));
       await withTransaction(pool, (client) =>
         updateItemWithClient(
           client,
@@ -897,14 +950,14 @@ describe("inbox custom route handlers (issue #239)", () => {
               proposal: {
                 entityKind: "database",
                 target: files.id,
-                properties: { name: "Document" },
+                properties: { name: "Document", file },
                 operations: [
                   {
                     ref: "file",
                     op: "create",
                     databaseKey: "files",
                     role: "primary",
-                    properties: { name: "Document" },
+                    properties: { name: "Document", file },
                   },
                   {
                     ref: "task",
@@ -1788,6 +1841,407 @@ describe("inbox custom route handlers (issue #239)", () => {
       const itemEvents = events.filter((event) => event.scope === "item");
       expect(itemEvents.length).toBeGreaterThanOrEqual(1);
       expect(itemEvents.every((event) => event.userId === userId)).toBe(true);
+    });
+  });
+
+  describe("createUpdateProposalValuesRouteHandler (issue #1892)", () => {
+    async function readCard(id: string): Promise<ItemRow> {
+      const card = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, id));
+      if (!card) throw new Error(`card ${id} not found`);
+      return card;
+    }
+
+    it("edits the card, a thin mapping onto updateProposalValuesWithClient", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+      const handler = createUpdateProposalValuesRouteHandler(pool);
+
+      const result = await handler({
+        params: { id: proposalId },
+        body: { set: { primary: { name: "Buy oat milk" } } },
+      });
+
+      expect(result.status).toBe(200);
+      expect("item" in result && result.item.id).toBe(proposalId);
+      expect("item" in result && result.item.properties.userEditedKeys).toEqual(["primary.name"]);
+      expect("warnings" in result && result.warnings).toEqual([]);
+      expect((await readCard(proposalId)).properties.proposal).toMatchObject({ properties: { name: "Buy oat milk" } });
+    });
+
+    it("answers a required warning for a field the edit left empty, and saves the card", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+      const handler = createUpdateProposalValuesRouteHandler(pool);
+
+      const result = await handler({ params: { id: proposalId }, body: { set: { primary: { name: "" } } } });
+
+      expect(result.status).toBe(200);
+      expect("warnings" in result && result.warnings).toEqual([{ field: "name", code: "required" }]);
+      expect((await readCard(proposalId)).properties.proposal).toMatchObject({ properties: { name: "" } });
+    });
+
+    it("passes a current ifVersion through", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+      const handler = createUpdateProposalValuesRouteHandler(pool);
+
+      const result = await handler({
+        params: { id: proposalId },
+        body: { set: { primary: { name: "Buy oat milk" } }, ifVersion: (await readCard(proposalId)).updatedAt },
+      });
+
+      expect(result.status).toBe(200);
+    });
+
+    it("answers a stale ifVersion with a version conflict that carries the current card, and writes nothing", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+      const stale = (await readCard(proposalId)).updatedAt;
+      const handler = createUpdateProposalValuesRouteHandler(pool);
+      await handler({ params: { id: proposalId }, body: { set: { primary: { name: "First" } } } });
+      const before = await readCard(proposalId);
+
+      const error = await handler({
+        params: { id: proposalId },
+        body: { set: { primary: { name: "Second" } }, ifVersion: stale },
+      }).then(
+        () => null,
+        (err: unknown) => err,
+      );
+
+      expect(error).toBeInstanceOf(ConflictError);
+      expect(error).toMatchObject({ status: 409, code: "version_conflict" });
+      expect(error).toHaveProperty("details.current.id", proposalId);
+      expect(await readCard(proposalId)).toEqual(before);
+    });
+
+    it("rejects a request with no `id` path parameter", async () => {
+      const handler = createUpdateProposalValuesRouteHandler(pool);
+      await expect(handler({ params: {}, body: { set: { primary: { name: "x" } } } })).rejects.toThrow(ValidationError);
+    });
+
+    it("rejects an unknown proposal id", async () => {
+      const handler = createUpdateProposalValuesRouteHandler(pool);
+      await expect(
+        handler({ params: { id: randomUUID() }, body: { set: { primary: { name: "x" } } } }),
+      ).rejects.toThrow(NotFoundError);
+    });
+
+    it.each([
+      ["a null body", null, undefined],
+      ["an array body", [], undefined],
+      ["a string body", "set", undefined],
+      ["a body without set", {}, "set"],
+      ["a null set", { set: null }, "set"],
+      ["an array set", { set: [] }, "set"],
+      ["a null ref value", { set: { primary: null } }, "set"],
+      ["an array ref value", { set: { primary: [] } }, "set"],
+      ["a string ref value", { set: { primary: "Buy oat milk" } }, "set"],
+      ["a numeric ifVersion", { set: { primary: { name: "x" } }, ifVersion: 5 }, "ifVersion"],
+      ["a null ifVersion", { set: { primary: { name: "x" } }, ifVersion: null }, "ifVersion"],
+      ["a null relations", { relations: null }, "relations"],
+      ["an array relations", { relations: [] }, "relations"],
+      ["a string relations ref value", { relations: { primary: "p" } }, "relations"],
+      ["an array relations ref value", { relations: { primary: [] } }, "relations"],
+      ["a relation list that is not an array", { relations: { primary: { project: PROJECT_ID } } }, "relations"],
+      ["a relation id that is not a string", { relations: { primary: { project: [5] } } }, "relations"],
+      ["a relation id that is not a UUID", { relations: { primary: { project: ["not-an-id"] } } }, "relations"],
+      [
+        "a relation list over the cap",
+        { relations: { primary: { project: Array.from({ length: 201 }, () => PROJECT_ID) } } },
+        "relations",
+      ],
+      ["a null steps", { steps: null }, "steps"],
+      ["an array steps", { steps: [] }, "steps"],
+      ["a string steps ref value", { steps: { followup: "off" } }, "steps"],
+      ["a step without enabled", { steps: { followup: {} } }, "steps"],
+      ["a step whose enabled is not a boolean", { steps: { followup: { enabled: "no" } } }, "steps"],
+      ["a step with another key beside enabled", { steps: { followup: { enabled: true, name: "x" } } }, "steps"],
+    ])("rejects %s with a ValidationError and writes nothing", async (_label, body, field) => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+      const before = await readCard(proposalId);
+      const handler = createUpdateProposalValuesRouteHandler(pool);
+
+      const error = await handler({ params: { id: proposalId }, body }).then(
+        () => null,
+        (err: unknown) => err,
+      );
+
+      expect(error).toBeInstanceOf(ValidationError);
+      if (field !== undefined) expect(error).toHaveProperty("details.field", field);
+      expect(await readCard(proposalId)).toEqual(before);
+    });
+
+    it("edits relation lists and step switches, a thin mapping onto updateProposalValuesWithClient (issue #1920)", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+      const project = await withTransaction(pool, async (client) => {
+        const projects = await getDatabaseByModuleId(client, "projects");
+        if (!projects) throw new Error("Projects database missing");
+        return createItemWithClient(client, { databaseId: projects.id, properties: { name: "Shopping" } });
+      });
+      const handler = createUpdateProposalValuesRouteHandler(pool);
+
+      const result = await handler({
+        params: { id: proposalId },
+        body: { relations: { primary: { project: [project.id] } } },
+      });
+
+      expect(result.status).toBe(200);
+      expect("item" in result && result.item.properties.userEditedKeys).toEqual(["primary.relations.project"]);
+      expect("item" in result && result.item.properties.proposal).toMatchObject({
+        relations: { project: [project.id] },
+      });
+      expect("warnings" in result && result.warnings).toEqual([]);
+    });
+
+    it("refuses to switch the primary step off with a ValidationError and writes nothing", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+      const before = await readCard(proposalId);
+
+      const error = await createUpdateProposalValuesRouteHandler(pool)({
+        params: { id: proposalId },
+        body: { steps: { primary: { enabled: false } } },
+      }).then(
+        () => null,
+        (err: unknown) => err,
+      );
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toHaveProperty("details", { ref: "primary", field: "enabled" });
+      expect(await readCard(proposalId)).toEqual(before);
+    });
+
+    it("refuses a relation list or a step switch for a ref the card does not have, naming it", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+      const before = await readCard(proposalId);
+      const handler = createUpdateProposalValuesRouteHandler(pool);
+
+      for (const body of [
+        { relations: { followup: { project: [PROJECT_ID] } } },
+        { steps: { followup: { enabled: false } } },
+      ]) {
+        const error = await handler({ params: { id: proposalId }, body }).then(
+          () => null,
+          (err: unknown) => err,
+        );
+        expect(error).toBeInstanceOf(ValidationError);
+        expect(error).toHaveProperty("details", { ref: "followup", field: "followup" });
+      }
+      expect(await readCard(proposalId)).toEqual(before);
+    });
+
+    it("refuses a reserved key in set, and a ref named like an Object member in relations and steps", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+      const before = await readCard(proposalId);
+      const handler = createUpdateProposalValuesRouteHandler(pool);
+
+      await expect(
+        handler({ params: { id: proposalId }, body: { set: { primary: { enabled: false } } } }),
+      ).rejects.toMatchObject({ details: { ref: "primary", field: "enabled" } });
+      for (const part of ["relations", "steps"]) {
+        const body: unknown = JSON.parse(
+          part === "relations"
+            ? `{"relations":{"__proto__":{"project":["${PROJECT_ID}"]}}}`
+            : '{"steps":{"__proto__":{"enabled":false}}}',
+        );
+        await expect(handler({ params: { id: proposalId }, body })).rejects.toThrow(/no step '__proto__'/);
+      }
+      expect(await readCard(proposalId)).toEqual(before);
+    });
+
+    it("passes a ref named like an Object member on as data and refuses it as an unknown ref", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+      const before = await readCard(proposalId);
+      const handler = createUpdateProposalValuesRouteHandler(pool);
+      const body: unknown = JSON.parse('{"set":{"__proto__":{"name":"x"}}}');
+
+      await expect(handler({ params: { id: proposalId }, body })).rejects.toThrow(/no step '__proto__'/);
+
+      expect(await readCard(proposalId)).toEqual(before);
+    });
+
+    describe("with an Idempotency-Key (issue gh-1894)", () => {
+      const userId = randomUUID();
+      const keyed = (key: string) => ({
+        req: { headers: { "idempotency-key": key } },
+        identity: { user: { id: userId } },
+      });
+      const storedRowCount = async (): Promise<number> => {
+        const { rows } = await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM idempotent_responses");
+        return rows[0]?.n ?? -1;
+      };
+      const historyKinds = (card: ItemRow): unknown[] =>
+        z
+          .array(z.object({ kind: z.string().optional() }))
+          .parse(card.properties.history)
+          .map((entry) => entry.kind);
+
+      it("applies the edit once and answers the same card to a repeat of the key", async () => {
+        const proposalId = await createDatabaseProposal("Buy milk");
+        const handler = createUpdateProposalValuesRouteHandler(pool);
+        const request = {
+          params: { id: proposalId },
+          body: { set: { primary: { name: "Buy oat milk" } } },
+          ...keyed("key-1"),
+        };
+
+        const first = await runInTenant(getTenantZeroId(), () => handler(request));
+        const second = await runInTenant(getTenantZeroId(), () => handler(request));
+
+        expect(first.status).toBe(200);
+        expect(second).toEqual(first);
+        expect("item" in second && second.item.id).toBe(proposalId);
+        expect(historyKinds(await readCard(proposalId)).filter((kind) => kind === "userEdit")).toHaveLength(1);
+        expect(await storedRowCount()).toBe(1);
+      });
+
+      it("answers the required warnings of the first call to a repeat of the key (issues gh-1894, #1928)", async () => {
+        const proposalId = await createDatabaseProposal("Buy milk");
+        const handler = createUpdateProposalValuesRouteHandler(pool);
+        const request = {
+          params: { id: proposalId },
+          body: { set: { primary: { name: "" } } },
+          ...keyed("key-warn"),
+        };
+
+        const first = await runInTenant(getTenantZeroId(), () => handler(request));
+        const second = await runInTenant(getTenantZeroId(), () => handler(request));
+
+        expect("warnings" in first && first.warnings).toEqual([{ field: "name", code: "required" }]);
+        expect(second).toEqual(first);
+        expect(historyKinds(await readCard(proposalId)).filter((kind) => kind === "userEdit")).toHaveLength(1);
+      });
+
+      it("runs the edit again for another user of the tenant with the same key", async () => {
+        const proposalId = await createDatabaseProposal("Buy milk");
+        const handler = createUpdateProposalValuesRouteHandler(pool);
+        const asOtherUser = { ...keyed("key-1"), identity: { user: { id: randomUUID() } } };
+        await runInTenant(getTenantZeroId(), () =>
+          handler({ params: { id: proposalId }, body: { set: { primary: { name: "First" } } }, ...keyed("key-1") }),
+        );
+
+        await runInTenant(getTenantZeroId(), () =>
+          handler({ params: { id: proposalId }, body: { set: { primary: { name: "Second" } } }, ...asOtherUser }),
+        );
+
+        const card = await readCard(proposalId);
+        expect(historyKinds(card).filter((kind) => kind === "userEdit")).toHaveLength(2);
+        expect(card.properties.proposal).toMatchObject({ properties: { name: "Second" } });
+        expect(await storedRowCount()).toBe(2);
+      });
+
+      it("refuses the key of another body and of another card with validation_failed and applies nothing", async () => {
+        const proposalId = await createDatabaseProposal("Buy milk");
+        const otherId = await createDatabaseProposal("Buy bread");
+        const handler = createUpdateProposalValuesRouteHandler(pool);
+        await runInTenant(getTenantZeroId(), () =>
+          handler({ params: { id: proposalId }, body: { set: { primary: { name: "A" } } }, ...keyed("key-1") }),
+        );
+        const before = [await readCard(proposalId), await readCard(otherId)];
+
+        const otherBody = await runInTenant(getTenantZeroId(), () =>
+          handler({ params: { id: proposalId }, body: { set: { primary: { name: "B" } } }, ...keyed("key-1") }),
+        ).then(
+          () => null,
+          (err: unknown) => err,
+        );
+        const otherCard = await runInTenant(getTenantZeroId(), () =>
+          handler({ params: { id: otherId }, body: { set: { primary: { name: "A" } } }, ...keyed("key-1") }),
+        ).then(
+          () => null,
+          (err: unknown) => err,
+        );
+
+        for (const error of [otherBody, otherCard]) {
+          expect(error).toBeInstanceOf(ValidationError);
+          expect(error).toHaveProperty("details.field", "Idempotency-Key");
+        }
+        expect([await readCard(proposalId), await readCard(otherId)]).toEqual(before);
+      });
+
+      it("stores nothing for a request without the header", async () => {
+        const proposalId = await createDatabaseProposal("Buy milk");
+        const handler = createUpdateProposalValuesRouteHandler(pool);
+
+        await handler({ params: { id: proposalId }, body: { set: { primary: { name: "Buy oat milk" } } } });
+
+        expect(await storedRowCount()).toBe(0);
+      });
+
+      it("stores nothing for a refused update, so the key can be used again", async () => {
+        const proposalId = await createDatabaseProposal("Buy milk");
+        const handler = createUpdateProposalValuesRouteHandler(pool);
+        const stale = (await readCard(proposalId)).updatedAt;
+        await handler({ params: { id: proposalId }, body: { set: { primary: { name: "First" } } } });
+
+        await expect(
+          runInTenant(getTenantZeroId(), () =>
+            handler({
+              params: { id: proposalId },
+              body: { set: { primary: { name: "Second" } }, ifVersion: stale },
+              ...keyed("key-1"),
+            }),
+          ),
+        ).rejects.toThrow(ConflictError);
+        expect(await storedRowCount()).toBe(0);
+        const retried = await runInTenant(getTenantZeroId(), async () =>
+          handler({
+            params: { id: proposalId },
+            body: { set: { primary: { name: "Second" } }, ifVersion: (await readCard(proposalId)).updatedAt },
+            ...keyed("key-1"),
+          }),
+        );
+        expect(retried.status).toBe(200);
+        expect(await storedRowCount()).toBe(1);
+      });
+
+      it("refuses an Idempotency-Key longer than 255 characters before opening a transaction", async () => {
+        const proposalId = await createDatabaseProposal("Buy milk");
+        const before = await readCard(proposalId);
+        const handler = createUpdateProposalValuesRouteHandler(pool);
+
+        const error = await runInTenant(getTenantZeroId(), () =>
+          handler({ params: { id: proposalId }, body: { set: { primary: { name: "x" } } }, ...keyed("k".repeat(256)) }),
+        ).then(
+          () => null,
+          (err: unknown) => err,
+        );
+
+        expect(error).toBeInstanceOf(ValidationError);
+        expect(error).toHaveProperty("details.field", "Idempotency-Key");
+        expect(await readCard(proposalId)).toEqual(before);
+      });
+
+      it("fails a keyed request that carries no authenticated user, and applies nothing", async () => {
+        const proposalId = await createDatabaseProposal("Buy milk");
+        const before = await readCard(proposalId);
+        const handler = createUpdateProposalValuesRouteHandler(pool);
+
+        await expect(
+          runInTenant(getTenantZeroId(), () =>
+            handler({
+              params: { id: proposalId },
+              body: { set: { primary: { name: "x" } } },
+              req: { headers: { "idempotency-key": "key-1" } },
+            }),
+          ),
+        ).rejects.toThrow("needs the authenticated user");
+
+        expect(await readCard(proposalId)).toEqual(before);
+      });
+
+      it("fails when the stored response is not a card, instead of answering it", async () => {
+        const proposalId = await createDatabaseProposal("Buy milk");
+        const body = { set: { primary: { name: "Buy oat milk" } } };
+        // Fixture SQL: a stored response the store never writes for this route.
+        await pool.query(
+          `INSERT INTO idempotent_responses (tenant_id, user_id, key, route, request_hash, status, body, expires_at)
+           VALUES ($1, $2, 'key-1', 'PATCH /api/proposals/:id/values', $3, 200, '{"unexpected":true}'::jsonb,
+                   now() + interval '1 hour')`,
+          [getTenantZeroId(), userId, hashIdempotentRequest({ proposalId, body })],
+        );
+        const handler = createUpdateProposalValuesRouteHandler(pool);
+
+        await expect(
+          runInTenant(getTenantZeroId(), () => handler({ params: { id: proposalId }, body, ...keyed("key-1") })),
+        ).rejects.toThrow(z.ZodError);
+      });
     });
   });
 

@@ -427,7 +427,7 @@ async function ownerModuleIdOf(context: PageContext, envelope: CardEnvelope): Pr
 }
 
 /** The Inbox item types of `inboxItems`, by Inbox item id: one edge read and one item read for the whole page. */
-async function loadItemTypes(
+export async function loadItemTypes(
   client: PoolClient,
   inboxDatabaseId: string,
   inboxItems: ItemRow[],

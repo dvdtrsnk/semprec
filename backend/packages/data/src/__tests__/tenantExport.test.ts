@@ -381,6 +381,12 @@ describe("tenant data export (issue #1043)", () => {
   it("archives exactly tenant A's data, with every table counted and every blob byte-identical", async () => {
     const seededA = await seedTenant(tenantA);
     const seededB = await seedTenant(tenantB);
+    // Fixture SQL: the stored response of a card action (issue gh-1894), a row the export must leave out.
+    await adminPool.query(
+      `INSERT INTO idempotent_responses (tenant_id, user_id, key, route, request_hash, status, body, expires_at)
+       VALUES ($1, $2, 'export-probe-key', 'PATCH /api/proposals/:id/values', 'h', 200, '{}'::jsonb, now() + interval '1 hour')`,
+      [tenantA, randomUUID()],
+    );
     const aliasIds: string[] = [];
     for (const tenant of [tenantA, tenantB]) {
       const id = await runInTenant(tenant, () =>
@@ -552,6 +558,9 @@ describe("tenant data export (issue #1043)", () => {
     expect(
       [...entries.keys()].some((name) => name.includes("tenant_keys") || name.includes("external_credentials")),
     ).toBe(false);
+    expect([...entries.keys()].some((name) => name.includes("idempotent_responses"))).toBe(false);
+    expect(everything).not.toContain("export-probe-key");
+    expect(manifest.tables.map((table) => table.name)).not.toContain("idempotent_responses");
   });
 
   it("writes the account's displayName into account.json when one is set", async () => {

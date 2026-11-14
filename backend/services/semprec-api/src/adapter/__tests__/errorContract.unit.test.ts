@@ -7,11 +7,14 @@ import {
   HeartbeatDisabledError,
   HeartbeatEventTriggeredError,
   HeartbeatRunningError,
+  MailAttachmentTooLargeError,
   MailDraftAlreadySentError,
   MailDraftNotEditableError,
   NotFoundError,
+  NotRetryableError,
   OptionLabelExistsError,
   PropertyLockedError,
+  RetryPendingError,
   SchemaLockedError,
   ValidationError,
   type ActiveHeartbeatRunSummary,
@@ -89,6 +92,16 @@ const FIXTURES: Array<{ code: ItemErrorCode; status: number; error: ChokePointEr
     error: new HeartbeatRunningError("this heartbeat is already running or queued", { activeRun: null }),
   },
   {
+    code: "not_retryable",
+    status: 409,
+    error: new NotRetryableError("this run cannot be retried"),
+  },
+  {
+    code: "retry_pending",
+    status: 409,
+    error: new RetryPendingError("an automatic attempt may still run"),
+  },
+  {
     code: "option_label_exists",
     status: 409,
     error: new OptionLabelExistsError("the property already has an option with this label", { key: "medication" }),
@@ -100,6 +113,7 @@ const FIXTURES: Array<{ code: ItemErrorCode; status: number; error: ChokePointEr
   },
   { code: "mail_draft_already_sent", status: 409, error: new MailDraftAlreadySentError() },
   { code: "mail_draft_not_editable", status: 409, error: new MailDraftNotEditableError() },
+  { code: "mail_attachment_too_large", status: 413, error: new MailAttachmentTooLargeError(20_971_520, 25_000_000) },
 ];
 
 const ACTIVE_RUN: ActiveHeartbeatRunSummary = {

@@ -39,6 +39,8 @@ describe("serve.ts startup SMTP_PORT check", () => {
   it("rejects a non-numeric SMTP_PORT with the service's own message", async () => {
     process.env.SEMPREC_API_DATABASE_URL = "postgres://localhost/unused";
     process.env.SETUP_TOKEN = "test-setup-token";
+    // The custom route dependencies build the gateway client at module top (issue gh-1900), before the SMTP check.
+    process.env.AI_GATEWAY_INTERNAL_TOKEN = "test-gateway-internal-token";
     process.env.SMTP_HOST = "smtp.example.com";
     process.env.SMTP_FROM_ADDRESS = "no-reply@example.com";
     process.env.SMTP_PORT = "smtp";
@@ -49,6 +51,8 @@ describe("serve.ts startup SMTP_PORT check", () => {
   it.each(["0", "65536"])("rejects an out-of-range SMTP_PORT of %s", async (value) => {
     process.env.SEMPREC_API_DATABASE_URL = "postgres://localhost/unused";
     process.env.SETUP_TOKEN = "test-setup-token";
+    // The custom route dependencies build the gateway client at module top (issue gh-1900), before the SMTP check.
+    process.env.AI_GATEWAY_INTERNAL_TOKEN = "test-gateway-internal-token";
     process.env.SMTP_HOST = "smtp.example.com";
     process.env.SMTP_FROM_ADDRESS = "no-reply@example.com";
     process.env.SMTP_PORT = value;

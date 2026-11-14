@@ -24,6 +24,8 @@ import {
   createSemprecTickAction,
   createTranscriptionRequeueSweepAction,
   createTasksDayRolloverAction,
+  createNextOccurrenceRefreshAction,
+  NEXT_OCCURRENCE_REFRESH_ACTION_ID,
   type ActionRegistry,
 } from "@semprec/data";
 import type { ModuleRegistry } from "@semprec/module-registry";
@@ -35,8 +37,9 @@ import { createProposalComputation } from "./proposalComputation.js";
 
 /**
  * The api runtime's heartbeat `ActionRegistry` (issue #641): every seeded action id that
- * `resolveHeartbeatFireTaskName` routes onto `heartbeatFireCore`. `core.agentRun` belongs to the
- * agents runtime (`services/semprec-agents/src/actionRegistryComposition.ts`); `semprec.tick`
+ * `resolveHeartbeatFireTaskName` routes onto `heartbeatFireCore`. `core.agentRun` and
+ * `core.journalWeeklyCleanup` belong to the agents runtime
+ * (`services/semprec-agents/src/actionRegistryComposition.ts`); `semprec.tick`
  * (issue #1434) is a system process of this runtime, backed by the gateway's `inbox_proposal`
  * operation, and is not registered in the agents runtime.
  *
@@ -66,6 +69,7 @@ export function createApiActionRegistry(pool: Pool, moduleRegistry: ModuleRegist
   registry.set(FILES_TRANSCRIPTION_TRIGGER_ACTION_ID, createFilesTranscriptionTriggerAction(pool));
   registry.set(TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID, createTranscriptionRequeueSweepAction(pool));
   registry.set(TASKS_DAY_ROLLOVER_ACTION_ID, createTasksDayRolloverAction(pool));
+  registry.set(NEXT_OCCURRENCE_REFRESH_ACTION_ID, createNextOccurrenceRefreshAction(pool));
   registry.set(SEMPREC_TICK_ACTION_ID, createSemprecTickAction(pool, createProposalComputation({ pool, gateway })));
   registry.set(AGENT_GUIDANCE_DRIFT_ACTION_ID, (_actionConfig, context) =>
     agentGuidanceDrift({ projectItemId: context.projectItemId }),

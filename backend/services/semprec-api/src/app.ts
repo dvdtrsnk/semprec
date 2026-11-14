@@ -108,6 +108,9 @@ export async function createDispatcher(
     // Issue gh-1750: one limiter for as long as this dispatcher serves, so every request of the password
     // connect route is counted in the same windows. A caller's own instance is kept.
     throttle: callerDependencies.throttle ?? createClientIpThrottle(),
+    // Issue gh-1895: the limit the draft attachment route applies to a mailbox without a provider limit is the upload
+    // cap of this dispatcher, whatever the caller's container carries.
+    maxFileSizeBytes: options.maxFileSizeBytes,
   });
   // The sole neutral `GenericApplicationPort` implementation (issue #219): one instance per
   // injected `Pool`, threaded into every generic resource route family below so there is no

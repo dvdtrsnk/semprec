@@ -65,6 +65,7 @@ export async function getSempMessageTurn(client: PoolClient, threadId: string, m
   const { rows } = await client.query<{
     kind: string;
     heartbeat_id: string | null;
+    subject_inbox_item_id: string | null;
     project_item_id: string | null;
     role: string;
     source_id: string;
@@ -73,7 +74,7 @@ export async function getSempMessageTurn(client: PoolClient, threadId: string, m
     system_key: string | null;
     heartbeat_enabled: boolean | null;
   }>(
-    `SELECT t.kind, t.heartbeat_id, h.project_item_id, h.enabled AS heartbeat_enabled,
+    `SELECT t.kind, t.heartbeat_id, t.subject_inbox_item_id, h.project_item_id, h.enabled AS heartbeat_enabled,
             source.id AS source_id, source.role, source.text, source.context, source.system_key
        FROM semp_messages reply
        JOIN semp_threads t ON t.tenant_id = reply.tenant_id AND t.id = reply.thread_id
@@ -138,6 +139,7 @@ export async function getSempMessageTurn(client: PoolClient, threadId: string, m
   return {
     kind: assertKnownValue(["chat", "item", "tick"] as const, row.kind, "thread kind"),
     heartbeatId: row.heartbeat_id,
+    subjectInboxItemId: row.subject_inbox_item_id,
     projectItemId: row.project_item_id,
     role: assertKnownValue(["user", "system"] as const, row.role, "source message role"),
     sourceId: row.source_id,

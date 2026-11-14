@@ -28,6 +28,14 @@ export const ACCOUNT_ROUTES: RouteMatrixEntry[] = [
     tenancy: "tenant",
   },
   {
+    name: "account summary",
+    method: "GET",
+    path: "/api/account/summary",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "delete own account",
     method: "POST",
     path: "/api/account/delete",

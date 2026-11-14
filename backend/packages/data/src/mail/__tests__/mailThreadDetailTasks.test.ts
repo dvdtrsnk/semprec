@@ -109,16 +109,24 @@ async function link(relationPropertyId: string, callerItemId: string, targetItem
   await inTenant(() => cp.createRelation({ relationPropertyId, callerItemId, targetItemId }, USER));
 }
 
-/** A task linked to `thread` through `Threads.tasks`. */
+/**
+ * A task linked to `thread` through `Threads.tasks`. The link rule `taskProjectFromThread` of the mail manifest (issue
+ * gh-1900) gives the task an `on` link of its project when the edge is written. These tests fix the value links of a
+ * task themselves, in the states they report, so that link row is removed: no production write removes a link row
+ * without its item, hence the SQL.
+ */
 async function newThreadTask(thread: TestThread, taskProperties: Record<string, unknown>): Promise<string> {
   const taskId = await newItem("tasks", taskProperties);
   await link(properties.threadTasks, thread.itemId, taskId);
+  await inTenant(() =>
+    runtime.query("DELETE FROM value_links WHERE item_id = $1 AND rule_key = 'taskProjectFromThread'", [taskId]),
+  );
   return taskId;
 }
 
 /**
- * An `on` value link of one task property whose source is the thread item. No link rule makes a task
- * inherit from its thread, so the row is written with the store function the link rules write theirs with.
+ * An `on` value link of one task property whose source is the thread item, in the rows `newThreadTask` left without one.
+ * The row is written with the store function the link rules write theirs with.
  */
 async function inherit(taskId: string, propertyKey: string, thread: TestThread): Promise<void> {
   await inTenant(() =>

@@ -6,6 +6,7 @@ import { ValidationError } from "../errors.js";
 import { getBlock } from "../docs/blocks.js";
 import { readRefDocumentStates } from "../docs/docsStore.js";
 import { validateTranscriptSegmentRefs } from "../transcription/transcriptSegmentRef.js";
+import { resolveMailThreadRefIds } from "../mail/mailThreadRef.js";
 
 const SERIES_ID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -92,6 +93,16 @@ export async function validateSempMessageRefs(
         doc.destroy();
       }
     }
+  }
+  // A thread ref names a thread of this tenant, directly or through the alias of a merge; the id is stored as given.
+  const threads = refs.flatMap((ref, index) => (ref.kind === "mailThread" ? [{ id: ref.threadId, index }] : []));
+  if (threads.length) {
+    const current = await resolveMailThreadRefIds(
+      client,
+      threads.map((entry) => entry.id),
+    );
+    for (const [position, entry] of threads.entries())
+      if (typeof current[position] === "string") valid.add(entry.index);
   }
   const attachments = refs.flatMap((ref, index) =>
     ref.kind === "mailAttachment" ? [{ id: ref.attachmentId, index }] : [],

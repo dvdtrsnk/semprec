@@ -1,6 +1,18 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { ModuleRegistry, type EditorSchemaDescriptor, type ModuleCatalogs } from "@semprec/module-registry";
-import { resolveEditorSchema, type EditorSchemaRegistry } from "../editorSchema.js";
+import {
+  buildEditorValues,
+  findMissingRequired,
+  isFieldVisible,
+  normalizeHiddenFields,
+  resolveEditorSchema,
+  toProposalWarnings,
+  visibleKeys,
+  type EditorRuleSchema,
+  type EditorSchemaRegistry,
+  type EditorStepValues,
+} from "../editorSchema.js";
+import type { ProposalEnvelope, ProposalStep } from "../proposalEnvelope.js";
 
 const SYSTEM_DATABASES_MANIFEST_PATH = new URL("../../seed/systemDatabasesModuleManifest.js", import.meta.url).href;
 const INBOX_MANIFEST_PATH = new URL("../inboxModuleManifest.js", import.meta.url).href;
@@ -258,5 +270,394 @@ describe("the editor schemas the modules declare (issue #1825)", () => {
       }
     }
     expect(missing).toEqual([]);
+  });
+});
+
+describe("editor schema rules (issue #1928)", () => {
+  /** One step `primary` holding `values`. */
+  const single = (values: Record<string, unknown>): EditorStepValues[] => [{ ref: "primary", synthetic: true, values }];
+
+  describe("isFieldVisible", () => {
+    it("shows a field that declares no condition", () => {
+      expect(isFieldVisible({}, single({}))).toBe(true);
+    });
+
+    it("shows a field whose `equals` condition holds and hides it when it does not", () => {
+      const field = { when: { field: "followupTask", equals: true } } as const;
+      expect(isFieldVisible(field, single({ followupTask: true }))).toBe(true);
+      expect(isFieldVisible(field, single({ followupTask: false }))).toBe(false);
+    });
+
+    it("shows a field whose `notEquals` condition holds and hides it when it does not", () => {
+      const field = { when: { field: "status", notEquals: "longTerm" } } as const;
+      expect(isFieldVisible(field, single({ status: "active" }))).toBe(true);
+      expect(isFieldVisible(field, single({ status: "longTerm" }))).toBe(false);
+    });
+
+    it("treats a condition field that has no value as not equal to anything", () => {
+      expect(isFieldVisible({ when: { field: "followupTask", equals: true } }, single({}))).toBe(false);
+      expect(isFieldVisible({ when: { field: "status", notEquals: "longTerm" } }, single({}))).toBe(true);
+    });
+
+    it("reads the condition field from any step, the first step that has it winning", () => {
+      const field = { when: { field: "followupTask", equals: true } } as const;
+      const steps: EditorStepValues[] = [
+        { ref: "primary", values: {} },
+        { ref: "followup", values: { followupTask: true } },
+      ];
+      expect(isFieldVisible(field, steps)).toBe(true);
+      expect(isFieldVisible(field, [{ ref: "primary", values: { followupTask: false } }, ...steps.slice(1)])).toBe(
+        false,
+      );
+    });
+  });
+
+  describe("findMissingRequired", () => {
+    const SCHEMA_RULES: EditorRuleSchema = {
+      groups: [
+        {
+          fields: [
+            { key: "name", required: true },
+            { key: "note" },
+            { key: "followupTask" },
+            { key: "followDate", required: true, when: { field: "followupTask", equals: true } },
+          ],
+        },
+        { fields: [{ key: "area", required: true }] },
+      ],
+    };
+
+    it("lists the visible required fields without a value in schema order", () => {
+      expect(findMissingRequired(SCHEMA_RULES, single({ followupTask: true }))).toEqual([
+        { field: "name" },
+        { field: "followDate" },
+        { field: "area" },
+      ]);
+    });
+
+    it("does not list a field that has a value, nor an optional one", () => {
+      expect(findMissingRequired(SCHEMA_RULES, single({ name: "Milk", area: "a1" }))).toEqual([]);
+    });
+
+    it("does not list a required field that a condition hides", () => {
+      expect(findMissingRequired(SCHEMA_RULES, single({ name: "x", area: "a", followupTask: false }))).toEqual([]);
+    });
+
+    it.each([
+      ["undefined", undefined],
+      ["null", null],
+      ["an empty string", ""],
+      ["a whitespace-only string", " \t\n "],
+      ["an empty array", []],
+    ])("counts %s as no value", (_label, value) => {
+      expect(findMissingRequired(SCHEMA_RULES, single({ name: value, area: "a" }))).toEqual([{ field: "name" }]);
+    });
+
+    it.each([
+      ["false", false],
+      ["zero", 0],
+      ["a non-empty array", ["a"]],
+      ["a string with text", " x "],
+    ])("counts %s as a value", (_label, value) => {
+      expect(findMissingRequired(SCHEMA_RULES, single({ name: value, area: "a" }))).toEqual([]);
+    });
+
+    it("reports a missing field of a card with several steps on its first step, and none for a single step", () => {
+      const steps: EditorStepValues[] = [
+        { ref: "company", values: {} },
+        { ref: "person", values: { name: "Jane" } },
+      ];
+      expect(findMissingRequired(SCHEMA_RULES, steps)).toEqual([{ ref: "company", field: "area" }]);
+      expect(findMissingRequired(SCHEMA_RULES, single({}))[0]).toEqual({ field: "name" });
+    });
+
+    it("reports the real ref of a card whose envelope has operations even when only one step is active", () => {
+      expect(findMissingRequired(SCHEMA_RULES, [{ ref: "file", values: { area: "a" } }])).toEqual([
+        { ref: "file", field: "name" },
+      ]);
+      // A real step may be named `primary`: it is still addressed by that ref, unlike the synthetic step.
+      expect(findMissingRequired(SCHEMA_RULES, [{ ref: "primary", values: { area: "a" } }])).toEqual([
+        { ref: "primary", field: "name" },
+      ]);
+    });
+
+    it("finds a required field's value in a later step", () => {
+      const steps: EditorStepValues[] = [
+        { ref: "company", values: { area: "a" } },
+        { ref: "person", values: { name: "Jane" } },
+      ];
+      expect(findMissingRequired(SCHEMA_RULES, steps)).toEqual([]);
+    });
+  });
+
+  describe("visibleKeys", () => {
+    const SCHEMA_RULES: EditorRuleSchema = {
+      groups: [
+        { fields: [{ key: "followupTask" }, { key: "followDate", when: { field: "followupTask", equals: true } }] },
+        { fields: [{ key: "name" }] },
+      ],
+    };
+
+    it("lists the keys of the visible fields in schema order", () => {
+      expect(visibleKeys(SCHEMA_RULES, single({ followupTask: true }))).toEqual(["followupTask", "followDate", "name"]);
+    });
+
+    it("leaves out the key of a hidden field", () => {
+      expect(visibleKeys(SCHEMA_RULES, single({ followupTask: false }))).toEqual(["followupTask", "name"]);
+    });
+  });
+
+  describe("toProposalWarnings", () => {
+    it("adds the code `required` to every missing field and none when nothing is missing", () => {
+      const schema: EditorRuleSchema = { groups: [{ fields: [{ key: "name", required: true }] }] };
+      expect(toProposalWarnings(schema, single({}))).toEqual([{ field: "name", code: "required" }]);
+      expect(toProposalWarnings(schema, single({ name: "x" }))).toEqual([]);
+    });
+  });
+
+  describe("buildEditorValues", () => {
+    const TARGET = "00000000-0000-4000-8000-000000000001";
+    const database = (properties: Record<string, unknown>): ProposalEnvelope => ({
+      entityKind: "database",
+      target: TARGET,
+      properties,
+    });
+    const step = (ref: string, role: "primary" | "secondary", extra: Partial<ProposalStep> = {}): ProposalStep => ({
+      ref,
+      op: "create",
+      databaseKey: "tasks",
+      role,
+      properties: { name: ref },
+      ...extra,
+    });
+
+    it("lays the user's values for `primary` over the properties of a single-step envelope", () => {
+      expect(
+        buildEditorValues(database({ name: "Milk", date: "2026-11-13" }), {
+          primary: { date: "2026-11-14", allDay: true },
+        }),
+      ).toEqual([{ ref: "primary", synthetic: true, values: { name: "Milk", date: "2026-11-14", allDay: true } }]);
+    });
+
+    it("ignores the user's values of a ref a single-step envelope does not have", () => {
+      expect(buildEditorValues(database({ name: "Milk" }), { other: { allDay: true } })).toEqual([
+        { ref: "primary", synthetic: true, values: { name: "Milk" } },
+      ]);
+    });
+
+    it("answers `page` and `day` with the target of a pageContent envelope, below its own properties", () => {
+      const envelope: ProposalEnvelope = {
+        entityKind: "pageContent",
+        target: TARGET,
+        properties: { markdown: "Text", placement: "end" },
+      };
+      expect(buildEditorValues(envelope, {})).toEqual([
+        {
+          ref: "primary",
+          synthetic: true,
+          values: { page: TARGET, day: TARGET, markdown: "Text", placement: "end" },
+        },
+      ]);
+      expect(buildEditorValues(envelope, { primary: { page: "other" } })[0]?.values.page).toBe("other");
+    });
+
+    it("lists the active steps of a multi-step envelope, the primary one first, with the user's values", () => {
+      const envelope: ProposalEnvelope = {
+        ...database({ name: "main" }),
+        operations: [step("followup", "secondary", { properties: { name: "followup" } }), step("main", "primary")],
+      };
+      expect(buildEditorValues(envelope, { followup: { followDate: "2026-12-01" }, main: { allDay: false } })).toEqual([
+        { ref: "main", values: { name: "main", allDay: false } },
+        { ref: "followup", values: { name: "followup", followDate: "2026-12-01" } },
+      ]);
+    });
+
+    it("keeps the real ref of the one active step of an envelope with operations, so a missing field names it", () => {
+      const envelope: ProposalEnvelope = {
+        ...database({ name: "main" }),
+        operations: [step("file", "primary"), step("off", "secondary", { enabled: false })],
+      };
+      const values = buildEditorValues(envelope, {});
+      expect(values).toEqual([{ ref: "file", values: { name: "file" } }]);
+      expect(findMissingRequired({ groups: [{ fields: [{ key: "area", required: true }] }] }, values)).toEqual([
+        { ref: "file", field: "area" },
+      ]);
+    });
+
+    it("leaves out a disabled step and the properties an update step writes are read from `after`", () => {
+      const envelope: ProposalEnvelope = {
+        ...database({ name: "main" }),
+        operations: [
+          step("main", "primary"),
+          step("off", "secondary", { enabled: false }),
+          step("upd", "secondary", {
+            op: "update",
+            itemId: "00000000-0000-4000-8000-000000000009",
+            properties: { name: "before" },
+            after: { properties: { name: "after" } },
+          }),
+        ],
+      };
+      expect(
+        buildEditorValues(envelope, { off: { allDay: true } }).map((entry) => [entry.ref, entry.values.name]),
+      ).toEqual([
+        ["main", "main"],
+        ["upd", "after"],
+      ]);
+    });
+  });
+});
+
+describe("normalizeHiddenFields (issue #1934)", () => {
+  const single = (values: Record<string, unknown>): EditorStepValues[] => [{ ref: "primary", synthetic: true, values }];
+
+  /** The shape of the task, event and project schemas: a date whose time part allDay hides, and a date a status hides. */
+  const SCHEMA: EditorRuleSchema = {
+    groups: [
+      {
+        fields: [
+          { key: "name", required: true },
+          { key: "date", timeHiddenWhen: { field: "allDay", equals: true } },
+          { key: "allDay" },
+          { key: "dueDate", when: { field: "status", notEquals: "longTerm" } },
+          { key: "followDate", when: { field: "followupTask", equals: true } },
+        ],
+      },
+    ],
+  };
+  const TASKS = new Set(["name", "date", "dueDate", "timeFrom", "timeTo"]);
+  const NO_TIME = new Set(["name", "date", "dueDate"]);
+  const PROPERTIES = { name: "Send it", date: "2026-12-01", dueDate: "2026-12-24", timeFrom: "09:00", timeTo: "10:00" };
+
+  it("drops the time part of a field whose timeHiddenWhen holds and keeps the date", () => {
+    expect(normalizeHiddenFields(SCHEMA, single({ allDay: true }), PROPERTIES, TASKS, false)).toEqual({
+      name: "Send it",
+      date: "2026-12-01",
+      dueDate: "2026-12-24",
+    });
+  });
+
+  it("keeps the time part while timeHiddenWhen does not hold", () => {
+    expect(normalizeHiddenFields(SCHEMA, single({ allDay: false }), PROPERTIES, TASKS, false)).toEqual(PROPERTIES);
+    expect(normalizeHiddenFields(SCHEMA, single({}), PROPERTIES, TASKS, false)).toEqual(PROPERTIES);
+  });
+
+  it("sets the time part to null instead of dropping it when the destination stores an empty time as null", () => {
+    expect(normalizeHiddenFields(SCHEMA, single({ allDay: true }), PROPERTIES, TASKS, true)).toEqual({
+      name: "Send it",
+      date: "2026-12-01",
+      dueDate: "2026-12-24",
+      timeFrom: null,
+      timeTo: null,
+    });
+  });
+
+  it("sets the time part to null on a destination whose envelope carried no times", () => {
+    const { timeFrom, timeTo, ...withoutTimes } = PROPERTIES;
+    expect(timeFrom).toBeDefined();
+    expect(timeTo).toBeDefined();
+
+    expect(normalizeHiddenFields(SCHEMA, single({ allDay: true }), withoutTimes, TASKS, true)).toEqual({
+      ...withoutTimes,
+      timeFrom: null,
+      timeTo: null,
+    });
+  });
+
+  it("leaves a card whose envelope has no times unchanged, and adds nothing for a destination that drops the time", () => {
+    const { timeFrom, timeTo, ...withoutTimes } = PROPERTIES;
+    expect(timeFrom).toBeDefined();
+    expect(timeTo).toBeDefined();
+
+    expect(normalizeHiddenFields(SCHEMA, single({ allDay: true }), withoutTimes, TASKS, false)).toEqual(withoutTimes);
+  });
+
+  it("leaves a destination without timeFrom and timeTo alone, whether it drops or nulls the time", () => {
+    for (const hiddenTimeIsNull of [false, true]) {
+      expect(normalizeHiddenFields(SCHEMA, single({ allDay: true }), PROPERTIES, NO_TIME, hiddenTimeIsNull)).toEqual(
+        PROPERTIES,
+      );
+    }
+  });
+
+  describe("a date that carries a time of day", () => {
+    const withDate = (date: string): Record<string, unknown> => ({ ...PROPERTIES, date });
+
+    it("reduces a wall-clock date to its calendar date while timeHiddenWhen holds, whatever the destination does with the times", () => {
+      for (const hiddenTimeIsNull of [false, true]) {
+        const normalized = normalizeHiddenFields(
+          SCHEMA,
+          single({ allDay: true }),
+          withDate("2026-12-01T10:00:30"),
+          TASKS,
+          hiddenTimeIsNull,
+        );
+
+        expect(normalized.date).toBe("2026-12-01");
+      }
+    });
+
+    it("reads an instant in the given zone", () => {
+      const read = (zone: string) =>
+        normalizeHiddenFields(SCHEMA, single({ allDay: true }), withDate("2026-12-01T23:30:00Z"), TASKS, true, zone)
+          .date;
+
+      expect(read("Europe/Prague")).toBe("2026-12-02");
+      expect(read("America/New_York")).toBe("2026-12-01");
+    });
+
+    it("refuses an instant without a zone with a validation error on the field", () => {
+      expect(() =>
+        normalizeHiddenFields(SCHEMA, single({ allDay: true }), withDate("2026-12-01T09:00+01:00"), TASKS, true),
+      ).toThrow(expect.objectContaining({ details: { field: "date" } }));
+    });
+
+    it("leaves the date alone while timeHiddenWhen does not hold, a date-only date and a value that is not a date", () => {
+      expect(
+        normalizeHiddenFields(SCHEMA, single({ allDay: false }), withDate("2026-12-01T10:00"), TASKS, true).date,
+      ).toBe("2026-12-01T10:00");
+      expect(normalizeHiddenFields(SCHEMA, single({ allDay: true }), withDate("2026-12-01"), TASKS, true).date).toBe(
+        "2026-12-01",
+      );
+      expect(
+        normalizeHiddenFields(SCHEMA, single({ allDay: true }), withDate("2026-12-01T25:00"), TASKS, true).date,
+      ).toBe("2026-12-01T25:00");
+    });
+  });
+
+  it("drops the property of a field its condition hides, and keeps it while the condition holds", () => {
+    expect(normalizeHiddenFields(SCHEMA, single({ status: "longTerm" }), PROPERTIES, TASKS, false)).toEqual({
+      name: "Send it",
+      date: "2026-12-01",
+      timeFrom: "09:00",
+      timeTo: "10:00",
+    });
+    expect(normalizeHiddenFields(SCHEMA, single({ status: "inProgress" }), PROPERTIES, TASKS, false)).toEqual(
+      PROPERTIES,
+    );
+  });
+
+  it("reads the condition from the card's effective values, not from the envelope properties", () => {
+    // The envelope's own `status` is not an effective value: only `values` decide.
+    const properties = { ...PROPERTIES, status: "longTerm" };
+    expect(normalizeHiddenFields(SCHEMA, single({}), properties, new Set([...TASKS, "status"]), false)).toEqual(
+      properties,
+    );
+  });
+
+  it("keeps a hidden field's key when the destination has no property of that name, because it is a pseudo field", () => {
+    const properties = { name: "Send it", followDate: "2026-12-05" };
+
+    expect(normalizeHiddenFields(SCHEMA, single({ followupTask: false }), properties, TASKS, false)).toEqual(
+      properties,
+    );
+  });
+
+  it("changes nothing in the envelope properties it was given", () => {
+    const properties = { ...PROPERTIES };
+
+    normalizeHiddenFields(SCHEMA, single({ allDay: true, status: "longTerm" }), properties, TASKS, true);
+
+    expect(properties).toEqual(PROPERTIES);
   });
 });

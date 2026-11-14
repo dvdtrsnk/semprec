@@ -5,6 +5,7 @@ import {
   type SempMessageRef,
   type SempRefResolution,
 } from "@semprec/shared";
+import { resolveMailThreadRefTargets } from "../mail/mailThreadRef.js";
 import { assertDescriptionShape } from "../mcp/approvalRequestsStore.js";
 import { labelTranscriptSegmentRefs, type TranscriptSegmentRef } from "../transcription/transcriptSegmentRef.js";
 
@@ -143,6 +144,16 @@ export async function resolveSempHistoryContexts(client: PoolClient, contexts: r
       );
       values = rows.map((row) =>
         row.filename === null ? PURGED : { label: row.filename, databaseKey: row.database_key, state: "active" },
+      );
+    } else if (kind === "mailThread") {
+      // The thread a merged-away id leads to is the one labelled; an id with no thread and no alias is purged. A thread
+      // is not an item the client can address, so it carries no database key.
+      const ids = entries.map(({ ref }) => {
+        if (ref.kind !== "mailThread") throw new Error("Invalid thread reference group");
+        return ref.threadId;
+      });
+      values = (await resolveMailThreadRefTargets(client, ids)).map((target) =>
+        target === null ? PURGED : { label: target.label, databaseKey: null, state: target.state },
       );
     } else if (kind === "agentRun") {
       const ids = entries.map(({ ref }) => {

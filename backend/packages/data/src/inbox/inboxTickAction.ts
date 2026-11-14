@@ -27,6 +27,7 @@ import {
   RECOGNITION_CARD_KEYS,
 } from "./inboxRecognition.js";
 import { aiProposalPatch } from "./proposalEnvelope.js";
+import { assistantSideChanged, mergeRecomputeWithManualValues } from "./tickRecompute.js";
 export { aiProposalPatch, readAiProposal } from "./proposalEnvelope.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { z } from "zod";
@@ -128,8 +129,10 @@ async function findExistingProposal(
  * Re-reads `snapshot` (a proposal this tick read earlier, unlocked) under `FOR UPDATE`, in the
  * transaction that is about to write it, and returns the locked row only if it is still the
  * row the tick decided on: present, not soft-deleted, not `confirmed`/`rejected`, and with the
- * same `updatedAt`. Anything else — a confirm/reject or any other write that committed since
- * the snapshot — is logged with its reason and returns `null`, and the caller skips its write.
+ * same `fingerprint` and `aiVersion` (`assistantSideChanged`). Anything else — a confirm/reject
+ * or an assistant write that committed since the snapshot — is logged with its reason and returns
+ * `null`, and the caller skips its write. A manual edit that moved only `updatedAt` does not make
+ * the row `changed`; the caller passes the locked row's `updatedAt` as `ifVersion`.
  *
  * The initial repeatable-read phase skips a serialization conflict as changed. The post-model
  * phase uses a nonblocking lock so a confirmation holding the card cannot wait on the source
@@ -160,7 +163,7 @@ async function lockUnlockedProposal(
   else if (locked.deletedAt !== null) reason = "deleted";
   else if (typeof locked.properties.status === "string" && LOCKED_PROPOSAL_STATUSES.has(locked.properties.status))
     reason = "locked";
-  else if (locked.updatedAt !== snapshot.updatedAt) reason = "changed";
+  else if (assistantSideChanged(locked, snapshot)) reason = "changed";
 
   if (reason !== null) {
     logger.info({ proposalId: snapshot.id, reason }, "Skipping proposal write");
@@ -425,7 +428,9 @@ export async function assertValidProposalEnvelope(
  * with no pre-filled `proposal` rather than ever going silent. Creates the row if none exists,
  * revises it if unlocked, and is a no-op if the row is already locked or already
  * `needsClarification` with the same `fingerprint` (so a repeatedly-untyped or
- * repeatedly-invalid item doesn't spam its history on every tick).
+ * repeatedly-invalid item doesn't spam its history on every tick). A card's `userOverrides` and
+ * `userEditedKeys` are not written here: they stay stored and apply again to the next valid envelope
+ * (`reviseProposal`).
  */
 async function writeNeedsClarification(
   client: PoolClient,
@@ -794,7 +799,12 @@ async function readTickSnapshot(
   };
 }
 
-/** Revises `existing` with `envelope`, through the locked re-check — a no-op if it lost the race. */
+/**
+ * Revises `existing` with `envelope`, through the locked re-check — a no-op if it lost the race. Under the lock it
+ * writes the assistant's parts from `envelope` (`aiProposal` with its `aiVersion`, `fingerprint`, the history entry)
+ * and keeps the manual values of the locked row that still apply: `proposal` is the effective envelope and
+ * `userOverrides` and `userEditedKeys` follow it (`mergeRecomputeWithManualValues`).
+ */
 async function reviseProposal(
   client: PoolClient,
   config: SemprecTickActionConfig,
@@ -807,6 +817,7 @@ async function reviseProposal(
 ): Promise<void> {
   const locked = await lockUnlockedProposal(client, config, existing);
   if (!locked) return;
+  const merged = await mergeRecomputeWithManualValues(client, locked, envelope);
   await updateItemWithClient(
     client,
     {
@@ -815,12 +826,14 @@ async function reviseProposal(
       ifVersion: locked.updatedAt,
       propertiesPatch: {
         fingerprint,
-        proposal: envelope,
+        proposal: merged.effective,
         reason,
         ...recognitionPatch,
         ...aiProposalPatch(locked.properties, envelope),
+        userOverrides: merged.userOverrides,
+        userEditedKeys: merged.userEditedKeys,
         status: "proposed",
-        history: appendHistoryEntry(locked.properties.history, "Revised the proposal after the source item changed."),
+        history: merged.history,
       },
     },
     {
@@ -830,6 +843,8 @@ async function reviseProposal(
         "proposal",
         "aiProposal",
         "aiVersion",
+        "userOverrides",
+        "userEditedKeys",
         "status",
         "history",
       ],

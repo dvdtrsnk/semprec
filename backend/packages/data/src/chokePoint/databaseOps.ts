@@ -1,8 +1,9 @@
 // Owns the databases domain of the choke point: creating, archiving, restoring, renaming, reading and
 // listing databases, plus the transaction-scoped `databaseArchiveWithClient` the approved-operation
-// executor calls. Item, property, relation and view writes do not belong here, and neither does any
-// other domain module's code — this module talks only to `databasesStore` and the realtime hook, plus
-// `propertiesStore` and the relation-property creation for `createDatabaseWithProperties`.
+// executor calls and its restore counterpart `databaseRestoreWithClient`. Item, property, relation and
+// view writes do not belong here, and neither does any other domain module's code — this module talks
+// only to `databasesStore` and the realtime hook, plus `propertiesStore` and the relation-property
+// creation for `createDatabaseWithProperties`.
 // Constrained by:
 // - docs/adr/2026-09-12-thin-user-scoped-realtime-invalidations.md
 // - docs/adr/2026-09-18-exactly-once-execution-of-approved-destructive-operations.md
@@ -49,6 +50,25 @@ export async function databaseArchiveWithClient(
 ): Promise<DatabaseRow> {
   await requireRollupCoordinationTransaction(client);
   const database = await databasesStore.archiveDatabase(client, id);
+  await enqueueDependentRollupRecomputes(client, database.id);
+  runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }));
+  return database;
+}
+
+/**
+ * Transaction-scoped counterpart to `chokePoint.restoreDatabase`, as `databaseArchiveWithClient` is to
+ * `archiveDatabase`: `databasesStore.restoreDatabase` clears `archived_at` and `purge_at`, the dependent rollup full
+ * jobs are enqueued in the same transaction and one schema invalidation follows the commit. It checks no reader's
+ * access (the caller does) and takes the rollup coordination transaction assumptions as the archive does. Not
+ * trashed is not an error: the database is returned unchanged but still announced, as a repeated restore does.
+ */
+export async function databaseRestoreWithClient(
+  client: PoolClient,
+  id: string,
+  actingUserId?: string,
+): Promise<DatabaseRow> {
+  await requireRollupCoordinationTransaction(client);
+  const database = await databasesStore.restoreDatabase(client, id);
   await enqueueDependentRollupRecomputes(client, database.id);
   runAfterCommit(client, () => notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }));
   return database;
@@ -162,13 +182,7 @@ export function createDatabaseOps(deps: Pick<ChokePointDeps, "pool" | "computedK
     async restoreDatabase(id: string, actingUserId?: string, reader?: DatabaseReader): Promise<DatabaseRow> {
       return withTransaction(pool, async (client) => {
         if (reader !== undefined) await assertReaderDatabaseAccess(client, reader, id, "write");
-        await requireRollupCoordinationTransaction(client);
-        const database = await databasesStore.restoreDatabase(client, id);
-        await enqueueDependentRollupRecomputes(client, database.id);
-        runAfterCommit(client, () =>
-          notifyInvalidation({ scope: "schema", databaseId: database.id, userId: actingUserId }),
-        );
-        return database;
+        return databaseRestoreWithClient(client, id, actingUserId);
       });
     },
     /**

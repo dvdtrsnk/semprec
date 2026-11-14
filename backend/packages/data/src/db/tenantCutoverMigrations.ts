@@ -27,6 +27,7 @@ import { runTranscriptionTriggerEventsCutoverMigration } from "../transcription/
 import { runEventsCalendarPropertiesCutoverMigration } from "../calendar/eventsCalendarPropertiesCutoverMigration.js";
 import { runEventsIcalIdentityCutoverMigration } from "../calendar/eventsIcalIdentityCutoverMigration.js";
 import { runCalendarsCutoverMigration } from "../calendar/calendarsCutoverMigration.js";
+import { runNextOccurrenceDateCutoverMigration } from "../calendar/nextOccurrenceDateCutoverMigration.js";
 import { runPeopleEventsInverseCutoverMigration } from "../calendar/peopleEventsInverseCutoverMigration.js";
 import { runProjectAgentGuidanceCutoverMigration } from "../projectAgentGuidance/projectAgentGuidanceCutoverMigration.js";
 import { runProcessingProposalsCardStateCutoverMigration } from "../inbox/processingProposalsCardStateCutoverMigration.js";
@@ -43,6 +44,7 @@ import { runTasksDayRolloverHeartbeatCutoverMigration } from "../tasks/tasksDayR
 import { runTaskRecurrenceSeriesCutoverMigration } from "../tasks/taskRecurrenceSeriesCutoverMigration.js";
 import { runJournalProjectCutoverMigration } from "../journal/journalProjectCutoverMigration.js";
 import { runJournalEventsCutoverMigration } from "../journal/journalEventsCutoverMigration.js";
+import { runJournalWeeklyCleanupCutoverMigration } from "../journal/journalWeeklyCleanupCutoverMigration.js";
 import { runPeopleRelationshipOptionsCutoverMigration } from "../seed/peopleRelationshipOptionsCutoverMigration.js";
 import { runHealthRecordTagsCutoverMigration } from "../seed/healthRecordTagsCutoverMigration.js";
 import { runHealthRecordTasksCutoverMigration } from "../seed/healthRecordTasksCutoverMigration.js";
@@ -159,6 +161,13 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     // Issue gh-1843: the Events `seriesId` and `occurrenceDate` properties. It needs no other step's result and
     // stands after the recurrence step of gh-1817, before the area-note cutover that stays last.
     await runEventsOccurrenceCutoverMigration(pool);
+    // Issue gh-1905: the Events `nextOccurrenceDate` property, its backfill and the daily refresh heartbeat. It needs the
+    // calendars cutover (#1600) above, whose project owns the heartbeat, and stands after the occurrence step of gh-1843,
+    // before the area-note cutover that stays last.
+    await runNextOccurrenceDateCutoverMigration(pool);
+    // Issue gh-1883: the weekly Journal cleanup heartbeat on the Semprec project. It needs no other step's result and
+    // stands after the entries of the sources it declares as blockers, before the area-note cutover that stays last.
+    await runJournalWeeklyCleanupCutoverMigration(pool);
     // Last: it converts each area in its own transaction and reports failed areas only after every area ran.
     await runAreaNoteCutoverMigration(pool);
   });

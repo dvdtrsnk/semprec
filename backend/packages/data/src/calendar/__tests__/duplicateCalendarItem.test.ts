@@ -200,6 +200,8 @@ describe("duplicate a calendar item (issue gh-1796)", () => {
         travelMinutes: 30,
         icalUid: expect.any(String),
         icalSequence: expect.any(Number),
+        // The copy is not recurring, so its next occurrence is its own day (issue gh-1905).
+        nextOccurrenceDate: "2026-10-19",
       });
       expect(result.item.properties.icalUid).not.toBe((await f.read("events", meeting))?.properties.icalUid);
       // Project, three people and the source's own calendar, which the create linked: no transcript, action item or hosted task.

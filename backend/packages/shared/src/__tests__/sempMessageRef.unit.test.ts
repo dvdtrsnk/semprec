@@ -15,6 +15,7 @@ const valid: Record<string, Record<string, unknown>> = {
   block: { kind: "block", itemId: id(), blockId: id() },
   transcriptSegment: { kind: "transcriptSegment", itemId: id(), startsAt: 1.5, endsAt: 4 },
   mailAttachment: { kind: "mailAttachment", attachmentId: id() },
+  mailThread: { kind: "mailThread", threadId: id() },
   agentRun: { kind: "agentRun", agentRunId: id(), messageId: id() },
   approvalRequest: { kind: "approvalRequest", approvalRequestId: id() },
   taskOccurrence: { kind: "taskOccurrence", seriesId: id(), occurrenceDate: "2026-11-16" },
@@ -163,6 +164,31 @@ describe("sempMessageRefSchema", () => {
       expect(key(night("2026-10-16"))).toBe("sleepNight:2026-10-16");
       expect(key(night("2026-10-16"))).toBe(key(night("2026-10-16")));
       expect(key(night("2026-10-16"))).not.toBe(key(night("2026-10-17")));
+    });
+  });
+
+  describe("mail thread reference (issue gh-1933)", () => {
+    it("carries only the thread id and refuses an item id, a database id or a thread item id beside it", () => {
+      const threadId = id();
+      for (const extra of ["itemId", "databaseId", "threadItemId", "messageId"]) {
+        expect(sempMessageRefSchema.safeParse({ kind: "mailThread", threadId, [extra]: id() }).success).toBe(false);
+      }
+    });
+
+    it("refuses an item ref in place of a thread ref, and a thread ref with the item fields", () => {
+      expect(sempMessageRefSchema.safeParse({ kind: "mailThread", itemId: id(), databaseId: id() }).success).toBe(
+        false,
+      );
+      expect(sempMessageRefSchema.safeParse({ kind: "item", threadId: id() }).success).toBe(false);
+    });
+
+    it("keys a thread as mailThread:<threadId>, by the id as given", () => {
+      const key = (value: unknown) => messageRefKey(sempMessageRefSchema.parse(value));
+      const threadId = id();
+      expect(key({ kind: "mailThread", threadId })).toBe(`mailThread:${threadId}`);
+      expect(key({ kind: "mailThread", threadId })).toBe(key({ kind: "mailThread", threadId }));
+      expect(key({ kind: "mailThread", threadId })).not.toBe(key({ kind: "mailThread", threadId: id() }));
+      expect(key({ kind: "mailThread", threadId })).not.toBe(key({ kind: "mailAttachment", attachmentId: threadId }));
     });
   });
 

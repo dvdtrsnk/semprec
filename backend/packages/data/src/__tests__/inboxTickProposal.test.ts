@@ -57,7 +57,11 @@ import {
   type ProposalEnvelope,
   type ProposalStep,
 } from "../inbox/inboxTickAction.js";
-import { confirmProposalWithClient, reviseProposalWithClient } from "../inbox/proposalActions.js";
+import {
+  confirmProposalWithClient,
+  reviseProposalWithClient,
+  updateProposalValuesWithClient,
+} from "../inbox/proposalActions.js";
 
 let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
@@ -5746,6 +5750,369 @@ describe("aiProposal and aiVersion on the tick's writes (issue #1471)", () => {
     const revised = await findProposalForItem(pool, proposalsId, item.id);
     expect(revised!.properties.aiProposal).toEqual(revised!.properties.proposal);
     expect(revised!.properties.aiVersion).toBe(1);
+  });
+});
+
+describe("semprec.tick keeps user-edited keys when it recomputes a proposal (issue #1921)", () => {
+  let inboxId: string;
+  let typesId: string;
+  let proposalsId: string;
+  let tasksId: string;
+  let databaseIds: TickDatabaseIds;
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    viewTypeRegistry = createViewTypeRegistry();
+    await resetDatabase(pool);
+    await seedSystem(pool, viewTypeRegistry);
+    inboxId = await databaseIdFor("inbox");
+    typesId = await databaseIdFor("inboxItemTypes");
+    proposalsId = await databaseIdFor("processingProposals");
+    tasksId = await databaseIdFor("tasks");
+    databaseIds = {
+      inboxDatabaseId: inboxId,
+      inboxItemTypesDatabaseId: typesId,
+      processingProposalsDatabaseId: proposalsId,
+    };
+  });
+
+  const config = () => ({ processingProposalsDatabaseId: proposalsId });
+  const RECOMPUTE_MESSAGE = "Revised the proposal after the source item changed.";
+
+  /** A typed Task item whose first tick stored a `proposed` card; the card is returned as the tick wrote it. */
+  async function seedCard() {
+    const type = await withTransaction(pool, (client) =>
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Task",
+        emoji: "☑️",
+        processingMethod: "database",
+        targetDatabase: "tasks",
+      }),
+    );
+    const item = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        date: "2026-08-28",
+        time: "09:00",
+        text: "Buy milk",
+        type: type.id,
+      }),
+    );
+    await runTick(pool, databaseIds, item.id, async () => ({
+      properties: { name: "Buy milk", description: "From the shop" },
+    }));
+    const card = await findProposalForItem(pool, proposalsId, item.id);
+    if (!card) throw new Error("the first tick wrote no card");
+    return { type, item, card };
+  }
+
+  async function readCard(cardId: string) {
+    const card = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, cardId));
+    if (!card) throw new Error(`card ${cardId} not found`);
+    return card;
+  }
+
+  /** A manual `PATCH values` of the card, through the production function; answers the updated card. */
+  async function editValues(cardId: string, values: Record<string, unknown>) {
+    const { item } = await withTransaction(pool, (client) =>
+      updateProposalValuesWithClient(client, config(), cardId, { set: { primary: values } }),
+    );
+    return item;
+  }
+
+  async function editText(itemId: string, text: string) {
+    await withTransaction(pool, (client) =>
+      itemsStore.updateItemProperties(client, { databaseId: inboxId, itemId, propertiesPatch: { text } }),
+    );
+  }
+
+  function historyOf(card: { properties: Record<string, unknown> }) {
+    return z
+      .array(z.object({ author: z.string(), message: z.string(), kind: z.string().optional() }))
+      .parse(card.properties.history);
+  }
+
+  const envelopeOf = (properties: Record<string, unknown>, target = tasksId) => ({
+    entityKind: "database",
+    target,
+    properties,
+  });
+
+  it("a recompute after the source text changed keeps the edited title and takes the other fields from the assistant", async () => {
+    const { item, card } = await seedCard();
+    await editValues(card.id, { name: "My own title" });
+    await editText(item.id, "Buy milk and eggs");
+
+    await runTick(pool, databaseIds, item.id, async () => ({
+      properties: { name: "Buy milk and eggs", description: "Two things" },
+    }));
+
+    const after = await readCard(card.id);
+    expect(after.properties.aiProposal).toEqual(envelopeOf({ name: "Buy milk and eggs", description: "Two things" }));
+    expect(after.properties.aiVersion).toBe(2);
+    expect(after.properties.proposal).toEqual(envelopeOf({ name: "My own title", description: "Two things" }));
+    expect(after.properties.userOverrides).toEqual({ primary: { name: "My own title" } });
+    expect(after.properties.userEditedKeys).toEqual(["primary.name"]);
+    expect(after.properties.status).toBe("proposed");
+    const last = historyOf(after).at(-1);
+    expect(last).toEqual({ author: "ai", message: RECOMPUTE_MESSAGE, kind: "recompute" });
+  });
+
+  it("a card without manual values gets empty overrides and a plain recompute entry", async () => {
+    const { item, card } = await seedCard();
+    await editText(item.id, "Buy oat milk");
+
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy oat milk" } }));
+
+    const after = await readCard(card.id);
+    expect(after.properties.proposal).toEqual(envelopeOf({ name: "Buy oat milk" }));
+    expect(after.properties.proposal).toEqual(after.properties.aiProposal);
+    expect(after.properties.userOverrides).toEqual({});
+    expect(after.properties.userEditedKeys).toEqual([]);
+    expect(historyOf(after).at(-1)).toMatchObject({ message: RECOMPUTE_MESSAGE, kind: "recompute" });
+  });
+
+  it("a key whose manual value now equals the new assistant value drops out of the edited keys", async () => {
+    const { item, card } = await seedCard();
+    await editValues(card.id, { name: "My own title", description: "Two things" });
+    await editText(item.id, "Buy milk and eggs");
+
+    await runTick(pool, databaseIds, item.id, async () => ({
+      properties: { name: "Buy milk and eggs", description: "Two things" },
+    }));
+
+    const after = await readCard(card.id);
+    expect(after.properties.userOverrides).toEqual({ primary: { name: "My own title" } });
+    expect(after.properties.userEditedKeys).toEqual(["primary.name"]);
+    expect(after.properties.proposal).toEqual(envelopeOf({ name: "My own title", description: "Two things" }));
+    // A value that became equal is not "dropped": the history entry names nothing.
+    expect(historyOf(after).at(-1)).toMatchObject({ message: RECOMPUTE_MESSAGE, kind: "recompute" });
+  });
+
+  it("a manual PATCH values committed while computeProposal runs does not discard the assistant result", async () => {
+    const { item, card } = await seedCard();
+    await editText(item.id, "Buy milk and eggs");
+    const before = await readCard(card.id);
+
+    let editedVersion: string | undefined;
+    await runTick(pool, databaseIds, item.id, async () => {
+      editedVersion = (await editValues(card.id, { name: "Typed during the call" })).updatedAt;
+      return { properties: { name: "Computed meanwhile", description: "Two things" } };
+    });
+
+    expect(editedVersion).toBeDefined();
+    expect(editedVersion).not.toBe(before.updatedAt);
+    const after = await readCard(card.id);
+    expect(after.properties.aiProposal).toEqual(envelopeOf({ name: "Computed meanwhile", description: "Two things" }));
+    expect(after.properties.aiVersion).toBe(2);
+    expect(after.properties.proposal).toEqual(envelopeOf({ name: "Typed during the call", description: "Two things" }));
+    expect(after.properties.userOverrides).toEqual({ primary: { name: "Typed during the call" } });
+    expect(after.properties.userEditedKeys).toEqual(["primary.name"]);
+    expect(historyOf(after).at(-1)).toMatchObject({ message: RECOMPUTE_MESSAGE, kind: "recompute" });
+  });
+
+  it("a card rejected while computeProposal runs is left as the reject wrote it, with its manual values", async () => {
+    const { item, card } = await seedCard();
+    await editValues(card.id, { name: "My own title" });
+    await editText(item.id, "Buy milk and eggs");
+    const before = await readCard(card.id);
+
+    let rejectedVersion: string | undefined;
+    await runTick(pool, databaseIds, item.id, async () => {
+      const rejected = await withTransaction(pool, (client) =>
+        itemsStore.updateItemProperties(client, {
+          databaseId: proposalsId,
+          itemId: card.id,
+          propertiesPatch: { status: "rejected" },
+        }),
+      );
+      rejectedVersion = rejected.updatedAt;
+      return { properties: { name: "Must not be stored" } };
+    });
+
+    const after = await readCard(card.id);
+    expect(after.updatedAt).toBe(rejectedVersion);
+    expect(after.properties).toEqual({ ...before.properties, status: "rejected" });
+  });
+
+  it("a card confirmed while computeProposal runs is left as the confirm wrote it, with its manual values", async () => {
+    const { item, card } = await seedCard();
+    await editValues(card.id, { name: "My own title" });
+    await editText(item.id, "Buy milk and eggs");
+    // The tick and the confirm enqueue the source's Journal-day recompute under one job key, so a confirm issued
+    // from inside the tick would wait on the tick's own transaction; the source leaves its Journal day first.
+    await withTransaction(pool, async (client) => {
+      const journalDayProperty = await propertiesStore.getPropertyByKey(client, inboxId, "journalDay");
+      const relationDefinition = await relationsStore.getRelationDefinitionByPropertyId(client, journalDayProperty!.id);
+      for (const edge of await relationsStore.listRelationsForItem(client, relationDefinition!.id, item.id)) {
+        await relationsStore.deleteItemRelation(client, edge.relationDefinitionId, edge.itemA, edge.itemB);
+      }
+    });
+    const before = await readCard(card.id);
+
+    await runTick(pool, databaseIds, item.id, async () => {
+      await withTransaction(pool, (client) => confirmProposalWithClient(client, config(), card.id));
+      return { properties: { name: "Must not be stored" } };
+    });
+
+    const after = await readCard(card.id);
+    expect(after.properties.status).toBe("confirmed");
+    expect(after.properties.aiProposal).toEqual(before.properties.aiProposal);
+    expect(after.properties.aiVersion).toBe(before.properties.aiVersion);
+    expect(after.properties.proposal).toEqual(before.properties.proposal);
+    expect(after.properties.userOverrides).toEqual({ primary: { name: "My own title" } });
+    expect(historyOf(after).map((entry) => entry.message)).not.toContain(RECOMPUTE_MESSAGE);
+  });
+
+  it("a second assistant write while computeProposal runs discards the older result", async () => {
+    const { item, card } = await seedCard();
+    await editValues(card.id, { name: "My own title" });
+    await editText(item.id, "Buy milk and eggs");
+
+    await runTick(pool, databaseIds, item.id, async () => {
+      await withTransaction(pool, (client) =>
+        reviseProposalWithClient(client, config(), card.id, {
+          message: "Use another description",
+          entityKind: "database",
+          target: tasksId,
+          properties: { name: "Assistant revision", description: "From the thread" },
+        }),
+      );
+      return { properties: { name: "Older result", description: "Must not be stored" } };
+    });
+
+    const after = await readCard(card.id);
+    expect(after.properties.aiVersion).toBe(2);
+    expect(after.properties.aiProposal).toEqual(
+      envelopeOf({ name: "Assistant revision", description: "From the thread" }),
+    );
+    expect(JSON.stringify(after.properties)).not.toContain("Older result");
+    expect(historyOf(after).map((entry) => entry.message)).not.toContain(RECOMPUTE_MESSAGE);
+  });
+
+  it("an older result is also discarded when the card had no aiVersion, which counts as 0", async () => {
+    const { item, card } = await seedCard();
+    // A card written before aiVersion existed: no current writer can produce that state.
+    await pool.query("UPDATE items SET properties = properties - 'aiVersion' WHERE id = $1", [card.id]);
+    await editText(item.id, "Buy milk and eggs");
+
+    await runTick(pool, databaseIds, item.id, async () => {
+      await withTransaction(pool, (client) =>
+        reviseProposalWithClient(client, config(), card.id, {
+          entityKind: "database",
+          target: tasksId,
+          properties: { name: "Assistant revision" },
+        }),
+      );
+      return { properties: { name: "Older result" } };
+    });
+
+    const after = await readCard(card.id);
+    expect(after.properties.aiVersion).toBe(1);
+    expect(after.properties.aiProposal).toEqual(envelopeOf({ name: "Assistant revision" }));
+  });
+
+  it("a card whose fingerprint another write moved while computeProposal runs discards the result", async () => {
+    const { item, card } = await seedCard();
+    await editText(item.id, "Buy milk and eggs");
+
+    let movedVersion: string | undefined;
+    await runTick(pool, databaseIds, item.id, async () => {
+      // The fingerprint alone moves, as a failed computation clears it (issue #1485); aiVersion stays.
+      const moved = await withTransaction(pool, (client) =>
+        itemsStore.updateItemProperties(client, {
+          databaseId: proposalsId,
+          itemId: card.id,
+          propertiesPatch: { fingerprint: null },
+        }),
+      );
+      movedVersion = moved.updatedAt;
+      return { properties: { name: "Must not be stored" } };
+    });
+
+    const after = await readCard(card.id);
+    expect(after.updatedAt).toBe(movedVersion);
+    expect(after.properties).toEqual({ ...card.properties, fingerprint: null });
+  });
+
+  it("an assistant envelope with another target drops the manual values and the recompute entry names them", async () => {
+    const { type, item, card } = await seedCard();
+    await editValues(card.id, { name: "My own title", description: "Typed note" });
+    const projectsId = await databaseIdFor("projects");
+    await withTransaction(pool, (client) =>
+      updateItemWithClient(client, {
+        databaseId: typesId,
+        itemId: type.id,
+        propertiesPatch: { targetDatabase: "projects" },
+      }),
+    );
+    await editText(item.id, "Plan the move");
+
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Plan the move" } }));
+
+    const after = await readCard(card.id);
+    expect(after.properties.aiProposal).toEqual(envelopeOf({ name: "Plan the move" }, projectsId));
+    expect(after.properties.proposal).toEqual(envelopeOf({ name: "Plan the move" }, projectsId));
+    expect(after.properties.userOverrides).toEqual({});
+    expect(after.properties.userEditedKeys).toEqual([]);
+    const last = historyOf(after).at(-1);
+    expect(last).toMatchObject({ kind: "recompute" });
+    expect(last?.message).toBe(
+      `${RECOMPUTE_MESSAGE} Manual values that no longer apply were dropped: primary.description, primary.name.`,
+    );
+  });
+
+  it("an override key the target no longer has is dropped while the keys that still apply are kept", async () => {
+    const { item, card } = await seedCard();
+    await editValues(card.id, { name: "My own title" });
+    // A key the target database does not have: the API refuses to store one, and a removed property leaves one behind.
+    await pool.query(
+      `UPDATE items SET properties = properties || jsonb_build_object(
+         'userOverrides', jsonb_build_object('primary', jsonb_build_object('name', 'My own title', 'removedKey', 'x')),
+         'userEditedKeys', jsonb_build_array('primary.name', 'primary.removedKey')) WHERE id = $1`,
+      [card.id],
+    );
+    await editText(item.id, "Buy milk and eggs");
+
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk and eggs" } }));
+
+    const after = await readCard(card.id);
+    expect(after.properties.userOverrides).toEqual({ primary: { name: "My own title" } });
+    expect(after.properties.userEditedKeys).toEqual(["primary.name"]);
+    expect(after.properties.proposal).toEqual(envelopeOf({ name: "My own title" }));
+    expect(historyOf(after).at(-1)?.message).toBe(
+      `${RECOMPUTE_MESSAGE} Manual values that no longer apply were dropped: primary.removedKey.`,
+    );
+  });
+
+  it("an assistant output that fails validation makes the card needsClarification and keeps the manual values stored", async () => {
+    const { item, card } = await seedCard();
+    await editValues(card.id, { name: "My own title" });
+    await editText(item.id, "Buy milk and eggs");
+
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { noSuchProperty: "x" } }));
+
+    const clarifying = await readCard(card.id);
+    expect(clarifying.properties).toMatchObject({
+      status: "needsClarification",
+      proposal: null,
+      aiProposal: null,
+      aiVersion: 2,
+      userOverrides: { primary: { name: "My own title" } },
+      userEditedKeys: ["primary.name"],
+    });
+
+    // They apply again when a later valid assistant output arrives.
+    await editText(item.id, "Buy milk and eggs again");
+    await runTick(pool, databaseIds, item.id, async () => ({
+      properties: { name: "Buy milk and eggs again", description: "Two things" },
+    }));
+    const recovered = await readCard(card.id);
+    expect(recovered.properties.status).toBe("proposed");
+    expect(recovered.properties.aiVersion).toBe(3);
+    expect(recovered.properties.proposal).toEqual(envelopeOf({ name: "My own title", description: "Two things" }));
+    expect(recovered.properties.userEditedKeys).toEqual(["primary.name"]);
   });
 });
 

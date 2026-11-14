@@ -3,7 +3,13 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { AGENT_TASK_NAMES, enqueueJob } from "@semprec/queue";
 import { getTenantZeroId, getTestPool, inTenantZero, resetDatabase } from "@semprec/data/testSupport";
-import { CORE_AGENT_RUN_ACTION_ID, createAgentRun, createUser, seedSystem } from "@semprec/data";
+import {
+  CORE_AGENT_RUN_ACTION_ID,
+  JOURNAL_WEEKLY_CLEANUP_ACTION_ID,
+  createAgentRun,
+  createUser,
+  seedSystem,
+} from "@semprec/data";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { createAgentsActionRegistry, unwiredRunAgent } from "../actionRegistryComposition.js";
 import { createAgentsQueueRuntime, type AgentsQueueRuntime } from "../queueRuntime.js";
@@ -36,10 +42,10 @@ describe("createAgentsActionRegistry (issue #641)", () => {
     await pool.end();
   });
 
-  it("registers exactly core.agentRun", () => {
+  it("registers exactly core.agentRun and core.journalWeeklyCleanup", () => {
     const registry = createAgentsActionRegistry(pool, unwiredRunAgent);
 
-    expect([...registry.keys()]).toEqual([CORE_AGENT_RUN_ACTION_ID]);
+    expect([...registry.keys()]).toEqual([CORE_AGENT_RUN_ACTION_ID, JOURNAL_WEEKLY_CLEANUP_ACTION_ID]);
   });
 
   it("closes a fired core.agentRun heartbeat's run as error with the code internal, and the job names the unwired runtime", async () => {
@@ -89,5 +95,36 @@ describe("createAgentsActionRegistry (issue #641)", () => {
     expect(runs).toHaveLength(1);
     expect(runs[0]?.status).toBe("error");
     expect(runs[0]?.result).toBe("internal");
+  });
+
+  it("fires a seeded weekly Journal cleanup heartbeat on the agents runtime and starts its agent run", async () => {
+    await seedSystem(pool);
+    const user = await createUser(pool, {
+      email: "owner@example.com",
+      passwordHash: "unused",
+      tenantId: getTenantZeroId(),
+    });
+    const { rows: heartbeats } = await pool.query<{ id: string }>(
+      `SELECT id FROM project_heartbeats WHERE action_id = $1`,
+      [JOURNAL_WEEKLY_CLEANUP_ACTION_ID],
+    );
+    expect(heartbeats).toHaveLength(1);
+    const heartbeatId = heartbeats[0]!.id;
+
+    runtime = await createAgentsQueueRuntime(pool, new ModuleRegistry(() => new Set()));
+    await inTenantZero(() =>
+      enqueueJob(pool, AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT, { heartbeatId, triggeredByUserId: user.id }),
+    );
+
+    // The unwired runtime closes the run it opened as an error; waiting for that settles the attempt, and it is
+    // the handler, not the affinity check or the registry lookup, that opened the run.
+    const runStatuses = async (): Promise<string[]> => {
+      const { rows } = await pool.query<{ status: string }>(`SELECT status FROM agent_runs WHERE heartbeat_id = $1`, [
+        heartbeatId,
+      ]);
+      return rows.map((row) => row.status);
+    };
+    await waitFor(async () => (await runStatuses()).join() === "error");
+    expect(await runStatuses()).toEqual(["error"]);
   });
 });

@@ -205,8 +205,8 @@ async function lockCascadeEpochRowIds(
  * rolls the whole cascade back. Each hook also receives the epoch at full precision
  * (`deletedAtExact`) and this call's `queueAffinity`. Before it locks the root row, the call runs the restore
  * pre-lock hooks of the root's owning module, as the delete does. Exported for a domain restore hook that
- * restores a related item in the same transaction (issue #1642); it is not part of the package's
- * public barrel.
+ * restores a related item in the same transaction (issue #1642) and for the bulk restore route
+ * (`trash/trashRouteHandlers.ts`, issue gh-1904); it is not part of the package's public barrel.
  */
 export async function restoreItemWithClient(
   client: PoolClient,

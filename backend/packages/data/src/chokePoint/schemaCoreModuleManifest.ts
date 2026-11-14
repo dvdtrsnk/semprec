@@ -42,11 +42,17 @@ export {
 export { createBadgeCountsRouteHandler } from "../notifications/badgeCountsRoute.js";
 export { createTriggerHeartbeatRouteHandler } from "../scheduler/triggerHeartbeatRoute.js";
 export { createSetHeartbeatEnabledRouteHandler } from "../scheduler/setHeartbeatEnabledRoute.js";
+export { createProjectHeartbeatsRouteHandler } from "../scheduler/projectHeartbeatsRoute.js";
 export {
   createListAgentDatabaseGrantsRouteHandler,
   createPatchAgentDatabaseGrantRouteHandler,
 } from "../agentGrants/agentDatabaseGrantsRouteHandlers.js";
-export { createTrashDatabasesRouteHandler, createTrashItemsRouteHandler } from "../trash/trashRouteHandlers.js";
+export {
+  createTrashDatabasesRouteHandler,
+  createTrashItemsRouteHandler,
+  createTrashRestoreRouteHandler,
+} from "../trash/trashRouteHandlers.js";
+export { createListAgentRunsRouteHandler } from "../agentRuns/agentRunsListRouteHandler.js";
 
 /**
  * Retrofit manifest (module-contract issue #226) for the schema/data core: the choke point
@@ -290,6 +296,36 @@ export const manifest: ModuleManifest = {
       // The archived user databases of the caller's tenant with their live item count, shaped for exactly one
       // consumer, the "Databases" tab of the "Recently deleted" screen (issue gh-1873): `GET /api/databases` leaves
       // archived databases out and no generic read lists them.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "restoreTrash",
+      method: "POST",
+      path: "/api/trash/restore",
+      handlerExport: "createTrashRestoreRouteHandler",
+      // Every selected database and item is restored in its own savepoint of one transaction, so a refused id
+      // (a restore hook's rejection, an archived database) rolls back alone and the rest still restore, and its
+      // announcements are dropped (issue gh-1904): the generic item-write endpoint takes one resource at a time.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "listAgentRuns",
+      method: "GET",
+      path: "/api/agent-runs",
+      handlerExport: "createListAgentRunsRouteHandler",
+      // The recent runs of one project that the caller started, with the cost and the display status of each,
+      // shaped for exactly one consumer, the project's agent page (issue gh-1909): the run detail route reads one
+      // run by id and no generic read lists agent runs.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "listProjectHeartbeats",
+      method: "GET",
+      path: "/api/projects/:id/heartbeats",
+      handlerExport: "createProjectHeartbeatsRouteHandler",
+      // The automations a person made in one project with each one's rule label, last run outcome and tick thread,
+      // shaped for exactly one consumer, the project's agent screen (issue gh-1910): the generic item reads know
+      // neither `project_heartbeats` nor the runs of its occurrences.
       justification: "single-consumer-read",
     },
   ],

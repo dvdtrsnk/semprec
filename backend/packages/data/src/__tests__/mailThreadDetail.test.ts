@@ -307,6 +307,10 @@ describe("GET /api/mail/threads/:threadId (issue #1632)", () => {
         flagged: row.flagged,
         mailboxes: row.mailboxes,
         senderPerson: row.senderPerson,
+        // The thread's company, project and their link state (issue gh-1897) are the list row's too.
+        project: row.project,
+        company: row.company,
+        links: row.links,
       });
       expect(header.messageCount).toBe(4);
     });

@@ -4,6 +4,7 @@ import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
 import {
   CORE_AGENT_RUN_ACTION_ID,
   DRIFT_CHECK_ACTION_ID,
+  JOURNAL_WEEKLY_CLEANUP_ACTION_ID,
   KNOWN_HEARTBEAT_ACTION_IDS,
   KNOWN_OWNER_PROCESS_IDS,
   SEMPREC_TICK_ACTION_ID,
@@ -36,10 +37,11 @@ describe("createApiActionRegistry (issue #641)", () => {
     await pool.end();
   });
 
-  it("registers every known heartbeat action except core.agentRun, including semprec.tick", async () => {
+  it("registers every known heartbeat action except the agent-run ones, including semprec.tick", async () => {
     const registry = createApiActionRegistry(pool, await loadFullModuleRegistry());
 
-    const expected = [...KNOWN_HEARTBEAT_ACTION_IDS].filter((actionId) => actionId !== CORE_AGENT_RUN_ACTION_ID).sort();
+    const agentRunActionIds = [CORE_AGENT_RUN_ACTION_ID, JOURNAL_WEEKLY_CLEANUP_ACTION_ID];
+    const expected = [...KNOWN_HEARTBEAT_ACTION_IDS].filter((actionId) => !agentRunActionIds.includes(actionId)).sort();
     expect([...registry.keys()].sort()).toEqual(expected);
     expect(registry.has(SEMPREC_TICK_ACTION_ID)).toBe(true);
   });

@@ -428,4 +428,132 @@ describe("coreAgentRunAction", () => {
     const [run] = await listAgentRunsByHeartbeat(pool, heartbeatId);
     expect(run).toMatchObject({ heartbeatOccurrenceId: null, attempt: 1, retryOfRunId: null });
   });
+
+  describe("retry of a failed run (issue #1908)", () => {
+    /** The failed first attempt of a new occurrence, closed the way the worker closes a final failure. */
+    async function failedFirstAttempt(): Promise<{
+      heartbeatId: string;
+      projectItemId: string;
+      occurrenceId: string;
+      runId: string;
+    }> {
+      const { heartbeatId, projectItemId } = await createTestHeartbeat();
+      const occurrenceId = await createOccurrence(heartbeatId);
+      const failing = coreAgentRunAction(pool, async () => {
+        throw new Error("model failed");
+      });
+      await expect(
+        failing(
+          { task: "Plan the week" },
+          { heartbeatId, projectItemId, occurrenceId, attempt: 1, isFinalAttempt: true },
+        ),
+      ).rejects.toThrow("model failed");
+      const run = await getLatestRunOfOccurrence(pool, occurrenceId);
+      if (!run) throw new Error("the first attempt created no run");
+      return { heartbeatId, projectItemId, occurrenceId, runId: run.id };
+    }
+
+    it("creates the next attempt of the retried run with its task, heartbeat, project and occurrence, and runs the agent with that task", async () => {
+      const { heartbeatId, projectItemId, occurrenceId, runId } = await failedFirstAttempt();
+      const tasks: string[] = [];
+      const handler = coreAgentRunAction(pool, async (input) => {
+        tasks.push(input.task);
+        return { result: "recovered" };
+      });
+
+      // The heartbeat's own action config differs from the retried run's task: the retry repeats the run.
+      await handler({ task: "A newer configured task" }, { heartbeatId, projectItemId, retryOfRunId: runId });
+
+      const retry = await getLatestRunOfOccurrence(pool, occurrenceId);
+      expect(retry).toMatchObject({
+        attempt: 2,
+        retryOfRunId: runId,
+        heartbeatId,
+        projectItemId,
+        heartbeatOccurrenceId: occurrenceId,
+        task: "Plan the week",
+        triggeredBy: "heartbeat",
+        parentRunId: null,
+        status: "done",
+      });
+      expect(tasks).toEqual(["Plan the week"]);
+      expect(await listAgentRunsByHeartbeat(pool, heartbeatId)).toHaveLength(2);
+    });
+
+    it("numbers the attempt after the attempt of the retried run, not after the number of runs", async () => {
+      const { heartbeatId, projectItemId, runId } = await failedFirstAttempt();
+      // The retried run is the third attempt: raw SQL, because no producer gives a lone run an attempt of 3.
+      const updated = await pool.query("UPDATE agent_runs SET attempt = 3 WHERE id = $1", [runId]);
+      expect(updated.rowCount).toBe(1);
+      const handler = coreAgentRunAction(pool, async () => undefined);
+
+      await handler({}, { heartbeatId, projectItemId, retryOfRunId: runId });
+
+      const { rows } = await pool.query<{ attempt: number }>(
+        "SELECT attempt FROM agent_runs WHERE retry_of_run_id = $1",
+        [runId],
+      );
+      expect(rows).toEqual([{ attempt: 4 }]);
+    });
+
+    it("starts no agent and creates no run when the retried run already has a successor", async () => {
+      const { heartbeatId, projectItemId, runId } = await failedFirstAttempt();
+      const first = coreAgentRunAction(pool, async () => undefined);
+      await first({}, { heartbeatId, projectItemId, retryOfRunId: runId });
+      const runAgent = vi.fn(async () => undefined);
+      const warn = vi.spyOn(logger, "warn");
+      try {
+        await coreAgentRunAction(pool, runAgent)({}, { heartbeatId, projectItemId, retryOfRunId: runId });
+
+        expect(runAgent).not.toHaveBeenCalled();
+        expect(await listAgentRunsByHeartbeat(pool, heartbeatId)).toHaveLength(2);
+        expect(warn).toHaveBeenCalledWith(
+          { heartbeatId, retryOfRunId: runId },
+          "core.agentRun: the run to retry already has a successor; not running",
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("starts no agent and creates no run when the retried run does not exist", async () => {
+      const { heartbeatId, projectItemId } = await createTestHeartbeat();
+      const missing = "00000000-0000-4000-8000-0000000000aa";
+      const runAgent = vi.fn(async () => undefined);
+      const warn = vi.spyOn(logger, "warn");
+      try {
+        await coreAgentRunAction(pool, runAgent)({}, { heartbeatId, projectItemId, retryOfRunId: missing });
+
+        expect(runAgent).not.toHaveBeenCalled();
+        expect(await listAgentRunsByHeartbeat(pool, heartbeatId)).toHaveLength(0);
+        expect(warn).toHaveBeenCalledWith(
+          { heartbeatId, retryOfRunId: missing },
+          "core.agentRun: the run to retry does not exist; nothing to run",
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("closes a failing retry as a final failure with one agent_run_error notification on the retry's run", async () => {
+      const { heartbeatId, projectItemId, runId } = await failedFirstAttempt();
+      // The failed first attempt was final, so its notification is the one already there.
+      expect(await getNotifications("agent_run_error")).toHaveLength(1);
+      const handler = coreAgentRunAction(pool, async () => {
+        throw new Error("model failed again");
+      });
+
+      await expect(
+        handler({}, { heartbeatId, projectItemId, retryOfRunId: runId, isFinalAttempt: true }),
+      ).rejects.toThrow("model failed again");
+
+      const retried = await pool.query<{ id: string; status: string }>(
+        "SELECT id, status FROM agent_runs WHERE retry_of_run_id = $1",
+        [runId],
+      );
+      expect(retried.rows).toEqual([{ id: expect.any(String), status: "error" }]);
+      const notifications = await getNotifications("agent_run_error");
+      expect(notifications.map((row) => row.source_id).sort()).toEqual([runId, retried.rows[0]!.id].sort());
+    });
+  });
 });

@@ -25,6 +25,7 @@ import {
   type MailDraftRecipient,
 } from "./mailDraftsStore.js";
 import { resolveMailModuleIds } from "./mailModuleIds.js";
+import { deleteFilesOfDiscardedDraft, listDraftAttachments, type DraftAttachment } from "./mailDraftAttachmentFiles.js";
 import { announceMailThreadChanged } from "./mailThreadActions.js";
 import { normalizeEmailAddress } from "./personEmailIndexStore.js";
 
@@ -112,6 +113,20 @@ export class MailDraftAlreadySentError extends ChokePointError {
 }
 
 /**
+ * Raised when a file would bring the total size of a draft's attachments over the limit of its mailbox's provider
+ * (issue gh-1895). `details` carries the limit and the total the draft would have, both in bytes.
+ */
+export class MailAttachmentTooLargeError extends ChokePointError {
+  constructor(limitBytes: number, totalBytes: number) {
+    super(413, "mail_attachment_too_large", "The attachments of the draft would be larger than the mailbox allows", {
+      limitBytes,
+      totalBytes,
+    });
+    this.name = "MailAttachmentTooLargeError";
+  }
+}
+
+/**
  * Raised when an Emails item has no `mail_drafts` row: a draft a mail provider holds is read-only here, as is
  * any other message.
  */
@@ -175,8 +190,8 @@ export interface EmailDraftView {
   threadId: string | null;
   mode: MailDraftMode;
   sourceEmailId: string | null;
-  /** Empty until attachments are added to drafts (issue #1895). */
-  attachments: { fileItemId: string; blobId: string; filename: string; byteSize: number }[];
+  /** The files attached to the draft, oldest first (issue gh-1895). */
+  attachments: DraftAttachment[];
   createdBy: MailDraftActor;
   lastEditedBy: MailDraftActor;
   /** The Emails item's `updatedAt`: the value a later `PATCH` sends as `ifVersion`. */
@@ -189,7 +204,7 @@ function textProperty(item: ItemRow, key: string): string {
   return typeof value === "string" ? value : "";
 }
 
-function toEmailDraftView(item: ItemRow, draft: MailDraft): EmailDraftView {
+function toEmailDraftView(item: ItemRow, draft: MailDraft, attachments: DraftAttachment[]): EmailDraftView {
   return {
     id: item.id,
     mailboxId: draft.mailboxItemId,
@@ -202,7 +217,7 @@ function toEmailDraftView(item: ItemRow, draft: MailDraft): EmailDraftView {
     threadId: draft.threadId,
     mode: draft.mode,
     sourceEmailId: draft.sourceEmailItemId,
-    attachments: [],
+    attachments,
     createdBy: draft.createdBy,
     lastEditedBy: draft.lastEditedBy,
     updatedAt: item.updatedAt,
@@ -227,7 +242,7 @@ function assertFromAddressRegistered(mailbox: ItemRow, from: string): void {
 }
 
 /** Announces the draft's change on its thread. A draft without a thread, or whose thread is gone, announces nothing. */
-async function announceDraftThreadChanged(client: PoolClient, threadId: string | null): Promise<void> {
+export async function announceDraftThreadChanged(client: PoolClient, threadId: string | null): Promise<void> {
   if (threadId === null) return;
   const live = await resolveMergedThreadId(client, threadId);
   if (live !== null) announceMailThreadChanged(client, live);
@@ -317,11 +332,11 @@ async function assertLiveEmail(client: PoolClient, emailsDatabaseId: string, ite
  * message) all give the same 404. A sent draft is returned, with its `sentAt`.
  */
 export async function readEmailDraft(client: PoolClient, draftItemId: string): Promise<EmailDraftView> {
-  const { emailsDatabaseId } = await resolveMailModuleIds(client);
-  const item = await getItemById(client, emailsDatabaseId, draftItemId);
+  const ids = await resolveMailModuleIds(client);
+  const item = await getItemById(client, ids.emailsDatabaseId, draftItemId);
   const draft = item && !item.deletedAt ? await getMailDraft(client, draftItemId) : null;
   if (!item || !draft) throw new NotFoundError("Draft not found");
-  return toEmailDraftView(item, draft);
+  return toEmailDraftView(item, draft, await listDraftAttachments(client, ids, draftItemId));
 }
 
 /**
@@ -329,7 +344,7 @@ export async function readEmailDraft(client: PoolClient, draftItemId: string): P
  * (the version, `sentAt`). An id that names no live Emails item is a 404; an item without a row is a
  * `MailDraftNotEditableError` and a sent draft a `MailDraftAlreadySentError`, both 409.
  */
-async function lockUnsentDraft(
+export async function lockUnsentDraft(
   client: PoolClient,
   emailsDatabaseId: string,
   draftItemId: string,
@@ -359,7 +374,8 @@ export async function updateEmailDraft(
   input: UpdateEmailDraftInput,
   context: MailDraftWriteContext,
 ): Promise<EmailDraftView> {
-  const { emailsDatabaseId, mailboxesDatabaseId } = await resolveMailModuleIds(client);
+  const ids = await resolveMailModuleIds(client);
+  const { emailsDatabaseId, mailboxesDatabaseId } = ids;
   const { item, draft } = await lockUnsentDraft(client, emailsDatabaseId, input.draftItemId);
   if (input.ifVersion !== item.updatedAt) {
     throw new ConflictError("Draft was modified since ifVersion was read", { current: item });
@@ -407,24 +423,32 @@ export async function updateEmailDraft(
     },
   );
   await announceDraftThreadChanged(client, updated.threadId);
-  return toEmailDraftView(written, updated);
+  return toEmailDraftView(written, updated, await listDraftAttachments(client, ids, input.draftItemId));
 }
 
 /**
- * Discards an unsent draft in the caller's transaction and tenant: the Emails item goes to the trash and its
- * `mail_drafts` row is deleted, which frees the thread for a new agent draft. The refusals before it are those
- * of `updateEmailDraft` up to `mail_draft_already_sent`. After the commit it announces the change on the draft's
- * thread, when it has one.
+ * Discards an unsent draft in the caller's transaction and tenant: the files attached to it that were made for it
+ * and belong to it alone go to the trash (`deleteFilesOfDiscardedDraft`, issue gh-1895; a file that is older than
+ * the draft stays), the Emails item goes to the trash and its `mail_drafts` row is deleted, which frees the thread
+ * for a new agent draft. The refusals before it are those of `updateEmailDraft` up to `mail_draft_already_sent`.
+ * After the commit it announces the change on the draft's thread, when it has one.
  */
 export async function discardEmailDraft(
   client: PoolClient,
   draftItemId: string,
   context: MailDraftWriteContext,
 ): Promise<void> {
-  const { emailsDatabaseId } = await resolveMailModuleIds(client);
+  const ids = await resolveMailModuleIds(client);
+  const { emailsDatabaseId } = ids;
   const { draft } = await lockUnsentDraft(client, emailsDatabaseId, draftItemId);
+  const queueAffinity = context.queueAffinity ?? createActionQueueAffinity();
+  await deleteFilesOfDiscardedDraft(client, ids, draftItemId, {
+    writer: context.writer,
+    actingUserId: context.actingUserId,
+    queueAffinity,
+  });
   const trashed = await itemDeleteWithClient(client, emailsDatabaseId, draftItemId, {
-    queueAffinity: context.queueAffinity ?? createActionQueueAffinity(),
+    queueAffinity,
     actingUserId: context.actingUserId,
     writer: context.writer,
   });

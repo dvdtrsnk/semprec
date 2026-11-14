@@ -24,12 +24,13 @@ import {
  * set and its exclusions are recorded in `docs/adr/2026-10-17-tenant-data-export-archive.md`.
  */
 
-/** Tenant-classified tables never exported: credential ciphertext, the wrapped tenant data key, and the exports themselves. */
+/** Tenant-classified tables never exported: credential ciphertext, the wrapped tenant data key, the exports themselves, and the stored responses of card actions (transient, expire after 24 hours). */
 export const EXPORT_EXCLUDED_TABLES = [
   "external_credentials",
   "tenant_keys",
   "tenant_exports",
   "mail_oauth_states",
+  "idempotent_responses",
 ] as const;
 
 /** The archive layout version written to `manifest.json`. */

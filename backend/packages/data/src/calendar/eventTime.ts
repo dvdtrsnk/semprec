@@ -132,6 +132,24 @@ export function eventDateIsInstant(date: unknown): boolean {
   return typeof date === "string" && readEventDate(date).kind === "instant";
 }
 
+/**
+ * The calendar date (`YYYY-MM-DD`) of an Event `date` value with its time of day taken off: a date-only value is
+ * returned as it is, a wall-clock one (no offset) keeps its own date, and an instant (an offset or `Z`) is the date
+ * in `zone`, the same reading `deriveEventTimeProperties` makes before it stores the time. `undefined` for a value
+ * that is unreadable, which is left for the validation of #1663. An instant without a `zone` is refused with a 400
+ * on `field`, as the transform refuses it.
+ */
+export function dateWithoutTimeOfDay(value: string, zone: string | undefined, field = "date"): string | undefined {
+  const read = readEventDate(value);
+  if (read.kind === "dateOnly") return value;
+  if (read.kind === "wallClock") return read.date;
+  if (read.kind === "unreadable") return undefined;
+  if (zone === undefined) {
+    throw new ValidationError("An Event date with an offset needs the tenant time zone to be prepared", { field });
+  }
+  return DateTime.fromISO(read.value, { setZone: true }).setZone(zone).toFormat("yyyy-MM-dd");
+}
+
 function patchNeedsZone(patch: Record<string, unknown>): boolean {
   return eventDateIsInstant(patch.date);
 }

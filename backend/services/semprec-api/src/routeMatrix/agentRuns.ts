@@ -4,6 +4,14 @@ import { EXAMPLE_ID } from "./exampleId.js";
 /** `ROUTE_MATRIX` slice for the `/api/agent-runs` path family. */
 export const AGENT_RUNS_ROUTES: RouteMatrixEntry[] = [
   {
+    name: "list agent runs",
+    method: "GET",
+    path: "/api/agent-runs",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
     name: "agent run detail",
     method: "GET",
     path: `/api/agent-runs/${EXAMPLE_ID}`,
@@ -23,6 +31,14 @@ export const AGENT_RUNS_ROUTES: RouteMatrixEntry[] = [
     name: "mint mcp run credential",
     method: "POST",
     path: "/api/agent-runs/mcp-credentials",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
+  {
+    name: "retry agent run",
+    method: "POST",
+    path: `/api/agent-runs/${EXAMPLE_ID}/retry`,
     surface: "api",
     public: false,
     tenancy: "tenant",

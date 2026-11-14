@@ -7,6 +7,7 @@ import type {
   VerifyMailCredentialsInput,
 } from "@semprec/data";
 import type { ModuleCustomRouteDefinition } from "@semprec/module-registry";
+import type { AiGatewayClientPort } from "@semprec/shared";
 import type { ClientIpThrottle } from "../clientIpThrottle.js";
 import { mountRoutes, type RouteDefinition } from "./routeTable.js";
 import type { AdapterHandler } from "./adapterRoute.js";
@@ -60,12 +61,24 @@ export interface CustomRouteDependencies {
   /** Replaces the global `fetch` for outbound calls to providers. */
   outboundHttp?: typeof fetch;
   /**
+   * The HTTP client of `semprec-ai-gateway` that a route calls for a model answer (issue gh-1900: the task name of
+   * `POST /api/mail/threads/:threadId/tasks`). `serve.ts` sets it. A mount without it fails each request of such a
+   * route with a configuration error.
+   */
+  aiGateway?: AiGatewayClientPort;
+  /**
    * The in-process limiter in which the password connect route counts the login verifications of each user
    * (issue gh-1750, action `mailboxCredentialVerification` of `clientIpThrottle.ts`). `createDispatcher`
    * creates one for its own lifetime when the caller's container carries none. A mount without it fails
    * each request of that route with a configuration error.
    */
   throttle?: ClientIpThrottle;
+  /**
+   * `MAX_FILE_SIZE_MB` in bytes (issue gh-1895): the limit of the attachments of a draft in a mailbox that has no
+   * provider limit, the one `POST /api/files` enforces for an upload. `createDispatcher` sets it from its
+   * `maxFileSizeBytes` option.
+   */
+  maxFileSizeBytes?: number;
 }
 
 /**
