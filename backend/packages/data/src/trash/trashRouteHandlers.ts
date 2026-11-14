@@ -1,12 +1,16 @@
 import { DateTime } from "luxon";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import type { ModuleCatalogs } from "@semprec/module-registry";
 import { getCalendarClock, type CalendarClock } from "../calendarTime.js";
-import { requireSingleRow, withTransaction, type Queryable } from "../db/pool.js";
+import { requireSingleRow, withSavepoint, withTransaction, type Queryable } from "../db/pool.js";
+import * as databasesStore from "../chokePoint/databasesStore.js";
+import { databaseRestoreWithClient } from "../chokePoint/databaseOps.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
+import { restoreItemWithClient } from "../chokePoint/itemTrash.js";
+import type { WriterIdentity } from "../chokePoint/writerKind.js";
 import { MAX_SUBPAGE_CHAIN } from "../docs/pageOwnerDatabase.js";
-import { ValidationError } from "../errors.js";
+import { ChokePointError, ForbiddenError, ValidationError } from "../errors.js";
 import {
   createCatalogResolver,
   resolveDatabaseName,
@@ -15,6 +19,7 @@ import {
   type ManifestLocale,
 } from "../manifest/catalogResolution.js";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
+import { createActionQueueAffinity, type ActionQueueAffinity } from "../scheduler/actions.js";
 import { PAGES_MODULE_ID } from "../seed/pagesModuleKey.js";
 import { RETENTION_DAYS } from "./purgeExpiredTrash.js";
 
@@ -260,12 +265,38 @@ async function readTrashRootsPage(
  LIMIT $4`,
     cursor === null ? [...rootParams, limit + 1] : [...rootParams, limit + 1, cursor.at, cursor.id],
   );
+  const totalCount = await countRoots(client, rootParams);
+  const pages = await readPageRowInfo(client, rows.slice(0, limit), databaseIds.all);
+  return { rows, pages, totalCount, clock: await getCalendarClock(client) };
+}
+
+/** The number of cascade roots `ROOTS_WHERE` selects with `rootParams` (the `totalCount` of the list). */
+async function countRoots(client: Queryable, rootParams: unknown[]): Promise<number> {
   const { rows: totals } = await client.query<{ total: number }>(
     `SELECT count(*)::int AS total FROM items i JOIN databases d ON d.id = i.database_id WHERE ${ROOTS_WHERE}`,
     rootParams,
   );
-  const pages = await readPageRowInfo(client, rows.slice(0, limit), databaseIds.all);
-  return { rows, pages, totalCount: totals[0]?.total ?? 0, clock: await getCalendarClock(client) };
+  return totals[0]?.total ?? 0;
+}
+
+/**
+ * The `totalCount` of `GET /api/trash/items` for the tenant in scope: the trashed cascade roots, read by the same
+ * statement the list reads its total with. Row-level security limits it to the tenant.
+ */
+export async function countTrashItemRoots(client: Queryable): Promise<number> {
+  const databaseIds = await readDatabaseIds(client);
+  return countRoots(client, [databaseIds.notArchived, databaseIds.all, PAGES_MODULE_ID]);
+}
+
+/**
+ * The `totalCount` of `GET /api/trash/databases` for the tenant in scope: the archived user databases, read by the
+ * statement the list reads its total with.
+ */
+export async function countArchivedTrashDatabases(client: Queryable): Promise<number> {
+  const { rows } = await client.query<{ total: number }>(
+    "SELECT count(*)::int AS total FROM databases WHERE archived_at IS NOT NULL AND NOT system",
+  );
+  return requireSingleRow(rows, "archived databases count").total;
 }
 
 /** The ids of the databases of the tenant in scope (row-level security): all of them, and those not archived. */
@@ -440,9 +471,7 @@ export function createTrashDatabasesRouteHandler(pool: Pool) {
             LIMIT $1`,
           [MAX_TRASH_DATABASES],
         );
-        const { rows: totals } = await client.query<{ total: number }>(
-          "SELECT count(*)::int AS total FROM databases WHERE archived_at IS NOT NULL AND NOT system",
-        );
+        const totalCount = await countArchivedTrashDatabases(client);
         const clock = await getCalendarClock(client);
         const databases = [];
         for (const row of rows) {
@@ -456,10 +485,151 @@ export function createTrashDatabasesRouteHandler(pool: Pool) {
             daysLeft: row.purge_at === null ? null : daysUntil(clock, row.purge_at, now),
           });
         }
-        return { databases, totalCount: requireSingleRow(totals, "archived databases count").total };
+        return { databases, totalCount };
       },
       { isolation: "repeatable_read" },
     );
     return { status: 200, body: page };
+  };
+}
+
+/** The most ids one bulk restore takes, databases and items together once duplicates are merged. */
+const MAX_RESTORE_IDS = 100;
+
+const restoreBodySchema = z
+  .object({ itemIds: z.array(z.uuid()).optional(), databaseIds: z.array(z.uuid()).optional() })
+  .strict();
+
+/** What the restore of one id came to: `restored` also covers an id that was not trashed. */
+type RestoreStatus = "restored" | "not_found" | "database_archived" | "conflict";
+
+interface RestoreResult {
+  id: string;
+  kind: "item" | "database";
+  status: RestoreStatus;
+}
+
+interface TrashRestoreRouteRequestContext {
+  body: unknown;
+  identity: { user: { id: string } };
+}
+
+/** Each item is restored as the person who asked, as `POST /api/items/:id/restore` does for a session. */
+const USER_WRITER: WriterIdentity = { writerKind: "user" };
+
+/** The ids of one list, lower-cased so that the two spellings of a UUID are one id, without repeats, first occurrence first. */
+function mergeDuplicates(ids: readonly string[] | undefined): string[] {
+  return [...new Set((ids ?? []).map((id) => id.toLowerCase()))];
+}
+
+/**
+ * Reads the body of `POST /api/trash/restore`: only `itemIds` and `databaseIds`, each a list of UUIDs, at least one
+ * id and at most `MAX_RESTORE_IDS` of them in total once duplicates are merged. Anything else is
+ * `400 validation_failed` before a transaction opens.
+ */
+function parseRestoreBody(body: unknown): { itemIds: string[]; databaseIds: string[] } {
+  const parsed = restoreBodySchema.safeParse(body);
+  if (!parsed.success) {
+    const field = parsed.error.issues[0]?.path[0];
+    throw new ValidationError("Invalid request body", { field: typeof field === "string" ? field : "body" });
+  }
+  const itemIds = mergeDuplicates(parsed.data.itemIds);
+  const databaseIds = mergeDuplicates(parsed.data.databaseIds);
+  const total = itemIds.length + databaseIds.length;
+  if (total === 0) throw new ValidationError("Send at least one id to restore", { field: "body" });
+  if (total > MAX_RESTORE_IDS)
+    throw new ValidationError(`Send at most ${MAX_RESTORE_IDS} ids to restore`, { field: "body" });
+  return { itemIds, databaseIds };
+}
+
+/**
+ * The refusal a failed item restore stands for: a database that is archived (`ForbiddenError` with the code
+ * `database_archived`) or a restore hook's rejection, which is a `409` (a Journal day whose period already has a live
+ * entry). Anything else is not a refusal of this id but a defect or an outage, and is not mapped.
+ */
+function refusalOfItemRestore(error: unknown): "database_archived" | "conflict" | undefined {
+  if (error instanceof ForbiddenError && error.code === "database_archived") return "database_archived";
+  if (error instanceof ChokePointError && error.status === 409) return "conflict";
+  return undefined;
+}
+
+/**
+ * Restores one database in its own savepoint; an id the tenant has no database for is `not_found`. The row is locked
+ * by the lookup that decides this and held to the commit, so the nightly purge cannot delete the database between
+ * that decision and the restore: a purge that committed first leaves no row to lock and the id is `not_found`.
+ */
+async function restoreOneDatabase(client: PoolClient, id: string, actingUserId: string): Promise<RestoreStatus> {
+  if (!(await databasesStore.lockDatabase(client, id))) return "not_found";
+  await withSavepoint(client, () => databaseRestoreWithClient(client, id, actingUserId));
+  return "restored";
+}
+
+/**
+ * Restores one item in its own savepoint, in the database `databaseId` that the item was looked up in. A refusal rolls
+ * back this item alone and discards what it queued for after the commit; an item that is gone by the time its row is
+ * locked is `not_found`.
+ */
+async function restoreOneItem(
+  client: PoolClient,
+  id: string,
+  databaseId: string,
+  actingUserId: string,
+  queueAffinity: ActionQueueAffinity,
+): Promise<RestoreStatus> {
+  try {
+    const restored = await withSavepoint(client, () =>
+      restoreItemWithClient(client, databaseId, id, queueAffinity, actingUserId, USER_WRITER),
+    );
+    return restored === null ? "not_found" : "restored";
+  } catch (error) {
+    const refusal = refusalOfItemRestore(error);
+    if (refusal === undefined) throw error;
+    return refusal;
+  }
+}
+
+/**
+ * `POST /api/trash/restore` (issue gh-1904): restores the databases and items the "Recently deleted" screen selected,
+ * in one transaction with one savepoint per id, so a refusal rolls back that id alone and the others still restore.
+ * The body is `{ itemIds, databaseIds }` (each optional), at least one and at most 100 ids in total after duplicates
+ * are merged, otherwise `400 validation_failed`. The databases are restored first, in the order sent, then the items,
+ * so an item of a database restored by the same request restores with it.
+ *
+ * The answer is `200 { results: [{ id, kind, status }] }` in that order, whatever the statuses are. `restored` also
+ * covers an id that was not trashed (a repeated call restores nothing again). `not_found` is an id the tenant has no
+ * database or item for, another tenant's id included. `database_archived` is an item whose database is archived and
+ * `conflict` an item a restore hook rejected with `409`; the item stays in the Trash. A restored item announces what
+ * the single restore announces after the commit and a restored database its schema change; an id that was refused
+ * announces nothing. Any other failure is not a refusal of one id: it aborts the request with its own error and
+ * nothing is restored.
+ *
+ * An item is looked up by id with its deleted rows included, in the tenant's databases, in the same transaction that
+ * restores it; `restoreItemWithClient` locks the row before it acts. A database is locked by its lookup, so an id
+ * that the purge deletes meanwhile is `not_found` and not an abort of the request.
+ */
+export function createTrashRestoreRouteHandler(pool: Pool) {
+  const queueAffinity = createActionQueueAffinity();
+  return async (ctx: TrashRestoreRouteRequestContext): Promise<CustomRouteResult> => {
+    const { itemIds, databaseIds } = parseRestoreBody(ctx.body);
+    const actingUserId = ctx.identity.user.id;
+    const results = await withTransaction(pool, async (client) => {
+      const outcome: RestoreResult[] = [];
+      for (const id of databaseIds) {
+        outcome.push({ id, kind: "database", status: await restoreOneDatabase(client, id, actingUserId) });
+      }
+      const databaseIdOfItem = new Map(
+        (await itemsStore.getItemsByIdsIncludingDeleted(client, itemIds)).map((item) => [item.id, item.databaseId]),
+      );
+      for (const id of itemIds) {
+        const databaseId = databaseIdOfItem.get(id);
+        const status =
+          databaseId === undefined
+            ? "not_found"
+            : await restoreOneItem(client, id, databaseId, actingUserId, queueAffinity);
+        outcome.push({ id, kind: "item", status });
+      }
+      return outcome;
+    });
+    return { status: 200, body: { results } };
   };
 }

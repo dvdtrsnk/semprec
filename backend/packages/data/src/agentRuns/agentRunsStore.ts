@@ -544,6 +544,61 @@ export async function listAgentRunsByHeartbeat(
 }
 
 /**
+ * The most recent runs of a project that the user `actorUserId` started or that started on the user's behalf
+ * (issue gh-1909), newest first by `started_at`, then by `id`, at most `limit` rows. A run of another actor is
+ * not returned, and neither is a run with `triggered_by = 'supervisor'` (a delegated sub-run).
+ *
+ * A heartbeat occurrence that was attempted several times is one row (issue gh-1914): the run with the highest
+ * `attempt`, ties by the later `started_at`, then the greater `id` (the `(attempt, started_at)` order of
+ * `getLatestRunOfOccurrence`, which has no `id` key, extended by `id` as the last key so that the pick is
+ * deterministic), so a row stands at the start time of its latest attempt. A run without `heartbeat_occurrence_id` is always a
+ * row. The earlier attempts are dropped by a per-row probe of `agent_runs_occurrence_idx` inside the scan, before
+ * `LIMIT` applies, so the limit counts rows after the collapse and the scan of
+ * `agent_runs_tenant_project_started_idx` stops once it has found `limit` of them; no step sorts or groups the
+ * project's history. An unknown project id, and the id of a project of another tenant that row-level security
+ * hides, return no rows; the probe sees only the caller's tenant, so an occurrence id of another tenant never
+ * collapses with this one's.
+ */
+export async function listProjectAgentRuns(
+  client: Pool | PoolClient,
+  input: { projectItemId: string; actorUserId: string; limit: number },
+): Promise<AgentRunRow[]> {
+  const { rows } = await client.query<AgentRunDbRow>(
+    `SELECT ${AGENT_RUN_ROW_COLUMNS}
+     FROM agent_runs r
+     WHERE r.project_item_id = $1 AND r.actor_user_id = $2 AND r.triggered_by <> 'supervisor'
+       AND (r.heartbeat_occurrence_id IS NULL OR NOT EXISTS (
+         SELECT 1 FROM agent_runs later
+         WHERE later.heartbeat_occurrence_id = r.heartbeat_occurrence_id
+           AND (later.attempt, later.started_at, later.id) > (r.attempt, r.started_at, r.id)))
+     ORDER BY r.started_at DESC, r.id DESC
+     LIMIT $3`,
+    [input.projectItemId, input.actorUserId, input.limit],
+  );
+  return rows.map(mapRow);
+}
+
+/**
+ * Every run of each of the heartbeat occurrences `occurrenceIds` in the current tenant scope, in one statement
+ * (issue gh-1914): ordered by occurrence, then `attempt`, then `started_at` and `id`, ascending. An occurrence
+ * with no run, and one of another tenant, has none.
+ */
+export async function listRunsOfOccurrences(
+  client: Pool | PoolClient,
+  occurrenceIds: readonly string[],
+): Promise<AgentRunRow[]> {
+  if (occurrenceIds.length === 0) return [];
+  const { rows } = await client.query<AgentRunDbRow>(
+    `SELECT ${AGENT_RUN_ROW_COLUMNS}
+     FROM agent_runs
+     WHERE heartbeat_occurrence_id = ANY($1::uuid[])
+     ORDER BY heartbeat_occurrence_id, attempt, started_at, id`,
+    [occurrenceIds],
+  );
+  return rows.map(mapRow);
+}
+
+/**
  * The most recently started run of a heartbeat whose `status` is still `running`, or `null`. The
  * manual trigger (issue #1453) reads it to refuse a second run while this one is active.
  */

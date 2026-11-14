@@ -141,10 +141,10 @@ function assertActionAffinity(actionId: string, expectedAffinity: TaskAffinity):
  * total), a failure is recorded to `last_error` and a `heartbeat_error` notification
  * is written in the same transaction — whether it came from the handler itself or from the
  * preparation (scheduled path only), the affinity check, or the handler lookup that precede it.
- * `payload` carries exactly one of four discriminators (issue #213): `occurrenceId` for a sweep-driven scheduled fire, `itemId` for an `onItemEvent`
- * fire, `triggeredByRunId` for a `heartbeat.trigger` manual fire by an agent, or `triggeredByUserId`
- * for a manual fire by a person (issue #1453) — zero or more than one is rejected with
- * `validation_failed` rather than guessed at.
+ * `payload` carries exactly one of five discriminators (issue #213): `occurrenceId` for a sweep-driven scheduled fire, `itemId` for an `onItemEvent`
+ * fire, `triggeredByRunId` for a `heartbeat.trigger` manual fire by an agent, `triggeredByUserId`
+ * for a manual fire by a person (issue #1453), or `retryOfRunId` for the retry of a failed run by a
+ * person (issue #1908) — zero or more than one is rejected with `validation_failed` rather than guessed at.
  *
  * Shared by both of `heartbeatFire`'s split task names (issue #222) — `createHeartbeatFireCoreTask`
  * and `createHeartbeatFireAgentTask` below are thin wrappers over this with their own
@@ -186,12 +186,20 @@ function createHeartbeatFireTaskForAffinity(
     if (rawTriggeredByUserId !== undefined && typeof rawTriggeredByUserId !== "string") {
       throw new Error("heartbeat fire job payload field 'triggeredByUserId' must be a string when present");
     }
-    const discriminators = [rawOccurrenceId, rawItemId, rawTriggeredByRunId, rawTriggeredByUserId].filter(
-      (v) => v !== undefined,
-    );
+    const rawRetryOfRunId = record?.retryOfRunId;
+    if (rawRetryOfRunId !== undefined && typeof rawRetryOfRunId !== "string") {
+      throw new Error("heartbeat fire job payload field 'retryOfRunId' must be a string when present");
+    }
+    const discriminators = [
+      rawOccurrenceId,
+      rawItemId,
+      rawTriggeredByRunId,
+      rawTriggeredByUserId,
+      rawRetryOfRunId,
+    ].filter((v) => v !== undefined);
     if (discriminators.length !== 1) {
       throw new ValidationError(
-        "heartbeat fire job payload must carry exactly one of 'occurrenceId', 'itemId', 'triggeredByRunId', 'triggeredByUserId'",
+        "heartbeat fire job payload must carry exactly one of 'occurrenceId', 'itemId', 'triggeredByRunId', 'triggeredByUserId', 'retryOfRunId'",
       );
     }
     const payload = {
@@ -201,6 +209,7 @@ function createHeartbeatFireTaskForAffinity(
       itemId: rawItemId,
       triggeredByRunId: rawTriggeredByRunId,
       triggeredByUserId: rawTriggeredByUserId,
+      retryOfRunId: rawRetryOfRunId,
     };
 
     const moduleRuleKinds = await resolveModuleRuleKinds(moduleRegistry);
@@ -249,6 +258,7 @@ function createHeartbeatFireTaskForAffinity(
         itemId: payload.itemId,
         triggeredByRunId: payload.triggeredByRunId,
         triggeredByUserId: payload.triggeredByUserId,
+        retryOfRunId: payload.retryOfRunId,
         isFinalAttempt,
       });
       await withTransaction(pool, (client) => recordHeartbeatHandlerSuccess(client, heartbeat));
@@ -274,7 +284,7 @@ export function createHeartbeatFireCoreTask(
   return createHeartbeatFireTaskForAffinity(pool, registry, "api", moduleRegistry);
 }
 
-/** `heartbeatFireAgent` (issue #222): the one heartbeat action (`core.agentRun`) that starts or continues an agent session. */
+/** `heartbeatFireAgent` (issue #222): the heartbeat actions that start or continue an agent session (`core.agentRun`, `core.journalWeeklyCleanup`). */
 export function createHeartbeatFireAgentTask(
   pool: Pool,
   registry: ActionRegistry,

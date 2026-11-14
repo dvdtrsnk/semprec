@@ -404,7 +404,7 @@ describe("MCP server write hook and the item-create hook registry (issue #1029)"
       withTransaction(pool, (client) =>
         confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposalId),
       ),
-    ).rejects.toMatchObject({ details: { field: "connectionConfig" } });
+    ).rejects.toMatchObject({ details: { field: "transport" } });
     expect(await countItems(mcpServersId)).toBe(0);
   });
 });

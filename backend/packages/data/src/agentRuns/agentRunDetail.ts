@@ -73,7 +73,13 @@ function triggerKindOf(run: AgentRunRow, threadKind: SempThreadKind | null): Age
   return run.triggeredBy;
 }
 
-function durationMsOf(run: AgentRunRow): number | null {
+/**
+ * The `durationMs` of the run detail (issue #1805): `finishedAt - startedAt` of a finished `invocation` run that no
+ * MCP client started, `null` for every other run. The project run list (issue gh-1909) reads it for each row.
+ */
+export function durationMsOf(
+  run: Pick<AgentRunRow, "unit" | "triggeredBy" | "startedAt" | "finishedAt">,
+): number | null {
   if (run.unit !== "invocation" || run.triggeredBy === "mcp" || run.finishedAt === null) return null;
   return Date.parse(run.finishedAt) - Date.parse(run.startedAt);
 }

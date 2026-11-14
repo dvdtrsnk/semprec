@@ -29,6 +29,12 @@ function conflict(): never {
   throw new ChokePointError(409, "value_link_conflict", "Value link cannot be changed");
 }
 
+/**
+ * The live item sources of a link and the values they hold now. A source whose property the source's database does not
+ * have cannot say what it holds, and reading it as an empty value would let a relink delete the target's whole value, so
+ * it is a conflict: nothing is computed from it. A link made for a value that no rule computes (the people of a task made
+ * from a mail thread, `mailThreadTaskPeople`) names such a source property, so it cannot be relinked.
+ */
 async function sourceValues(client: PoolClient, linkId: string): Promise<{ live: number; values: unknown[] }> {
   const sources = await valueLinksStore.listValueLinkSourcesByLinkIds(client, [linkId]);
   const items = await itemsStore.getItemsByIds(
@@ -44,7 +50,7 @@ async function sourceValues(client: PoolClient, linkId: string): Promise<{ live:
     if (!item) continue;
     live++;
     const property = await propertiesStore.getPropertyByKey(client, item.databaseId, source.sourcePropertyKey);
-    if (!property) continue;
+    if (!property) conflict();
     let next: unknown[];
     if (property.type === "relation") {
       const definition = await relationsStore.getRelationDefinitionByPropertyId(client, property.id);
@@ -105,6 +111,8 @@ export type ValueLinkWriter = "user" | "agent" | (WriterIdentity & { writerKind:
  * would end an active link asks for approval first (issue #1758), which rolls the transaction back; the
  * approved replay (`approvedRequestId`) ends the link with `broken_by` agent. An unlink of a link that
  * is already broken stays the idempotent no-op it always was.
+ *
+ * A relink is refused with `value_link_conflict` when a live source's property does not exist (`sourceValues`).
  *
  * An agent writer that carries a project (`agentProjectItemId`, issue #1810) needs `write` access to the
  * item's database, checked before anything about the link is read, so a refusal tells it nothing about the

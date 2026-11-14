@@ -35,6 +35,16 @@ import {
   type ProposalEnvelope,
 } from "./inboxTickAction.js";
 import { insertItemOrigins, type ItemOriginSource } from "./itemOriginsStore.js";
+export {
+  updateProposalValuesWithClient,
+  type UpdateProposalValuesInput,
+  type UpdateProposalValuesResult,
+} from "./proposalValueUpdates.js";
+export { reviseProposalFromThreadWithClient, type ReviseProposalFromThreadInput } from "./proposalThreadRevision.js";
+export type { ProposalWarning } from "./editorSchema.js";
+import { assertRequiredFieldsHaveValues } from "./proposalEditorRules.js";
+import { assertCardIsNotStdioMcpServer, normalizeEnvelopeForWrite } from "./proposalHiddenFields.js";
+import { appendDroppedValuesEntry, retainValuesForRevise } from "./proposalRetention.js";
 import { executeProposalSteps } from "./proposalSteps.js";
 import { effectiveStepRelations } from "./proposalStepGraph.js";
 import { enqueueJournalInboxRecomputeForProposal } from "./journalInboxCompute.js";
@@ -69,7 +79,7 @@ export interface ConfirmProposalCredentialInput {
 }
 
 /** Row-locks the proposal (serializing concurrent confirm/reject/revise on the same row) and rejects a missing or soft-deleted one. */
-async function lockLiveProposal(client: PoolClient, databaseId: string, proposalId: string): Promise<ItemRow> {
+export async function lockLiveProposal(client: PoolClient, databaseId: string, proposalId: string): Promise<ItemRow> {
   const proposal = await itemsStore.lockItemById(client, databaseId, proposalId);
   if (!proposal || proposal.deletedAt) throw new NotFoundError(`Processing proposal ${proposalId} not found`);
   return proposal;
@@ -135,13 +145,13 @@ function isHeadingUnavailable(error: ValidationError): boolean {
   );
 }
 
-interface EnvelopeForCard {
+export interface EnvelopeForCard {
   transcriptCardEdge: TranscriptCardEdge | null;
   targetDatabase: DatabaseRow | null;
 }
 
 /** An unknown stored kind is displayed, never executed: this release cannot validate or run it. */
-function unsupportedEntityKindError(entityKind: string): ConflictError {
+export function unsupportedEntityKindError(entityKind: string): ConflictError {
   return new ConflictError(`Proposal entityKind '${entityKind}' is not supported by this release`, {
     field: "entityKind",
     entityKind,
@@ -312,7 +322,7 @@ async function resolveItemOriginSource(
  * other card) alongside the envelope's target database row (`null` for a non-`'database'`
  * envelope).
  */
-async function assertValidEnvelopeForCard(
+export async function assertValidEnvelopeForCard(
   client: PoolClient,
   config: ProposalActionConfig,
   proposal: ItemRow,
@@ -480,6 +490,15 @@ async function assertValidEnvelopeForCard(
  * ever exists once a human confirmed it. A `fileFromAttachment` step (issue #1703) moves an attachment
  * of the card's source Inbox item into Files inside the same transaction; `executeProposalSteps` does it.
  *
+ * A visible required field of the card's editor schema that has no value (issue #1928, `assertRequiredFieldsHaveValues`)
+ * is a `ValidationError` naming it, raised after the envelope validation and before any write; a card whose base
+ * kind has no schema is not checked.
+ *
+ * What is written is what the card's editor shows (issue #1934, `normalizeEnvelopeForWrite`): the properties of the
+ * fields the schema hides are left out of the created item (the time part of an all-day card as `timeFrom` and
+ * `timeTo`, which an Event stores as null, and the time of day inside its `date`), and an MCP server card is written as `{ transport, url }`. A card whose
+ * MCP server connection is `stdio` is a `ValidationError` on `transport`, raised before the envelope validation.
+ *
  * `ifVersion` (issue #1852) is the `updatedAt` the caller last saw. It is checked after the card is locked, after
  * the answer for a card that is already `confirmed` (returned unchanged, whatever `ifVersion` says, so a replayed
  * decision succeeds) and after the refusal of any status other than `proposed`: an `ifVersion` that is not the
@@ -507,6 +526,7 @@ export async function confirmProposalWithClient(
   const markdownPageContent = envelope.entityKind === "pageContent" && Object.hasOwn(envelope.properties, "markdown");
   if (markdownPageContent && proposal.properties.kind === "transcript")
     throw new ValidationError("A transcript proposal cannot target page content", { field: "entityKind" });
+  await assertCardIsNotStdioMcpServer(client, envelope);
   let validated: EnvelopeForCard;
   try {
     validated = await assertValidEnvelopeForCard(client, config, proposal, envelope);
@@ -519,6 +539,8 @@ export async function confirmProposalWithClient(
     throw error;
   }
   const { transcriptCardEdge, targetDatabase } = validated;
+  await assertRequiredFieldsHaveValues(client, proposal, envelope);
+  const written = await normalizeEnvelopeForWrite(client, proposal, envelope, targetDatabase);
 
   let resultItemId: string;
   let resultLabel: string;
@@ -546,8 +568,8 @@ export async function confirmProposalWithClient(
     let created: ItemRow;
     let createdItemIds: string[];
     let resultDatabaseId = envelope.target;
-    if (envelope.operations) {
-      const executed = await executeProposalSteps(client, envelope.operations, {
+    if (written.operations) {
+      const executed = await executeProposalSteps(client, written.operations, {
         writer: CONFIRMING_USER_WRITER,
         actingUserId,
         sourceInboxItemId: origin.inboxItemId,
@@ -562,7 +584,7 @@ export async function confirmProposalWithClient(
     } else {
       created = await createItemWithClient(
         client,
-        { databaseId: envelope.target, properties: envelope.properties },
+        { databaseId: envelope.target, properties: written.properties },
         { writer: CONFIRMING_USER_WRITER, actingUserId },
       );
       createdItemIds = [created.id];
@@ -978,8 +1000,30 @@ export async function settleSpeakerCardWithClient(
   return "confirmed";
 }
 
-/** The history entry text of a revise that carries no `message`. */
-const DEFAULT_REVISE_MESSAGE = "Revised by user.";
+/** The history entry text of a revise that carries no `message`, by who revised. */
+const DEFAULT_REVISE_MESSAGES = { user: "Revised by user.", ai: "Revised by assistant." } as const;
+
+/**
+ * Who a revise is recorded as in the card's history. A `user` revise is the route's. An `ai` revise is a revision by
+ * the assistant in an Inbox item thread (issue #1906): its entry has kind `threadRevision` and names the thread and
+ * the assistant message whose turn made the revision.
+ */
+export type ProposalRevisionAuthor = { author: "user" } | { author: "ai"; threadId: string; messageId: string };
+
+/**
+ * `history` followed by the entry of a revise by `revisedBy`; `message` is its text, the default of that author when
+ * absent. `reviseProposalFromThreadWithClient` (issue #1938) writes its entry the same way.
+ */
+export function appendRevisionEntry(history: unknown, message: string | undefined, revisedBy: ProposalRevisionAuthor) {
+  return appendHistoryEntry(
+    history,
+    message ?? DEFAULT_REVISE_MESSAGES[revisedBy.author],
+    revisedBy.author,
+    revisedBy.author === "ai"
+      ? { kind: "threadRevision", threadId: revisedBy.threadId, messageId: revisedBy.messageId }
+      : undefined,
+  );
+}
 
 /**
  * What `reviseProposalWithClient` takes: either a complete replacement envelope (all of `entityKind`, `target` and
@@ -1020,13 +1064,28 @@ export type ReviseProposalInput = { ifVersion?: string } & (
  * revised like any other, and its `invalidReason` is cleared in the same write.
  *
  * Without an envelope (issue #1870) only a `kind = 'transcript'` card accepts the call: the `message` is appended
- * to its history as a user entry and nothing else on the card changes; acting on the instruction is not done
- * here. A card that is locked, whose source Inbox item was deleted or whose stored `entityKind` this release
+ * to its history as an entry of the revising author (`revisedBy`: the user, or the assistant of an item thread) and
+ * nothing else on the card changes; acting on the instruction is not done here. A card that is locked, whose source Inbox item was deleted or whose stored `entityKind` this release
  * does not support is refused as above. Any other card is refused with `validation_failed` on `message`.
  *
  * `input.ifVersion` is handed to the card's update, so a card whose `updatedAt` differs is answered
  * `version_conflict` and nothing is written. The envelope is validated before that update, so an invalid
  * envelope on a stale card is refused as invalid. `actingUserId` addresses the realtime invalidation of the write.
+ * `revisedBy` says who the history entry of the revise names (`ProposalRevisionAuthor`): the user by default, as for
+ * the route, or the assistant of an item thread (issue #1906), whose entry has author `ai`, kind `threadRevision`
+ * and the ids of its thread and message. The `reset` entry that lists dropped manual values keeps the author `user`
+ * in both cases, and nothing else about the revise differs.
+ *
+ * The user's manual values (`userOverrides`, `userEditedKeys`, issue #1892) only fit the destination they were
+ * typed for (issue #1924, `retainOverridesForEnvelope`): when the new envelope's `entityKind` or `target` differs
+ * from the assistant's previous one they are all cleared. Otherwise only the values of the envelope's own
+ * destination stay (`primary`, or the primary step of a multi-step envelope) whose key is a property of the target;
+ * the values of any other step are dropped, and a value equal to the new assistant value leaves the overrides
+ * without an entry. When a value was dropped, a history entry of kind `reset` listing the dropped `ref.key`s follows
+ * the revise entry. The new envelope is stored as the assistant's output (`aiProposal`), and `proposal` holds the
+ * effective envelope: the new envelope with the values that stay laid over it, validated as confirm validates it,
+ * so a kept value is what confirm writes. A revision made in an Inbox item thread has rules of its own
+ * (`reviseProposalFromThreadWithClient`, issue #1938).
  */
 export async function reviseProposalWithClient(
   client: PoolClient,
@@ -1034,6 +1093,7 @@ export async function reviseProposalWithClient(
   proposalId: string,
   input: ReviseProposalInput,
   actingUserId?: string,
+  revisedBy: ProposalRevisionAuthor = { author: "user" },
 ): Promise<ItemRow> {
   const proposal = await lockLiveProposal(client, config.processingProposalsDatabaseId, proposalId);
   const status = proposal.properties.status;
@@ -1058,7 +1118,7 @@ export async function reviseProposalWithClient(
       {
         databaseId: config.processingProposalsDatabaseId,
         itemId: proposal.id,
-        propertiesPatch: { history: appendHistoryEntry(proposal.properties.history, input.message, "user") },
+        propertiesPatch: { history: appendRevisionEntry(proposal.properties.history, input.message, revisedBy) },
         ifVersion: input.ifVersion,
       },
       { allowedSystemKeys: ["history"], actingUserId },
@@ -1073,6 +1133,15 @@ export async function reviseProposalWithClient(
   };
   await assertValidEnvelopeForCard(client, config, proposal, envelope);
 
+  // The user's manual values only fit the destination they were typed for (issue #1924).
+  const retained = await retainValuesForRevise(client, proposal, envelope);
+  const effective = retained.effective;
+  if (retained.userEditedKeys.length > 0) await assertValidEnvelopeForCard(client, config, proposal, effective);
+  const history = appendDroppedValuesEntry(
+    appendRevisionEntry(proposal.properties.history, input.message, revisedBy),
+    retained,
+  );
+
   // A fixable invalid card leaves `invalid` here, so its reason goes with it in this same write.
   const clearedReason = status === "invalid" ? { invalidReason: null } : {};
   const updated = await updateItemWithClient(
@@ -1081,15 +1150,29 @@ export async function reviseProposalWithClient(
       databaseId: config.processingProposalsDatabaseId,
       itemId: proposal.id,
       propertiesPatch: {
-        proposal: envelope,
+        proposal: effective,
         ...aiProposalPatch(proposal.properties, envelope),
+        userOverrides: retained.userOverrides,
+        userEditedKeys: retained.userEditedKeys,
         status: "proposed",
         ...clearedReason,
-        history: appendHistoryEntry(proposal.properties.history, input.message ?? DEFAULT_REVISE_MESSAGE, "user"),
+        history,
       },
       ifVersion: input.ifVersion,
     },
-    { allowedSystemKeys: ["proposal", "aiProposal", "aiVersion", "status", "invalidReason", "history"], actingUserId },
+    {
+      allowedSystemKeys: [
+        "proposal",
+        "aiProposal",
+        "aiVersion",
+        "userOverrides",
+        "userEditedKeys",
+        "status",
+        "invalidReason",
+        "history",
+      ],
+      actingUserId,
+    },
   );
   await enqueueJournalInboxRecomputeForProposal(client, proposal.id);
   return updated;

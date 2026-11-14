@@ -1,4 +1,4 @@
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { AGENT_TASK_NAMES, CORE_TASK_NAMES, type AgentTaskName, type CoreTaskName } from "@semprec/queue";
 import { withTraceContext } from "@semprec/shared";
 import { agentRunErrorCodeOf } from "../agentRuns/agentRunErrorCodes.js";
@@ -6,6 +6,7 @@ import {
   createAgentRun,
   createChainedAgentRun,
   finishAgentRun,
+  getAgentRun,
   getLatestRunOfOccurrence,
   type AgentRunRow,
 } from "../agentRuns/agentRunsStore.js";
@@ -14,6 +15,7 @@ import { finishTickRunWithMessage, getOrCreateTickThread } from "../semp/sempTic
 import { withTransaction } from "../db/pool.js";
 import { tenantLane } from "../tenancy/tenantLane.js";
 import { SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME } from "../inbox/inboxTickKeys.js";
+import { JOURNAL_WEEKLY_CLEANUP_ACTION_ID } from "../journal/journalWeeklyCleanupKeys.js";
 import { parseItemRelationFilterConfig, passesItemRelationFilter } from "./itemRelationFilter.js";
 import { logger } from "./logger.js";
 import { parseSenderKnownFilterConfig, passesSenderKnownFilter } from "./senderKnownFilter.js";
@@ -27,6 +29,8 @@ export interface ActionContext {
   triggeredByRunId?: string;
   /** the user from the manual trigger's payload (`POST /api/heartbeats/:id/trigger`, issue #1453) — the person whose run this is, recorded as the new run's actor. Unset for every other fire, and a manual fire from a person has no `triggeredByRunId`. */
   triggeredByUserId?: string;
+  /** the failed run from the retry's payload (`POST /api/agent-runs/:id/retry`, issue #1908). Set, the new run is the next attempt of that run in its chain. Unset for every other fire. */
+  retryOfRunId?: string;
   /**
    * Set by the heartbeat fire task from the queue job's `attempts >= max_attempts`. `undefined`
    * for a caller outside the queue (treated as final — a direct caller has no retry).
@@ -75,6 +79,38 @@ export type RunAgentFn = (input: {
 }) => Promise<{ result?: string } | void>;
 
 /**
+ * The run of the retry of `retryOfRunId` (issue #1908): the next attempt of that run in its chain, with the
+ * heartbeat, project, task and occurrence it was started with. `null`, with the ids logged, when the retried run
+ * is gone or already has a successor, so the caller starts no agent.
+ */
+async function createRetryRun(
+  client: PoolClient,
+  heartbeatId: string,
+  retryOfRunId: string,
+  threadId: string,
+): Promise<AgentRunRow | null> {
+  const retried = await getAgentRun(client, retryOfRunId);
+  if (!retried) {
+    logger.warn({ heartbeatId, retryOfRunId }, "core.agentRun: the run to retry does not exist; nothing to run");
+    return null;
+  }
+  const chained = await createChainedAgentRun(client, {
+    projectItemId: retried.projectItemId,
+    heartbeatId: retried.heartbeatId,
+    heartbeatOccurrenceId: retried.heartbeatOccurrenceId,
+    threadId,
+    triggeredBy: "heartbeat",
+    task: retried.task,
+    retryOfRunId,
+    attempt: retried.attempt + 1,
+  });
+  if (!chained) {
+    logger.warn({ heartbeatId, retryOfRunId }, "core.agentRun: the run to retry already has a successor; not running");
+  }
+  return chained;
+}
+
+/**
  * `core.agentRun`: "run the agent owning the project with the task from action_config.task."
  * Actually running an LLM session is out of scope for this issue — `runAgent` is the
  * pluggable/injected function a later agent-orchestration issue will supply.
@@ -84,6 +120,10 @@ export type RunAgentFn = (input: {
  * an Emails item related to an inbox Folder and not to a junk/trash one, without any mail-specific
  * scheduler. Only applied for item-triggered (`onItemEvent`) heartbeats, where `context.itemId`
  * is set; time-based heartbeats ignore it.
+ *
+ * With `context.retryOfRunId` (issue #1908) the run is the next attempt of that run, made with
+ * `createChainedAgentRun` and the retried run's own task; it starts no agent when the retried run is gone or was
+ * retried already. The fire job of a retry has one attempt, so a failing retry is a final failure.
  *
  * A `runAgent` failure closes this attempt's `agent_runs` row as `error` on every attempt, but
  * writes the `agent_run_error` notification only on the final one (`context.isFinalAttempt !==
@@ -111,8 +151,14 @@ export function coreAgentRunAction(pool: Pool, runAgent: RunAgentFn): ActionHand
     const task = context.itemId ? `${baseTask}\nTriggering item id: ${context.itemId}` : baseTask;
     // Run start: the tick thread (one per heartbeat) is created on first use and the run is linked
     // to it in the same transaction; subscribers are told once that transaction commits.
-    const { run, thread } = await withTransaction(pool, async (client) => {
+    const started = await withTransaction(pool, async (client) => {
       const tickThread = await getOrCreateTickThread(client, context.heartbeatId);
+      if (context.retryOfRunId !== undefined) {
+        const retry = await createRetryRun(client, context.heartbeatId, context.retryOfRunId, tickThread.id);
+        if (retry === null) return null;
+        publishSempThreadInvalidation(client, tickThread.tenantId, tickThread.id);
+        return { run: retry, thread: tickThread };
+      }
       const runInput = {
         projectItemId: context.projectItemId,
         parentRunId: context.triggeredByRunId ?? null,
@@ -149,13 +195,17 @@ export function coreAgentRunAction(pool: Pool, runAgent: RunAgentFn): ActionHand
       return { run: created, thread: tickThread };
     });
 
+    // A retry that found nothing to retry, or a run already retried, starts no agent.
+    if (started === null) return;
+    const { run, thread } = started;
+
     await withTraceContext({ agentRunId: run.id }, async () => {
       let outcome: { result?: string } | void;
       try {
         outcome = await runAgent({
           agentRunId: run.id,
           projectItemId: context.projectItemId,
-          task,
+          task: run.task,
           ...(context.itemId ? { itemId: context.itemId } : {}),
         });
       } catch (err) {
@@ -215,10 +265,19 @@ export function coreAgentRunAction(pool: Pool, runAgent: RunAgentFn): ActionHand
 export const CORE_AGENT_RUN_ACTION_ID = "core.agentRun";
 
 /**
+ * The heartbeat actions whose fire starts or continues an agent session: `core.agentRun`, and
+ * `core.journalWeeklyCleanup` (issue #1883), which runs the agent through the `core.agentRun` handler.
+ */
+const AGENT_SESSION_ACTION_IDS: ReadonlySet<string> = new Set([
+  CORE_AGENT_RUN_ACTION_ID,
+  JOURNAL_WEEKLY_CLEANUP_ACTION_ID,
+]);
+
+/**
  * Which of `heartbeatFire`'s two split task names (issue #222) a heartbeat action's fire job
- * belongs on: `heartbeatFireAgent` for `core.agentRun`, the only action id that starts or
- * continues an agent session; `heartbeatFireCore` for every other action (the default —
- * including library processing, drift checks, and every other known core action id).
+ * belongs on: `heartbeatFireAgent` for the actions that start or continue an agent session
+ * (`core.agentRun` and `core.journalWeeklyCleanup`); `heartbeatFireCore` for every other action (the
+ * default — including library processing, drift checks, and every other known core action id).
  *
  * Deliberately not validated against `KNOWN_HEARTBEAT_ACTION_IDS` (manifest/knownActionIds.ts):
  * that catalog only covers real, module-registered actions, while tests register arbitrary ids
@@ -227,7 +286,7 @@ export const CORE_AGENT_RUN_ACTION_ID = "core.agentRun";
  * that already look one up (schedulerStore.ts, the legacy job migration).
  */
 export function resolveHeartbeatFireTaskName(actionId: string): CoreTaskName | AgentTaskName {
-  return actionId === CORE_AGENT_RUN_ACTION_ID
+  return AGENT_SESSION_ACTION_IDS.has(actionId)
     ? AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT
     : CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE;
 }

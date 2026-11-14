@@ -23,6 +23,7 @@ import { installFatalHandlers, withTraceContext } from "@semprec/shared";
 import { createDispatcher } from "./app.js";
 import type { CustomRouteDependencies, CustomRouteOAuthClient } from "./adapter/customRouteMount.js";
 import { createMailLiveSyncControl } from "./mailLiveSyncControl.js";
+import { createAiGatewayClientForApi } from "./projectAgentGuidanceComposition.js";
 import {
   createGmailPubSubDispatcherFor,
   createImapIdleLifecycleFactory,
@@ -100,6 +101,8 @@ const customRouteDependencies: CustomRouteDependencies = {
     redirectBaseUrl: appBaseUrl,
   },
   mailLiveSync: mailLiveSyncControl.control,
+  // The thread task route (issue gh-1900) names a task without a name through the gateway and has no other way to.
+  aiGateway: createAiGatewayClientForApi(),
 };
 
 /**

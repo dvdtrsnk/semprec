@@ -523,6 +523,43 @@ describe("adapter route (issue #238)", () => {
     if (failures.length > 1) throw new AggregateError(failures, "Adapter test and settlement failed");
   });
 
+  it("adds a top-level `warnings` field when the handler returns warnings, an empty list included, and none otherwise", async () => {
+    const token = await tokenFor("warnings@example.com");
+    const warnings = [{ ref: "company", field: "name", code: "required" as const }];
+    const warningsServer = createServer(
+      asVoid(
+        createAdapterRequestListener(pool, async ({ req }) => {
+          if (req.url === "/some") return { status: 200, item: SAMPLE_ITEM, warnings };
+          if (req.url === "/empty") return { status: 200, item: SAMPLE_ITEM, warnings: [] };
+          return { status: 200, item: SAMPLE_ITEM };
+        }),
+      ),
+    );
+    await new Promise<void>((resolve) => warningsServer.listen(0, resolve));
+    const failures: unknown[] = [];
+    try {
+      const address = warningsServer.address();
+      if (!address || typeof address === "string") throw new Error("Expected bound TCP address");
+      const base = `http://127.0.0.1:${address.port}`;
+      const headers = { Authorization: `Bearer ${token}` };
+      const read = async (path: string): Promise<unknown> => (await fetch(`${base}${path}`, { headers })).json();
+      expect(await read("/some")).toEqual({ ...SAMPLE_ITEM, warnings });
+      expect(await read("/empty")).toEqual({ ...SAMPLE_ITEM, warnings: [] });
+      expect(await read("/none")).toEqual(SAMPLE_ITEM);
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      await new Promise<void>((resolve, reject) =>
+        warningsServer.close((error) => (error ? reject(error) : resolve())),
+      );
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Adapter test and settlement failed");
+  });
+
   it("keeps blob metadata identical when typed results are added", async () => {
     const token = await tokenFor("result-blob@example.com");
     const item = await runInTenant(getTenantZeroId(), async () => {

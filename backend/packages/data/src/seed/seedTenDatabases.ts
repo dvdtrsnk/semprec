@@ -305,6 +305,11 @@ export async function seedTenDatabasesInTransaction(
     // The fixed recurrence rule of an Event (issue gh-1817), judged by `calendar/eventRecurrenceHook.ts`; a populated
     // tenant gets the same definition from `calendar/eventsRecurrenceCutoverMigration.ts`.
     { key: "recurrence", name: "Recurrence", type: "json", owner: "user" },
+    // The day of the nearest occurrence on or after today in the tenant time zone (issue gh-1905), computed by
+    // `calendar/nextOccurrenceDateTransform.ts` and refreshed daily by `calendar/nextOccurrenceRefreshAction.ts`, so the
+    // generic sort, group and filter work on a recurring Event. Declared like `time`; a populated tenant gets the same
+    // definition from `calendar/nextOccurrenceDateCutoverMigration.ts`.
+    { key: "nextOccurrenceDate", name: "Next occurrence date", type: "date", owner: "system", locked: true },
     // The identity of a materialized occurrence of a recurring Event (issue gh-1843), written only by
     // `calendar/materializeEventOccurrence.ts`; a populated tenant gets the same two definitions from
     // `calendar/eventsOccurrenceCutoverMigration.ts`.

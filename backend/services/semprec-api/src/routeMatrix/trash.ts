@@ -18,4 +18,12 @@ export const TRASH_ROUTES: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
+  {
+    name: "restore trash",
+    method: "POST",
+    path: "/api/trash/restore",
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
 ];

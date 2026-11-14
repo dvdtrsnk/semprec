@@ -354,6 +354,9 @@ describe("Inbox proposal tool owner", () => {
         captureText: "",
         envelope: own.envelope,
         userEditedKeys: [],
+        version: (
+          await runtime.query<{ updated_at: Date }>("SELECT updated_at FROM items WHERE id = $1", [own.cardId])
+        ).rows[0]?.updated_at.toISOString(),
         status: "proposed",
         history: expect.arrayContaining([expect.objectContaining({ author: "user", message: "Revise" })]),
         attachments: own.attachmentIds.map((attachmentId) => ({ attachmentId, name: null })),

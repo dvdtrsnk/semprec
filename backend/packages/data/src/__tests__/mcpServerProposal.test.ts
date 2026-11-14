@@ -10,6 +10,8 @@ import { confirmProposalWithClient, reviseProposalWithClient } from "../inbox/pr
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { getDecryptedCredential, hasCredential } from "../credentials/externalCredentialsStore.js";
 import { MCP_CREDENTIAL_FIELD_NAMES } from "../mcp/mcpServerProposal.js";
+import { ValidationError } from "../errors.js";
+import { z } from "zod";
 
 let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
@@ -222,6 +224,74 @@ describe("MCP server database seed and proposal/confirm integration (issue #123)
       getDecryptedCredential(client, { itemId: serverId, actorType: "mcp_connection_manager", purpose: "test" }),
     );
     expect(decrypted).toBe("sk-super-secret");
+  });
+
+  describe("what confirm stores of the connection (issue #1934)", () => {
+    const confirmCard = (cardId: string, credential?: { credentialType: "api_key"; plaintext: string }) =>
+      withTransaction(pool, (client) =>
+        confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId, credential),
+      );
+    const storedServer = async (confirmed: { properties: Record<string, unknown> }) => {
+      const serverId = z.string().parse(confirmed.properties.resultItemId);
+      return withTransaction(pool, (client) => itemsStore.getItemById(client, mcpServersId, serverId));
+    };
+    const serverCount = async (): Promise<number> =>
+      (await pool.query("SELECT 1 FROM items WHERE database_id = $1", [mcpServersId])).rowCount ?? 0;
+
+    it.each(["http", "sse"])(
+      "stores a %s connection as { transport, url } without the command its envelope carried",
+      async (transport) => {
+        const proposal = await createMcpProposal({
+          name: "Remote tool",
+          connectionConfig: { transport, url: "https://mcp.example.com/mcp", command: "my-mcp-server" },
+        });
+
+        const server = await storedServer(await confirmCard(proposal.id));
+
+        expect(server?.properties).toEqual({
+          name: "Remote tool",
+          connectionConfig: { transport, url: "https://mcp.example.com/mcp" },
+        });
+      },
+    );
+
+    it("stores a card that has no connection yet as it is", async () => {
+      const proposal = await createMcpProposal({ name: "Bare tool" });
+
+      const server = await storedServer(await confirmCard(proposal.id));
+
+      expect(server?.properties).toEqual({ name: "Bare tool" });
+    });
+
+    it("refuses a card whose stored connection is stdio with a validation error on transport, and creates nothing", async () => {
+      const proposal = await createMcpProposal({
+        name: "Remote tool",
+        connectionConfig: { transport: "http", url: "https://mcp.example.com/mcp" },
+      });
+      // Raw write: a proposal that holds a stdio connection cannot be created through the API (it is refused as a card).
+      const stdio = {
+        entityKind: "database",
+        target: mcpServersId,
+        properties: { name: "Local tool", connectionConfig: { transport: "stdio", command: "my-mcp-server" } },
+      };
+      await pool.query("UPDATE items SET properties = properties || $2::jsonb WHERE id = $1", [
+        proposal.id,
+        JSON.stringify({ proposal: stdio, aiProposal: stdio }),
+      ]);
+      const serversBefore = await serverCount();
+
+      const error = await confirmCard(proposal.id, { credentialType: "api_key", plaintext: "sk-not-stored" }).then(
+        () => null,
+        (err: unknown) => err,
+      );
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toHaveProperty("details", { field: "transport" });
+      expect(await serverCount()).toBe(serversBefore);
+      expect((await pool.query("SELECT 1 FROM external_credentials")).rowCount).toBe(0);
+      const card = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, proposal.id));
+      expect(card?.properties.status).toBe("proposed");
+    });
   });
 
   it("confirm without a credential succeeds and stores no credential", async () => {

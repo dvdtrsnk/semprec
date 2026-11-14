@@ -1,6 +1,7 @@
 import type { ModuleManifest } from "@semprec/module-registry";
 import { CALENDAR_MODULE_ID } from "./calendarModuleId.js";
 import { CALENDARS_MODULE_ID } from "../seed/calendarsKeys.js";
+import { NEXT_OCCURRENCE_REFRESH_ACTION_ID } from "./nextOccurrenceRefreshAction.js";
 
 export { createCalendarTimelineRouteHandler } from "./timelineRouteHandler.js";
 export { createCalendarAgendaRouteHandler } from "./agendaRouteHandler.js";
@@ -32,6 +33,8 @@ export const manifest: ModuleManifest = {
   databases: [{ key: CALENDARS_MODULE_ID, name: "Calendars" }],
   capabilities: [],
   agentTools: [],
+  // Moves the stored `nextOccurrenceDate` of recurring Events on as days pass (issue gh-1905).
+  heartbeatActions: [NEXT_OCCURRENCE_REFRESH_ACTION_ID],
   customRoutes: [
     {
       name: "calendarTimeline",

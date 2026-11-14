@@ -179,19 +179,70 @@ async function requireHeartbeat(
 
 /**
  * All of a project's heartbeats, agent-triggered and deterministic alike (issue #135's
- * `heartbeat.list`) — a rule whose kind's module was deactivated still lists (matching
- * `setHeartbeatEnabled`'s disable path) rather than failing the whole call for one bad row.
+ * `heartbeat.list`), or only those of one `origin` when it is given (issue #1910) — a rule whose
+ * kind's module was deactivated still lists (matching `setHeartbeatEnabled`'s disable path) rather
+ * than failing the whole call for one bad row.
  */
 export async function listHeartbeatsByProject(
   client: Pool | PoolClient,
   projectItemId: string,
   moduleRuleKinds: HeartbeatRuleKindRegistry = new Map(),
+  origin: HeartbeatOrigin | null = null,
 ): Promise<HeartbeatRow[]> {
   const { rows } = await client.query<HeartbeatDbRow>(
-    `SELECT ${COLUMNS} FROM project_heartbeats WHERE project_item_id = $1 ORDER BY created_at ASC`,
-    [projectItemId],
+    `SELECT ${COLUMNS} FROM project_heartbeats
+     WHERE project_item_id = $1 AND ($2::text IS NULL OR origin = $2)
+     ORDER BY created_at ASC`,
+    [projectItemId, origin],
   );
   return rows.map((row) => mapRow(row, moduleRuleKinds, { tolerateUnknownRuleKind: true }));
+}
+
+/** The latest scheduled occurrence of a heartbeat whose run has finished, and that run (issue #1910). */
+export interface LastFinishedOccurrenceRun {
+  heartbeatId: string;
+  /** The due time the occurrence was scheduled for, an ISO timestamp. */
+  scheduledFor: string;
+  /** The run of the occurrence with the highest `attempt` (the one `getLatestRunOfOccurrence` returns). */
+  runId: string;
+}
+
+/**
+ * For each of `heartbeatIds` that has one, its latest occurrence (by `scheduled_for`) whose latest run
+ * is no longer `running` (issue #1910). An occurrence with no run (queued, cancelled, or failed before
+ * its run was created) and an occurrence whose run still runs are passed over for the one before it.
+ * The occurrence's own `status` is not read: it says the fire task succeeded, not how the run ended.
+ * One statement for all heartbeats; per heartbeat it walks `heartbeat_occurrences` newest first and
+ * stops at the first match. A heartbeat with no such occurrence is absent from the result.
+ */
+export async function listLastFinishedOccurrenceRuns(
+  client: Pool | PoolClient,
+  heartbeatIds: readonly string[],
+): Promise<LastFinishedOccurrenceRun[]> {
+  if (heartbeatIds.length === 0) return [];
+  const { rows } = await client.query<{ heartbeat_id: string; scheduled_for: Date; run_id: string }>(
+    `SELECT h.id AS heartbeat_id, last.scheduled_for, last.run_id
+     FROM unnest($1::uuid[]) AS h(id)
+     CROSS JOIN LATERAL (
+       SELECT o.scheduled_for, r.id AS run_id
+       FROM heartbeat_occurrences o
+       JOIN LATERAL (
+         SELECT id, status FROM agent_runs
+         WHERE heartbeat_occurrence_id = o.id
+         ORDER BY attempt DESC, started_at DESC
+         LIMIT 1
+       ) r ON r.status <> 'running'
+       WHERE o.heartbeat_id = h.id
+       ORDER BY o.scheduled_for DESC
+       LIMIT 1
+     ) last`,
+    [heartbeatIds],
+  );
+  return rows.map((row) => ({
+    heartbeatId: row.heartbeat_id,
+    scheduledFor: row.scheduled_for.toISOString(),
+    runId: row.run_id,
+  }));
 }
 
 /**
@@ -375,7 +426,7 @@ export async function updateHeartbeatName(
 /**
  * Sets `action_config.task` of a `core.agentRun` heartbeat, keeping every other `action_config`
  * key. Returns null when no heartbeat with this id is visible to the caller's tenant; a heartbeat
- * with another action is a validation error, because only `core.agentRun` reads `task`.
+ * with another action is a validation error, because this edit is defined for `core.agentRun` only.
  */
 export async function updateHeartbeatTask(
   client: Pool | PoolClient,
@@ -504,6 +555,37 @@ export function occurrenceFireJobKey(heartbeatId: string, occurrenceId: string, 
  */
 export function manualHeartbeatFireJobKey(heartbeatId: string): string {
   return `heartbeat-fire:manual:${heartbeatId}`;
+}
+
+/**
+ * The dedup key of the retry of one failed heartbeat run (issue #1908). Two requests to retry the same run
+ * collapse onto one job, and the key is distinct from `manualHeartbeatFireJobKey` and from the scheduler keys, so
+ * a retry never replaces the attribution of a pending manual or scheduled fire.
+ */
+export function retryHeartbeatFireJobKey(runId: string): string {
+  return `heartbeat-fire:retry:${runId}`;
+}
+
+const HEARTBEAT_OCCURRENCE_STATUSES = ["queued", "running", "succeeded", "failed", "cancelled"] as const;
+export type HeartbeatOccurrenceStatus = (typeof HEARTBEAT_OCCURRENCE_STATUSES)[number];
+
+/**
+ * The status of one heartbeat occurrence in the current tenant (issue #1908). An occurrence is expected to exist
+ * for the caller's id, because `agent_runs.heartbeat_occurrence_id` is a foreign key; a missing one is a broken
+ * invariant and throws, as does a status the table's check constraint does not allow.
+ */
+export async function getHeartbeatOccurrenceStatus(
+  client: Pool | PoolClient,
+  occurrenceId: string,
+): Promise<HeartbeatOccurrenceStatus> {
+  const { rows } = await client.query<{ status: string }>(`SELECT status FROM heartbeat_occurrences WHERE id = $1`, [
+    occurrenceId,
+  ]);
+  return assertKnownValue(
+    HEARTBEAT_OCCURRENCE_STATUSES,
+    requireSingleRow(rows, "heartbeat_occurrences row").status,
+    "heartbeat occurrence status",
+  );
 }
 
 /**

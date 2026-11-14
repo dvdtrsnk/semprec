@@ -157,7 +157,7 @@ describe("bespoke listeners run in the caller's tenant or an explicit system sco
   }
 
   it("covers every tenant-scoped listener route of the matrix", () => {
-    expect(tenantRoutes).toHaveLength(22);
+    expect(tenantRoutes).toHaveLength(23);
   });
 
   describe.each(tenantRoutes)("$name ($method $path)", (route) => {

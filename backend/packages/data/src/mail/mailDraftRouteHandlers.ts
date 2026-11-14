@@ -15,6 +15,7 @@ import {
   type EmailDraftView,
   type MailDraftWriteContext,
 } from "./draft.js";
+import { attachFileToDraft, detachFileFromDraft } from "./mailDraftAttachments.js";
 import { MAIL_DRAFT_MODES } from "./mailDraftsStore.js";
 
 const MAX_ADDRESS_LENGTH = 320;
@@ -160,6 +161,86 @@ export function createMailDraftUpdateRouteHandler(pool: Pool) {
       updateEmailDraft(
         client,
         { ...fields, draftItemId: draftId, mailboxItemId: mailboxId, sourceEmailItemId: sourceEmailId },
+        writeContext(ctx, queueAffinity),
+      ),
+    );
+    return { status: 200, body: draft };
+  };
+}
+
+const attachBodySchema = z.object({ fileItemId: z.uuid() }).strict();
+
+/**
+ * The members of the composition root's custom-route container the attach route reads
+ * (docs/adr/2026-10-29-custom-route-composition-root-dependencies.md). `semprec-api`'s
+ * `CustomRouteDependencies` is assignable to it.
+ */
+export interface MailDraftAttachmentRouteDependencies {
+  /**
+   * `MAX_FILE_SIZE_MB` in bytes, the limit of the attachments of a draft in a mailbox that has no provider limit.
+   * `createDispatcher` of `semprec-api` sets it (`services/semprec-api/src/app.ts`). The route has no limit of its
+   * own to fall back on.
+   */
+  maxFileSizeBytes?: number;
+}
+
+/**
+ * The upload limit the composition root configured. A root that configured none fails the request with a plain
+ * error and not a `ChokePointError`, as docs/adr/2026-10-29-custom-route-composition-root-dependencies.md decides
+ * for a member that is not set: the deployment is missing configuration, so the adapter logs the error and answers a
+ * generic 500.
+ */
+function requireUploadLimit(dependencies: MailDraftAttachmentRouteDependencies): number {
+  const limit = dependencies.maxFileSizeBytes;
+  if (limit === undefined) {
+    throw new Error('custom route dependency "maxFileSizeBytes" is not configured by the composition root');
+  }
+  return limit;
+}
+
+/**
+ * `POST /api/mail/drafts/:id/attachments` with the body `{ fileItemId }` (issue gh-1895): attaches the Files item to
+ * the draft and answers 200 with the draft, whose `attachments` lists it. A draft id that is no UUID is a 404 and a
+ * body that is anything but that object a 400. The refusals are those of `attachFileToDraft`: 404 for an unknown
+ * draft or file (another tenant's included), 409 for a draft that cannot be changed and 413
+ * `mail_attachment_too_large` for attachments over the limit of the mailbox's provider.
+ */
+export function createMailDraftAttachmentAddRouteHandler(
+  pool: Pool,
+  dependencies: MailDraftAttachmentRouteDependencies,
+) {
+  const queueAffinity = createActionQueueAffinity();
+  return async (ctx: DraftRouteContext): DraftRouteResult<EmailDraftView> => {
+    const uploadLimitBytes = requireUploadLimit(dependencies);
+    const draftId = draftIdOf(ctx);
+    const parsed = attachBodySchema.safeParse(ctx.body);
+    if (!parsed.success) throw invalidBody(parsed.error);
+    const draft = await withTransaction(pool, (client) =>
+      attachFileToDraft(
+        client,
+        { draftItemId: draftId, fileItemId: parsed.data.fileItemId, uploadLimitBytes },
+        writeContext(ctx, queueAffinity),
+      ),
+    );
+    return { status: 200, body: draft };
+  };
+}
+
+/**
+ * `DELETE /api/mail/drafts/:id/attachments/:fileItemId` (issue gh-1895): removes the attachment edge and answers 200
+ * with the draft. A draft id or file id that is no UUID names nothing and is a 404, as is a file that is not attached
+ * to the draft. The Files item stays.
+ */
+export function createMailDraftAttachmentRemoveRouteHandler(pool: Pool) {
+  const queueAffinity = createActionQueueAffinity();
+  return async (ctx: DraftRouteContext): DraftRouteResult<EmailDraftView> => {
+    const draftId = draftIdOf(ctx);
+    const fileItemId = z.uuid().safeParse(ctx.params.fileItemId);
+    if (!fileItemId.success) throw new NotFoundError("Attachment not found");
+    const draft = await withTransaction(pool, (client) =>
+      detachFileFromDraft(
+        client,
+        { draftItemId: draftId, fileItemId: fileItemId.data },
         writeContext(ctx, queueAffinity),
       ),
     );

@@ -19,6 +19,8 @@ import {
 import { sanitizeMailHtml } from "./mail/htmlSanitize.js";
 import { EMAILS_MODULE_ID, MAILBOXES_MODULE_ID } from "./seed/emailModuleKeys.js";
 import { registerItemReadProjection } from "./chokePoint/hooks.js";
+import { registerRelatedRowContributor } from "./chokePoint/relatedContributors.js";
+import { personMailThreadsRelatedRow } from "./mail/threadRelatedCount.js";
 // The composition point for the choke point's per-process hook registries (chokePoint/hooks.ts):
 // the one place that imports every domain's hook by name and registers it, so chokePoint/ itself
 // never has to. Side-effect only — imported for its registration calls, not any export.
@@ -68,6 +70,12 @@ import { sempThreadSearchGroup } from "./search/sempThreadSearch.js";
 import { mailGlobalSearchGroup } from "./mail/mailGlobalSearchGroup.js";
 import { eventTimePreWriteTransform, prepareEventTime } from "./calendar/eventTime.js";
 import { eventIcalIdentityTransform, prepareEventIcalIdentity } from "./calendar/eventIcalIdentityTransform.js";
+import { nextOccurrenceDateTransform, prepareNextOccurrenceDate } from "./calendar/nextOccurrenceDateTransform.js";
+import {
+  nextOccurrenceSeriesItemDeleteHook,
+  nextOccurrenceSeriesItemRestoreHook,
+  nextOccurrenceSeriesItemUpdateHook,
+} from "./calendar/nextOccurrenceSeriesHooks.js";
 import { eventValidationItemCreateHook, eventValidationItemUpdateHook } from "./calendar/eventValidationHook.js";
 import { eventRecurrenceItemCreateHook, eventRecurrenceItemUpdateHook } from "./calendar/eventRecurrenceHook.js";
 import {
@@ -121,6 +129,7 @@ import {
 import { journalItemCreateHook } from "./journal/journalWriteHook.js";
 import { journalItemRestoreHook } from "./journal/journalRestoreHook.js";
 import { inboxItemCreateHook } from "./inbox/inboxCreateHook.js";
+import { idempotentResponsesPurgeHook } from "./inbox/idempotentResponsesPurgeHook.js";
 import { journalDayRelinkItemCreateHook } from "./inbox/journalDayRelinkHook.js";
 import { inboxTypeItemCreateHook, inboxTypeItemUpdateHook } from "./inbox/inboxTypeWriteHook.js";
 import {
@@ -181,6 +190,12 @@ registerItemPreWriteTransform(FILES_MODULE_ID, filesItemPreWriteTransform, async
 // Events: the time transform first, so the iCalendar sequence compares normalized times (issues #1598, #1599).
 registerItemPreWriteTransform(EVENTS_MODULE_ID, eventTimePreWriteTransform, prepareEventTime);
 registerItemPreWriteTransform(EVENTS_MODULE_ID, eventIcalIdentityTransform, prepareEventIcalIdentity);
+// Issue gh-1905: the day a recurring Event is next on, after the time transform has normalized the day it reads.
+registerItemPreWriteTransform(EVENTS_MODULE_ID, nextOccurrenceDateTransform, prepareNextOccurrenceDate);
+// Issue gh-1905: a cancelled, restored or moved occurrence recomputes the day its series is next on.
+registerItemUpdateHook(nextOccurrenceSeriesItemUpdateHook);
+registerItemDeleteHook(nextOccurrenceSeriesItemDeleteHook);
+registerItemRestoreHook(nextOccurrenceSeriesItemRestoreHook);
 // Events: the date and time rules judge what the transforms above stored (issue #1663).
 registerItemCreateHook(eventValidationItemCreateHook);
 registerItemUpdateHook(eventValidationItemUpdateHook);
@@ -225,6 +240,8 @@ registerItemCreateHook(journalDayRelinkItemCreateHook);
 registerItemCreateHook(inboxItemCreateHook);
 registerItemCreateHook(inboxTypeItemCreateHook);
 registerItemUpdateHook(inboxTypeItemUpdateHook);
+// Issue gh-1894: the permanent deletion of a Processing proposals card sweeps the expired stored responses of card actions.
+registerItemPurgeHook(idempotentResponsesPurgeHook);
 
 registerItemReadProjection({
   ownerModuleId: EMAILS_MODULE_ID,
@@ -382,3 +399,9 @@ registerItemSearchGroup({ type: "journal", ownerModuleIds: [JOURNAL_MODULE_ID] }
 registerItemSearchGroup({ type: "file", ownerModuleIds: [FILES_MODULE_ID] });
 registerThreadSearchGroup(mailGlobalSearchGroup);
 registerThreadSearchGroup(sempThreadSearchGroup);
+
+// Issue gh-1874: the related collections of a person list their mail threads in the Threads collection (the People
+// declaration in seed/systemDatabasesModuleManifest.ts omits the Emails collection). A read contributor, not a write
+// hook: it runs in the read of `relation.related`
+// (docs/adr/2026-11-13-related-rows-are-contributed-through-a-per-process-registry.md).
+registerRelatedRowContributor(PEOPLE_MODULE_ID, personMailThreadsRelatedRow);

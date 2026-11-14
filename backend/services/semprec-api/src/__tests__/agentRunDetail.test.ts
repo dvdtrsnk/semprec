@@ -1412,4 +1412,66 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
       expect((await readScoped(owner, chat.runId, b.assistantMessageId)).title).toBe("Next");
     });
   });
+
+  describe("retrying a finished tick run whose reply is incomplete (issue #1908)", () => {
+    /** A tick run of a succeeded occurrence, closed as done with `steps` stored on its single reply. */
+    async function tickRunWithReply(owner: Session, steps: SempReplyStep[]): Promise<AgentRunRow> {
+      const projectItemId = await createProject(owner, "Weekly review");
+      const { heartbeatId, tickThreadId } = await createHeartbeatWithThread(owner, projectItemId, "Sunday planning");
+      // Raw SQL: only the sweep inserts an occurrence, and it does so for a due rule at a time the test cannot set.
+      const occurrence = await runInTenant(owner.tenant, () =>
+        pool.query<{ id: string }>(
+          `INSERT INTO heartbeat_occurrences (heartbeat_id, scheduled_for, rule_snapshot, status)
+           VALUES ($1, now(), '{}', 'succeeded') RETURNING id`,
+          [heartbeatId],
+        ),
+      );
+      const run = await createRun(owner, {
+        projectItemId,
+        heartbeatId,
+        heartbeatOccurrenceId: occurrence.rows[0]!.id,
+        threadId: tickThreadId,
+        triggeredBy: "heartbeat",
+        task: "Plan the week",
+      });
+      await finishRunWithReply(owner, run, steps);
+      return run;
+    }
+
+    async function retry(session: Session, runId: string): Promise<{ status: number; body: unknown }> {
+      const res = await fetch(`${baseUrl}/api/agent-runs/${runId}/retry`, { method: "POST", headers: session.headers });
+      return { status: res.status, body: await res.json() };
+    }
+
+    async function retryJobCount(runId: string): Promise<number> {
+      const { rows } = await admin.query<{ count: number }>(
+        "SELECT count(*)::int AS count FROM graphile_worker.jobs WHERE key = $1",
+        [`heartbeat-fire:retry:${runId}`],
+      );
+      return rows[0]!.count;
+    }
+
+    it("queues the retry of a run that closed as done and reads error because its reply left a failed tool call", async () => {
+      const owner = await tenantSession();
+      const run = await tickRunWithReply(owner, [failedMcpStep("unavailable")]);
+      expect((await readDetail(owner, run.id)).body).toMatchObject({ status: "done", displayStatus: "error" });
+
+      const answer = await retry(owner, run.id);
+
+      expect(answer).toEqual({ status: 202, body: { jobKey: `heartbeat-fire:retry:${run.id}` } });
+      expect(await retryJobCount(run.id)).toBe(1);
+    });
+
+    it("refuses with not_retryable a run of the same occurrence whose reply is complete", async () => {
+      const owner = await tenantSession();
+      const run = await tickRunWithReply(owner, []);
+      expect((await readDetail(owner, run.id)).body).toMatchObject({ status: "done", displayStatus: "done" });
+
+      const answer = await retry(owner, run.id);
+
+      expect(answer.status).toBe(409);
+      expect(answer.body).toMatchObject({ code: "not_retryable" });
+      expect(await retryJobCount(run.id)).toBe(0);
+    });
+  });
 });

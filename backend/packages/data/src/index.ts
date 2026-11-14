@@ -84,12 +84,12 @@ export { requireApprovalForWrite } from "./chokePoint/writeApproval.js";
 export { postApprovalOutcomeMessage } from "./mcp/approvalOutcomeMessage.js";
 export { getDatabaseByModuleId, type CreateDatabaseInput } from "./chokePoint/databasesStore.js";
 export { type CreatePropertyInput, listPropertiesByDatabase } from "./chokePoint/propertiesStore.js";
-export type { ListItemsOptions } from "./chokePoint/itemsStore.js";
 export { findIdempotentReplay, getItemById, getItemsByIds, lockItemById } from "./chokePoint/itemsStore.js";
-export { writeComputed } from "./chokePoint/itemsStore.js";
+export { type ListItemsOptions, writeComputed } from "./chokePoint/itemsStore.js";
 export type { CreateViewInput, PatchViewInput } from "./chokePoint/viewsStore.js";
 export * from "./chokePoint/viewTypeRegistry.js";
 export { manifest as schemaCoreModuleManifest } from "./chokePoint/schemaCoreModuleManifest.js";
+export { createProjectHeartbeatsRouteHandler } from "./scheduler/projectHeartbeatsRoute.js";
 export { createSetHeartbeatEnabledRouteHandler } from "./scheduler/setHeartbeatEnabledRoute.js";
 export { createSempStatusRouteHandler, createSempStatusSummaryRouteHandler } from "./semp/sempStatusRouteHandler.js";
 export {
@@ -188,6 +188,7 @@ export { approvalNotificationLinkHref } from "./notifications/approvalNotificati
 
 export * from "./agentRuns/agentRunsStore.js";
 export * from "./agentRuns/agentRunDetail.js";
+export { createListAgentRunsRouteHandler } from "./agentRuns/agentRunsListRouteHandler.js";
 export { agentRunErrorFields, agentRunErrorSummary } from "./agentRuns/agentRunErrorSummary.js";
 export { deriveReplyOutcome, REPLY_INCOMPLETE_REASONS, type ReplyOutcome } from "./agentRuns/replyOutcome.js";
 export { deriveRunDisplayStatus, type AgentRunDisplayStatus } from "./agentRuns/agentRunDisplayStatus.js";
@@ -201,10 +202,7 @@ export {
 } from "./agentRuns/agentRunStepPages.js";
 export { projectAgentRunStepPage } from "./agentRuns/agentRunStepProjection.js";
 export { stepSummary, stepTitle } from "./agentRuns/agentStepCatalog.js";
-export {
-  AGENT_RUN_EVENTS_RETENTION_DAYS,
-  handleAgentRunEventsRetentionTask,
-} from "./agentRuns/agentRunEventsRetention.js";
+export * from "./agentRuns/agentRunEventsRetention.js";
 export * from "./aiGateway/agentRunUsage.js";
 export { enqueueAiBudgetReset } from "./aiGateway/aiBudgetResetJob.js";
 export * from "./aiGateway/aiGatewayCallsStore.js";
@@ -542,6 +540,7 @@ export {
   createTaskHostEventsClearRouteHandler,
 } from "./tasks/taskHostEventRouteHandlers.js";
 export { createTasksDayRolloverAction, TASKS_DAY_ROLLOVER_ACTION_ID } from "./tasks/tasksDayRolloverAction.js";
+export * from "./calendar/nextOccurrenceRefreshAction.js";
 export { firstOccurrenceAfter, latestOccurrenceOnOrBefore } from "./tasks/nextDueDate.js";
 export {
   createTaskRecurrence,
@@ -583,11 +582,11 @@ export {
   mergeApprovedJournalDuplicates,
   type JournalMergeCheck,
 } from "./journal/journalMergeApproval.js";
+export * from "./journal/mergeJournalDuplicates.js";
 export {
-  mergeJournalDuplicates,
-  type MergeJournalDuplicatesInput,
-  type MergeJournalDuplicatesResult,
-} from "./journal/mergeJournalDuplicates.js";
+  createJournalWeeklyCleanupAction,
+  JOURNAL_WEEKLY_CLEANUP_ACTION_ID,
+} from "./journal/journalWeeklyCleanupAction.js";
 export type { RefusedRelationEdge } from "./chokePoint/relationOps.js";
 export * from "./journal/journalPeriods.js";
 export * from "./views/temporalSwitcherViewType.js";
@@ -835,6 +834,7 @@ export { acceptInvitation } from "./tenancy/acceptInvitation.js";
 export { getUserTenantBinding } from "./tenancy/tenantsStore.js";
 export * from "./tenancy/accountsAdminStore.js";
 export * from "./tenancy/deleteAccount.js";
+export * from "./tenancy/profileAccountSummary.js";
 export * from "./tenancy/invites.js";
 export * from "./tenancy/inviteMail.js";
 export * from "./tenancy/tenantStatusSignal.js";
@@ -865,7 +865,7 @@ export { registerItemReadProjection, projectItemForRead, type ItemReadProjection
 export { filterRecognitionCandidates, RECOGNITION_TARGETS } from "./inbox/inboxRecognition.js";
 
 export { createMailContactsRouteHandler } from "./mail/mailContactsRoute.js";
-export { MailDraftAlreadySentError, MailDraftNotEditableError } from "./mail/draft.js";
+export { MailAttachmentTooLargeError, MailDraftAlreadySentError, MailDraftNotEditableError } from "./mail/draft.js";
 export * from "./mail/mailDraftRouteHandlers.js";
 export {
   createMailThreadDetailRouteHandler,
@@ -882,7 +882,7 @@ export {
 
 export { handleMailLinkPersonEmailsTask } from "./mail/linkPersonEmailsJob.js";
 
-export type { ConfirmationResult } from "./inbox/proposalActions.js";
+export type { ConfirmationResult, ProposalWarning } from "./inbox/proposalActions.js";
 
 export {
   createSempChatThread,
@@ -945,4 +945,4 @@ export { readRecordingRequest, recordRecordingIntake } from "./transcription/rec
 
 export { createLibraryMetadataFetcher } from "./library/libraryMetadataFetcher.js";
 
-export { createInboxProposalGetTool, inboxProposalGetArgsSchema } from "./inbox/inboxAgentTools.js";
+export * from "./inbox/inboxAgentTools.js";

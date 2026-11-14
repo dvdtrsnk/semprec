@@ -118,6 +118,19 @@ export async function readMailThreadUnread(client: PoolClient, threadId: string)
 }
 
 /**
+ * Whether thread `threadId` (an id `resolveMailThreadForAction` returned) is flagged, as the thread detail reports it:
+ * some live copy, drafts included, has its `flagged` flag set (`copy_stats` of `mailThreadCopyCtes` with a thread
+ * id). A thread without a live copy is not flagged.
+ */
+export async function readMailThreadFlagged(client: PoolClient, threadId: string): Promise<boolean> {
+  const { rows } = await client.query<{ flagged: boolean }>(
+    `WITH ${mailThreadCopyCtes(1)} SELECT COALESCE((SELECT flagged FROM copy_stats), false) AS flagged`,
+    [threadId],
+  );
+  return rows[0]?.flagged === true;
+}
+
+/**
  * Announces after the commit of the caller's transaction that mail thread `threadId` changed: one thin
  * `mailThread` invalidation to every socket of the tenant (issue #1816), so a client refetches the thread,
  * the mailbox counts and the overview. A rolled-back transaction announces nothing. `threadId` is the id a

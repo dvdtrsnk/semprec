@@ -652,14 +652,16 @@ describe("matchTranscriptToEvent (issue #247)", () => {
   });
 
   it("propagates an invalid tenant zone, writing neither an edge nor a card", async () => {
+    // An Event write reads the tenant zone (it derives the next occurrence date), so the Event is
+    // created while the zone is still valid and the zone is corrupted only afterwards.
+    await createEvent("meeting", "2024-03-01", { timeFrom: "12:30", timeTo: "14:00" });
+    const transcriptId = await createTranscript();
     // Raw SQL: the settings write refuses an invalid zone, so only a corrupted row holds one.
     const settingsUpdate = await pool.query(
       'UPDATE items SET properties = properties || \'{"timezone": "Not/AZone"}\'::jsonb WHERE database_id = $1',
       [await withTransaction(pool, (client) => getSystemSettingsDatabaseId(client))],
     );
     expect(settingsUpdate.rowCount).toBe(1);
-    await createEvent("meeting", "2024-03-01", { timeFrom: "12:30", timeTo: "14:00" });
-    const transcriptId = await createTranscript();
 
     const failure = await match(transcriptId).then(
       () => null,

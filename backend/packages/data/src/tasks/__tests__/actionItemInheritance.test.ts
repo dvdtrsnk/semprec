@@ -413,7 +413,9 @@ describe("a task from an Event's action item inherits the Event's project and pe
   it("declares the two rules, with the own-person filter on the people rule, valid against the seeded schema", async () => {
     const registry = await loadFullModuleRegistry();
     expect(() => registry.validateLinkRules()).not.toThrow();
-    const rules = (await registry.getLinkRules()).filter((rule) => rule.key.startsWith("task"));
+    const rules = (await registry.getLinkRules()).filter(
+      (rule) => rule.moduleId === "systemDatabases" && rule.key.startsWith("task"),
+    );
     expect(rules).toEqual([
       {
         moduleId: "systemDatabases",

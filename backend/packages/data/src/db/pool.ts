@@ -470,6 +470,93 @@ export async function withTransaction<T>(
 }
 
 /**
+ * What `withSavepoint` records when it starts and gives back when its body fails: how many after-commit callbacks
+ * and search-lane jobs the transaction had queued, and the callback of each keyed slot that existed.
+ */
+interface SavepointMark {
+  callbackCount: number;
+  searchJobCount: number;
+  keyedSlots: Map<{ callback: () => void }, () => void>;
+}
+
+function markSavepoint(client: PoolClient, owner: TransactionOwner): SavepointMark {
+  const keyedSlots = new Map<{ callback: () => void }, () => void>();
+  for (const keyed of owner.keyedCallbacks.values()) {
+    for (const slot of keyed.values()) keyedSlots.set(slot, slot.callback);
+  }
+  return {
+    callbackCount: afterCommitCallbacks.get(client)?.length ?? 0,
+    searchJobCount: owner.searchJobs.length,
+    keyedSlots,
+  };
+}
+
+/**
+ * Drops what the transaction queued since `mark`: the after-commit callbacks, the search-lane jobs and the keyed slots
+ * registered since (a slot that already existed gets its earlier callback back). A keyed slot is dropped together with
+ * the callback that wraps it, so a later registration under the same key queues a fresh one instead of replacing a
+ * callback that no longer runs.
+ */
+function discardSinceSavepoint(client: PoolClient, owner: TransactionOwner, mark: SavepointMark): void {
+  afterCommitCallbacks.get(client)?.splice(mark.callbackCount);
+  owner.searchJobs.splice(mark.searchJobCount);
+  for (const keyed of owner.keyedCallbacks.values()) {
+    for (const [key, slot] of keyed) {
+      const earlier = mark.keyedSlots.get(slot);
+      if (earlier === undefined) keyed.delete(key);
+      else slot.callback = earlier;
+    }
+  }
+}
+
+/** Names the savepoints of this process; a name never repeats, so a savepoint inside a savepoint cannot shadow its parent. */
+let savepointSequence = 0;
+
+/**
+ * Runs `fn` as one step of the active managed transaction of `client` (the `withTransaction` body that is running):
+ * between `SAVEPOINT` and `RELEASE SAVEPOINT`. When `fn` throws, the transaction goes back to the savepoint, so the
+ * writes of `fn` are gone and the transaction goes on, and the after-commit callbacks, search-lane jobs and keyed
+ * callbacks that were queued since the savepoint began are discarded, so the step announces nothing once the
+ * transaction commits. What was queued before the savepoint stays. The error `fn` threw is rethrown unchanged; the
+ * caller decides which errors are a refusal of this step and which are not, and rethrows the rest, which fails the
+ * whole transaction as any other error of its body.
+ *
+ * A rollback-only mark (`markManagedTransactionRollbackOnly`) belongs to the whole transaction and is not undone by
+ * the savepoint: a step whose failure marked it makes the transaction fail at its end, whatever the caller does with
+ * the error. When going back to the savepoint itself fails the connection is in an unknown state, so the transaction
+ * is marked rollback-only with the error of `fn` (which is the one rethrown) and the failed cleanup is logged.
+ * Docs: docs/adr/2026-11-14-a-savepoint-step-discards-what-it-queued-for-after-the-commit.md.
+ */
+export async function withSavepoint<T>(client: PoolClient, fn: () => Promise<T>): Promise<T> {
+  const owner = transactionOwner.getStore();
+  if (!owner?.active || owner.client !== client)
+    throw new Error("A savepoint requires the active managed transaction of its client");
+  // The name is built here from a counter and is never taken from input, so it cannot inject.
+  const name = `semprec_savepoint_${++savepointSequence}`;
+  const mark = markSavepoint(client, owner);
+  await client.query(`SAVEPOINT ${name}`);
+  let result: T;
+  try {
+    result = await fn();
+  } catch (error) {
+    discardSinceSavepoint(client, owner, mark);
+    try {
+      await client.query(`ROLLBACK TO SAVEPOINT ${name}`);
+      await client.query(`RELEASE SAVEPOINT ${name}`);
+    } catch (cleanupError) {
+      markManagedTransactionRollbackOnly(client, error);
+      logger.error(
+        { errorCategory: cleanupError instanceof Error ? "error" : "non_error" },
+        "withSavepoint: going back to the savepoint failed; the transaction can no longer commit",
+      );
+    }
+    throw error;
+  }
+  await client.query(`RELEASE SAVEPOINT ${name}`);
+  return result;
+}
+
+/**
  * Unwraps the single row of a query that returns exactly one by construction — an aggregate
  * with no GROUP BY, a `SELECT format(...)`, a `RETURNING` on a row just written. Postgres
  * guarantees the row; `noUncheckedIndexedAccess` cannot see that, and `rows[0]!` would silently

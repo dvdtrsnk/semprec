@@ -24,6 +24,8 @@ const fixtures = vi.hoisted(() => ({
   resolveCalls: [] as { runId: string; messageId: string; locale: string }[],
   /** The reply `getAgentRunDetail` was given, one entry per read. */
   detailReplies: [] as unknown[],
+  /** What `getRetrySuccessorId` answers: the id of the run that retries the run, or null. */
+  successorId: null as string | null,
 }));
 
 const DETAIL = {
@@ -77,6 +79,7 @@ vi.mock("@semprec/data", async (importOriginal) => ({
     fixtures.detailReplies.push(reply);
     return DETAIL;
   },
+  getRetrySuccessorId: async () => fixtures.successorId,
   getAgentRunUsage: async (_client: Client, runId: string, locale: string, sempMessageId?: string) => {
     fixtures.usageReads.push({ runId, locale, sempMessageId });
     return USAGE;
@@ -124,6 +127,7 @@ describe("GET /api/agent-runs/:id actor check (issue #1805) and usage locale (is
     fixtures.resolution = { kind: "notFound" };
     fixtures.resolveCalls = [];
     fixtures.detailReplies = [];
+    fixtures.successorId = null;
     server = createServer(createAgentRunRequestListener(new Pool()));
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
@@ -159,12 +163,28 @@ describe("GET /api/agent-runs/:id actor check (issue #1805) and usage locale (is
 
     expect(own).toEqual({
       status: 200,
-      body: { ...forgedRun(ids.sessionUser), ...DETAIL, errorCode: null, errorSummary: null, usage: USAGE },
+      body: {
+        ...forgedRun(ids.sessionUser),
+        retriedByRunId: null,
+        ...DETAIL,
+        errorCode: null,
+        errorSummary: null,
+        usage: USAGE,
+      },
     });
     expect(fixtures.detailReads).toBe(1);
     expect(fixtures.usageReads).toEqual([{ runId: ids.run, locale: "cs", sempMessageId: undefined }]);
     expect(fixtures.resolveCalls).toEqual([]);
     expect(fixtures.detailReplies).toEqual([undefined]);
+  });
+
+  it("answers the id of the run that retries the run as retriedByRunId (issue #1908)", async () => {
+    fixtures.run = forgedRun(ids.sessionUser);
+    fixtures.successorId = "77777777-7777-4777-8777-777777777777";
+
+    const own = await read();
+
+    expect(own).toMatchObject({ status: 200, body: { retriedByRunId: fixtures.successorId } });
   });
 
   it("reads the usage in English for a session user whose locale has no catalog (issue #1822)", async () => {
@@ -228,6 +248,7 @@ describe("GET /api/agent-runs/:id actor check (issue #1805) and usage locale (is
         status: 200,
         body: {
           ...forgedRun(ids.sessionUser),
+          retriedByRunId: null,
           startedAt: REPLY.startedAt,
           ...DETAIL,
           errorCode: null,
@@ -247,7 +268,14 @@ describe("GET /api/agent-runs/:id actor check (issue #1805) and usage locale (is
 
       expect(scoped).toEqual({
         status: 200,
-        body: { ...forgedRun(ids.sessionUser), ...DETAIL, errorCode: null, errorSummary: null, usage: USAGE },
+        body: {
+          ...forgedRun(ids.sessionUser),
+          retriedByRunId: null,
+          ...DETAIL,
+          errorCode: null,
+          errorSummary: null,
+          usage: USAGE,
+        },
       });
       expect(fixtures.detailReplies).toEqual([undefined]);
       expect(fixtures.usageReads).toEqual([{ runId: ids.run, locale: "cs", sempMessageId: undefined }]);

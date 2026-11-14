@@ -2,22 +2,29 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   withTransaction,
   ChokePointError,
+  NotRetryableError,
+  RetryPendingError,
   ValidationError,
   AGENT_RUN_STEP_DEFAULT_LIMIT,
   AGENT_RUN_STEP_MAX_LIMIT,
   agentRunErrorFields,
   buildAgentRunStepPage,
+  enqueueManualHeartbeatFire,
   getAgentRun,
   getAgentRunDetail,
   getAgentRunReplyOutcome,
   getAgentRunUsage,
+  getHeartbeatOccurrenceStatus,
+  getRetrySuccessorId,
   isAgentRunHistoryTruncated,
   isAgentRunReplyHistoryTruncated,
   isAgentRunStepReadSettled,
   listAgentRunEventsForStepPage,
+  lockHeartbeatForManualFire,
   mintMcpRunCredential,
   projectAgentRunStepPage,
   resolveAgentRunReply,
+  retryHeartbeatFireJobKey,
   toManifestLocale,
   type AgentRunReplyScope,
   type AgentRunRow,
@@ -34,6 +41,7 @@ const MAX_BODY_BYTES = 64 * 1024;
 
 const AGENT_RUN_PATH = /^\/api\/agent-runs\/([^/]+)$/;
 const AGENT_RUN_STEPS_PATH = /^\/api\/agent-runs\/([^/]+)\/steps$/;
+const AGENT_RUN_RETRY_PATH = /^\/api\/agent-runs\/([^/]+)\/retry$/;
 const MCP_CREDENTIALS_PATH = "/api/agent-runs/mcp-credentials";
 
 interface MintMcpCredentialRequestBody {
@@ -116,6 +124,60 @@ async function resolveReply(
   return resolution.kind === "wholeRun" ? undefined : resolution.reply;
 }
 
+const NOT_RETRYABLE_MESSAGE = "this run cannot be retried";
+const RETRY_PENDING_MESSAGE = "an automatic attempt of this run may still run; try again later";
+
+/**
+ * Queues the retry of the failed heartbeat run `run` (issue #1908) inside the caller's transaction, or refuses it
+ * with a typed error. The refusals come in this order:
+ *
+ * 1. `NotRetryableError` unless the run was triggered by a heartbeat that its row names, belongs to a scheduled
+ *    occurrence (a run of a manual fire or an item event has none) and its display status is `error`, which
+ *    includes a finished run whose reply left a failed tool call (issue #1890).
+ * 2. `NotRetryableError` when the run already has a successor: only the last run of a chain can be retried.
+ * 3. By the status of the occurrence: `queued` or `running` is `RetryPendingError` (an automatic attempt may
+ *    still run), `cancelled` is `NotRetryableError`, `failed` and `succeeded` go on (a `succeeded` occurrence
+ *    whose run reads `error` is the incomplete reply).
+ * 4. The refusals of the manual trigger of `enqueueManualHeartbeatFire` (heartbeat disabled or event-triggered).
+ *
+ * The heartbeat row is locked before the display status, the successor and the occurrence are read, so two
+ * requests for the heartbeat wait for each other. That does not stop the worker, which creates the successor in
+ * its own transaction: the job key makes repeated requests for one run one job, and the worker's chained insert
+ * is what keeps a second job of a run that was retried meanwhile from starting another agent. The job runs once (`maxAttempts` 1), so a
+ * failed retry is a final failure with its notification and can be retried again. No run row is written here: the
+ * worker creates it, because a `running` row ahead of the worker would be closed by startup repair.
+ */
+async function queueRetryOfHeartbeatRun(client: PoolClient, run: AgentRunRow): Promise<{ jobKey: string }> {
+  if (run.triggeredBy !== "heartbeat" || run.heartbeatOccurrenceId === null || run.heartbeatId === null) {
+    throw new NotRetryableError(NOT_RETRYABLE_MESSAGE);
+  }
+  // The row is read again by `enqueueManualHeartbeatFire`, which refuses a heartbeat that is gone.
+  await lockHeartbeatForManualFire(client, run.heartbeatId, null);
+  const replyOutcome = run.status === "done" ? await getAgentRunReplyOutcome(client, run) : null;
+  if ((await getAgentRunDetail(client, run, replyOutcome)).displayStatus !== "error") {
+    throw new NotRetryableError(NOT_RETRYABLE_MESSAGE);
+  }
+  if ((await getRetrySuccessorId(client, run.id)) !== null) {
+    throw new NotRetryableError(NOT_RETRYABLE_MESSAGE);
+  }
+  const occurrenceStatus = await getHeartbeatOccurrenceStatus(client, run.heartbeatOccurrenceId);
+  if (occurrenceStatus === "queued" || occurrenceStatus === "running") {
+    throw new RetryPendingError(RETRY_PENDING_MESSAGE);
+  }
+  if (occurrenceStatus === "cancelled") {
+    throw new NotRetryableError(NOT_RETRYABLE_MESSAGE);
+  }
+  const queued = await enqueueManualHeartbeatFire(client, {
+    heartbeatId: run.heartbeatId,
+    projectItemId: null,
+    trigger: { retryOfRunId: run.id },
+    refuseWhileActive: false,
+    jobKey: retryHeartbeatFireJobKey(run.id),
+    maxAttempts: 1,
+  });
+  return { jobKey: queued.jobKey };
+}
+
 /**
  * `GET /api/agent-runs/:id` — the destination the global approval queue's (issue #132) "source
  * agent-run link" points at — a read-only view of one run: the fields of its row (`getAgentRun`)
@@ -128,7 +190,13 @@ async function resolveReply(
  * before anything else about the run is read. With `?messageId=<assistant message id>` (issue #1889) the
  * title, `startedAt`, `durationMs`, `approvals`, `usage` and `displayStatus` describe that one reply of a
  * chat run (`resolveAgentRunReply`); a message that is no assistant message of the run in the caller's
- * tenant answers the same 404, and a run that is not a chat run answers with the whole run.
+ * tenant answers the same 404, and a run that is not a chat run answers with the whole run. The run row carries
+ * `retriedByRunId`, the id of the run that retries it or `null` (`getRetrySuccessorId`, issue #1908).
+ *
+ * `POST /api/agent-runs/:id/retry` (issue #1908) retries one failed run of a scheduled heartbeat occurrence: it
+ * answers `202 {jobKey}` once the retry job is queued (`queueRetryOfHeartbeatRun` holds the eligibility rules and
+ * their `not_retryable` and `retry_pending` refusals, both 409). The run must be the caller's own, as for the
+ * reads above, and another tenant's id answers the 404 of an unknown one. The request body is not read.
  *
  * `GET /api/agent-runs/:id/steps?after=<eventId>&limit=<n>` (issue #1821) — the run's events grouped
  * into steps, one page at a time, with `nextCursor` to pass as the next `after` (`buildAgentRunStepPage`
@@ -185,6 +253,23 @@ export function createAgentRunRequestListener(pool: Pool) {
             capabilities: minted.capabilities,
             expiresAt: minted.expiresAt,
           });
+          return;
+        }
+
+        const retryMatch = url.pathname.match(AGENT_RUN_RETRY_PATH);
+        if (retryMatch && req.method === "POST") {
+          // Group 1 of the route pattern is not optional, so a successful match always captured it.
+          const retryRunId = assertUuid(retryMatch[1]!, "id");
+          const queued = await withTransaction(pool, async (client) => {
+            const run = await getAgentRun(client, retryRunId);
+            if (!run || run.actorUserId !== identity.user.id) return null;
+            return queueRetryOfHeartbeatRun(client, run);
+          });
+          if (!queued) {
+            sendJson(res, 404, { error: "Not found" });
+            return;
+          }
+          sendJson(res, 202, queued);
           return;
         }
 
@@ -256,6 +341,7 @@ export function createAgentRunRequestListener(pool: Pool) {
             runDetail.displayStatus === "error" && replyOutcome?.outcome === "incomplete" ? replyOutcome : null;
           return {
             ...run,
+            retriedByRunId: await getRetrySuccessorId(client, run.id),
             ...(reply === undefined ? {} : { startedAt: reply.startedAt }),
             ...runDetail,
             ...(await agentRunErrorFields(run, identity.user.locale, incompleteReply)),

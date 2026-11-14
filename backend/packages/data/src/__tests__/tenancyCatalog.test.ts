@@ -92,6 +92,7 @@ const TENANT_TABLES = [
   "notification_preferences",
   "transcript_action_item_states",
   "library_cover_candidates",
+  "idempotent_responses",
 ];
 
 type Queryable = Pick<Pool | PoolClient, "query">;

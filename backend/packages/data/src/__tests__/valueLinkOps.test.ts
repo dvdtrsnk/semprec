@@ -438,4 +438,33 @@ describe("explicit value link operations", () => {
       });
     });
   });
+
+  it("refuses to relink from a source whose property its database does not have, without deleting the target's value", async () => {
+    await runInTenant(tenant, async () => {
+      const db = await cp.createDatabase({ name: "Link test" });
+      await cp.createProperty({ databaseId: db.id, key: "name", name: "Name", type: "text" });
+      const source = await cp.createItem({ databaseId: db.id, properties: { name: "source" } });
+      const target = await cp.createItem({ databaseId: db.id, properties: { name: "target" } });
+      await withTransaction(data, (client) =>
+        insertValueLink(client, {
+          itemId: target.id,
+          propertyKey: "name",
+          ruleKey: "test",
+          state: "broken",
+          brokenBy: "user",
+          brokenAt: new Date(),
+          sources: [{ kind: "item", sourceItemId: source.id, sourcePropertyKey: "missing" }],
+        }),
+      );
+      const before = await cp.getValueLinksForItems([target.id]);
+
+      await expect(cp.relinkValue({ itemId: target.id, propertyKey: "name" })).rejects.toMatchObject({
+        status: 409,
+        code: "value_link_conflict",
+      });
+
+      expect(await cp.getValueLinksForItems([target.id])).toEqual(before);
+      expect((await cp.getItem(db.id, target.id))?.properties.name).toBe("target");
+    });
+  });
 });

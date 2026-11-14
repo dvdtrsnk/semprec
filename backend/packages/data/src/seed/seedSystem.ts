@@ -38,6 +38,7 @@ import {
 } from "../transcription/transcriptionActions.js";
 import { seedTenDatabasesInTransaction } from "./seedTenDatabases.js";
 import { TASKS_DAY_ROLLOVER_ACTION_ID, TASKS_DAY_ROLLOVER_HEARTBEAT } from "../tasks/tasksDayRolloverAction.js";
+import { ensureJournalWeeklyCleanupHeartbeat } from "../journal/journalWeeklyCleanupAction.js";
 import { seedLibraryModuleInTransaction } from "./seedLibraryModule.js";
 import { seedEmailModuleInTransaction } from "./seedEmailModule.js";
 import { seedInboxPipelineInTransaction } from "./seedInboxPipeline.js";
@@ -343,6 +344,9 @@ export async function seedSystem(
       actionId: TASKS_DAY_ROLLOVER_ACTION_ID,
       actionConfig: { tasksDatabaseId: tenDatabases.tasks.id },
     });
+    // Weekly Journal cleanup (issue #1883): asks the assistant to tidy the Journal every Sunday evening. A populated
+    // install gets it from runJournalWeeklyCleanupCutoverMigration instead.
+    await ensureJournalWeeklyCleanupHeartbeat(client, semprecProject.id);
 
     // Inbox / Inbox item types / Processing proposals (issue #101): the three databases
     // issue #24's ten hardcoded databases deliberately exclude. Order relative to the

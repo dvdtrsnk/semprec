@@ -16,6 +16,7 @@ import { itemIdsLinkedToDatabases } from "../agentGrants/inheritedSensitivity.js
 import { getTaskRecurrenceBySeriesId, publicTaskRecurrenceTemplate } from "../tasks/taskRecurrenceStore.js";
 import { getApprovalRequest } from "../mcp/approvalRequestsStore.js";
 import { getBlob } from "../blobs/blobsStore.js";
+import { resolveMailThreadRefTargets } from "../mail/mailThreadRef.js";
 import { loadBlobMetadataForItems } from "../blobs/blobMetadata.js";
 import { listTranscriptSpeakers } from "../transcription/transcriptionSpeakerEdges.js";
 import { expandTranscriptSegmentRef } from "../transcription/transcriptSegmentRef.js";
@@ -293,6 +294,19 @@ export async function readSempRefContext(
       state: "active",
       details: { filename: row.filename, contentType: row.content_type, byteSize: row.byte_size },
       blob: blobProjection(await getBlob(client, row.blob_id)),
+    };
+  }
+  if (ref.kind === "mailThread") {
+    // The agent is handed the thread the id leads to now, which `mail.thread.get` reads; a purged thread is unavailable.
+    const [target] = await resolveMailThreadRefTargets(client, [ref.threadId]);
+    if (!target) return null;
+    return {
+      label: Array.from(target.label ?? "")
+        .slice(0, 500)
+        .join(""),
+      state: target.state,
+      details: { threadId: target.currentThreadId },
+      blob: null,
     };
   }
   const unreadableDatabaseIds = reader

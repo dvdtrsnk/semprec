@@ -1,5 +1,6 @@
 import type { PoolClient } from "pg";
 import { z } from "zod";
+import { getValueLinksForItems, type ValueLinkEntry } from "../chokePoint/valueLinkReads.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import {
   mailThreadHasSempDraft,
@@ -10,6 +11,7 @@ import {
 import type { ParsedMailSearchQuery } from "./search.js";
 
 const address = z.object({ name: z.string(), address: z.string() });
+const namedItem = z.object({ id: z.uuid(), name: z.string() });
 const thread = z.object({
   threadId: z.uuid(),
   subject: z.string(),
@@ -23,8 +25,8 @@ const thread = z.object({
   flagged: z.boolean(),
   mailboxes: z.array(z.object({ id: z.uuid(), name: z.string(), provider: z.string().nullable() })),
   senderPerson: z.object({ id: z.uuid(), name: z.string(), relationship: z.string().nullable() }).nullable(),
-  project: z.null(),
-  company: z.null(),
+  project: namedItem.nullable(),
+  company: namedItem.nullable(),
   hasSempDraft: z.boolean(),
 });
 
@@ -122,6 +124,39 @@ export const MAIL_SEARCH_MESSAGES_CTE = `search_messages AS (
   WHERE m.tenant_id = app_tenant_default() AND m.thread_id IS NOT NULL AND i.deleted_at IS NULL
 )`;
 
+/** The value-link entries of a thread's `company` and `project`, only for a property that has a value-link row. */
+export interface MailThreadLinks {
+  company?: ValueLinkEntry;
+  project?: ValueLinkEntry;
+}
+
+/** The Threads properties whose link state the thread list and the detail report (issue gh-1897). */
+const THREAD_LINK_KEYS = ["company", "project"] as const;
+
+/**
+ * The lateral join that names the one live item a relation property of the Threads item holds (issue gh-1897): the
+ * `{ id, name }` of the Projects or Companies item the thread's `propertyKey` edge reaches, or no row when it has no
+ * edge or the item is in the Trash, which reads as `null`. The lookup of the target item is pinned to the system
+ * database `ownerModuleId`. Both arguments are a literal union and never input, which is why they are interpolated
+ * into the fixed SQL. `p.thread_id` is the thread of the page row `p`. A thread that holds several edges (the property
+ * is many-valued, but the thread value edge hook admits one) answers the one with the lowest item id.
+ */
+function threadRelationNameJoin(propertyKey: "project" | "company", ownerModuleId: "projects" | "companies"): string {
+  return `LEFT JOIN LATERAL (
+  SELECT jsonb_build_object('id', target.id, 'name', COALESCE(target.properties->>'name', '')) AS value
+  FROM mail_threads t
+  JOIN properties tp ON tp.tenant_id = t.tenant_id AND tp.database_id = (SELECT threads FROM schema_ids) AND tp.key = '${propertyKey}'
+  JOIN relation_definitions rd ON rd.tenant_id = t.tenant_id AND tp.id IN (rd.property_id_a, rd.property_id_b)
+  JOIN item_relations r ON r.tenant_id = t.tenant_id AND r.relation_definition_id = rd.id
+    AND (CASE WHEN rd.property_id_a = tp.id THEN r.item_a ELSE r.item_b END) = t.item_id
+  JOIN items target ON target.tenant_id = t.tenant_id
+    AND target.database_id = (SELECT d.id FROM databases d WHERE d.tenant_id = app_tenant_default() AND d.system AND d.owner_module_id = '${ownerModuleId}')
+    AND target.id = CASE WHEN rd.property_id_a = tp.id THEN r.item_b ELSE r.item_a END AND target.deleted_at IS NULL
+  WHERE t.tenant_id = app_tenant_default() AND t.id = p.thread_id
+  ORDER BY target.id LIMIT 1
+) ${propertyKey}_name ON true`;
+}
+
 const cursorSchema = z.object({ at: z.iso.datetime({ precision: 6 }), id: z.uuid() }).strict();
 
 /**
@@ -202,7 +237,7 @@ export async function listMailThreads(
   );
   const search = filters.search ? matchesSearch(filters.search, 10) : null;
   if (search) predicates.push(search.sql);
-  const result = await client.query<Record<string, unknown>>(
+  const result = await client.query<{ thread: unknown; thread_item_id: string | null }>(
     `
 WITH ${mailThreadCopyCtes(9)}, thread_project AS (
   SELECT t.id AS thread_id, project.id AS project_id
@@ -257,9 +292,12 @@ SELECT jsonb_build_object(
   'preview', p.preview_text, 'hasAttachment', p.has_attachment, 'unread', p.unread, 'flagged', p.flagged,
   'mailboxes', COALESCE(boxes.value, '[]'::jsonb),
   'senderPerson', CASE WHEN person.id IS NULL THEN NULL ELSE jsonb_build_object('id', person.id, 'name', COALESCE(person.properties->>'name', ''), 'relationship', person.properties->>'relationship') END,
-  'project', NULL, 'company', NULL, 'hasSempDraft', ${mailThreadHasSempDraft("p.thread_id")}
-) AS thread
+  'project', project_name.value, 'company', company_name.value, 'hasSempDraft', ${mailThreadHasSempDraft("p.thread_id")}
+) AS thread,
+  (SELECT mt.item_id FROM mail_threads mt WHERE mt.tenant_id = app_tenant_default() AND mt.id = p.thread_id) AS thread_item_id
 FROM page p
+${threadRelationNameJoin("project", "projects")}
+${threadRelationNameJoin("company", "companies")}
 LEFT JOIN person_email_index pei ON pei.tenant_id = app_tenant_default() AND pei.email = lower(btrim(p.envelope->'from'->>'address', E' \\t\\n\\r'))
 LEFT JOIN items person ON person.tenant_id = app_tenant_default() AND person.database_id = (SELECT people FROM schema_ids) AND person.id = pei.item_id AND person.deleted_at IS NULL
 LEFT JOIN LATERAL (
@@ -298,5 +336,21 @@ ORDER BY p.activity DESC NULLS LAST, p.thread_id DESC
       ...(search?.params ?? []),
     ],
   );
-  return result.rows.map((row) => thread.parse(row.thread));
+  const rows = result.rows.map((row) => ({
+    thread: thread.parse(row.thread),
+    itemId: z.uuid().nullable().parse(row.thread_item_id),
+  }));
+  // One batched read for the whole page (`getValueLinksForItems`), whatever the number of threads.
+  const linksByItem = await getValueLinksForItems(
+    client,
+    rows.flatMap((row) => (row.itemId === null ? [] : [row.itemId])),
+  );
+  return rows.map(({ thread: row, itemId }) => {
+    const all = itemId === null ? undefined : linksByItem.get(itemId);
+    const links: MailThreadLinks = {};
+    for (const key of THREAD_LINK_KEYS) {
+      if (all && Object.hasOwn(all, key)) links[key] = all[key];
+    }
+    return { ...row, links };
+  });
 }

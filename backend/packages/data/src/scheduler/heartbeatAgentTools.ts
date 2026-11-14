@@ -299,8 +299,13 @@ function refusalForAgentTool(err: unknown, heartbeatId: string): HeartbeatAgentT
   return null;
 }
 
-/** The trigger attributed to a manual fire: the agent run whose `heartbeat.trigger` called it, or the person who pressed Run (issue #1453). */
-export type ManualHeartbeatFireTrigger = { triggeredByRunId: string } | { triggeredByUserId: string };
+/**
+ * The trigger attributed to a manual fire: the agent run whose `heartbeat.trigger` called it, the person who pressed
+ * Run (issue #1453), or the failed run a person retries (issue #1908). The key is the payload discriminator the fire
+ * task reads.
+ */
+export type ManualHeartbeatFireTrigger =
+  { triggeredByRunId: string } | { triggeredByUserId: string } | { retryOfRunId: string };
 
 export interface ManualHeartbeatFireRequest {
   heartbeatId: string;
@@ -314,6 +319,10 @@ export interface ManualHeartbeatFireRequest {
    * alongside a running one.
    */
   refuseWhileActive: boolean;
+  /** The dedup key of the job. Defaults to `manualHeartbeatFireJobKey` of the heartbeat. */
+  jobKey?: string;
+  /** How often the queue runs the job. Defaults to 3, the attempts of every other heartbeat fire. */
+  maxAttempts?: number;
 }
 
 export interface ManualHeartbeatFireOutcome {
@@ -333,7 +342,7 @@ function summarizeActiveRun(run: AgentRunRow): ActiveHeartbeatRunSummary {
 
 /**
  * The one enqueue behind every manual fire (issue #136's `heartbeat.trigger`; issue #1453's
- * `POST /api/heartbeats/:id/trigger`, and the failed-run retry of #1908 once it lands). It runs in
+ * `POST /api/heartbeats/:id/trigger`, and the failed-run retry of #1908, `POST /api/agent-runs/:id/retry`). It runs in
  * the caller's transaction and refuses with a typed error instead of enqueuing:
  *
  * - `NotFoundError` for an unknown id, or one outside `projectItemId` (both give the same answer);
@@ -349,7 +358,8 @@ function summarizeActiveRun(run: AgentRunRow): ActiveHeartbeatRunSummary {
  *
  * The enqueued payload carries the trigger's discriminator; `coreAgentRunAction` (scheduler/actions.ts)
  * writes `triggeredByRunId` onto the new run as `parent_run_id`, and `triggeredByUserId` as its actor
- * with no parent. The job key (`manualHeartbeatFireJobKey`) is deliberately distinct from the sweep's
+ * with no parent; for `retryOfRunId` it makes the new run the next attempt of that run. The job key
+ * (`manualHeartbeatFireJobKey` unless the request gives `jobKey`) is deliberately distinct from the sweep's
  * own `heartbeatFireJobKey`: a pending scheduled fire and a pending manual fire never collapse onto or
  * overwrite each other's attribution, while repeated manual triggers before the first has started
  * running do collapse onto the same job (graphile-worker's `job_key` replace semantics). This never
@@ -385,14 +395,14 @@ export async function enqueueManualHeartbeatFire(
     }
   }
 
-  const jobKey = manualHeartbeatFireJobKey(heartbeat.id);
+  const jobKey = request.jobKey ?? manualHeartbeatFireJobKey(heartbeat.id);
   await enqueueJob(
     client,
     resolveHeartbeatFireTaskName(heartbeat.actionId),
     { heartbeatId: heartbeat.id, ...request.trigger },
     {
       jobKey,
-      maxAttempts: 3,
+      maxAttempts: request.maxAttempts ?? 3,
       queueName: resolveAgentRunLane(heartbeat.actionId),
     },
   );

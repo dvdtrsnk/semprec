@@ -11,8 +11,10 @@ import { runAsSystem, runInTenant } from "@semprec/shared";
 import {
   createRuntimeRolePool,
   createTestTenant,
+  ensureFolderItem,
   ensureMailAccountSyncState,
   getTestPool,
+  ingestEmailMessage,
   reconcileGmailAccount,
   resetDatabase,
   type GmailMailClient,
@@ -940,6 +942,141 @@ describe("durable Semp thread history", () => {
         error: { code: "validation_failed", details: { field: "context[0]" } },
       });
       expect(await counts()).toEqual(before);
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    try {
+      await rm(directory, { recursive: true, force: true });
+    } catch (error) {
+      if (failed) {
+        // Preserve the original fixture failure as the primary cause; cleanup remains in the aggregate.
+        // eslint-disable-next-line preserve-caught-error
+        throw new AggregateError([failure, error], "Mail fixture and cleanup failed", { cause: failure });
+      }
+      throw error;
+    }
+    if (failed) throw failure instanceof Error ? failure : new Error("Mail fixture failed", { cause: failure });
+  });
+
+  it("accepts a thread ref and a merged-away thread ref as given, and refuses an unknown, another tenant's and a Threads item id on both message routes without effects (issue gh-1933)", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "semprec-ref-thread-"));
+    let failure: unknown;
+    let failed = false;
+    try {
+      const tenant = await createTestTenant(admin);
+      const foreign = await createTestTenant(admin);
+      const email = `${randomUUID()}@example.test`;
+      await createUser(admin, { tenantId: tenant, email, passwordHash: await hashPassword("thread-test-password") });
+      const session = await login(admin, { email, password: "thread-test-password", platform: "ios", ip: "127.0.0.1" });
+      const storage = new LocalFsBlobStorageWriter(directory);
+      // Messages of one tenant: the root starts a thread, the reply arrives before the bridge it answers and starts
+      // another, and the bridge then joins the root, so the root's thread absorbs the reply's thread.
+      const mail = async (tenantId: string) => {
+        await runInTenant(tenantId, () => seedSystem(pool));
+        return runInTenant(tenantId, () =>
+          withTransaction(pool, async (client) => {
+            const ids = await resolveMailModuleIds(client);
+            const cp = createChokePoint(pool);
+            const emailProperties = await cp.listProperties(ids.emailsDatabaseId);
+            const folderProperties = await cp.listProperties(ids.foldersDatabaseId);
+            const propertyId = (properties: typeof emailProperties, key: string) => {
+              const property = properties.find((entry) => entry.key === key);
+              if (!property) throw new Error(`Missing ${key} property`);
+              return property.id;
+            };
+            const mailbox = await createItemWithClient(client, {
+              databaseId: ids.mailboxesDatabaseId,
+              properties: { name: "Mailbox", provider: "generic" },
+            });
+            const folderItemId = await ensureFolderItem(client, {
+              foldersDatabaseId: ids.foldersDatabaseId,
+              mailboxItemId: mailbox.id,
+              mailboxRelationPropertyId: propertyId(folderProperties, "mailbox"),
+              providerId: "INBOX",
+              name: "Inbox",
+              behavior: "folder",
+              specialPurpose: "inbox",
+            });
+            const ingest = async (name: string, references: string[]) => {
+              const { itemId } = await ingestEmailMessage(client, {
+                emailsDatabaseId: ids.emailsDatabaseId,
+                filesDatabaseId: ids.filesDatabaseId,
+                folderRelationPropertyId: propertyId(emailProperties, "folder"),
+                attachmentsRelationPropertyId: propertyId(emailProperties, "attachments"),
+                folderItemId,
+                mailboxItemId: mailbox.id,
+                messageId: `<${name}-${tenantId}@example.test>`,
+                inReplyTo: references.at(-1) ?? null,
+                references: references.map((reference) => `<${reference}-${tenantId}@example.test>`),
+                subject: name,
+                envelope: {},
+                attachments: [],
+                storage,
+                storageKeyPrefix: "ref-thread-test",
+              });
+              const { rows } = await client.query<{ thread_id: string; item_id: string | null }>(
+                `SELECT m.thread_id, t.item_id FROM mail_message_meta m JOIN mail_threads t ON t.id = m.thread_id
+                  WHERE m.item_id = $1`,
+                [itemId],
+              );
+              const row = rows[0];
+              if (!row?.item_id) throw new Error(`Message ${name} has no thread`);
+              return { threadId: row.thread_id, threadItemId: row.item_id };
+            };
+            const root = await ingest("root", []);
+            const merged = await ingest("reply", ["bridge"]);
+            const bridge = await ingest("bridge", ["root"]);
+            expect(merged.threadId).not.toBe(root.threadId);
+            expect(bridge.threadId).toBe(root.threadId);
+            return { survivor: root.threadId, merged: merged.threadId, threadItemId: root.threadItemId };
+          }),
+        );
+      };
+      const own = await mail(tenant);
+      const other = await mail(foreign);
+      const threadRef = (id: string) => ({ kind: "mailThread", threadId: id });
+      const send = (path: string, context: unknown[]) =>
+        fetch(`${baseUrl}${path}`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${session.token}`, "content-type": "application/json" },
+          body: JSON.stringify({ text: "question", context }),
+        });
+      const chatThreadId = await runInTenant(tenant, () =>
+        withTransaction(pool, (client) => createSempChatThread(client)),
+      );
+
+      const accepted = await send(`/api/semp/threads/${chatThreadId}/messages`, [
+        threadRef(own.survivor),
+        threadRef(own.merged),
+      ]);
+      expect(accepted.status).toBe(202);
+      const stored = await runInTenant(tenant, () =>
+        pool.query<{ context: unknown }>(
+          "SELECT context FROM semp_messages WHERE thread_id = $1 AND role = 'user' ORDER BY id",
+          [chatThreadId],
+        ),
+      );
+      expect(stored.rows).toEqual([{ context: [threadRef(own.survivor), threadRef(own.merged)] }]);
+
+      const snapshot = () =>
+        runInTenant(tenant, async () => ({
+          threads: (await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM semp_threads")).rows,
+          messages: (await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM semp_messages")).rows,
+        }));
+      const before = await snapshot();
+      for (const path of ["/api/semp/threads", `/api/semp/threads/${chatThreadId}/messages`]) {
+        for (const refused of [randomUUID(), other.survivor, other.merged, own.threadItemId]) {
+          const response = await send(path, [threadRef(own.survivor), threadRef(refused)]);
+          expect(response.status).toBe(400);
+          expect(await response.json()).toMatchObject({
+            error: { code: "validation_failed", details: { field: "context[1]" } },
+          });
+          expect(await snapshot()).toEqual(before);
+        }
+      }
+      const created = await send("/api/semp/threads", [threadRef(own.merged)]);
+      expect(created.status).toBe(202);
     } catch (error) {
       failed = true;
       failure = error;

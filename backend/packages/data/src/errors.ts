@@ -266,6 +266,29 @@ export class HeartbeatRunningError extends ChokePointError {
   }
 }
 
+/**
+ * The `not_retryable` code of the REST error contract (issue #1908) — a retry of an agent run that can never be
+ * retried: it did not fail, it is not a run of a scheduled heartbeat occurrence, or it was retried already.
+ * Distinct from `retry_pending`, which means a later attempt may still make the run retryable.
+ */
+export class NotRetryableError extends ChokePointError {
+  constructor(message: string, details?: unknown) {
+    super(409, "not_retryable", message, details);
+    this.name = "NotRetryableError";
+  }
+}
+
+/**
+ * The `retry_pending` code of the REST error contract (issue #1908) — a retry of a failed run whose heartbeat
+ * occurrence is still queued or running, so an automatic attempt may still run. The caller can try again later.
+ */
+export class RetryPendingError extends ChokePointError {
+  constructor(message: string, details?: unknown) {
+    super(409, "retry_pending", message, details);
+    this.name = "RetryPendingError";
+  }
+}
+
 const PASSWORD_RESET_TOKEN_ERROR_MESSAGES = {
   invalid: "Password reset token is invalid",
   expired: "Password reset token has expired",

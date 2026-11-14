@@ -42,6 +42,16 @@ const mailAttachmentRefSchema = z.strictObject({
   attachmentId: uuid,
 });
 
+/**
+ * A mail thread, named by its public thread id (not the id of its Threads item, which no client addresses). The id is
+ * stored as given: a thread merged away keeps resolving through its alias and is translated when the ref is read or
+ * expanded, not when it is sent.
+ */
+const mailThreadRefSchema = z.strictObject({
+  kind: z.literal("mailThread"),
+  threadId: uuid,
+});
+
 const agentRunRefSchema = z.strictObject({
   kind: z.literal("agentRun"),
   agentRunId: uuid,
@@ -87,6 +97,7 @@ export const sempMessageRefSchema = z.discriminatedUnion("kind", [
   blockRefSchema,
   transcriptSegmentRefSchema,
   mailAttachmentRefSchema,
+  mailThreadRefSchema,
   agentRunRefSchema,
   approvalRequestRefSchema,
   taskOccurrenceRefSchema,
@@ -102,6 +113,7 @@ export const labeledSempMessageRefSchema = z.discriminatedUnion("kind", [
   blockRefSchema.safeExtend({ label: z.string() }),
   transcriptSegmentRefSchema.safeExtend({ label: z.string() }),
   mailAttachmentRefSchema.safeExtend({ label: z.string() }),
+  mailThreadRefSchema.safeExtend({ label: z.string() }),
   agentRunRefSchema.safeExtend({ label: z.string() }),
   approvalRequestRefSchema.safeExtend({ label: z.string() }),
   taskOccurrenceRefSchema.safeExtend({ label: z.string() }),
@@ -138,6 +150,7 @@ export const SEMP_MESSAGE_REF_KINDS = [
   "block",
   "transcriptSegment",
   "mailAttachment",
+  "mailThread",
   "agentRun",
   "approvalRequest",
   "taskOccurrence",
@@ -148,7 +161,9 @@ export const SEMP_MESSAGE_REF_KINDS = [
 /**
  * Dedup identity of a ref: the kind plus its id fields, the block id for
  * blocks, the range for segments and the night for a sleep night. `messageId`
- * of an agent run ref is not part of the identity.
+ * of an agent run ref is not part of the identity. A mail thread is keyed by the
+ * id as given, so a merged-away thread id and the id of the thread that absorbed
+ * it are two refs.
  */
 export function messageRefKey(ref: SempMessageRef): string {
   switch (ref.kind) {
@@ -160,6 +175,8 @@ export function messageRefKey(ref: SempMessageRef): string {
       return `transcriptSegment:${ref.itemId}:${ref.startsAt}:${ref.endsAt}`;
     case "mailAttachment":
       return `mailAttachment:${ref.attachmentId}`;
+    case "mailThread":
+      return `mailThread:${ref.threadId}`;
     case "agentRun":
       return `agentRun:${ref.agentRunId}`;
     case "approvalRequest":

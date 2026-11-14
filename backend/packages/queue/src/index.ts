@@ -219,9 +219,9 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
 
 /**
  * The closed set of task names the agents runtime (issue #91's second composition root) may
- * run. `heartbeatFireAgent`'s handler and enqueue routing ship with #222, for the one heartbeat
- * action (`core.agentRun`) that starts or continues an agent session; `agentRun`/
- * `delegatedAgentRun`'s handlers ship with #91 — this issue only closes the name catalog for them.
+ * run. `heartbeatFireAgent`'s handler and enqueue routing ship with #222, for the heartbeat
+ * actions that start or continue an agent session (`core.agentRun` and `core.journalWeeklyCleanup`);
+ * `agentRun`/`delegatedAgentRun`'s handlers ship with #91 — this issue only closes the name catalog for them.
  */
 export const AGENT_TASK_NAMES = {
   HEARTBEAT_FIRE_AGENT: "heartbeatFireAgent",

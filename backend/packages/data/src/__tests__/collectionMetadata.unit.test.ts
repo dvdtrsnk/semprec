@@ -142,6 +142,8 @@ describe("collection metadata resolver (issue #1407)", () => {
     // Projects omit Tasks, and the order lists the future key of a database that is not active.
     expect(projects?.omit).toEqual(["tasks"]);
     expect(projects?.order.slice(0, 3)).toEqual(["projects", "events", "files"]);
+    // People omit Emails: the mail of a person is listed as threads (issue gh-1874).
+    expect(resolver.relatedOrder?.({ key: "people", system: true })?.omit).toEqual(["emails"]);
     // A system database without a declaration, one without a descriptor and one without a key.
     for (const key of ["tasks", "unknownInternal", null]) {
       expect(resolver.relatedOrder?.({ key, system: true })).toBeUndefined();

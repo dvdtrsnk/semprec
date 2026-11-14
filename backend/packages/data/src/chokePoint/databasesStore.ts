@@ -392,6 +392,18 @@ export async function lockExpiredArchivedDatabase(client: PoolClient, id: string
   return rows.length === 1;
 }
 
+/**
+ * Locks the database row `FOR NO KEY UPDATE`, the lock the purge takes (`lockExpiredArchivedDatabase`) before it
+ * deletes the database, and says whether the row exists. A caller that decides on the strength of this lookup, a
+ * restore that reports an unknown id, holds the row to the commit: a purge that committed first is seen as a missing
+ * row (the lookup waits for it), and one that comes later waits for the caller's transaction and then finds a
+ * database that is no longer archived.
+ */
+export async function lockDatabase(client: PoolClient, id: string): Promise<boolean> {
+  const { rows } = await client.query<{ id: string }>("SELECT id FROM databases WHERE id = $1 FOR NO KEY UPDATE", [id]);
+  return rows.length === 1;
+}
+
 /** The ids of the inline databases owned by any of `itemIds`; an item with a page can own one. */
 export async function listInlineDatabaseIds(client: PoolClient, itemIds: readonly string[]): Promise<string[]> {
   const { rows } = await client.query<{ id: string }>(

@@ -5,8 +5,13 @@ import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { CALENDAR_MODULE_ID } from "../calendar/calendarModuleId.js";
+import {
+  NEXT_OCCURRENCE_REFRESH_ACTION_ID,
+  NEXT_OCCURRENCE_REFRESH_HEARTBEAT,
+} from "../calendar/nextOccurrenceRefreshAction.js";
 import { requireAffectedRows, requireSingleRow } from "../db/pool.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
+import { createHeartbeat } from "../scheduler/schedulerStore.js";
 import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
 import { CALENDARS_MODULE_ID } from "./calendarsKeys.js";
 
@@ -118,8 +123,10 @@ export interface CalendarsSeedResult {
  * project item for the module, the `calendars` system database with its properties (`kind` and
  * `systemKey` system-owned by the calendar module), the `Calendars.events` / `Events.calendar` relation,
  * and the eight default and system calendars. The project's and the rows' names come from the calendar
- * module catalog in the tenant user's language (`cs` while the tenant has no user). The schema is locked
- * once complete.
+ * module catalog in the tenant user's language (`cs` while the tenant has no user), and the daily
+ * `calendar.refreshNextOccurrence` heartbeat of the module's system project (issue gh-1905; a populated tenant
+ * that already has the calendars database gets it from `calendar/nextOccurrenceDateCutoverMigration.ts`). The schema
+ * is locked once complete.
  *
  * Not idempotent on its own: `seedSystem` calls it once for a new tenant and
  * `calendar/calendarsCutoverMigration.ts` calls it only for a tenant without a calendars database.
@@ -178,5 +185,11 @@ export async function seedCalendarsInTransaction(
     if (row.isDefault) defaultCalendarId = item.id;
   }
   if (defaultCalendarId === undefined) throw new Error("The calendar seed declares no default calendar");
+  await createHeartbeat(client, {
+    projectItemId: project.id,
+    ...NEXT_OCCURRENCE_REFRESH_HEARTBEAT,
+    actionId: NEXT_OCCURRENCE_REFRESH_ACTION_ID,
+    actionConfig: { eventsDatabaseId },
+  });
   return { calendars, relationDefinitionId, defaultCalendarId };
 }

@@ -27,4 +27,12 @@ export const PROPOSALS_ROUTES: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
+  {
+    name: "update proposal values",
+    method: "PATCH",
+    path: `/api/proposals/${EXAMPLE_ID}/values`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
 ];

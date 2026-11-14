@@ -4,11 +4,15 @@ export { createMailContactsRouteHandler } from "./mailContactsRoute.js";
 export {
   createMailThreadDetailRouteHandler,
   createMailThreadFacetsRouteHandler,
+  createMailThreadFlagRouteHandler,
   createMailThreadListRouteHandler,
   createMailThreadReadRouteHandler,
 } from "./mailThreadRoutes.js";
+export { createMailThreadTaskCreateRouteHandler } from "./mailThreadTaskRouteHandlers.js";
 export { createMailAutonomousSendProjectsRouteHandler } from "./mailAutonomousSendRouteHandlers.js";
 export {
+  createMailDraftAttachmentAddRouteHandler,
+  createMailDraftAttachmentRemoveRouteHandler,
   createMailDraftCreateRouteHandler,
   createMailDraftDiscardRouteHandler,
   createMailDraftReadRouteHandler,
@@ -29,6 +33,7 @@ import {
   MAILBOXES_MODULE_ID,
   THREADS_MODULE_ID,
 } from "../seed/emailModuleKeys.js";
+import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID, MAIL_REINDEX_PERSON_EMAILS_ACTION_ID } from "./personLinkingActions.js";
 
 export { createNoopMailLiveSyncLifecycleFactory } from "./mailLiveSyncRoot.js";
@@ -83,6 +88,18 @@ export const manifest: ModuleManifest = {
   heartbeatActions: [MAIL_REINDEX_PERSON_EMAILS_ACTION_ID, MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID],
   workers: [{ name: "semprec-mailsync", handlerExport: "createNoopMailLiveSyncLifecycleFactory" }],
   migrations: ["0006_mail_sync.sql", "0007_mail_delivered_to_and_dsn.sql"],
+  linkRules: [
+    // A task made from a thread takes over the thread's project (issue gh-1900). Ownership handoff: `Tasks.project`
+    // stays `owner: user`, and the `valueLinks` process writes it only while the task's value link for that property
+    // is `on`. The rule runs in the transaction that writes the `Threads.tasks` edge (`mail/threadTasks.ts`). The task's
+    // people are not a rule: see docs/adr/2026-11-14-a-task-made-from-a-mail-thread-inherits-its-project-and-people.md.
+    {
+      key: "taskProjectFromThread",
+      source: { databaseKey: THREADS_MODULE_ID, propertyKey: "project" },
+      target: { databaseKey: TASKS_MODULE_ID, propertyKey: "project" },
+      via: { databaseKey: THREADS_MODULE_ID, relationKey: "tasks" },
+    },
+  ],
   customRoutes: [
     {
       name: "mailboxList",
@@ -143,6 +160,25 @@ export const manifest: ModuleManifest = {
       justification: "transactional-semantics",
     },
     {
+      name: "mailThreadTaskCreate",
+      method: "POST",
+      path: "/api/mail/threads/:threadId/tasks",
+      handlerExport: "createMailThreadTaskCreateRouteHandler",
+      // Issue gh-1900: with no name, names the task through the AI gateway outside any transaction and then, in one
+      // transaction, checks that the thread did not change and writes the Tasks item, its `Threads.tasks` edge and the
+      // inherited project and people.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "mailThreadFlag",
+      method: "POST",
+      path: "/api/mail/threads/:threadId/flag",
+      handlerExport: "createMailThreadFlagRouteHandler",
+      // Issue gh-1893: flags the last incoming message of a conversation, or clears the flag on every message of
+      // it, through the item update path in one transaction, and sends one thin invalidation after the commit.
+      justification: "transactional-semantics",
+    },
+    {
       name: "mailDraftCreate",
       method: "POST",
       path: "/api/mail/drafts",
@@ -173,6 +209,23 @@ export const manifest: ModuleManifest = {
       path: "/api/mail/drafts/:id",
       handlerExport: "createMailDraftDiscardRouteHandler",
       // Issue gh-1867: trashes the Emails item and deletes its `mail_drafts` row in one transaction.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "mailDraftAttachmentAdd",
+      method: "POST",
+      path: "/api/mail/drafts/:id/attachments",
+      handlerExport: "createMailDraftAttachmentAddRouteHandler",
+      // Issue gh-1895: attaches a Files item to an unsent draft, or a copy of it over the same blob when another
+      // email holds it, after the provider's size limit, in one transaction.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "mailDraftAttachmentRemove",
+      method: "DELETE",
+      path: "/api/mail/drafts/:id/attachments/:fileItemId",
+      handlerExport: "createMailDraftAttachmentRemoveRouteHandler",
+      // Issue gh-1895: removes the attachment edge of an unsent draft in one transaction.
       justification: "transactional-semantics",
     },
     {

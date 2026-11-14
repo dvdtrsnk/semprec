@@ -467,7 +467,7 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
     expect(seen.dependencies?.throttle).toBe(throttle);
   });
 
-  it("createDispatcher supplies only its registry provider and a limiter when the caller gives no container", async () => {
+  it("createDispatcher supplies only its registry provider, a limiter and the upload cap when the caller gives no container (issue gh-1895)", async () => {
     const moduleRegistry = await loadFullModuleRegistry();
     const registryRules = vi.spyOn(moduleRegistry, "getHeartbeatRuleKindDefinitions");
     const seen: { dependencies?: CustomRouteDependencies } = {};
@@ -488,8 +488,10 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
       maxFileSizeBytes: 1024,
     });
 
-    expect(Object.keys(seen.dependencies ?? {}).sort()).toEqual(["heartbeatRuleKinds", "throttle"]);
+    expect(Object.keys(seen.dependencies ?? {}).sort()).toEqual(["heartbeatRuleKinds", "maxFileSizeBytes", "throttle"]);
     expect(seen.dependencies?.heartbeatRuleKinds).toEqual(expect.any(Function));
+    // The upload cap of the dispatcher (issue gh-1895): the draft attachment limit of a mailbox without a provider limit.
+    expect(seen.dependencies?.maxFileSizeBytes).toBe(1024);
     expect(seen.dependencies?.throttle?.tryAcquire("mailboxCredentialVerification", "user-fixture").granted).toBe(true);
     expect(registryRules).not.toHaveBeenCalled();
     await seen.dependencies?.heartbeatRuleKinds?.();

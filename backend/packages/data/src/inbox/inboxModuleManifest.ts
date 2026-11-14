@@ -7,7 +7,12 @@ import {
 } from "../seed/inboxPipelineKeys.js";
 import { SEMPREC_TICK_ACTION_ID } from "./inboxTickAction.js";
 
-export { createInboxProposalGetTool, inboxProposalGetArgsSchema } from "./inboxAgentTools.js";
+export {
+  createInboxProposalGetTool,
+  createInboxProposalReviseTool,
+  inboxProposalGetArgsSchema,
+  inboxProposalReviseArgsSchema,
+} from "./inboxAgentTools.js";
 export {
   createConfirmProposalRouteHandler,
   createInboxCardsCountRouteHandler,
@@ -15,6 +20,7 @@ export {
   createInboxTypesRouteHandler,
   createRejectProposalRouteHandler,
   createReviseProposalRouteHandler,
+  createUpdateProposalValuesRouteHandler,
 } from "./inboxRouteHandlers.js";
 
 /**
@@ -28,10 +34,12 @@ export {
  * `CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE`) is core-registered, not module-declared, the
  * same reason the docs manifest (#226) excludes its cron tasks — so this manifest declares
  * no `taskNames`. `onItemEvent` itself is a core-defined heartbeat rule kind, not a new one
- * this module contributes, so it is not declared under `heartbeatRuleKinds` either. There is
- * no dedicated agent tool for confirm/reject/revise (issue #105) — those go through the
- * generic item-update choke point, the same "single path" every other module uses — so
- * the read-only `inbox.proposal.get` tool is limited to the calling run's own thread.
+ * this module contributes, so it is not declared under `heartbeatRuleKinds` either.
+ * `proposal`, `status` and `history` are system-owned, so a generic item update cannot write them: confirm, reject and
+ * revise go through the proposal actions (`proposalActions.ts`) and their routes. The two agent tools are limited to the
+ * card of the calling run's own item thread: `inbox.proposal.get` reads it, and `inbox.proposal.revise` (issue #1906)
+ * replaces its envelope through the revise path. A revision keeps the card a proposal, and nothing is created in a
+ * target database before the user confirms, so the tool needs no approval.
  *
  * Ownership handoff for Processing proposals
  * (`docs/adr/2026-09-23-speaker-mappings-are-edges-proposed-on-transcript-cards.md`, superseding
@@ -60,6 +68,13 @@ export const manifest: ModuleManifest = {
       argumentSchemaExport: "inboxProposalGetArgsSchema",
       approval: "none",
       riskClass: "read",
+    },
+    {
+      name: "inbox.proposal.revise",
+      handlerExport: "createInboxProposalReviseTool",
+      argumentSchemaExport: "inboxProposalReviseArgsSchema",
+      approval: "none",
+      riskClass: "write",
     },
   ],
   viewTypes: [JOURNAL_INBOX_VIEW_TYPE],
@@ -92,6 +107,16 @@ export const manifest: ModuleManifest = {
       handlerExport: "createReviseProposalRouteHandler",
       // The replacement envelope is validated against live destination state, and the lock check and the
       // status transition commit with it in one transaction.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "updateProposalValues",
+      method: "PATCH",
+      path: "/api/proposals/:id/values",
+      handlerExport: "createUpdateProposalValuesRouteHandler",
+      // The proposal's lock, the merge into its user overrides and the history entry commit in one
+      // transaction, which a generic item update cannot express (it refuses the system-owned
+      // `proposal`, `status` and `history` of a Processing proposal).
       justification: "transactional-semantics",
     },
     {

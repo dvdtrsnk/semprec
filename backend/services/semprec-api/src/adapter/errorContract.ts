@@ -23,6 +23,8 @@ export const ITEM_ERROR_CODES = [
   "heartbeat_event_triggered",
   "heartbeat_disabled",
   "heartbeat_running",
+  "not_retryable",
+  "retry_pending",
   "cardinality_violation",
   "database_archived",
   "mail_auth_failed",
@@ -35,6 +37,7 @@ export const ITEM_ERROR_CODES = [
   "duplicate_item",
   "mail_draft_already_sent",
   "mail_draft_not_editable",
+  "mail_attachment_too_large",
 ] as const;
 
 export type ItemErrorCode = (typeof ITEM_ERROR_CODES)[number];
@@ -62,6 +65,8 @@ export const ITEM_ERROR_STATUS_BY_CODE: Readonly<Record<ItemErrorCode, number>> 
   heartbeat_event_triggered: 409,
   heartbeat_disabled: 409,
   heartbeat_running: 409,
+  not_retryable: 409,
+  retry_pending: 409,
   cardinality_violation: 409,
   database_archived: 403,
   mail_auth_failed: 400,
@@ -74,6 +79,7 @@ export const ITEM_ERROR_STATUS_BY_CODE: Readonly<Record<ItemErrorCode, number>> 
   duplicate_item: 409,
   mail_draft_already_sent: 409,
   mail_draft_not_editable: 409,
+  mail_attachment_too_large: 413,
 };
 
 function isItemErrorCode(code: string): code is ItemErrorCode {
