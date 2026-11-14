@@ -6,6 +6,17 @@ import { approvalNotificationBody } from "../notifications/approvalNotificationB
 
 const paramsByKey: Record<string, string[]> = {
   "approval.itemDelete": ["itemName", "databaseKey", "databaseName", "projectName", "linkedCount", "restorableDays"],
+  "approval.itemDeleteImpact": [
+    "itemName",
+    "databaseKey",
+    "databaseName",
+    "projectName",
+    "linkedCount",
+    "restorableDays",
+    "seriesInstanceCount",
+    "attachmentCount",
+    "hostEventCount",
+  ],
   "approval.itemPatch": ["itemName", "databaseKey", "databaseName"],
   "approval.changesSeries": ["taskName", "fromRule", "toRule"],
   "approval.breaksLink": [
@@ -39,6 +50,7 @@ const paramsByKey: Record<string, string[]> = {
   "approval.journalMerge.day": ["period", "survivorName", "mergedName"],
   "approval.mcpInvoke": ["serverName", "toolName"],
   "approval.moduleTool": ["toolName"],
+  "approval.emailSend": ["mailboxName", "recipientCount"],
 };
 const catalog = (locale: string) =>
   z
@@ -92,6 +104,26 @@ describe("approval notification body", () => {
     });
     expect(JSON.stringify(body)).not.toContain("private value");
   });
+  it("renders a mail send request from the mailbox name and the recipient count only and promises no app undo", () => {
+    const body = approvalNotificationBody({
+      riskClass: "outbound",
+      description: { key: "approval.emailSend", params: { mailboxName: "Personal", recipientCount: 3 } },
+      payload: {
+        draftId: "draft",
+        draftHash: "hash",
+        mailboxId: "mailbox",
+        to: [{ name: "Private Name", address: "private@example.test" }],
+        subject: "Private subject",
+        body: "Private text",
+      },
+    });
+    expect(body).toEqual({
+      bodyKey: "approval.emailSend",
+      bodyParams: { mailboxName: "Personal", recipientCount: 3 },
+      bodySuffixKey: "notification.body.cannotUndo",
+    });
+    expect(JSON.stringify(body)).not.toContain("Private");
+  });
   it.each([
     ["item.delete", "notification.body.canUndo"],
     ["property.delete", "notification.body.cannotUndo"],
@@ -108,6 +140,22 @@ describe("approval notification body", () => {
         },
       }).bodySuffixKey,
     ).toBe(bodySuffixKey);
+  });
+  it("selects the delete body that names the impact only for a description that carries its three counts", () => {
+    const base = {
+      itemName: "Review",
+      databaseKey: "tasks",
+      databaseName: "Tasks",
+      linkedCount: 1,
+      restorableDays: 30,
+    };
+    const impact = { seriesInstanceCount: 3, attachmentCount: 2, hostEventCount: 1 };
+    const body = (params: Record<string, string | number>) =>
+      approvalNotificationBody({ ...mcp, description: { key: "approval.itemDelete", params } }).bodyKey;
+
+    expect(body({ ...base, ...impact })).toBe("approval.itemDeleteImpact");
+    expect(body(base)).toBe("approval.itemDelete");
+    expect(body({ ...base, seriesInstanceCount: 3 })).toBe("approval.itemDelete");
   });
   it("omits absent descriptions and refuses unknown templates", () => {
     expect(approvalNotificationBody({ ...mcp, description: null })).toEqual({});

@@ -14,6 +14,7 @@ export type {
   ModuleCustomRouteDescriptor,
   ModuleLinkRuleDescriptor,
   ModuleLinkRuleEndpoint,
+  ModuleResolverLinkRuleDescriptor,
   CustomRouteMethod,
   CustomRouteJustification,
   EditorSchemaDescriptor,
@@ -54,5 +55,6 @@ export {
   type ModuleDataMigrationConverterContext,
   type ModuleCustomRouteDefinition,
   type ModuleLinkRuleProjection,
+  type ModuleLinkResolverRuleProjection,
   type ModuleEditorSchemaProjection,
 } from "./registry.js";

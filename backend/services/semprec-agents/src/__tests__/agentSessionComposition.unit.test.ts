@@ -279,7 +279,9 @@ describe("approval-gated module tools in a composed session (issue #1791)", () =
   };
 
   /** Composes a session whose registry offers `gated` (a tool with `requiresApproval`) and `plain`, and returns its tools. */
-  async function composeTools(handler: () => Promise<{ error: boolean; result: string }>): Promise<AgentTool[]> {
+  async function composeTools(
+    handler: () => Promise<{ error: boolean; result: string; approvalRequestId?: string }>,
+  ): Promise<AgentTool[]> {
     const pool = new Pool();
     const faux = fauxProvider();
     const registry = new ModuleRegistry(() => new Set());
@@ -379,6 +381,20 @@ describe("approval-gated module tools in a composed session (issue #1791)", () =
     expect(fixtures.approvalInputs).toEqual([]);
     expect(result.content).toEqual([{ type: "text", text: "ran" }]);
     expect(result.details).toEqual({ error: false });
+  });
+
+  it("writes the approval request id a tool that filed its own request answered into the details of its result (issue gh-1949)", async () => {
+    const tools = await composeTools(async () => ({
+      error: false,
+      result:
+        "Tool 'fixture.plain' requires human approval before it can run. Approval request request-9 has been created.",
+      approvalRequestId: "request-9",
+    }));
+
+    const result = await toolNamed(tools, "fixture_plain").execute("call-10", {});
+
+    expect(fixtures.approvalInputs).toEqual([]);
+    expect(result.details).toEqual({ error: false, approvalRequestId: "request-9" });
   });
 
   it("refuses arguments that are not a JSON object without creating a request", async () => {

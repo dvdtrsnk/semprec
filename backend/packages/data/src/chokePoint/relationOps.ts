@@ -538,12 +538,17 @@ export async function updateRelationWithClient(
 
 export type DeleteRelationInput = Omit<CreateRelationInput, "metadata">;
 
-/** Transfer only existing edges from one canonical Threads item to another in the caller's managed transaction. */
+/**
+ * Transfer only existing edges from one canonical Threads item to another in the caller's managed transaction.
+ * The winner keeps its own `project` and `company` edge unless the key is in `loserValueWins`: then the loser's edge
+ * of that key replaces the winner's (issue gh-1869).
+ */
 export async function transferMailThreadRelationsWithClient(
   client: PoolClient,
   databaseId: string,
   loserId: string,
   winnerId: string,
+  loserValueWins: ReadonlySet<string> = new Set(),
 ): Promise<void> {
   requireManagedTransaction(client);
   try {
@@ -576,11 +581,6 @@ export async function transferMailThreadRelationsWithClient(
       const context = await loadRelationEdgeContext(client, definition.propertyIdA);
       await assertRelationDatabasesNotArchived(client, context);
       if (context.reldef.id !== definition.id) throw new Error("Thread relation schema mismatch");
-      const oldInput = {
-        relationPropertyId: definition.propertyIdA,
-        callerItemId: edge.itemA,
-        targetItemId: edge.itemB,
-      };
       const newA = edge.itemA === loserId ? winnerId : edge.itemA;
       const newB = edge.itemB === loserId ? winnerId : edge.itemB;
       const newInput = { relationPropertyId: definition.propertyIdA, callerItemId: newA, targetItemId: newB };
@@ -599,35 +599,51 @@ export async function transferMailThreadRelationsWithClient(
             : null;
       const winnerEdges = await relationsStore.listRelationsForItem(client, definition.id, winnerId);
       const duplicate = winnerEdges.some((existing) => existing.itemA === newA && existing.itemB === newB);
-      const winnerTakesPrecedence =
+      const valueKey =
         threadProperty?.databaseId === databaseId &&
-        (threadProperty.key === "project" || threadProperty.key === "company") &&
-        winnerEdges.length > 0;
-      await runRelationEdgeDeleteHooks({ client, edgeContext: context, ...oldInput, writer: SYSTEM_WRITER });
-      const removed = await relationsStore.deleteItemRelation(client, definition.id, edge.itemA, edge.itemB);
-      if (!removed || removed.id !== edge.id) throw new Error("Thread relation changed during merge");
-      await breakValueLinksForRelationEdge(client, {
-        reldef: definition,
-        itemA: edge.itemA,
-        itemB: edge.itemB,
-        writerKind: SYSTEM_WRITER.writerKind,
-      });
-      await enqueueRollupRecomputeForEdge(client, {
-        relationDefinitionId: definition.id,
-        itemA: edge.itemA,
-        itemB: edge.itemB,
-      });
-      await runRelationEdgeChangedHooks({
-        client,
-        op: "delete",
-        relationDefinitionId: definition.id,
-        propertyId: context.property.id,
-        itemA: edge.itemA,
-        itemB: edge.itemB,
-        metadata: edge.metadata,
-        writer: SYSTEM_WRITER,
-      });
-      await announceRelation(client, context, oldInput, "delete");
+        (threadProperty.key === "project" || threadProperty.key === "company")
+          ? threadProperty.key
+          : null;
+      const replacesWinner = valueKey !== null && loserValueWins.has(valueKey);
+      const winnerTakesPrecedence = valueKey !== null && winnerEdges.length > 0 && !replacesWinner;
+      const removeEdge = async (removing: ItemRelationRow): Promise<void> => {
+        const removedInput = {
+          relationPropertyId: definition.propertyIdA,
+          callerItemId: removing.itemA,
+          targetItemId: removing.itemB,
+        };
+        await runRelationEdgeDeleteHooks({ client, edgeContext: context, ...removedInput, writer: SYSTEM_WRITER });
+        const removed = await relationsStore.deleteItemRelation(client, definition.id, removing.itemA, removing.itemB);
+        if (!removed || removed.id !== removing.id) throw new Error("Thread relation changed during merge");
+        await breakValueLinksForRelationEdge(client, {
+          reldef: definition,
+          itemA: removing.itemA,
+          itemB: removing.itemB,
+          writerKind: SYSTEM_WRITER.writerKind,
+        });
+        await enqueueRollupRecomputeForEdge(client, {
+          relationDefinitionId: definition.id,
+          itemA: removing.itemA,
+          itemB: removing.itemB,
+        });
+        await runRelationEdgeChangedHooks({
+          client,
+          op: "delete",
+          relationDefinitionId: definition.id,
+          propertyId: context.property.id,
+          itemA: removing.itemA,
+          itemB: removing.itemB,
+          metadata: removing.metadata,
+          writer: SYSTEM_WRITER,
+        });
+        await announceRelation(client, context, removedInput, "delete");
+      };
+      await removeEdge(edge);
+      if (replacesWinner && !duplicate) {
+        const lockedWinnerEdges = await relationsStore.lockThreadMergeEdges(client, winnerId);
+        for (const winnerEdge of lockedWinnerEdges.filter((entry) => entry.relationDefinitionId === definition.id))
+          await removeEdge(winnerEdge);
+      }
       if (duplicate || winnerTakesPrecedence) continue;
       await runRelationEdgeWriteHooks({
         client,

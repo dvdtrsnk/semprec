@@ -44,6 +44,7 @@ import { seedEmailModuleInTransaction } from "./seedEmailModule.js";
 import { seedInboxPipelineInTransaction } from "./seedInboxPipeline.js";
 import { seedMcpModuleInTransaction } from "./seedMcpModule.js";
 import { seedCalendarsInTransaction } from "./seedCalendars.js";
+import { seedInvitationsDatabaseInTransaction } from "./seedInvitationsDatabase.js";
 import { seedRecipesModuleInTransaction } from "./seedRecipesModule.js";
 import { seedSleepModuleInTransaction } from "./seedSleepModule.js";
 import { SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS } from "./systemProjectAgentGuidance.js";
@@ -368,7 +369,12 @@ export async function seedSystem(
 
     // Calendars (issue #1600): the calendar module's first database and the `Events.calendar` relation.
     // After seedTenDatabasesInTransaction above, whose Events database this edits.
-    await seedCalendarsInTransaction(client, projectsDb.id, tenDatabases.events.id);
+    const { calendars } = await seedCalendarsInTransaction(client, projectsDb.id, tenDatabases.events.id);
+
+    // Invitations (issue gh-1901): the calendar module's incoming-invitation database. After the Calendars seed
+    // above, whose project item owns it, and after the email module seed, whose Emails and Mailboxes it relates to.
+    // A tenant seeded before it gets the database from runInvitationsDatabaseCutoverMigration instead.
+    await seedInvitationsDatabaseInTransaction(client, calendars);
 
     // Recipes (issue #1707): depends only on the Projects database above. A tenant seeded before it gets the
     // module from runRecipesModuleCutoverMigration instead.

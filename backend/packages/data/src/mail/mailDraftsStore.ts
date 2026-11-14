@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { requireAffectedRows, type Queryable } from "../db/pool.js";
 import { assertKnownValue, assertShape } from "../dbRowValidation.js";
 import { ConflictError, NotFoundError } from "../errors.js";
@@ -254,4 +255,66 @@ export async function markMailDraftSent(
 export async function deleteMailDraft(db: Queryable, emailItemId: string): Promise<void> {
   const result = await db.query("DELETE FROM mail_drafts WHERE email_item_id = $1", [emailItemId]);
   requireAffectedRows(result, `mail draft ${emailItemId} delete`);
+}
+
+/** An unsent draft that an agent created, as `findOpenAgentDraftOfThread` finds it. */
+export interface OpenAgentDraft {
+  emailItemId: string;
+  /** Who wrote it last: `user` once its owner changed it, which an agent must not overwrite. */
+  lastEditedBy: MailDraftActor;
+}
+
+/**
+ * The thread ids a thread's drafts may carry: the thread itself and the threads merged into it, because
+ * `reassignThread` leaves `mail_drafts.thread_id` as it was and records the merge in `mail_thread_aliases` (issue gh-1493).
+ * Fixed SQL around the bind parameter `$1`, the thread's id.
+ */
+const THREAD_AND_MERGED_THREAD_IDS_SQL = `SELECT $1::uuid
+      UNION ALL
+      SELECT a.from_thread_id FROM mail_thread_aliases a
+      WHERE a.tenant_id = app_tenant_default() AND a.to_thread_id = $1::uuid`;
+
+/** The live Emails items, as a join condition on the item `i` of a draft row `d`; fixed SQL. */
+const LIVE_DRAFT_ITEM_SQL = `JOIN items i ON i.tenant_id = d.tenant_id AND i.id = d.email_item_id AND i.deleted_at IS NULL
+    AND i.database_id = (SELECT id FROM databases WHERE tenant_id = app_tenant_default() AND system AND owner_module_id = 'emails')`;
+
+const openAgentDraftRow = z.object({ email_item_id: z.uuid(), last_edited_by: z.enum(MAIL_DRAFT_ACTORS) });
+
+/**
+ * The open agent draft of the thread whose live id is `threadId` (issue gh-1941): an unsent draft that an agent created, in
+ * a live Emails item, of the thread or of a thread merged into it. The oldest when merged threads left several, `null`
+ * when there is none. A draft of a person, a sent draft and a discarded one do not count. The read takes no lock: a caller
+ * that decides a write from it relies on `mail_drafts_one_unsent_agent_per_thread_uq` for the write itself.
+ */
+export async function findOpenAgentDraftOfThread(db: Queryable, threadId: string): Promise<OpenAgentDraft | null> {
+  const { rows } = await db.query<Record<string, unknown>>(
+    `SELECT d.email_item_id, d.last_edited_by FROM mail_drafts d ${LIVE_DRAFT_ITEM_SQL}
+     WHERE d.tenant_id = app_tenant_default() AND d.created_by = 'agent' AND d.sent_at IS NULL
+       AND d.thread_id IN (${THREAD_AND_MERGED_THREAD_IDS_SQL})
+     ORDER BY d.created_at, d.email_item_id LIMIT 1`,
+    [threadId],
+  );
+  const row = rows[0] ? openAgentDraftRow.parse(rows[0]) : null;
+  return row ? { emailItemId: row.email_item_id, lastEditedBy: row.last_edited_by } : null;
+}
+
+/**
+ * Whether the thread whose live id is `threadId` holds a draft made in answer to the message `sourceEmailItemId`, by
+ * anybody and sent or not: a live Emails item with a `mail_drafts` row of the thread, or of a thread merged into it,
+ * whose `source_email_item_id` is that message (issue gh-1941).
+ */
+export async function hasDraftOfSourceMessage(
+  db: Queryable,
+  threadId: string,
+  sourceEmailItemId: string,
+): Promise<boolean> {
+  const { rows } = await db.query<{ found: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM mail_drafts d ${LIVE_DRAFT_ITEM_SQL}
+       WHERE d.tenant_id = app_tenant_default() AND d.source_email_item_id = $2
+         AND d.thread_id IN (${THREAD_AND_MERGED_THREAD_IDS_SQL})
+     ) AS found`,
+    [threadId, sourceEmailItemId],
+  );
+  return rows[0]?.found === true;
 }

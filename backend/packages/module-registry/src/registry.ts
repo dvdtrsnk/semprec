@@ -8,6 +8,7 @@ import {
   type EditorSchemaDescriptor,
   type ModuleDatabaseDescriptor,
   type ModuleLinkRuleDescriptor,
+  type ModuleResolverLinkRuleDescriptor,
   type ModuleManifest,
   type ModuleRelatedOrderDescriptor,
   type ModuleTaskAffinity,
@@ -15,6 +16,24 @@ import {
 
 export interface ModuleLinkRuleProjection extends ModuleLinkRuleDescriptor {
   moduleId: string;
+}
+
+/**
+ * A resolver rule of an active module. `resolver` is the module's export `resolverExport` as the module
+ * wrote it: the registry checked that it is an object and nothing more, so the caller that runs the rule
+ * validates its shape.
+ */
+export interface ModuleLinkResolverRuleProjection {
+  moduleId: string;
+  key: string;
+  target: ModuleLinkRuleDescriptor["target"];
+  resolver: object;
+}
+
+function isViaLinkRule(
+  rule: ModuleLinkRuleDescriptor | ModuleResolverLinkRuleDescriptor,
+): rule is ModuleLinkRuleDescriptor {
+  return "via" in rule;
 }
 
 /** A module's editor schema for one base kind, of an active module. */
@@ -301,6 +320,12 @@ export class ModuleRegistry {
     for (const route of manifest.customRoutes ?? []) {
       this.requireFunctionExport(imported, route.handlerExport, path, `custom route "${route.name}"`);
     }
+    for (const rule of manifest.linkRules ?? []) {
+      if (isViaLinkRule(rule)) continue;
+      const resolver = this.requireExport(imported, rule.resolverExport, path, `link rule "${rule.key}"`);
+      if (typeof resolver !== "object" || resolver === null)
+        throw new Error(`Module at "${path}" link rule "${rule.key}" export "${rule.resolverExport}" is not an object`);
+    }
   }
 
   /**
@@ -567,11 +592,11 @@ export class ModuleRegistry {
     };
   }
 
-  /** Link rules of active modules, in load order then manifest order. A rule without a `valueFilter` has no such key. */
+  /** Via link rules of active modules, in load order then manifest order. A rule without a `valueFilter` has no such key. */
   async getLinkRules(): Promise<ModuleLinkRuleProjection[]> {
     const active = await this.getActiveModules();
     return active.flatMap((loaded) =>
-      (loaded.manifest.linkRules ?? []).map((rule) => ({
+      (loaded.manifest.linkRules ?? []).filter(isViaLinkRule).map((rule) => ({
         moduleId: loaded.manifest.id,
         key: rule.key,
         source: { ...rule.source },
@@ -582,18 +607,38 @@ export class ModuleRegistry {
     );
   }
 
+  /** Resolver link rules of active modules, in load order then manifest order. */
+  async getLinkResolverRules(): Promise<ModuleLinkResolverRuleProjection[]> {
+    const active = await this.getActiveModules();
+    return active.flatMap((loaded) =>
+      (loaded.manifest.linkRules ?? []).flatMap((rule) => {
+        if (isViaLinkRule(rule)) return [];
+        const resolver = loaded.exports[rule.resolverExport];
+        if (typeof resolver !== "object" || resolver === null)
+          throw new Error(`Link rule "${rule.key}" resolver export is not an object`);
+        return [{ moduleId: loaded.manifest.id, key: rule.key, target: { ...rule.target }, resolver }];
+      }),
+    );
+  }
+
   /**
    * Validates every loaded module's link rules together, once all modules are loaded: a rule
    * may name a database of another module, which a single `loadModule` cannot see. Covers all
    * loaded modules regardless of activation. Throws on an unknown database key, a `via`
    * database that is neither the source's nor the target's, or a cycle in the property graph
-   * (one node per `databaseKey.propertyKey`, one edge per rule from source to target). The keys of
-   * a rule's `valueFilter` are not checked here: they name a singleton system database that no
+   * (one node per `databaseKey.propertyKey`, one edge per via rule from source to target). A resolver rule
+   * is checked for its target database only: it has no source or via, so it adds no edge to that graph. The
+   * keys of a rule's `valueFilter` are not checked here: they name a singleton system database that no
    * manifest declares, so only the manifest schema (their shape) and the seeded-schema drift check
    * of `@semprec/data` (their existence) cover them.
    */
   validateLinkRules(): void {
-    const rules = [...this.modulesById.values()].flatMap((loaded) => loaded.manifest.linkRules ?? []);
+    const allRules = [...this.modulesById.values()].flatMap((loaded) => loaded.manifest.linkRules ?? []);
+    for (const rule of allRules) {
+      if (!isViaLinkRule(rule) && !this.databaseKeyOwners.has(rule.target.databaseKey))
+        throw new Error(`Link rule "${rule.key}" target names unknown database key "${rule.target.databaseKey}"`);
+    }
+    const rules = allRules.filter(isViaLinkRule);
     for (const rule of rules) {
       for (const [role, databaseKey] of [
         ["source", rule.source.databaseKey],

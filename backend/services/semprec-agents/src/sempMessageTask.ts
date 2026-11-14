@@ -5,6 +5,7 @@ import {
   buildSempReplySummary,
   claimSempMessage,
   classifySempTurnFailure,
+  deriveReplyOutcome,
   enqueueSempThreadTitleIfFirst,
   finishSempMessageTurn,
   getDatabaseByModuleId,
@@ -17,7 +18,9 @@ import {
   listAgentRunsByHeartbeat,
   loadInboxCardThreadContext,
   publishSempThreadInvalidation,
+  raiseAgentReplyProblem,
   renderInboxCardThreadContext,
+  resolveAgentReplyProblem,
   startSempMessageTurn,
   withTransaction,
   type AgentQueueTaskHandler,
@@ -233,6 +236,13 @@ export function createSempMessageTask(
               ) {
                 throw new Error("Semp message could not be completed");
               }
+              // The problem of the reply follows the stored result in this same transaction: a reply that left a
+              // failed tool call raises it, a complete one resolves it (issue #1931).
+              if (deriveReplyOutcome(summary.steps).outcome === "incomplete") {
+                await raiseAgentReplyProblem(client, assistantMessageId);
+              } else {
+                await resolveAgentReplyProblem(client, assistantMessageId);
+              }
               await enqueueSempThreadTitleIfFirst(client, threadId, assistantMessageId);
               publishSempThreadInvalidation(client, scope.tenantId, threadId);
               return getSempMessageToken(client, assistantMessageId);
@@ -290,6 +300,9 @@ export function createSempMessageTask(
                 ) {
                   throw new Error("Semp message error state could not be stored");
                 }
+                // A failed or interrupted turn raises the problem of its reply in the transaction that stores the
+                // error; a turn the user stopped is not a problem (issue #1931).
+                if (errorCode !== "cancelled") await raiseAgentReplyProblem(client, assistantMessageId);
                 publishSempThreadInvalidation(client, scope.tenantId, threadId);
               });
             } catch (persistenceError) {

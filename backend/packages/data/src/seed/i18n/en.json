@@ -1,6 +1,7 @@
 {
   "approval.recurrence.end": "end",
   "approval.changesSeries": "Change recurrence of {taskName} from {fromRule} to {toRule}",
+  "approval.emailSend": "Send an email from the mailbox \"{mailboxName}\". Recipients: {recipientCount}.",
   "approval.breaksLink": "Set {propertyName} of \"{itemName}\" ({databaseKey}) to \"{newValueName}\". This ends the link to \"{sourceItemName}\" ({sourceDatabaseKey}); the item stops following it.",
   "approval.heartbeatCreate": "Create the automation \"{heartbeatName}\" in \"{projectName}\" with the schedule {rule}. Task: {task}",
   "approval.heartbeatUpdate": "Change the automation \"{heartbeatName}\" in \"{projectName}\" ({changes}).",

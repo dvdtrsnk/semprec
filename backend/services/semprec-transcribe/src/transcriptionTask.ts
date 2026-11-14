@@ -14,7 +14,6 @@ import {
   TRANSCRIPT_SEGMENTS_COMPUTED_KEY,
   TRANSCRIPT_LANGUAGE_COMPUTED_KEY,
   TRANSCRIPT_MEETING_NOTES_COMPUTED_KEY,
-  TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY,
   TRANSCRIPTION_OWNER_PROCESS,
   transcriptionSourceLink,
   createItemWithClient,
@@ -32,8 +31,6 @@ import {
   lockItemById,
   listPropertiesByDatabase,
   markItemAutomationDone,
-  proposeSpeakerMappings,
-  readSpeakerSuggestionContext,
   readRecordingRequest,
   readBlobId,
   recordItemAutomationFailure,
@@ -83,7 +80,7 @@ import {
   recordingDay,
 } from "./transcriptSummary.js";
 import { runEventMatch } from "./eventRecommendationStep.js";
-import { buildSpeakerSuggestionRequest, parseSpeakerSuggestionContent } from "./speakerSuggestion.js";
+import { runSpeakerSuggestion } from "./speakerSuggestionStep.js";
 import { raiseTranscriptionProblem, resolveTranscriptionProblem } from "./transcriptionProblems.js";
 import { linkTranscriptToUploadEvent } from "./uploadEventLink.js";
 
@@ -260,7 +257,7 @@ function withRepeatableReadTransaction<T>(pool: Pool, fn: (client: PoolClient) =
  * Trash or gone, so no step writes to or pays for deleted data. Returns the transcript row it
  * locked, for a step that decides on the transcript's `status`.
  */
-async function requireTranscriptionUnlocked(
+export async function requireTranscriptionUnlocked(
   client: PoolClient,
   { filesDatabaseId, fileItemId, transcriptId }: TranscriptionStepContextIds,
 ): Promise<ItemRow> {
@@ -279,7 +276,10 @@ async function requireTranscriptionUnlocked(
   return transcript;
 }
 
-type TranscriptionStepContextIds = Pick<TranscriptionStepContext, "filesDatabaseId" | "fileItemId" | "transcriptId">;
+export type TranscriptionStepContextIds = Pick<
+  TranscriptionStepContext,
+  "filesDatabaseId" | "fileItemId" | "transcriptId"
+>;
 
 /**
  * Step 0: database-only, so one transaction covers the checkpoint check, the Transcripts row and the
@@ -774,50 +774,30 @@ function runMatchStep(context: TranscriptionStepContext, completionClient: AiGat
 }
 
 /**
- * Step 7 (`suggestSpeakers`): proposes a card for each unmapped speaker. When candidates exist,
- * one gateway call suggests mappings; otherwise cards need clarification without a call. The
- * gateway call runs outside the transactions, and cards and checkpoint commit together. A replay
- * after that commit makes no second call; a crash before commit can repeat the call. A user must
- * confirm a card before a mapping is written. A transcript whose `status` is already `done` gets no
- * call, no card and no checkpoint (issue #1712), whether or not the checkpoint exists: the status is
- * read from the locked row before the call, and again in the transaction that would write the cards.
- * See docs/adr/2026-11-10-finished-transcripts-are-not-matched-or-suggested-again.md.
+ * Step 7 (`suggestSpeakers`): proposes a card for each unmapped speaker (`runSpeakerSuggestion`, which the
+ * `transcriptSpeakerSuggestion` task of issue gh-1942 shares). A transcript whose `status` is already `done` gets no
+ * call, no card and no checkpoint (issue #1712): the status is read from the row `lockRun` locked, before the call and
+ * again in the transaction that would write the cards. See
+ * docs/adr/2026-11-10-finished-transcripts-are-not-matched-or-suggested-again.md.
  */
-async function runSuggestSpeakersStep(
-  { pool, filesDatabaseId, fileItemId, transcriptId }: TranscriptionStepContext,
+function runSuggestSpeakersStep(
+  context: TranscriptionStepContext,
   completionClient: AiGatewayClientPort,
 ): Promise<void> {
-  const snapshot = await withRepeatableReadTransaction(pool, async (client) => {
-    const locked = await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
-    if (locked.properties.status === "done") return null;
-    const source = requireSource(await getItemById(client, filesDatabaseId, fileItemId), fileItemId);
-    if (Object.hasOwn(source.computed, TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY)) return null;
-    const transcriptsDatabaseId = await requireTranscriptsDatabaseId(client);
-    const transcript = requireTranscript(await getItemById(client, transcriptsDatabaseId, transcriptId), transcriptId);
-    const segments = requireSegments(transcript);
-    const context = await readSpeakerSuggestionContext(client, transcriptId);
-    return context ? { segments, context } : null;
-  });
-  if (!snapshot) return;
-
-  const suggestions = snapshot.context.candidates.length
-    ? parseSpeakerSuggestionContent(
-        (await completionClient.complete(buildSpeakerSuggestionRequest(snapshot.segments, snapshot.context))).content,
-      )
-    : [];
-
-  await withTransaction(pool, async (client) => {
-    const locked = await requireTranscriptionUnlocked(client, { filesDatabaseId, fileItemId, transcriptId });
-    // A run that finished the transcript while the call was out leaves it as that run left it.
-    if (locked.properties.status === "done") return;
-    // Locked, so a concurrent run that checkpointed first is not doubled.
-    const source = requireSource(await lockItemById(client, filesDatabaseId, fileItemId), fileItemId);
-    if (Object.hasOwn(source.computed, TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY)) return;
-    const proposedSpeakers = await proposeSpeakerMappings(client, { transcriptId, suggestions });
-    await writeComputed(client, filesDatabaseId, fileItemId, TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY, {
-      proposedSpeakers,
-    });
-  });
+  const { pool, filesDatabaseId, fileItemId, transcriptId } = context;
+  return runSpeakerSuggestion(
+    {
+      pool,
+      transcriptId,
+      filesDatabaseId,
+      fileItemId,
+      skipFinished: true,
+      lockRun: (client) => requireTranscriptionUnlocked(client, context),
+      readSource: async (client, lock) =>
+        requireSource(await (lock ? lockItemById : getItemById)(client, filesDatabaseId, fileItemId), fileItemId),
+    },
+    completionClient,
+  );
 }
 
 /**

@@ -426,6 +426,22 @@ async function holdThreadGuard(
   };
 }
 
+/**
+ * The Threads item an `ingestAttachments` call for a draft hangs its files on. A draft has no thread, and no production
+ * caller ingests attachments for one, so this stands for the thread item of the message the fixture models: a bare
+ * Threads item with no `mail_threads` row, which no thread count or thread cleanup sees.
+ */
+async function newThreadsItemFor(client: PoolClient): Promise<string> {
+  const threads = await getDatabaseByModuleId(client, THREADS_MODULE_ID);
+  if (!threads) throw new Error("the Threads database is not seeded");
+  const item = await createItemWithClient(
+    client,
+    { databaseId: threads.id, properties: { name: "Draft attachments" } },
+    { allowedSystemKeys: ["name"] },
+  );
+  return item.id;
+}
+
 describe("mail purge hook (gh-1691)", () => {
   beforeAll(async () => {
     admin = getTestPool();
@@ -627,6 +643,7 @@ describe("mail purge hook (gh-1691)", () => {
         });
         await ingestAttachments(client, {
           messageItemId: draft.id,
+          threadItemId: await newThreadsItemFor(client),
           filesDatabaseId: ids.files,
           attachmentsRelationPropertyId: ids.emailAttachmentsProperty,
           attachments: [attachment("draft.pdf")],

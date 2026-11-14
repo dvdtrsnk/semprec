@@ -44,7 +44,11 @@ import {
 } from "../inbox/proposalActions.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
-import { insertValueLink, listValueLinksByItemIds } from "../chokePoint/valueLinksStore.js";
+import {
+  insertValueLink,
+  listValueLinkSourcesByLinkIds,
+  listValueLinksByItemIds,
+} from "../chokePoint/valueLinksStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import { createDocStore, type DocStore } from "../docs/docStore.js";
@@ -56,6 +60,14 @@ import { matchTranscriptToEvent } from "../transcription/transcriptEventMatch.js
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
 import type { ItemRow } from "../types.js";
 import { createBlob } from "../blobs/blobsStore.js";
+import type { BlobStorageWriter } from "../mail/blobStorage.js";
+import { ingestEmailMessage } from "../mail/ingest.js";
+import { createMailThread, reassignThread } from "../mail/mailMessageMetaStore.js";
+import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
+import { createActionQueueAffinity } from "../scheduler/actions.js";
+import { purgeExpiredTrash } from "../trash/purgeExpiredTrash.js";
+import { confirmMailThreadCard } from "../inbox/mailThreadCard.js";
+import { PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
 
 let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
@@ -2048,14 +2060,18 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
 
   describe("multi-step proposals on confirm (issue #1486)", () => {
     type Step = NonNullable<ProposalEnvelope["operations"]>[number];
+    // In a tenant scope, as a request is: the writes of a People.companies edge or a Projects status queue
+    // value-link propagation (issue gh-1869), which needs the scope.
     const confirm = (proposalId: string, actingUserId?: string) =>
-      withTransaction(pool, (client) =>
-        confirmProposalWithClient(
-          client,
-          { processingProposalsDatabaseId: proposalsId },
-          proposalId,
-          undefined,
-          actingUserId,
+      runInTenant(getTenantZeroId(), () =>
+        withTransaction(pool, (client) =>
+          confirmProposalWithClient(
+            client,
+            { processingProposalsDatabaseId: proposalsId },
+            proposalId,
+            undefined,
+            actingUserId,
+          ),
         ),
       );
     const countItems = async (moduleId: string) =>
@@ -4200,7 +4216,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       expect(revised.properties.status).toBe("proposed");
       expect(historyAfter).toEqual([
         ...(historyBefore as unknown[]),
-        { author: "user", message: "Use the planning meeting instead", at: expect.any(String) },
+        { id: expect.any(String), author: "user", message: "Use the planning meeting instead", at: expect.any(String) },
       ]);
       const stored = await readCard(cardId);
       expect({ properties: stored.properties, updatedAt: stored.updatedAt }).toEqual({
@@ -5005,7 +5021,9 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         const card = await cardWithSteps(companyAndPerson);
         await edit(card, { person: { name: "Janet" }, company: { name: "Acme Corp" } });
 
-        const confirmed = await withTransaction(pool, (client) => confirmProposalWithClient(client, config(), card));
+        const confirmed = await runInTenant(getTenantZeroId(), () =>
+          withTransaction(pool, (client) => confirmProposalWithClient(client, config(), card)),
+        );
 
         expect(confirmed.properties.resultLabel).toBe("Acme Corp");
         const people = await pool.query<{ name: string }>(
@@ -6919,6 +6937,573 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       expect(after!.properties.status).toBe("rejected");
       expect(after!.properties.aiProposal).toEqual(before!.properties.aiProposal);
       expect(after!.properties.aiVersion).toBe(1);
+    });
+  });
+
+  describe("thread task cards (issue gh-2034)", () => {
+    const USER = { writerKind: "user" } as const;
+    /** A transaction in the tenant's scope, which the mail thread writers require. */
+    const scoped = <T>(fn: (client: PoolClient) => Promise<T>): Promise<T> =>
+      runInTenant(getTenantZeroId(), () => withTransaction(pool, fn));
+    const config = () => ({ processingProposalsDatabaseId: proposalsId });
+    const storage: BlobStorageWriter = {
+      writeStream() {
+        throw new Error("writeStream is not used by this test");
+      },
+      async delete() {},
+      readStream() {
+        throw new Error("readStream is not used by this test");
+      },
+    };
+    let inbox: { mailboxId: string; folderId: string };
+    let eventsDatabaseId: string;
+
+    beforeEach(async () => {
+      eventsDatabaseId = await databaseIdFor("events");
+      inbox = await scoped(async (client) => {
+        const mailbox = await createItemWithClient(client, {
+          databaseId: await databaseIdFor("mailboxes"),
+          properties: { name: "Personal", provider: "generic" },
+        });
+        const folder = await createItemWithClient(
+          client,
+          {
+            databaseId: await databaseIdFor("folders"),
+            properties: { name: "Inbox", behavior: "folder", specialPurpose: "inbox" },
+          },
+          { allowedSystemKeys: ["name", "behavior", "specialPurpose"] },
+        );
+        return { mailboxId: mailbox.id, folderId: folder.id };
+      });
+    });
+
+    async function propertyId(moduleId: string, key: string): Promise<string> {
+      const databaseId = await databaseIdFor(moduleId);
+      const property = await scoped((client) => propertiesStore.getPropertyByKey(client, databaseId, key));
+      if (!property) throw new Error(`Property ${moduleId}.${key} was not seeded`);
+      return property.id;
+    }
+
+    /** A message in the inbox through the sync writer: its thread, the thread's Threads item and its Emails item. */
+    async function newMessage(messageId: string): Promise<{ threadId: string; itemId: string; emailItemId: string }> {
+      return scoped(async (client) => {
+        const ingested = await ingestEmailMessage(client, {
+          emailsDatabaseId: await databaseIdFor("emails"),
+          filesDatabaseId: await databaseIdFor("files"),
+          folderRelationPropertyId: await propertyId("emails", "folder"),
+          attachmentsRelationPropertyId: await propertyId("emails", "attachments"),
+          mailboxItemId: inbox.mailboxId,
+          folderItemId: inbox.folderId,
+          messageId,
+          inReplyTo: null,
+          references: [],
+          subject: `Subject of ${messageId}`,
+          bodyText: `body of ${messageId}`,
+          envelope: { from: { name: "Client", address: "client@example.test" }, to: [{ address: "me@example.test" }] },
+          attachments: [],
+          storage,
+          storageKeyPrefix: "thread-task-card",
+        });
+        const { rows } = await client.query<{ id: string; item_id: string | null }>(
+          "SELECT t.id, t.item_id FROM mail_message_meta m JOIN mail_threads t ON t.id = m.thread_id WHERE m.item_id = $1",
+          [ingested.itemId],
+        );
+        const row = rows[0];
+        if (!row?.item_id) throw new Error("The ingested message has no thread item");
+        return { threadId: row.id, itemId: row.item_id, emailItemId: ingested.itemId };
+      });
+    }
+
+    async function newItem(moduleId: string, properties: Record<string, unknown>): Promise<string> {
+      const databaseId = await databaseIdFor(moduleId);
+      return (await scoped((client) => createItemWithClient(client, { databaseId, properties }))).id;
+    }
+
+    /** A thread with a project and a conversation of a sender and a recipient, linked the way production links them. */
+    async function newConversation() {
+      const thread = await newMessage("<invoice@example.test>");
+      const project = await newItem("projects", { name: "Web" });
+      const alice = await newItem("people", { name: "Alice" });
+      const bob = await newItem("people", { name: "Bob" });
+      const threadProject = await propertyId("threads", "project");
+      const sender = await propertyId("emails", "senderPeople");
+      const recipients = await propertyId("emails", "recipientsPeople");
+      await scoped(async (client) => {
+        await createRelationWithClient(
+          client,
+          { relationPropertyId: threadProject, callerItemId: thread.itemId, targetItemId: project },
+          undefined,
+          USER,
+        );
+        for (const [relationPropertyId, personId] of [
+          [sender, alice],
+          [recipients, bob],
+        ] as const) {
+          await createRelationWithClient(
+            client,
+            { relationPropertyId, callerItemId: thread.emailItemId, targetItemId: personId },
+            { ownerProcess: "emails" },
+          );
+        }
+      });
+      return { thread, project, people: [alice, bob].sort() };
+    }
+
+    /**
+     * A `kind = 'mailThread'` card as its producer writes it (issue gh-2035): the card with its envelope and, unless
+     * `threadItemId` is null, its `sourceThread` edge.
+     */
+    async function createThreadCard(
+      threadItemId: string | null,
+      proposalProperties: Record<string, unknown> = { name: "Pay the invoice" },
+      envelope: Record<string, unknown> = { entityKind: "database", target: tasksId, properties: proposalProperties },
+    ): Promise<ItemRow> {
+      return scoped(async (client) => {
+        const card = await createItemWithClient(
+          client,
+          {
+            databaseId: proposalsId,
+            properties: {
+              kind: "mailThread",
+              status: "proposed",
+              proposal: envelope,
+              aiProposal: envelope,
+              aiVersion: 1,
+              history: [],
+            },
+          },
+          { allowedSystemKeys: ["kind", "proposal", "aiProposal", "aiVersion", "history", "status"] },
+        );
+        if (threadItemId !== null) {
+          await createRelationWithClient(
+            client,
+            {
+              relationPropertyId: await propertyId("processingProposals", "sourceThread"),
+              callerItemId: card.id,
+              targetItemId: threadItemId,
+            },
+            { ownerProcess: PROCESSING_PROPOSALS_MODULE_ID },
+          );
+        }
+        return card;
+      });
+    }
+
+    function confirm(cardId: string, credential?: Parameters<typeof confirmProposalWithClient>[3]) {
+      return scoped((client) => confirmProposalWithClient(client, config(), cardId, credential));
+    }
+
+    function revise(cardId: string, input: Parameters<typeof reviseProposalWithClient>[3]) {
+      return scoped((client) => reviseProposalWithClient(client, config(), cardId, input));
+    }
+
+    async function readCard(id: string): Promise<ItemRow> {
+      const card = await scoped((client) => itemsStore.getItemById(client, proposalsId, id));
+      if (!card) throw new Error(`Card ${id} not found`);
+      return card;
+    }
+
+    async function relatedIds(moduleId: string, key: string, itemId: string): Promise<string[]> {
+      const id = await propertyId(moduleId, key);
+      return scoped(async (client) => {
+        const definition = await relationsStore.getRelationDefinitionByPropertyId(client, id);
+        if (!definition) throw new Error(`Relation ${moduleId}.${key} has no definition`);
+        const edges = await relationsStore.listRelationsForItem(client, definition.id, itemId);
+        return edges.map((edge) => relationsStore.otherSide(edge, itemId)).sort();
+      });
+    }
+
+    /** What a confirm adds to: the Tasks items, the edges and the value links of the tenant. */
+    async function writtenState() {
+      const tasks = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1 ORDER BY id", [
+        tasksId,
+      ]);
+      const edges = await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM item_relations");
+      const links = await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM value_links");
+      return { tasks: tasks.rows.map((row) => row.id), edges: edges.rows[0]?.count, links: links.rows[0]?.count };
+    }
+
+    /** The links of a task: property key, state and the Threads items they follow. */
+    async function linksOfTask(taskId: string) {
+      return scoped(async (client) => {
+        const links = await listValueLinksByItemIds(client, [taskId]);
+        const sources = await listValueLinkSourcesByLinkIds(
+          client,
+          links.map((link) => link.id),
+        );
+        return links.map((link) => ({
+          propertyKey: link.propertyKey,
+          state: link.state,
+          sourceItemIds: sources.flatMap((source) =>
+            source.linkId === link.id && source.kind === "item" ? [source.sourceItemId] : [],
+          ),
+        }));
+      });
+    }
+
+    it("confirm creates the task with the card's name and date, its Threads.tasks edge and the thread's project and people as inherited values", async () => {
+      const { thread, project, people } = await newConversation();
+      const card = await createThreadCard(thread.itemId, { name: "Pay the invoice", date: "2026-11-20" });
+
+      const confirmed = await confirm(card.id);
+
+      expect(confirmed.properties.status).toBe("confirmed");
+      const taskId = z.string().parse(confirmed.properties.resultItemId);
+      expect(confirmed.properties.resultLabel).toBe("Pay the invoice");
+      expect(confirmed.properties.results).toEqual([
+        expect.objectContaining({ ref: "primary", itemId: taskId, databaseKey: "tasks", label: "Pay the invoice" }),
+      ]);
+      const history = confirmed.properties.history as Array<Record<string, unknown>>;
+      expect(history[history.length - 1]).toMatchObject({ author: "user", message: "Confirmed by user." });
+      const task = await scoped((client) => itemsStore.getItemById(client, tasksId, taskId));
+      expect(task?.properties).toMatchObject({ name: "Pay the invoice", date: "2026-11-20" });
+      expect((await writtenState()).tasks).toEqual([taskId]);
+      expect(await relatedIds("threads", "tasks", thread.itemId)).toEqual([taskId]);
+      expect(await relatedIds("tasks", "project", taskId)).toEqual([project]);
+      expect(await relatedIds("tasks", "people", taskId)).toEqual(people);
+      expect(await linksOfTask(taskId)).toEqual([
+        { propertyKey: "people", state: "on", sourceItemIds: [thread.itemId] },
+        { propertyKey: "project", state: "on", sourceItemIds: [thread.itemId] },
+      ]);
+      // The card has no Inbox item or transcript to take an origin from.
+      const origins = await pool.query("SELECT 1 FROM item_origins WHERE item_id = $1", [taskId]);
+      expect(origins.rowCount).toBe(0);
+    });
+
+    it("confirm leaves the task without a date when the card has none", async () => {
+      const { thread } = await newConversation();
+      const card = await createThreadCard(thread.itemId, { name: "Pay the invoice" });
+
+      const taskId = z.string().parse((await confirm(card.id)).properties.resultItemId);
+
+      const task = await scoped((client) => itemsStore.getItemById(client, tasksId, taskId));
+      expect(task?.properties.name).toBe("Pay the invoice");
+      expect(task?.properties.date ?? null).toBeNull();
+    });
+
+    it("writes the task, its edge, its links and the card's confirmation in the caller's one transaction", async () => {
+      const { thread } = await newConversation();
+      const card = await createThreadCard(thread.itemId, { name: "Pay the invoice" });
+      const before = await writtenState();
+
+      await expect(
+        scoped(async (client) => {
+          await confirmProposalWithClient(client, config(), card.id);
+          const inside = await client.query<{ count: number }>(
+            "SELECT count(*)::int AS count FROM items WHERE database_id = $1",
+            [tasksId],
+          );
+          expect(inside.rows[0]?.count).toBe(1);
+          throw new Error("abort after confirm");
+        }),
+      ).rejects.toThrow("abort after confirm");
+
+      expect(await writtenState()).toEqual(before);
+      expect((await readCard(card.id)).properties.status).toBe("proposed");
+    });
+
+    it("a card edited before confirm uses the edited name and date", async () => {
+      const { thread } = await newConversation();
+      const card = await createThreadCard(thread.itemId, { name: "Pay the invoice", date: "2026-11-20" });
+
+      const revised = await revise(card.id, {
+        entityKind: "database",
+        target: tasksId,
+        properties: { name: "Pay the November invoice", date: "2026-12-01" },
+      });
+      expect(revised.properties.proposal).toMatchObject({ properties: { name: "Pay the November invoice" } });
+      const confirmed = await confirm(card.id);
+
+      expect(confirmed.properties.resultLabel).toBe("Pay the November invoice");
+      const task = await scoped((client) =>
+        itemsStore.getItemById(client, tasksId, z.string().parse(confirmed.properties.resultItemId)),
+      );
+      expect(task?.properties).toMatchObject({ name: "Pay the November invoice", date: "2026-12-01" });
+    });
+
+    const longName = "n".repeat(501);
+    const invalidRevisions: Array<[string, () => Parameters<typeof reviseProposalWithClient>[3], string]> = [
+      [
+        "a relations entry",
+        () => ({
+          entityKind: "database",
+          target: tasksId,
+          properties: { name: "X" },
+          relations: { project: [randomUUID()] },
+        }),
+        "relations",
+      ],
+      [
+        "an empty relations object",
+        () => ({ entityKind: "database", target: tasksId, properties: { name: "X" }, relations: {} }),
+        "relations",
+      ],
+      [
+        "another property",
+        () => ({ entityKind: "database", target: tasksId, properties: { name: "X", status: "done" } }),
+        "properties",
+      ],
+      [
+        "no name",
+        () => ({ entityKind: "database", target: tasksId, properties: { date: "2026-11-20" } }),
+        "properties",
+      ],
+      ["an empty name", () => ({ entityKind: "database", target: tasksId, properties: { name: "" } }), "properties"],
+      [
+        "a name over 500 characters",
+        () => ({ entityKind: "database", target: tasksId, properties: { name: longName } }),
+        "properties",
+      ],
+      [
+        "a date that is not a calendar date",
+        () => ({ entityKind: "database", target: tasksId, properties: { name: "X", date: "20.11.2026" } }),
+        "properties",
+      ],
+      [
+        "a date that is not a string",
+        () => ({ entityKind: "database", target: tasksId, properties: { name: "X", date: 20261120 } }),
+        "properties",
+      ],
+      [
+        "another target",
+        () => ({ entityKind: "database", target: eventsDatabaseId, properties: { name: "X" } }),
+        "target",
+      ],
+      [
+        "a target that is not a database id",
+        () => ({ entityKind: "database", target: "not-a-database", properties: { name: "X" } }),
+        "target",
+      ],
+      [
+        "the page content entity kind",
+        () => ({ entityKind: "pageContent", target: tasksId, properties: { flavour: "paragraph" } }),
+        "entityKind",
+      ],
+      [
+        "the relation entity kind",
+        () => ({ entityKind: "relation", target: randomUUID(), properties: { propertyKey: "tasks" } }),
+        "entityKind",
+      ],
+    ];
+    it.each(invalidRevisions)(
+      "revise rejects %s with a validation error and writes nothing",
+      async (_name, input, field) => {
+        const { thread } = await newConversation();
+        const card = await createThreadCard(thread.itemId, { name: "Pay the invoice" });
+        const before = await readCard(card.id);
+
+        const error = await revise(card.id, input()).catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(ValidationError);
+        expect(error).toMatchObject({ code: "validation_failed", details: { field } });
+        expect(await readCard(card.id)).toEqual(before);
+        expect((await writtenState()).tasks).toEqual([]);
+      },
+    );
+
+    it.each([
+      [
+        "a relations entry",
+        { entityKind: "database", target: "$tasks", properties: { name: "X" }, relations: {} },
+        "relations",
+      ],
+      [
+        "another property",
+        { entityKind: "database", target: "$tasks", properties: { name: "X", status: "done" } },
+        "properties",
+      ],
+      ["another target", { entityKind: "database", target: "$events", properties: { name: "X" } }, "target"],
+      [
+        "another entity kind",
+        { entityKind: "relation", target: randomUUID(), properties: { propertyKey: "tasks" } },
+        "entityKind",
+      ],
+      [
+        "a list of steps",
+        {
+          entityKind: "database",
+          target: "$tasks",
+          properties: { name: "X" },
+          operations: [
+            { ref: "primary", role: "primary", op: "create", databaseKey: "tasks", properties: { name: "X" } },
+          ],
+        },
+        "operations",
+      ],
+    ])(
+      "confirm rejects a stored envelope with %s with a validation error and writes nothing",
+      async (_name, stored, field) => {
+        const { thread } = await newConversation();
+        const card = await createThreadCard(thread.itemId, { name: "Pay the invoice" });
+        await setStoredProperty(
+          card.id,
+          "proposal",
+          JSON.parse(JSON.stringify(stored).replace("$tasks", tasksId).replace("$events", eventsDatabaseId)),
+        );
+        const before = await writtenState();
+
+        const error = await confirm(card.id).catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(ValidationError);
+        expect(error).toMatchObject({ code: "validation_failed", details: { field } });
+        expect(await writtenState()).toEqual(before);
+        expect((await readCard(card.id)).properties.status).toBe("proposed");
+      },
+    );
+
+    it("revise and confirm refuse a card without a sourceThread edge, naming sourceThread", async () => {
+      const card = await createThreadCard(null, { name: "Pay the invoice" });
+      const before = await readCard(card.id);
+
+      const revised = await revise(card.id, {
+        entityKind: "database",
+        target: tasksId,
+        properties: { name: "Pay it" },
+      }).catch((e: unknown) => e);
+      const confirmed = await confirm(card.id).catch((e: unknown) => e);
+
+      for (const error of [revised, confirmed]) {
+        expect(error).toBeInstanceOf(ValidationError);
+        expect(error).toMatchObject({ code: "validation_failed", details: { field: "sourceThread" } });
+      }
+      expect(await readCard(card.id)).toEqual(before);
+      expect((await writtenState()).tasks).toEqual([]);
+    });
+
+    it("confirm answers 409 conflict and writes nothing when the source thread was deleted, and the card stays proposed", async () => {
+      const { thread } = await newConversation();
+      const card = await createThreadCard(thread.itemId, { name: "Pay the invoice" });
+      await scoped(async (client) =>
+        itemDeleteWithClient(client, await databaseIdFor("threads"), thread.itemId, {
+          queueAffinity: createActionQueueAffinity(),
+        }),
+      );
+      const before = await writtenState();
+
+      const error = await confirm(card.id).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ConflictError);
+      expect(error).toMatchObject({ status: 409, code: "conflict", details: { field: "sourceThread" } });
+      expect(await writtenState()).toEqual(before);
+      expect(before.tasks).toEqual([]);
+      expect((await readCard(card.id)).properties.status).toBe("proposed");
+    });
+
+    it("a card whose source thread was purged from the Trash has lost its sourceThread edge, so revise and confirm answer the sourceThread validation error and write nothing", async () => {
+      const { thread } = await newConversation();
+      const card = await createThreadCard(thread.itemId, { name: "Pay the invoice" });
+      await scoped(async (client) =>
+        itemDeleteWithClient(client, await databaseIdFor("threads"), thread.itemId, {
+          queueAffinity: createActionQueueAffinity(),
+        }),
+      );
+      expect(await runInTenant(getTenantZeroId(), () => purgeExpiredTrash(pool, storage, 0))).toBeGreaterThan(0);
+      expect(await relatedIds("processingProposals", "sourceThread", card.id)).toEqual([]);
+      const before = await writtenState();
+
+      const revised = await revise(card.id, {
+        entityKind: "database",
+        target: tasksId,
+        properties: { name: "Pay it" },
+      }).catch((e: unknown) => e);
+      const confirmed = await confirm(card.id).catch((e: unknown) => e);
+
+      for (const error of [revised, confirmed]) {
+        expect(error).toBeInstanceOf(ValidationError);
+        expect(error).toMatchObject({ code: "validation_failed", details: { field: "sourceThread" } });
+      }
+      expect(await writtenState()).toEqual(before);
+      expect(before.tasks).toEqual([]);
+      expect((await readCard(card.id)).properties.status).toBe("proposed");
+    });
+
+    it("the confirm function answers 409 conflict and writes nothing for a thread item whose row the lock does not find", async () => {
+      const before = await writtenState();
+
+      const error = await scoped((client) =>
+        confirmMailThreadCard(client, randomUUID(), { name: "Pay the invoice" }),
+      ).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ConflictError);
+      expect(error).toMatchObject({ status: 409, code: "conflict", details: { field: "sourceThread" } });
+      expect(await writtenState()).toEqual(before);
+      expect(before.tasks).toEqual([]);
+    });
+
+    it("the merge of two threads moves the card's sourceThread edge, so the card of the merged-away thread confirms for the survivor", async () => {
+      const newBareThread = (subject: string) =>
+        scoped(async (client) => {
+          const created = await createMailThread(client, subject);
+          const { rows } = await client.query<{ item_id: string }>("SELECT item_id FROM mail_threads WHERE id = $1", [
+            created.id,
+          ]);
+          if (!rows[0]) throw new Error("Missing thread item");
+          return { threadId: created.id, itemId: rows[0].item_id };
+        });
+      const loser = await newBareThread("Losing");
+      const winner = await newBareThread("Winning");
+      const loserCard = await createThreadCard(loser.itemId, { name: "Reply to the loser" });
+      await scoped((client) => reassignThread(client, loser.threadId, winner.threadId));
+      expect(await relatedIds("processingProposals", "sourceThread", loserCard.id)).toEqual([winner.itemId]);
+
+      const taskId = z.string().parse((await confirm(loserCard.id)).properties.resultItemId);
+
+      expect(await relatedIds("threads", "tasks", winner.itemId)).toEqual([taskId]);
+    });
+
+    it("a repeated confirm returns the confirmed card and creates nothing twice", async () => {
+      const { thread } = await newConversation();
+      const card = await createThreadCard(thread.itemId, { name: "Pay the invoice" });
+      const first = await confirm(card.id);
+      const afterFirst = await writtenState();
+
+      const second = await confirm(card.id);
+
+      expect(second.properties.resultItemId).toBe(first.properties.resultItemId);
+      expect(second.updatedAt).toBe(first.updatedAt);
+      expect(await writtenState()).toEqual(afterFirst);
+      expect(afterFirst.tasks).toHaveLength(1);
+    });
+
+    it("confirm refuses a credential on a thread task card and writes nothing", async () => {
+      const { thread } = await newConversation();
+      const card = await createThreadCard(thread.itemId, { name: "Pay the invoice" });
+      const before = await writtenState();
+
+      const error = await confirm(card.id, { credentialType: "api_key", plaintext: "secret" }).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toMatchObject({ details: { field: "credential" } });
+      expect(await writtenState()).toEqual(before);
+      expect((await readCard(card.id)).properties.status).toBe("proposed");
+    });
+
+    it("reject locks the card as rejected without writing a task, and a rejected card cannot be confirmed", async () => {
+      const { thread } = await newConversation();
+      const card = await createThreadCard(thread.itemId, { name: "Pay the invoice" });
+      const before = await writtenState();
+
+      const rejected = await scoped((client) => rejectProposalWithClient(client, config(), card.id));
+
+      expect(rejected.properties.status).toBe("rejected");
+      expect(await writtenState()).toEqual(before);
+      await expect(confirm(card.id)).rejects.toThrow(/Cannot confirm a proposal in status 'rejected'/);
+      expect((await writtenState()).tasks).toEqual([]);
+    });
+
+    it("an Inbox card confirms as before: through the generic item create, with an Inbox origin and no thread edge", async () => {
+      const proposal = await createDatabaseProposal("Buy milk");
+
+      const confirmed = await confirm(proposal.id);
+
+      const taskId = z.string().parse(confirmed.properties.resultItemId);
+      const origins = await pool.query<{ capture_channel: string }>(
+        "SELECT capture_channel FROM item_origins WHERE item_id = $1",
+        [taskId],
+      );
+      expect(origins.rows).toEqual([{ capture_channel: "inbox" }]);
+      const edges = await pool.query("SELECT 1 FROM item_relations WHERE item_a = $1 OR item_b = $1", [taskId]);
+      expect(edges.rowCount).toBe(0);
     });
   });
 });

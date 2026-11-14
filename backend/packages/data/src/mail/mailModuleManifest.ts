@@ -2,13 +2,33 @@ export { createMailboxListRouteHandler, createMailboxDetailRouteHandler } from "
 export { createMailboxPasswordConnectRouteHandler } from "./mailboxPasswordRouteHandlers.js";
 export { createMailContactsRouteHandler } from "./mailContactsRoute.js";
 export {
+  createMailThreadArchiveRouteHandler,
   createMailThreadDetailRouteHandler,
   createMailThreadFacetsRouteHandler,
   createMailThreadFlagRouteHandler,
   createMailThreadListRouteHandler,
   createMailThreadReadRouteHandler,
+  createMailThreadRestoreRouteHandler,
+  createMailThreadTrashRouteHandler,
 } from "./mailThreadRoutes.js";
 export { createMailThreadTaskCreateRouteHandler } from "./mailThreadTaskRouteHandlers.js";
+export { threadCompanyLinkResolver, threadProjectLinkResolver } from "./threadLinkRules.js";
+export {
+  createMailDraftCreateTool,
+  createMailDraftSendTool,
+  createMailDraftUpdateTool,
+  createMailThreadGetTool,
+  mailDraftCreateArgsSchema,
+  mailDraftSendArgsSchema,
+  mailDraftUpdateArgsSchema,
+  mailThreadGetArgsSchema,
+} from "./mailAgentTools.js";
+export {
+  handleMailTriageThreadProject,
+  mailTriageThreadProjectPayloadSchema,
+  setThreadProjectTriageRuntime,
+} from "./threadProjectTriage.js";
+export { handleMailSyncThreadTaskPeople, mailSyncThreadTaskPeoplePayloadSchema } from "./threadTaskPeople.js";
 export { createMailAutonomousSendProjectsRouteHandler } from "./mailAutonomousSendRouteHandlers.js";
 export {
   createMailDraftAttachmentAddRouteHandler,
@@ -16,6 +36,7 @@ export {
   createMailDraftCreateRouteHandler,
   createMailDraftDiscardRouteHandler,
   createMailDraftReadRouteHandler,
+  createMailDraftSendRouteHandler,
   createMailDraftUpdateRouteHandler,
 } from "./mailDraftRouteHandlers.js";
 export {
@@ -33,8 +54,11 @@ import {
   MAILBOXES_MODULE_ID,
   THREADS_MODULE_ID,
 } from "../seed/emailModuleKeys.js";
-import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { FILES_MODULE_ID, TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { THREAD_ATTACHMENT_PROJECT_RULE_KEY } from "./threadAttachmentLinks.js";
 import { MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID, MAIL_REINDEX_PERSON_EMAILS_ACTION_ID } from "./personLinkingActions.js";
+import { THREAD_COMPANY_LINK_RULE_KEY, THREAD_PROJECT_LINK_RULE_KEY } from "./threadLinkRules.js";
+import { MAIL_SYNC_THREAD_TASK_PEOPLE_TASK } from "./threadTaskPeople.js";
 
 export { createNoopMailLiveSyncLifecycleFactory } from "./mailLiveSyncRoot.js";
 export { createMailboxRemovalImpactRouteHandler } from "./mailboxRemovalImpact.js";
@@ -48,9 +72,19 @@ export { createMailboxRemovalRouteHandler } from "./mailboxRemoval.js";
  * (`mailAccountSync`, `mailAccountSyncSweep`, `mailSearchReindexSweep`,
  * `mailLegacyEmailMigration` — all wired in `worker.ts`'s `createCoreTaskList`) are
  * core-registered, not module-declared, the same reason the docs manifest (#226) excludes
- * its cron tasks — so this manifest declares no `taskNames`. `mail.reindexPersonEmails` and
+ * its cron tasks — so the only `taskNames` entries are the module's own `mailTriageThreadProject` (issue gh-1872),
+ * which `threadProjectTriage.ts` enqueues, and `mailSyncThreadTaskPeople` (issue gh-1923, `threadTaskPeople.ts`).
+ * `mail.reindexPersonEmails` and
  * `mail.linkPeopleByEmail` (`personLinkingActions.ts`) are this module's own heartbeat
  * actions, not core's, so they are declared here.
+ *
+ * Its three draft agent tools (issue gh-1927, `mailAgentTools.ts`) are `mail.thread.get` (capability `mail.read`) and
+ * `mail.draft.create` and `mail.draft.update` (capability `mail.draft`). A drafted mail stays in Semprec and nothing
+ * sends it, so they declare no approval. The fourth, `mail.draft.send` (issue gh-1949, capability `mail.send`), is
+ * declared without `requiresApproval` and without a risk class although it concerns an outbound mail: the session
+ * runs its handler, which files the approval request of the send (issue gh-1913) and sends nothing, and the generic
+ * deferral would put a second approval in front of that request
+ * (docs/adr/2026-11-14-the-mail-send-tool-is-declared-without-deferral-and-files-its-own-approval-request.md).
  *
  * `workers` declares the per-mailbox sync worker (module-contract issue #110's generic
  * per-active-row mechanism, `moduleWorkers.ts`): one instance per active Mailboxes row,
@@ -82,8 +116,43 @@ export const manifest: ModuleManifest = {
       clientVisible: true,
     },
   ],
-  capabilities: [],
-  agentTools: [],
+  capabilities: ["mail.read", "mail.draft", "mail.send"],
+  agentTools: [
+    {
+      name: "mail.thread.get",
+      handlerExport: "createMailThreadGetTool",
+      argumentSchemaExport: "mailThreadGetArgsSchema",
+      capability: "mail.read",
+      approval: "none",
+      riskClass: "read",
+    },
+    // A draft stays in Semprec and nothing sends it, so creating and updating one needs no approval; sending is a
+    // separate tool (docs/adr/2026-10-28-module-agent-tools-approval-and-grants.md).
+    {
+      name: "mail.draft.create",
+      handlerExport: "createMailDraftCreateTool",
+      argumentSchemaExport: "mailDraftCreateArgsSchema",
+      capability: "mail.draft",
+      approval: "none",
+      riskClass: "write",
+    },
+    {
+      name: "mail.draft.update",
+      handlerExport: "createMailDraftUpdateTool",
+      argumentSchemaExport: "mailDraftUpdateArgsSchema",
+      capability: "mail.draft",
+      approval: "none",
+      riskClass: "write",
+    },
+    // Issue gh-1949. Not `requiresApproval`, not `approval: "always"` and not `outbound`: see the manifest docstring.
+    {
+      name: "mail.draft.send",
+      handlerExport: "createMailDraftSendTool",
+      argumentSchemaExport: "mailDraftSendArgsSchema",
+      capability: "mail.send",
+      approval: "none",
+    },
+  ],
   viewTypes: [MAILBOX_CLIENT_VIEW_TYPE],
   heartbeatActions: [MAIL_REINDEX_PERSON_EMAILS_ACTION_ID, MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID],
   workers: [{ name: "semprec-mailsync", handlerExport: "createNoopMailLiveSyncLifecycleFactory" }],
@@ -98,6 +167,51 @@ export const manifest: ModuleManifest = {
       source: { databaseKey: THREADS_MODULE_ID, propertyKey: "project" },
       target: { databaseKey: TASKS_MODULE_ID, propertyKey: "project" },
       via: { databaseKey: THREADS_MODULE_ID, relationKey: "tasks" },
+    },
+    // Issue gh-1869: a thread inherits its company from the sender of its first inbound message and its project
+    // from its company. Neither is copied along a relation, so both rules name a resolver (`threadLinkRules.ts`)
+    // that computes the value and declares the changes that make it stale. Ownership handoff: `Threads.company` and
+    // `Threads.project` stay `owner: user`, and the `valueLinks` process writes them only while the thread's link
+    // for that property is `on`.
+    {
+      key: THREAD_COMPANY_LINK_RULE_KEY,
+      target: { databaseKey: THREADS_MODULE_ID, propertyKey: "company" },
+      resolverExport: "threadCompanyLinkResolver",
+    },
+    {
+      key: THREAD_PROJECT_LINK_RULE_KEY,
+      target: { databaseKey: THREADS_MODULE_ID, propertyKey: "project" },
+      resolverExport: "threadProjectLinkResolver",
+    },
+    // A file that a message of a thread brought takes over the thread's project (issue gh-1898). Ownership handoff:
+    // `Files.projects` stays `owner: user`, and the `valueLinks` process writes it only while the file's value link for
+    // that property is `on`. The rule runs in the transaction that writes the `Threads.attachments` edge at ingest
+    // (`mail/attachments.ts`); a later change of the thread's project reaches the file through the `valueLinksPropagate`
+    // job. See docs/adr/2026-11-14-an-attachment-inherits-the-project-of-its-thread-by-a-link-rule.md.
+    {
+      key: THREAD_ATTACHMENT_PROJECT_RULE_KEY,
+      source: { databaseKey: THREADS_MODULE_ID, propertyKey: "project" },
+      target: { databaseKey: FILES_MODULE_ID, propertyKey: "projects" },
+      via: { databaseKey: THREADS_MODULE_ID, relationKey: "attachments" },
+    },
+  ],
+  taskNames: [
+    {
+      // Issue gh-1872: Semp picks a project for a thread that inherited none. `ingest.ts` enqueues it after the first
+      // inbound message of a new thread, delayed; the runtime binds the pool and the AI gateway it needs
+      // (`setThreadProjectTriageRuntime`).
+      name: "mailTriageThreadProject",
+      payloadSchemaExport: "mailTriageThreadProjectPayloadSchema",
+      handlerExport: "handleMailTriageThreadProject",
+      queueAffinity: "api",
+    },
+    {
+      // Adds a person who joined a thread's conversation to the people of its tasks (issue gh-1923); the edge changed
+      // hook of `threadTaskPeople.ts` enqueues it.
+      name: MAIL_SYNC_THREAD_TASK_PEOPLE_TASK,
+      payloadSchemaExport: "mailSyncThreadTaskPeoplePayloadSchema",
+      handlerExport: "handleMailSyncThreadTaskPeople",
+      queueAffinity: "api",
     },
   ],
   customRoutes: [
@@ -179,6 +293,34 @@ export const manifest: ModuleManifest = {
       justification: "transactional-semantics",
     },
     {
+      name: "mailThreadArchive",
+      method: "POST",
+      path: "/api/mail/threads/:threadId/archive",
+      handlerExport: "createMailThreadArchiveRouteHandler",
+      // Issue gh-1917: moves the Inbox messages of a conversation to the Archive folder of their mailboxes and records
+      // each move for the provider, in one transaction, and sends one thin invalidation after the commit.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "mailThreadTrash",
+      method: "POST",
+      path: "/api/mail/threads/:threadId/trash",
+      handlerExport: "createMailThreadTrashRouteHandler",
+      // Issue gh-1917: moves the messages of a conversation to the Trash folder of their mailboxes and records each
+      // move for the provider, in one transaction, and sends one thin invalidation after the commit.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "mailThreadRestore",
+      method: "POST",
+      path: "/api/mail/threads/:threadId/restore",
+      handlerExport: "createMailThreadRestoreRouteHandler",
+      // Issue gh-2033: moves the messages of a conversation that are in Archive or Trash back to the Inbox (incoming
+      // mail) or Sent (the user's own mail) folder of their mailboxes and records each move for the provider, in one
+      // transaction, and sends one thin invalidation after the commit.
+      justification: "transactional-semantics",
+    },
+    {
       name: "mailDraftCreate",
       method: "POST",
       path: "/api/mail/drafts",
@@ -229,12 +371,22 @@ export const manifest: ModuleManifest = {
       justification: "transactional-semantics",
     },
     {
+      name: "mailDraftSend",
+      method: "POST",
+      path: "/api/mail/drafts/:id/send",
+      handlerExport: "createMailDraftSendRouteHandler",
+      // Issue gh-1896: claims the draft, sends it through the mailbox's transport and, in one finalizing transaction,
+      // moves it to Sent, links its people and sets the draft row's `sent_at`.
+      justification: "transactional-semantics",
+    },
+    {
       name: "mailAutonomousSendProjects",
       method: "GET",
       path: "/api/mail/autonomous-send-projects",
       handlerExport: "createMailAutonomousSendProjectsRouteHandler",
-      // Read only: the account detail's list of projects allowed to send without confirmation. The
-      // permission is switched on per project on the server; the app offers no way to change it.
+      // Read only: the account detail's list of projects whose permission manifest holds `emailSendAutonomous`.
+      // No send reads that grant in v1 (every agent send needs approval, issue gh-1913). The permission is
+      // switched on per project on the server; the app offers no way to change it.
       justification: "single-consumer-read",
     },
     {

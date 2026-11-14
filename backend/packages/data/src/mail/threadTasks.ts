@@ -133,6 +133,15 @@ WHERE m.tenant_id = app_tenant_default() AND m.thread_id = $1
     WHERE pei.tenant_id = m.tenant_id AND pei.item_id = person.id)
 ORDER BY person.id`;
 
+/**
+ * The ids of the people of the conversation of mail thread `mailThreadId` (the `mail_threads` row, not its Threads
+ * item), in person id order: the people `CONVERSATION_PEOPLE_SQL` describes. Reads in the caller's transaction.
+ */
+export async function listConversationPersonIds(client: PoolClient, mailThreadId: string): Promise<string[]> {
+  const { rows } = await client.query<Record<string, unknown>>(CONVERSATION_PEOPLE_SQL, [mailThreadId]);
+  return rows.map((row) => personRow.parse(row).id);
+}
+
 /** The first `max` code points of `text`, never half of a surrogate pair. */
 function cutText(text: string, max: number): string {
   return Array.from(text).slice(0, max).join("");
@@ -323,11 +332,10 @@ export async function createThreadTask(
     ruleKey: THREAD_TASK_PEOPLE_RULE_KEY,
     sources: [{ kind: "item", sourceItemId: input.threadItemId, sourcePropertyKey: "people" }],
   });
-  const people = await client.query<Record<string, unknown>>(CONVERSATION_PEOPLE_SQL, [mailThread.id]);
-  for (const row of people.rows) {
+  for (const personId of await listConversationPersonIds(client, mailThread.id)) {
     await createRelationWithClient(
       client,
-      { relationPropertyId: peopleProperty.id, callerItemId: task.id, targetItemId: personRow.parse(row).id },
+      { relationPropertyId: peopleProperty.id, callerItemId: task.id, targetItemId: personId },
       { ownerProcess: VALUE_LINKS_OWNER_PROCESS },
     );
   }

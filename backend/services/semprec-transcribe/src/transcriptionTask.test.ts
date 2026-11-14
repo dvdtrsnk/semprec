@@ -3205,7 +3205,12 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
 
     await task({ fileItemId: file.id }, FIRST_ATTEMPT);
     const source = await withTransaction(pool, (client) => getItemById(client, files.id, file.id));
-    expect(source?.computed.suggestSpeakers).toBeDefined();
+    // Issue gh-1942: the checkpoint says what the step asked for, the Event (none here) and the candidate people.
+    expect(source?.computed.suggestSpeakers).toEqual({
+      proposedSpeakers: expect.any(Array),
+      eventId: null,
+      candidateIds: [],
+    });
     await task({ fileItemId: file.id }, FIRST_ATTEMPT);
 
     const transcript = await readTranscript(file.id);

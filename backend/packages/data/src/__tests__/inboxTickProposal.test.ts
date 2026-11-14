@@ -62,6 +62,8 @@ import {
   reviseProposalWithClient,
   updateProposalValuesWithClient,
 } from "../inbox/proposalActions.js";
+import { linkSourceInboxRelation } from "../inbox/inboxCardSourceLink.js";
+import { splitInboxSourceWithClient } from "../inbox/proposalSplit.js";
 
 let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
@@ -1998,6 +2000,186 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     );
     expect(liveRows).toHaveLength(1);
     expect(liveRows[0].properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk and eggs" }));
+  });
+
+  describe("a source split into several cards (issue #1939)", () => {
+    async function createSplitSource(text: string) {
+      const type = await withTransaction(pool, (client) =>
+        createInboxTypeWithClient(client, {
+          inboxItemTypesDatabaseId: typesId,
+          name: "Task",
+          emoji: "☑️",
+          processingMethod: "database",
+          targetDatabase: "tasks",
+        }),
+      );
+      const item = await withTransaction(pool, (client) =>
+        createInboxItemWithClient(client, {
+          inboxDatabaseId: inboxId,
+          date: "2026-08-28",
+          time: "09:00",
+          text,
+          type: type.id,
+        }),
+      );
+      return { type, item };
+    }
+
+    /** Every Processing proposals row as stored, so a test can prove a card was not written. */
+    async function storedCards() {
+      const { rows } = await pool.query<{ id: string; properties: Record<string, unknown>; updated_at: Date }>(
+        "SELECT id, properties, updated_at FROM items WHERE database_id = $1 ORDER BY id",
+        [proposalsId],
+      );
+      return new Map(
+        rows.map((row) => [row.id, { properties: row.properties, updatedAt: row.updated_at.toISOString() }]),
+      );
+    }
+
+    /** A sibling card of a split, written as the split action writes it, linked to `sourceId`. */
+    async function createSiblingCard(sourceId: string, primaryId: string, name: string): Promise<string> {
+      const envelope: ProposalEnvelope = {
+        entityKind: "database",
+        target: await databaseIdFor("tasks"),
+        properties: { name },
+      };
+      return withTransaction(pool, async (client) => {
+        const sibling = await createItemWithClient(
+          client,
+          {
+            databaseId: proposalsId,
+            properties: {
+              kind: "inbox",
+              proposal: envelope,
+              ...aiProposalPatch({}, envelope),
+              history: [],
+              status: "proposed",
+              splitFromProposalId: primaryId,
+            },
+          },
+          {
+            allowedSystemKeys: [
+              "kind",
+              "proposal",
+              "aiProposal",
+              "aiVersion",
+              "history",
+              "status",
+              "splitFromProposalId",
+            ],
+          },
+        );
+        await linkSourceInboxRelation(client, { processingProposalsDatabaseId: proposalsId }, sibling.id, sourceId);
+        return sibling.id;
+      });
+    }
+
+    async function editSource(itemId: string, text: string) {
+      await withTransaction(pool, (client) =>
+        itemsStore.updateItemProperties(client, {
+          databaseId: inboxId,
+          itemId,
+          propertiesPatch: { text },
+        }),
+      );
+    }
+
+    it("recomputes only the primary card when the source text is edited, and makes no call while the source is unchanged", async () => {
+      const { type, item } = await createSplitSource("Buy milk and renew the passport");
+      await runTick(pool, databaseIds, item.id, async () => ({
+        properties: { name: "Buy milk and renew the passport" },
+      }));
+      const primaryId = (await findProposalForItem(pool, proposalsId, item.id))!.id;
+      const tasksId = await databaseIdFor("tasks");
+      const { siblings } = await withTransaction(pool, (client) =>
+        splitInboxSourceWithClient(
+          client,
+          { processingProposalsDatabaseId: proposalsId },
+          {
+            proposalId: primaryId,
+            subjectItemId: item.id,
+            threadId: randomUUID(),
+            messageId: randomUUID(),
+            cards: [
+              { entityKind: "database", target: tasksId, properties: { name: "Buy milk" } },
+              { entityKind: "database", target: tasksId, properties: { name: "Renew the passport" } },
+              { entityKind: "database", target: tasksId, properties: { name: "Call mom" } },
+            ],
+          },
+        ),
+      );
+      expect(siblings).toHaveLength(2);
+      const afterSplit = await storedCards();
+      expect(afterSplit.size).toBe(3);
+
+      let calls = 0;
+      const compute: ComputeSemprecProposalFn = async () => {
+        calls++;
+        return { properties: { name: "Buy milk and eggs" } };
+      };
+      await runTick(pool, databaseIds, item.id, compute);
+      expect(calls).toBe(0);
+      expect(await storedCards()).toEqual(afterSplit);
+
+      await editSource(item.id, "Buy milk and eggs, renew the passport");
+      await runTick(pool, databaseIds, item.id, compute);
+
+      expect(calls).toBe(1);
+      const afterEdit = await storedCards();
+      expect(afterEdit.size).toBe(3);
+      const primary = afterEdit.get(primaryId)!;
+      expect(primary.properties.proposal).toEqual({
+        entityKind: "database",
+        target: tasksId,
+        properties: { name: "Buy milk and eggs" },
+      });
+      expect(primary.properties.fingerprint).toBe(
+        fingerprintV2Of({ typeId: type.id, text: "Buy milk and eggs, renew the passport" }),
+      );
+      for (const sibling of siblings) expect(afterEdit.get(sibling.id)).toEqual(afterSplit.get(sibling.id));
+    });
+
+    it("sees no sibling whichever edge comes first: it creates its own card beside the siblings of a source and later revises that one", async () => {
+      const { type, item } = await createSplitSource("Buy milk");
+      // The edges of both siblings exist before the tick's card has one, so a scan that took the first live card
+      // of the source would take a sibling.
+      const siblingIds = [
+        await createSiblingCard(item.id, randomUUID(), "Sibling one"),
+        await createSiblingCard(item.id, randomUUID(), "Sibling two"),
+      ];
+      const siblingsBefore = await storedCards();
+      let calls = 0;
+      const compute: ComputeSemprecProposalFn = async () => {
+        calls++;
+        return { properties: { name: "Buy milk" } };
+      };
+
+      await runTick(pool, databaseIds, item.id, compute);
+
+      expect(calls).toBe(1);
+      const created = await storedCards();
+      expect(created.size).toBe(3);
+      const primaryId = [...created.keys()].find((id) => !siblingIds.includes(id));
+      if (!primaryId) throw new Error("The tick created no card of its own");
+      expect(created.get(primaryId)!.properties).toMatchObject({
+        kind: "inbox",
+        status: "proposed",
+        fingerprint: fingerprintV2Of({ typeId: type.id, text: "Buy milk" }),
+      });
+      expect(created.get(primaryId)!.properties.splitFromProposalId).toBeUndefined();
+      for (const id of siblingIds) expect(created.get(id)).toEqual(siblingsBefore.get(id));
+
+      await editSource(item.id, "Buy milk and eggs");
+      await runTick(pool, databaseIds, item.id, compute);
+
+      expect(calls).toBe(2);
+      const revised = await storedCards();
+      expect(revised.size).toBe(3);
+      expect(revised.get(primaryId)!.properties.fingerprint).toBe(
+        fingerprintV2Of({ typeId: type.id, text: "Buy milk and eggs" }),
+      );
+      for (const id of siblingIds) expect(revised.get(id)).toEqual(siblingsBefore.get(id));
+    });
   });
 
   it("an item with no type is marked needsClarification, not silently skipped (issue #104)", async () => {
@@ -5434,12 +5616,15 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
         "tasks",
       );
       await validate(envelope);
-      await withTransaction(pool, (client) =>
-        updateItemWithClient(client, {
-          databaseId: databaseIdForProject,
-          itemId: project,
-          propertiesPatch: { status: "archived" },
-        }),
+      // In a tenant scope, as a request is: a Projects status update queues value-link propagation (issue gh-1869).
+      await runInTenant(getTenantZeroId(), () =>
+        withTransaction(pool, (client) =>
+          updateItemWithClient(client, {
+            databaseId: databaseIdForProject,
+            itemId: project,
+            propertiesPatch: { status: "archived" },
+          }),
+        ),
       );
       expect((await failure(envelope)).details).toMatchObject({
         ref: "move",
@@ -6113,6 +6298,101 @@ describe("semprec.tick keeps user-edited keys when it recomputes a proposal (iss
     expect(recovered.properties.aiVersion).toBe(3);
     expect(recovered.properties.proposal).toEqual(envelopeOf({ name: "My own title", description: "Two things" }));
     expect(recovered.properties.userEditedKeys).toEqual(["primary.name"]);
+  });
+});
+
+describe("semprec.tick computes a card that was sent back as computing, whatever its fingerprint says (issue gh-1947)", () => {
+  let inboxId: string;
+  let typesId: string;
+  let proposalsId: string;
+  let databaseIds: TickDatabaseIds;
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    viewTypeRegistry = createViewTypeRegistry();
+    await resetDatabase(pool);
+    await seedSystem(pool, viewTypeRegistry);
+    inboxId = await databaseIdFor("inbox");
+    typesId = await databaseIdFor("inboxItemTypes");
+    proposalsId = await databaseIdFor("processingProposals");
+    databaseIds = {
+      inboxDatabaseId: inboxId,
+      inboxItemTypesDatabaseId: typesId,
+      processingProposalsDatabaseId: proposalsId,
+    };
+  });
+
+  /** A typed Task item whose first tick stored a `proposed` card, which its fingerprint covers. */
+  async function seedCard() {
+    const type = await withTransaction(pool, (client) =>
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Task",
+        emoji: "☑️",
+        processingMethod: "database",
+        targetDatabase: "tasks",
+      }),
+    );
+    const item = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: inboxId,
+        date: "2026-08-28",
+        time: "09:00",
+        text: "Buy milk",
+        type: type.id,
+      }),
+    );
+    await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
+    const card = await findProposalForItem(pool, proposalsId, item.id);
+    if (!card) throw new Error("the first tick wrote no card");
+    return { type, item, card };
+  }
+
+  it("skips a proposed card whose fingerprint is current, the gate that a computing card does not meet", async () => {
+    const { item, card } = await seedCard();
+    let calls = 0;
+
+    await runTick(pool, databaseIds, item.id, async () => {
+      calls += 1;
+      return { properties: { name: "Buy oat milk" } };
+    });
+
+    expect(calls).toBe(0);
+    expect((await findProposalForItem(pool, proposalsId, item.id))?.properties).toMatchObject({
+      status: "proposed",
+      aiVersion: card.properties.aiVersion,
+    });
+  });
+
+  it("computes a computing card whose fingerprint is current, and stores the result as a proposed card", async () => {
+    const { type, item, card } = await seedCard();
+    await withTransaction(pool, (client) =>
+      updateItemWithClient(
+        client,
+        { databaseId: proposalsId, itemId: card.id, propertiesPatch: { status: "computing" } },
+        { allowedSystemKeys: ["status"] },
+      ),
+    );
+    expect((await findProposalForItem(pool, proposalsId, item.id))?.properties.fingerprint).toBe(
+      fingerprintV2Of({ typeId: type.id, text: "Buy milk" }),
+    );
+    let calls = 0;
+
+    await runTick(pool, databaseIds, item.id, async () => {
+      calls += 1;
+      return { properties: { name: "Buy oat milk" } };
+    });
+
+    expect(calls).toBe(1);
+    const tasksId = await databaseIdFor("tasks");
+    const envelope = { entityKind: "database", target: tasksId, properties: { name: "Buy oat milk" } };
+    expect((await findProposalForItem(pool, proposalsId, item.id))?.properties).toMatchObject({
+      status: "proposed",
+      proposal: envelope,
+      aiProposal: envelope,
+      aiVersion: 2,
+      fingerprint: fingerprintV2Of({ typeId: type.id, text: "Buy milk" }),
+    });
   });
 });
 

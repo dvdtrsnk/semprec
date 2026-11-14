@@ -719,7 +719,12 @@ describe("POST /api/tasks/series/:seriesId/occurrences/:date (issue #1720)", () 
     const trashed = (await post(seriesId, "2026-10-20", {})).item.id;
     const results = await whileHolding(
       async (client) => {
-        await itemDeleteWithClient(client, tasksId, trashed, { queueAffinity: createActionQueueAffinity() });
+        // Fixture SQL: the choke point trashes a series as a whole and turns its rule off (issue gh-1882), so the
+        // occurrence is trashed on its own to reach the route's branch for an occurrence that left the live items.
+        await client.query("UPDATE items SET deleted_at = now() WHERE database_id = $1 AND id = $2", [
+          tasksId,
+          trashed,
+        ]);
       },
       [() => post(seriesId, "2026-10-20", { status: "done" })],
     );
@@ -727,6 +732,19 @@ describe("POST /api/tasks/series/:seriesId/occurrences/:date (issue #1720)", () 
     const live = (await occurrences(seriesId)).filter((row) => row.occurrenceDate === "2026-10-20");
     expect(live).toEqual([{ id: expect.any(String), occurrenceDate: "2026-10-20", status: "done" }]);
     expect(live[0]?.id).not.toBe(trashed);
+  });
+
+  it("answers not found and creates nothing when the series is trashed while the request waits for its row (issue gh-1882)", async () => {
+    const { seriesId } = await series();
+    const stored = (await post(seriesId, "2026-10-20", {})).item.id;
+    const results = await whileHolding(
+      async (client) => {
+        await itemDeleteWithClient(client, tasksId, stored, { queueAffinity: createActionQueueAffinity() });
+      },
+      [() => post(seriesId, "2026-10-20", { status: "done" })],
+    );
+    expect(results[0]).toBeInstanceOf(NotFoundError);
+    expect(await occurrences(seriesId)).toEqual([]);
   });
 
   it("answers not found when the occurrence leaves its series while the request waits for its row", async () => {

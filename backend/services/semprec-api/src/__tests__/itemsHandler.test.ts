@@ -20,9 +20,11 @@ import {
   createRuntimeRolePool,
   getTestPool,
   getTenantZeroId,
+  createSeriesOccurrence,
   registerItemCreateHook,
   registerItemUpdateHook,
   resetDatabase,
+  startTaskSeries,
   runMailboxAddressesOwnerCutoverMigration,
   tenantForNextTestUser,
   upsertMailMessageMeta,
@@ -4355,6 +4357,9 @@ describe("item routes (issue #241)", () => {
       subtreeItemCount: number;
       subtreePageCount: number;
       linksToOwn: Array<{ itemId: string; propertyKey: string }>;
+      seriesInstanceCount: number;
+      attachmentCount: number;
+      hostEventCount: number;
     }
 
     async function getImpact(id: string, headers: Record<string, string>) {
@@ -4441,9 +4446,63 @@ describe("item routes (issue #241)", () => {
         // The page of the note, its two subpages and the page nested under one of them.
         subtreePageCount: 4,
         linksToOwn: [{ itemId: task.id, propertyKey: "title" }],
+        // The note belongs to a database without an owner module, which counts none of the series numbers.
+        seriesInstanceCount: 0,
+        attachmentCount: 0,
+        hostEventCount: 0,
       } satisfies DeleteImpactBody);
       expect((await pool.query("SELECT count(*)::int AS n FROM items")).rows).toEqual(itemsBefore.rows);
       expect((await chokePoint.getItem(notes.id, note.id))?.deletedAt).toBeNull();
+    });
+
+    it("counts the instances of a recurring task's series, its attachments and its host Events (issue gh-1882)", async () => {
+      await seedSystem(pool, createViewTypeRegistry());
+      const headers = await authHeader();
+      const [tasks, files, events] = await withTransaction(pool, async (client) => [
+        await getDatabaseByModuleId(client, "tasks"),
+        await getDatabaseByModuleId(client, "files"),
+        await getDatabaseByModuleId(client, "events"),
+      ]);
+      if (!tasks || !files || !events) throw new Error("The system is not seeded");
+      const task = await chokePoint.createItem({
+        databaseId: tasks.id,
+        properties: { name: "Review", date: "2026-10-12" },
+      });
+      const seriesId = await startTaskSeries(pool, {
+        databaseId: tasks.id,
+        itemId: task.id,
+        mode: "fixed",
+        rule: { kind: "weekdays", days: ["mon"] },
+      });
+      for (const occurrenceDate of ["2026-10-19", "2026-10-26"]) {
+        await createSeriesOccurrence(pool, { databaseId: tasks.id, seriesId, occurrenceDate, status: "notDone" });
+      }
+      const attach = async (key: string, caller: { id: string }, target: { id: string }, databaseId: string) => {
+        const property = (await chokePoint.listProperties(databaseId)).find((candidate) => candidate.key === key);
+        if (!property) throw new Error(`Missing ${key}`);
+        await chokePoint.createRelation({
+          relationPropertyId: property.id,
+          callerItemId: caller.id,
+          targetItemId: target.id,
+        });
+      };
+      await attach(
+        "files",
+        task,
+        await chokePoint.createItem({ databaseId: files.id, properties: { name: "a.pdf" } }),
+        tasks.id,
+      );
+      await attach(
+        "files",
+        task,
+        await chokePoint.createItem({ databaseId: files.id, properties: { name: "b.pdf" } }),
+        tasks.id,
+      );
+
+      const res = await getImpact(task.id, headers);
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ seriesInstanceCount: 3, attachmentCount: 2, hostEventCount: 0 });
     });
 
     it("reads all four parts in one repeatable-read snapshot", async () => {

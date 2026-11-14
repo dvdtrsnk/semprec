@@ -12,9 +12,11 @@ import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
 import { getItemsByIdsIncludingDeleted, lockItemById } from "../chokePoint/itemsStore.js";
 import { transferMailThreadRelationsWithClient } from "../chokePoint/relationOps.js";
+import { finishThreadValueMerge, planThreadValueMerge } from "./threadMergePrecedence.js";
 import { SYSTEM_WRITER } from "../chokePoint/writerKind.js";
 import { createActionQueueAffinity } from "../scheduler/actions.js";
 import { THREADS_MODULE_ID } from "../seed/emailModuleKeys.js";
+import { propagateThreadAttachmentLinks, repointThreadAttachmentLinks } from "./threadAttachmentLinks.js";
 
 export interface MailEnvelopeAddress {
   name?: string;
@@ -368,11 +370,29 @@ export async function createMailThread(client: PoolClient, subjectHint?: string)
 }
 
 /**
- * Moves every message out of `fromThreadId` into `toThreadId`, records the alias `fromThreadId -> toThreadId`,
+ * The Threads item that mail thread `threadId` is bound to (`mail_threads.item_id`), in the caller's tenant. A thread
+ * that does not exist, or that no Threads item is bound to yet, throws: a thread has its item from its creation on and
+ * from the cutover of issue #1573 on for every older one.
+ */
+export async function getMailThreadItemId(client: Queryable, threadId: string): Promise<string> {
+  const { rows } = await client.query<{ item_id: string | null }>(
+    "SELECT item_id FROM mail_threads WHERE tenant_id = app_tenant_default() AND id = $1",
+    [threadId],
+  );
+  const itemId = rows[0]?.item_id;
+  if (!itemId) throw new Error("The mail thread has no Threads item");
+  return itemId;
+}
+
+/**
+ * Moves every message out of `fromThreadId` into `toThreadId`, merges their Threads items (the winner's company and
+ * project stay unless the loser's value takes precedence, `planThreadValueMerge`), records the alias `fromThreadId -> toThreadId`,
  * repoints every alias that already targeted `fromThreadId`, then deletes the now-empty `mail_threads` row. Run it
  * in one transaction. Nothing else references `mail_threads` except `mail_message_meta.thread_id` and the aliases,
  * so after these statements `fromThreadId` has no remaining referencer; leaving it would accumulate an orphaned row on
- * every dummy-container merge (threading.ts's self-heal path). Merging a thread with itself does nothing.
+ * every dummy-container merge (threading.ts's self-heal path). Merging a thread with itself does nothing. The loser's
+ * Threads item hands its relation edges to the winner's; the value links of the loser's attachments move to the winner
+ * before that (`repointThreadAttachmentLinks`), so the attachments follow the winner's project (issue gh-1898).
  */
 export async function reassignThread(client: PoolClient, fromThreadId: string, toThreadId: string): Promise<void> {
   requireManagedTransaction(client);
@@ -392,7 +412,19 @@ export async function reassignThread(client: PoolClient, fromThreadId: string, t
       const item = await lockItemById(client, database.id, id);
       if (!item || item.deletedAt) throw new Error("Threads merge item is missing or deleted");
     }
-    await transferMailThreadRelationsWithClient(client, database.id, loserId, winnerId);
+    const valueMerge = {
+      winnerItemId: winnerId,
+      loserItemId: loserId,
+      winnerThreadId: toThreadId,
+      loserThreadId: fromThreadId,
+    };
+    const plan = await planThreadValueMerge(client, valueMerge);
+    // The loser's attachments keep following a thread: their links move to the winner before the generic move
+    // removes the loser's edges, which would end them (see `repointThreadAttachmentLinks`).
+    const repointed = await repointThreadAttachmentLinks(client, loserId, winnerId);
+    await transferMailThreadRelationsWithClient(client, database.id, loserId, winnerId, plan.loserValueWins);
+    await finishThreadValueMerge(client, plan, valueMerge);
+    if (repointed) await propagateThreadAttachmentLinks(client, winnerId);
     await itemDeleteWithClient(client, database.id, loserId, {
       queueAffinity: createActionQueueAffinity(),
       writer: SYSTEM_WRITER,

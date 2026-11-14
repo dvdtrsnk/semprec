@@ -132,6 +132,46 @@ describe("writeNotification", () => {
     );
   });
 
+  /** Writes the approval body of a delete that carries the delete impact of its module for one user and returns the stored body. */
+  async function writeImpactBody(userId: string, sourceId: string): Promise<string | null> {
+    await withTransaction(pool, (client) =>
+      writeNotification(client, {
+        userId,
+        kind: "approval_pending",
+        linkHref: null,
+        sourceTable: "approval_requests",
+        sourceId,
+        transitionInstance: sourceId,
+        bodyKey: "approval.itemDeleteImpact",
+        bodyParams: {
+          itemName: "Review",
+          databaseName: "Tasks",
+          databaseKey: "tasks",
+          linkedCount: 2,
+          restorableDays: 30,
+          seriesInstanceCount: 3,
+          attachmentCount: 1,
+          hostEventCount: 4,
+        },
+        bodySuffixKey: "notification.body.canUndo",
+      }),
+    );
+    const { rows } = await pool.query(`SELECT body FROM notifications WHERE source_id = $1`, [sourceId]);
+    return rows[0].body;
+  }
+
+  it("renders the counts of a delete impact in English (issue gh-1882)", async () => {
+    expect(await writeImpactBody(await createTestUser("en"), "impact-en")).toBe(
+      'Delete "Review" from "Tasks" (tasks); 2 linked items, 3 instances in its series, 1 attachments, 4 events it is placed in, retained for 30 days. This can be undone later.',
+    );
+  });
+
+  it("renders the counts of a delete impact in Czech (issue gh-1882)", async () => {
+    expect(await writeImpactBody(await createTestUser("cs"), "impact-cs")).toBe(
+      "Smazat „Review“ z „Tasks“ (tasks); propojených položek: 2, instancí v jeho řadě: 3, příloh: 1, událostí, ve kterých je zařazen: 4, uchování: 30 dní. Lze ji později vzít zpět.",
+    );
+  });
+
   it("rejects a suffix without an action body", async () => {
     const userId = await createTestUser("en");
     await expect(

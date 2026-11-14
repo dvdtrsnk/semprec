@@ -14,18 +14,24 @@ import {
   createDocStore,
   createItemWithClient,
   createPendingApprovalRequest,
+  claimSempMessage,
   createRelationWithClient,
+  createSempChatThread,
   createSemprecTickAction,
   createUser,
+  finishSempMessageTurn,
   getDatabaseByModuleId,
   ingestUploadedBlob,
   insertAgentRunEvent,
   listPropertiesByDatabase,
   LocalFsBlobStorageWriter,
   resolveMailModuleIds,
+  sendSempMessage,
   seedSystem,
+  startSempMessageTurn,
   withTransaction,
   writeComputed,
+  type SempReplyStep,
 } from "@semprec/data";
 import {
   createRuntimeRolePool,
@@ -292,6 +298,85 @@ describe("tenant-scoped reference blob expansion", () => {
     expect(refused.text).not.toContain("Company relation sentinel");
     expect(refused.text).not.toContain("Tool sentinel");
     expect(refused.text).not.toContain("Approval sentinel");
+  });
+
+  it("expands an agent run ref that names an answer as that answer only, and the whole session without it (issue gh-1936)", async () => {
+    const step: SempReplyStep = {
+      kind: "tool",
+      toolName: "stepSentinelTool",
+      label: { key: "agentStep.title.sentinel", params: {} },
+      detail: { key: "agentStep.detail.sentinel", params: {} },
+      status: "ok",
+      startedAt: "2026-11-01T10:00:00.000Z",
+      durationMs: 5,
+    };
+    const session = await runInTenant(tenant, () =>
+      withTransaction(runtime, async (client) => {
+        const threadId = await createSempChatThread(client);
+        const run = await createAgentRun(client, {
+          triggeredBy: "user",
+          unit: "session",
+          task: "Session task sentinel",
+          threadId,
+        });
+        const answers: Array<{ answerId: string }> = [];
+        for (const letter of ["A", "B", "C"]) {
+          const turn = await sendSempMessage(client, {
+            threadId,
+            text: `Question ${letter} sentinel`,
+            context: [],
+            hasContext: false,
+          });
+          expect(await claimSempMessage(client, threadId, turn.assistantMessageId)).toBe(true);
+          const started = await insertAgentRunEvent(client, run.id, "turn_start", { kind: "turn_start" });
+          await startSempMessageTurn(client, turn.assistantMessageId, run.id, started.id);
+          const ended = await insertAgentRunEvent(client, run.id, "turn_end", { kind: "turn_end" });
+          expect(
+            await finishSempMessageTurn(client, turn.assistantMessageId, {
+              status: "done",
+              text: `Answer ${letter} sentinel`,
+              lastEventId: ended.id,
+              summary: {
+                steps: letter === "B" ? [step] : [],
+                durationMs: 5,
+                tokens: { input: 0, output: 0 },
+                changes: [],
+              },
+            }),
+          ).toBe(true);
+          answers.push({ answerId: turn.assistantMessageId });
+        }
+        return { runId: run.id, answers };
+      }),
+    );
+    const second = session.answers[1];
+    if (!second) throw new Error("Missing second answer");
+    const answerRef = { kind: "agentRun" as const, agentRunId: session.runId, messageId: second.answerId };
+
+    const answer = await runInTenant(tenant, () => expandSempRefs(runtime, [answerRef], { files, mailAttachments }));
+
+    expect(answer.context).toEqual([{ ...answerRef, label: "Question B sentinel" }]);
+    for (const sentinel of ["Question B sentinel", "Answer B sentinel", "stepSentinelTool"])
+      expect(answer.text).toContain(sentinel);
+    for (const sentinel of [
+      "Question A sentinel",
+      "Answer A sentinel",
+      "Question C sentinel",
+      "Answer C sentinel",
+      "Session task sentinel",
+    ])
+      expect(answer.text).not.toContain(sentinel);
+
+    const whole = await runInTenant(tenant, () =>
+      expandSempRefs(runtime, [{ kind: "agentRun", agentRunId: session.runId }], { files, mailAttachments }),
+    );
+    expect(whole.context.map((entry) => entry.label)).toEqual(["Session task sentinel"]);
+    expect(whole.text).toContain("Session task sentinel");
+    expect(whole.text).not.toContain("Question B sentinel");
+
+    const refused = await runInTenant(foreign, () => expandSempRefs(runtime, [answerRef], { files, mailAttachments }));
+    expect(refused.text).toBe("agentRun: no longer exists or is unavailable.");
+    expect(refused.context.map((entry) => entry.label)).toEqual([""]);
   });
 
   it("expands a real Inbox capture and its revised tick-created card in both directions", async () => {

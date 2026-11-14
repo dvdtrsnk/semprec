@@ -201,8 +201,30 @@ export interface ModuleToolApprovalRequestPayload {
   args: Record<string, unknown>;
 }
 
+/** The tool name of an agent's or an MCP run credential's mail send (issue gh-1913): the `tool_name` of its request. */
+export const MAIL_DRAFT_SEND_TOOL_NAME = "mail.draft.send";
+
+/**
+ * The payload of the approval request of an agent's mail send (issue gh-1913), a request of the `moduleTool` family
+ * whose tool is `MAIL_DRAFT_SEND_TOOL_NAME`: the draft, the hash of what it held when the request was made, its mailbox
+ * and the To recipients, subject and text body. The Cc and Bcc recipients, the From address and the attachments are
+ * covered by `draftHash` only. The values stay in this column: every client-facing view of a request carries the
+ * argument names at most.
+ */
+export interface MailSendApprovalRequestPayload {
+  draftId: string;
+  draftHash: string;
+  mailboxId: string;
+  to: Array<{ name?: string; address: string }>;
+  subject: string;
+  body: string;
+}
+
 export type ApprovalRequestPayload =
-  McpInvokeApprovalRequestPayload | GenericOperationApprovalRequestPayload | ModuleToolApprovalRequestPayload;
+  | McpInvokeApprovalRequestPayload
+  | GenericOperationApprovalRequestPayload
+  | ModuleToolApprovalRequestPayload
+  | MailSendApprovalRequestPayload;
 
 export function isGenericOperationApprovalRequestPayload(
   payload: ApprovalRequestPayload,
@@ -220,6 +242,12 @@ export function isModuleToolApprovalRequestPayload(
   payload: ApprovalRequestPayload,
 ): payload is ModuleToolApprovalRequestPayload {
   return "moduleToolName" in payload;
+}
+
+export function isMailSendApprovalRequestPayload(
+  payload: ApprovalRequestPayload,
+): payload is MailSendApprovalRequestPayload {
+  return "draftHash" in payload;
 }
 
 interface ApprovalRequestRow {
@@ -398,6 +426,47 @@ export async function getApprovalRequest(
     [id],
   );
   return rows[0] ? rowToApprovalRequest(rows[0]) : null;
+}
+
+/**
+ * The oldest pending mail send request (issue gh-1913) of the draft `draftId`, or `null`. It is a guard only for a
+ * caller that holds the draft's Emails item lock, which is what every creation of such a request takes.
+ */
+export async function findPendingMailSendApprovalRequest(
+  client: Queryable,
+  draftId: string,
+): Promise<ApprovalRequest | null> {
+  const { rows } = await client.query<ApprovalRequestRow>(
+    `SELECT * FROM approval_requests
+      WHERE status = 'pending' AND payload ? 'draftHash' AND payload ->> 'draftId' = $1
+      ORDER BY requested_at ASC, id ASC
+      LIMIT 1`,
+    [draftId],
+  );
+  return rows[0] ? rowToApprovalRequest(rows[0]) : null;
+}
+
+/**
+ * Closes as superseded every other pending mail send request of the draft `draftId` once `decidedRequestId` was
+ * decided (issue gh-1913): they become `rejected` at this instant with no decider, and their execution result
+ * records `{ supersededBy }`. They never execute. Returns each request this call closed with the user that owns its
+ * run; none is a normal outcome, because creating a request returns the draft's pending one instead of a second request.
+ */
+export async function supersedePendingMailSendApprovalRequests(
+  client: Queryable,
+  draftId: string,
+  decidedRequestId: string,
+): Promise<Array<{ request: ApprovalRequest; ownerUserId: string }>> {
+  const { rows, rowCount } = await client.query<ApprovalRequestRow & { owner_user_id: string }>(
+    `UPDATE approval_requests
+        SET status = 'rejected', decided_at = now(), execution_result_jsonb = $3::jsonb
+      WHERE status = 'pending' AND payload ? 'draftHash' AND payload ->> 'draftId' = $1 AND id <> $2
+      RETURNING *, (SELECT r.actor_user_id FROM agent_runs r WHERE r.id = approval_requests.agent_run_id) AS owner_user_id`,
+    [draftId, decidedRequestId, JSON.stringify({ supersededBy: decidedRequestId })],
+  );
+  // Zero rows is the normal outcome: the draft had no other pending request.
+  if (rowCount === 0) return [];
+  return rows.map((row) => ({ request: rowToApprovalRequest(row), ownerUserId: row.owner_user_id }));
 }
 
 /**

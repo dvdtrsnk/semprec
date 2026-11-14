@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { createHash, randomUUID } from "node:crypto";
 import { runOnce } from "@semprec/queue";
+import type { AiGatewayClientPort } from "@semprec/shared";
 import {
   bindToTenantZero,
   createTenantZeroUser,
@@ -15,6 +16,7 @@ import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
 import { createActionRegistry, CORE_AGENT_RUN_ACTION_ID, coreAgentRunAction } from "../scheduler/actions.js";
+import { createNewEmailAgentRunDependencies } from "../mail/newEmailAgentRun.js";
 import { createCoreTaskList } from "../worker.js";
 import { listAgentRunsByHeartbeat } from "../agentRuns/agentRunsStore.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
@@ -64,14 +66,23 @@ async function getNewEmailHeartbeatId(): Promise<string> {
   return rows[0].id;
 }
 
+/** The seeded heartbeat has the answer-expected gate (issue gh-1941); this gateway says that every message expects one. */
+const answeringGateway: AiGatewayClientPort = {
+  complete: async () => ({ content: { expectsReply: true }, usage: { inputTokens: 1, outputTokens: 1 } }),
+};
+
 function agentRunRegistry(runCalls: string[]) {
   const registry = createActionRegistry();
   registry.set(
     CORE_AGENT_RUN_ACTION_ID,
-    coreAgentRunAction(pool, async ({ task }) => {
-      runCalls.push(task);
-      return { result: "ok" };
-    }),
+    coreAgentRunAction(
+      pool,
+      async ({ task }) => {
+        runCalls.push(task);
+        return { result: "ok" };
+      },
+      createNewEmailAgentRunDependencies(pool, answeringGateway),
+    ),
   );
   registry.set(MAIL_REINDEX_PERSON_EMAILS_ACTION_ID, createPersonEmailReindexAction(pool));
   registry.set(MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID, createLinkEmailToPeopleAction(pool));

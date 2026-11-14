@@ -10,6 +10,7 @@ import {
 } from "@semprec/data";
 import { wireRealtimeHooks } from "@semprec/realtime";
 import { installFatalHandlers } from "@semprec/shared";
+import { createAiGatewayClientForAgents } from "./actionRegistryComposition.js";
 import { createAgentRunTask, createRunAgentForHeartbeats } from "./agentRunTasks.js";
 import { createInFlightAgentRuns } from "./inFlightAgentRuns.js";
 import { createGatewayModel } from "./modelComposition.js";
@@ -66,6 +67,8 @@ logger.info({ repairedRunCount: repairedRunIds.length }, "Repaired interrupted a
 const gateway = createGatewayModel(process.env);
 const inFlightAgentRuns = createInFlightAgentRuns();
 const queueRuntime = await createAgentsQueueRuntime(pool, moduleRegistry, {
+  // Issue gh-1941: the client of the answer-expected gate of the `newEmail` heartbeat.
+  aiGateway: createAiGatewayClientForAgents(process.env),
   runAgent: createRunAgentForHeartbeats(pool, moduleRegistry, gateway, inFlightAgentRuns),
   agentRunTask: createAgentRunTask(pool, moduleRegistry, gateway, inFlightAgentRuns),
   delegatedAgentRunTask: createAgentRunTask(pool, moduleRegistry, gateway, inFlightAgentRuns),

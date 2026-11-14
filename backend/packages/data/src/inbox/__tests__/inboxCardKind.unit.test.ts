@@ -84,6 +84,33 @@ describe("deriveInboxCardKind", () => {
     });
   });
 
+  it("derives a thread task card with a Tasks envelope as a task, also while invalid", () => {
+    expect(deriveInboxCardKind(input({ kind: "mailThread" }))).toEqual({ cardKind: "task", baseKind: "task" });
+    expect(deriveInboxCardKind(input({ kind: "mailThread", status: "invalid" }))).toEqual({
+      cardKind: "invalid",
+      baseKind: "task",
+    });
+  });
+
+  it.each(["events", "pages", null])(
+    "falls back for a thread task card whose database has owner %s",
+    (ownerModuleId) => {
+      expect(deriveInboxCardKind(input({ kind: "mailThread", ownerModuleId }))).toEqual({
+        cardKind: "clarify",
+        baseKind: "page",
+      });
+    },
+  );
+
+  it("falls back for a thread task card whose envelope is not a database envelope", () => {
+    for (const envelope of [pageContent, eventRelation]) {
+      expect(deriveInboxCardKind(input({ kind: "mailThread", envelope, ownerModuleId: "tasks" }))).toEqual({
+        cardKind: "clarify",
+        baseKind: "page",
+      });
+    }
+  });
+
   it("derives clarify for needsClarification regardless of the envelope", () => {
     expect(deriveInboxCardKind(input({ status: "needsClarification" }))).toEqual({
       cardKind: "clarify",
@@ -114,7 +141,7 @@ describe("deriveInboxCardKind", () => {
     });
     expect(deriveInboxCardKind(input({ ownerModuleId: null }))).toEqual({ cardKind: "clarify", baseKind: "page" });
     const unknownEnvelope = parseStoredProposalEnvelope({ entityKind: "future", target: "x", properties: {} }, "p1");
-    for (const kind of ["inbox", "transcript"] as const) {
+    for (const kind of ["inbox", "transcript", "mailThread"] as const) {
       expect(deriveInboxCardKind(input({ kind, envelope: unknownEnvelope }))).toEqual({
         cardKind: "clarify",
         baseKind: "page",

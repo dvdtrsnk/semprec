@@ -133,8 +133,9 @@ describe("Threads single-value edges", () => {
       });
       const firstProject = await cp.createItem({ databaseId: db("projects"), properties: { name: "First" } });
       const winningProject = await cp.createItem({ databaseId: db("projects"), properties: { name: "Winner" } });
-      const loser = await withTransaction(runtime, (client) => createMailThread(client, "Losing"));
+      // The winner is created first: with two values of one kind the older thread's value is kept (issue gh-1869).
       const winner = await withTransaction(runtime, (client) => createMailThread(client, "Winning"));
+      const loser = await withTransaction(runtime, (client) => createMailThread(client, "Losing"));
       const bindings = await withTransaction(runtime, (client) =>
         client.query<{ id: string; item_id: string }>(
           "SELECT id, item_id FROM mail_threads WHERE id = ANY($1::uuid[])",
@@ -221,8 +222,9 @@ describe("Threads single-value edges", () => {
       const inherited = await cp.createItem({ databaseId: targets.id, properties: { name: "Inherited" } });
       const retained = await cp.createItem({ databaseId: targets.id, properties: { name: "Retained" } });
       const merge = async (winnerHasValue: boolean) => {
-        const loser = await withTransaction(runtime, (client) => createMailThread(client, "Loser"));
+        // The winner is created first: with two values of one kind the older thread's value is kept (issue gh-1869).
         const winner = await withTransaction(runtime, (client) => createMailThread(client, "Winner"));
+        const loser = await withTransaction(runtime, (client) => createMailThread(client, "Loser"));
         const rows = await withTransaction(runtime, (client) =>
           client.query<{ id: string; item_id: string }>(
             "SELECT id, item_id FROM mail_threads WHERE tenant_id = app_tenant_default() AND id = ANY($1::uuid[])",

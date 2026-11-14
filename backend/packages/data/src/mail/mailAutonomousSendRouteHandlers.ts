@@ -8,8 +8,8 @@ const projectRow = z.object({ id: z.uuid(), name: z.string() });
 /**
  * The tenant's live (not deleted) projects whose permission manifest grants
  * `capabilities.email.send.autonomous`, ordered by name, then id (issue #1635). The grant is decided
- * by `generatePermissionManifest` itself, the same computation an agent run and the send choke point
- * read, so this list cannot disagree with what is enforced. Read only: nothing here writes the
+ * by `generatePermissionManifest` itself, the same computation an agent run reads. It lists a grant that no send
+ * consults in v1: every send by an agent needs approval (issue gh-1913). Read only: nothing here writes the
  * project property behind the grant. Must run inside the caller's tenant transaction.
  */
 export async function listAutonomousSendProjects(client: PoolClient): Promise<{ projectId: string; name: string }[]> {
@@ -28,7 +28,8 @@ export async function listAutonomousSendProjects(client: PoolClient): Promise<{ 
   return allowed;
 }
 
-/** `GET /api/mail/autonomous-send-projects` (issue #1635): the read-only list of projects allowed to send mail without confirmation. */
+/** `GET /api/mail/autonomous-send-projects` (issue #1635): the read-only list of projects whose permission manifest holds
+ * `emailSendAutonomous`. No send reads that grant in v1 (issue gh-1913), so no project sends mail without approval. */
 export function createMailAutonomousSendProjectsRouteHandler(pool: Pool) {
   return async () => ({
     status: 200,

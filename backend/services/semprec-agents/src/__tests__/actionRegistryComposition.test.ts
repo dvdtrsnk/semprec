@@ -1,7 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { AGENT_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import type { AiGatewayClientPort } from "@semprec/shared";
 import { getTenantZeroId, getTestPool, inTenantZero, resetDatabase } from "@semprec/data/testSupport";
 import {
   CORE_AGENT_RUN_ACTION_ID,
@@ -9,6 +11,7 @@ import {
   createAgentRun,
   createUser,
   seedSystem,
+  type ActionRegistry,
 } from "@semprec/data";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { createAgentsActionRegistry, unwiredRunAgent } from "../actionRegistryComposition.js";
@@ -46,6 +49,51 @@ describe("createAgentsActionRegistry (issue #641)", () => {
     const registry = createAgentsActionRegistry(pool, unwiredRunAgent);
 
     expect([...registry.keys()]).toEqual([CORE_AGENT_RUN_ACTION_ID, JOURNAL_WEEKLY_CLEANUP_ACTION_ID]);
+  });
+
+  it("hands the AI gateway to core.agentRun for the answer-expected gate, and a registry without one fails a heartbeat that turns the gate on (issue gh-1941)", async () => {
+    const gateway: AiGatewayClientPort = {
+      complete: () => Promise.reject(new Error("The gate must not ask for a message that has no thread")),
+    };
+    const context = { heartbeatId: randomUUID(), projectItemId: randomUUID(), itemId: randomUUID() };
+    const fire = (registry: ActionRegistry) => {
+      const action = registry.get(CORE_AGENT_RUN_ACTION_ID);
+      if (!action) throw new Error("core.agentRun is not registered");
+      return action({ answerExpectedFilter: {} }, context);
+    };
+
+    await expect(fire(createAgentsActionRegistry(pool, unwiredRunAgent, gateway))).resolves.toBeUndefined();
+    await expect(fire(createAgentsActionRegistry(pool, unwiredRunAgent))).rejects.toThrow(
+      "No answer-expected gate is configured for this action",
+    );
+  });
+
+  it("resolves the mailThreadProject run project in core.agentRun and refuses any other resolver name (issue gh-1941)", async () => {
+    await seedSystem(pool);
+    await createUser(pool, { email: "owner@example.com", passwordHash: "unused", tenantId: getTenantZeroId() });
+    const { rows: heartbeats } = await pool.query<{ id: string; project_item_id: string }>(
+      `SELECT id, project_item_id FROM project_heartbeats WHERE action_id = $1`,
+      [CORE_AGENT_RUN_ACTION_ID],
+    );
+    const heartbeat = heartbeats[0];
+    if (!heartbeat) throw new Error("The newEmail heartbeat was not seeded");
+    const action = createAgentsActionRegistry(pool, unwiredRunAgent).get(CORE_AGENT_RUN_ACTION_ID);
+    if (!action) throw new Error("core.agentRun is not registered");
+    const context = { heartbeatId: heartbeat.id, projectItemId: heartbeat.project_item_id, itemId: randomUUID() };
+
+    await expect(action({ runProject: { resolver: "unknownResolver" } }, context)).rejects.toMatchObject({
+      name: "ValidationError",
+    });
+    // A message that is none of the tenant's has no thread, so the resolver answers the heartbeat's own project, and
+    // the unwired session then closes the run it opened as an error: the run was started in that project.
+    await expect(action({ runProject: { resolver: "mailThreadProject" } }, context)).rejects.toThrow(
+      "no agent session runtime wired",
+    );
+    const { rows: runs } = await pool.query<{ project_item_id: string }>(
+      "SELECT project_item_id FROM agent_runs WHERE heartbeat_id = $1",
+      [heartbeat.id],
+    );
+    expect(runs).toEqual([{ project_item_id: heartbeat.project_item_id }]);
   });
 
   it("closes a fired core.agentRun heartbeat's run as error with the code internal, and the job names the unwired runtime", async () => {

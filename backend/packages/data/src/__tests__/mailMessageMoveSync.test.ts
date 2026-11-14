@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { runInTenant } from "@semprec/shared";
 import { withTransaction } from "../db/pool.js";
 import { drainGmailMoves, drainGraphMoves, drainImapMoves } from "../mail/mailMessageMoveSync.js";
@@ -34,6 +34,7 @@ import {
   claimMailMoveStep,
   completeGraphMove,
   checkpointMailMoveStep,
+  hasPreservedMailMoveSource,
   listPendingMoves,
   markMailMoveUncertain,
   markMoveAttemptFailed,
@@ -402,6 +403,60 @@ describe("mail move intent store", () => {
     ).toEqual([]);
   });
 
+  it.each(["none", "pending", "operation outstanding", "done", "failed"] as const)(
+    "decides in one place whether a new desire keeps the earlier source: %s",
+    async (state) => {
+      const own = await fixture(a);
+      const inTenant = <T>(fn: (client: PoolClient) => Promise<T>) => runInTenant(a, () => withTransaction(pool, fn));
+      if (state !== "none") {
+        const first = await inTenant((client) =>
+          recordDesiredMailMessageMove(client, { ...own, desiredPurpose: "archive" }),
+        );
+        if (state === "operation outstanding")
+          expect(
+            await inTenant((client) =>
+              claimMailMoveStep(client, {
+                messageItemId: own.messageItemId,
+                revision: first.desired_revision,
+                token: randomUUID(),
+                step: "modify_labels",
+                evidence: {
+                  provider: "gmail",
+                  messageId: own.source.providerMessageId,
+                  inTrash: false,
+                  inInbox: true,
+                  inSent: false,
+                },
+              }),
+            ),
+          ).toBe(true);
+        if (state === "done")
+          expect(await inTenant((client) => markMoveConfirmed(client, own.messageItemId, first.desired_revision))).toBe(
+            true,
+          );
+        if (state === "failed")
+          expect(
+            await inTenant((client) =>
+              markMoveAttemptFailed(client, own.messageItemId, first.desired_revision, "providerRejected", 1),
+            ),
+          ).toBe(true);
+      }
+      const keeps = state === "pending" || state === "operation outstanding";
+
+      expect(await inTenant((client) => hasPreservedMailMoveSource(client, own.messageItemId))).toBe(keeps);
+      // The store keeps the earlier source exactly when the helper says so: a desire without a source of its own is
+      // recorded then and refused otherwise.
+      const record = inTenant((client) =>
+        recordDesiredMailMessageMove(client, {
+          messageItemId: own.messageItemId,
+          mailboxItemId: own.mailboxItemId,
+          desiredPurpose: "trash",
+        }),
+      );
+      if (keeps) expect(await record).toMatchObject({ desired_purpose: "trash", source_evidence: own.source });
+      else await expect(record).rejects.toThrow();
+    },
+  );
   it.each([
     ["acknowledged outcome", false, 0],
     ["uncertain evidence", true, null],

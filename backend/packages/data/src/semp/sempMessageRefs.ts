@@ -7,6 +7,7 @@ import { getBlock } from "../docs/blocks.js";
 import { readRefDocumentStates } from "../docs/docsStore.js";
 import { validateTranscriptSegmentRefs } from "../transcription/transcriptSegmentRef.js";
 import { resolveMailThreadRefIds } from "../mail/mailThreadRef.js";
+import { validateRunAnswerRefs } from "./sempRunAnswerRef.js";
 
 const SERIES_ID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -107,7 +108,15 @@ export async function validateSempMessageRefs(
   const attachments = refs.flatMap((ref, index) =>
     ref.kind === "mailAttachment" ? [{ id: ref.attachmentId, index }] : [],
   );
-  const runs = refs.flatMap((ref, index) => (ref.kind === "agentRun" ? [{ id: ref.agentRunId, index }] : []));
+  // A run ref without `messageId` names the whole run; one with it names an answer of the run (issue gh-1936).
+  const runs = refs.flatMap((ref, index) =>
+    ref.kind === "agentRun" && ref.messageId === undefined ? [{ id: ref.agentRunId, index }] : [],
+  );
+  const answers = refs.flatMap((ref, index) =>
+    ref.kind === "agentRun" && ref.messageId !== undefined
+      ? [{ ref: { agentRunId: ref.agentRunId, messageId: ref.messageId }, index }]
+      : [],
+  );
   const approvals = refs.flatMap((ref, index) =>
     ref.kind === "approvalRequest" ? [{ id: ref.approvalRequestId, index }] : [],
   );
@@ -128,6 +137,11 @@ export async function validateSempMessageRefs(
       valid.add(entry.index);
     }
   }
+  const accepted = await validateRunAnswerRefs(
+    client,
+    answers.map((entry) => entry.ref),
+  );
+  for (const [position, entry] of answers.entries()) if (accepted[position]) valid.add(entry.index);
   // A sleep night is virtual: its date is validated by the ref schema and no row has to exist for it.
   for (const [index, ref] of refs.entries()) if (ref.kind === "sleepNight") valid.add(index);
   const seen = new Set<string>();

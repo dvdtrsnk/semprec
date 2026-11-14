@@ -10,13 +10,14 @@ const PROCESSING_PROPOSALS_RELATION_CONTEXT: SystemRelationWriteContext = {
 };
 
 /**
- * Links a freshly created Processing proposal back to its source Inbox item via `sourceInbox`.
+ * Links a freshly created Processing proposal back to its source Inbox item via `sourceInbox`. It reads only the
+ * Processing proposals database id of the config, so the sibling cards of a split (issue #1939) use it as the tick does.
  * Lives apart from `inboxTickAction.ts`, which sits at the ESLint `max-lines` cap (issue #1811 moved
  * it unchanged to make room for the card realtime calls).
  */
 export async function linkSourceInboxRelation(
   client: PoolClient,
-  config: SemprecTickActionConfig,
+  config: Pick<SemprecTickActionConfig, "processingProposalsDatabaseId">,
   proposalId: string,
   sourceItemId: string,
 ): Promise<void> {

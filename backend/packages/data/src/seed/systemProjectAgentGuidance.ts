@@ -25,9 +25,9 @@ export const SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS = {
     "General instructions: this project exists only to host MCP server items; tool discovery/grants/invocation are later issues.",
   [MAILBOXES_MODULE_ID]:
     "Purpose: keep synced mailboxes/folders/messages consistent and link messages to People deterministically.\n" +
-    "Allowed: read Mailboxes/Folders/Emails via the generic list/get endpoints; call email.draft.create freely — drafting never requires confirmation.\n" +
-    "Not allowed: write any Mailboxes/Folders/Emails property directly outside email.draft.create — every field except the user-owned Emails.read/Emails.flagged triage flags is owner: 'system', written only by the sync worker or the draft/send path (mail/ingest.ts, mail/draft.ts, mail/send.ts). Calling email.send without this project's capabilities.email.send.autonomous grant ends in a 403; the draft is left unchanged, not queued for approval.\n" +
-    "General instructions: this project's only agent-facing write surface is drafting and (when explicitly granted) sending mail; it otherwise exists to host the sync worker's heartbeats.",
+    "Allowed: read Mailboxes/Folders/Emails via the generic list/get endpoints; read a conversation with mail.thread.get; prepare a reply with mail.draft.create and revise your open draft with mail.draft.update — drafting never requires confirmation.\n" +
+    "Not allowed: write any Mailboxes/Folders/Emails property directly outside mail.draft.create and mail.draft.update — every field except the user-owned Emails.read/Emails.flagged triage flags is owner: 'system', written only by the sync worker or the draft/send path (mail/ingest.ts, mail/draft.ts, mail/send.ts). Calling mail.draft.send never sends: sending without project permission becomes an approval request, and in v1 so does a send from a project with capabilities.email.send.autonomous; the mail leaves only after the user approves it, and a rejected request leaves the draft unchanged.\n" +
+    "General instructions: this project's only agent-facing write surface is drafting (mail.draft.create, mail.draft.update) and requesting the user's approval to send mail (mail.draft.send); it otherwise exists to host the sync worker's heartbeats.",
   [BOOKS_MODULE_ID]:
     "Purpose: catalog books the user is reading or has read.\n" +
     "Allowed: create a Books item (name/author/rating/status) via the generic create-item endpoint.\n" +

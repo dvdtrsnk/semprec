@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from "pg";
+import { z } from "zod";
 import { AGENT_TASK_NAMES, CORE_TASK_NAMES, type AgentTaskName, type CoreTaskName } from "@semprec/queue";
 import { withTraceContext } from "@semprec/shared";
 import { agentRunErrorCodeOf } from "../agentRuns/agentRunErrorCodes.js";
@@ -16,6 +17,7 @@ import { withTransaction } from "../db/pool.js";
 import { tenantLane } from "../tenancy/tenantLane.js";
 import { SEMPREC_TICK_ACTION_ID, SEMPREC_TICK_QUEUE_NAME } from "../inbox/inboxTickKeys.js";
 import { JOURNAL_WEEKLY_CLEANUP_ACTION_ID } from "../journal/journalWeeklyCleanupKeys.js";
+import { ValidationError } from "../errors.js";
 import { parseItemRelationFilterConfig, passesItemRelationFilter } from "./itemRelationFilter.js";
 import { logger } from "./logger.js";
 import { parseSenderKnownFilterConfig, passesSenderKnownFilter } from "./senderKnownFilter.js";
@@ -110,6 +112,62 @@ async function createRetryRun(
   return chained;
 }
 
+/** What the answer-expected gate decides for a fired message: no run, or a run whose task is followed by `taskNote`. */
+export type AnswerExpectedDecision = { run: false } | { run: true; taskNote: string };
+
+/** The answer-expected gate of `core.agentRun` for the item `itemId` (issue gh-1941, `scheduler/answerExpectedFilter.ts`). */
+export type AnswerExpectedGate = (itemId: string) => Promise<AnswerExpectedDecision>;
+
+/** A resolver a heartbeat's `runProject` config may name: the id of the project the run for `itemId` starts in. */
+export type RunProjectResolver = (input: { itemId: string; defaultProjectItemId: string }) => Promise<string>;
+
+/**
+ * What `coreAgentRunAction` is composed with by its composition root. They are injected, not imported, because the
+ * choke point imports this module (`chokePoint/hooks.ts` and `chokePointDeps.ts` for the action types) and the mail module
+ * imports the choke point: an import of the mail module here would close a cycle (`no-choke-point-rollup-cycle`).
+ * docs/adr/2026-11-14-a-heartbeat-agent-run-takes-composition-root-dependencies-and-may-run-in-the-project-of-its-item.md records the mechanism, the `runProject` config and the gate's outcomes.
+ */
+export interface CoreAgentRunDependencies {
+  /** The gate of the `answerExpectedFilter` config key. A heartbeat that turns the key on needs it. */
+  answerExpectedGate?: AnswerExpectedGate;
+  /** The resolvers of the `runProject` config key by name. A heartbeat that names one needs it. */
+  runProjectResolvers?: Readonly<Record<string, RunProjectResolver>>;
+}
+
+const answerExpectedFilterConfigSchema = z.strictObject({});
+const runProjectConfigSchema = z.strictObject({ resolver: z.string().min(1) });
+
+/** `{}`: the answer-expected gate has no settings, its presence in `action_config` turns it on. `null` when absent. */
+function parseAnswerExpectedFilterConfig(raw: unknown): true | null {
+  if (raw === undefined) return null;
+  if (!answerExpectedFilterConfigSchema.safeParse(raw).success) {
+    throw new ValidationError("Invalid answer-expected filter", { field: "answerExpectedFilter" });
+  }
+  return true;
+}
+
+/** The `runProject` config of a heartbeat: the name of its resolver, or `null` when it has none. */
+function parseRunProjectConfig(raw: unknown): string | null {
+  if (raw === undefined) return null;
+  const result = runProjectConfigSchema.safeParse(raw);
+  if (!result.success) throw new ValidationError("Invalid run project", { field: "runProject" });
+  return result.data.resolver;
+}
+
+function resolverNamed(dependencies: CoreAgentRunDependencies, name: string): RunProjectResolver {
+  const resolvers = dependencies.runProjectResolvers ?? {};
+  const resolver = Object.hasOwn(resolvers, name) ? resolvers[name] : undefined;
+  if (resolver === undefined) throw new ValidationError("Unknown run project resolver", { field: "runProject" });
+  return resolver;
+}
+
+function answerGateOf(dependencies: CoreAgentRunDependencies): AnswerExpectedGate {
+  if (dependencies.answerExpectedGate === undefined) {
+    throw new Error("No answer-expected gate is configured for this action");
+  }
+  return dependencies.answerExpectedGate;
+}
+
 /**
  * `core.agentRun`: "run the agent owning the project with the task from action_config.task."
  * Actually running an LLM session is out of scope for this issue — `runAgent` is the
@@ -120,6 +178,14 @@ async function createRetryRun(
  * an Emails item related to an inbox Folder and not to a junk/trash one, without any mail-specific
  * scheduler. Only applied for item-triggered (`onItemEvent`) heartbeats, where `context.itemId`
  * is set; time-based heartbeats ignore it.
+ *
+ * `actionConfig.answerExpectedFilter` (issue gh-1941, see answerExpectedFilter.ts) runs after the sender gate: it asks the
+ * AI gateway whether the fired message expects an answer and starts no run for one that does not, for a message that is
+ * not the newest of its thread, for a thread whose agent draft the user edited, and when the tenant's AI budget is used up;
+ * for a run that starts it appends its note, which names the thread's open agent draft when there is one, to the task.
+ * `actionConfig.runProject` (`{ resolver }`) moves the run to the project that the named resolver answers for the fired
+ * item, instead of the heartbeat's own project (the tick thread stays the heartbeat's). Both apply to an item-triggered
+ * fire only, and both come from `dependencies`, which the composition root fills (`CoreAgentRunDependencies`).
  *
  * With `context.retryOfRunId` (issue #1908) the run is the next attempt of that run, made with
  * `createChainedAgentRun` and the retried run's own task; it starts no agent when the retried run is gone or was
@@ -135,20 +201,41 @@ async function createRetryRun(
  * closing/notifying itself throws, that error is logged and the original `runAgent` error is what
  * this handler rejects with — never the close failure.
  */
-export function coreAgentRunAction(pool: Pool, runAgent: RunAgentFn): ActionHandler {
+export function coreAgentRunAction(
+  pool: Pool,
+  runAgent: RunAgentFn,
+  dependencies: CoreAgentRunDependencies = {},
+): ActionHandler {
   return async (actionConfig, context) => {
     const relationFilter = parseItemRelationFilterConfig(actionConfig.itemRelationFilter);
     if (relationFilter && context.itemId) {
       const passes = await passesItemRelationFilter(pool, context.itemId, relationFilter);
       if (!passes) return;
     }
+    let runProjectItemId = context.projectItemId;
+    let taskNote: string | null = null;
     if (context.itemId) {
       const senderFilter = parseSenderKnownFilterConfig(actionConfig.senderKnownFilter);
+      const answerFilter = parseAnswerExpectedFilterConfig(actionConfig.answerExpectedFilter);
+      const resolverName = parseRunProjectConfig(actionConfig.runProject);
+      // A heartbeat that names a resolver or turns the gate on without the composition root providing it is
+      // refused before anything is asked or written.
+      const resolver = resolverName === null ? null : resolverNamed(dependencies, resolverName);
+      const gate = answerFilter ? answerGateOf(dependencies) : null;
       if (senderFilter && !(await passesSenderKnownFilter(pool, context.itemId, senderFilter))) return;
+      if (gate !== null) {
+        const decision = await gate(context.itemId);
+        if (!decision.run) return;
+        taskNote = decision.taskNote;
+      }
+      if (resolver !== null) {
+        runProjectItemId = await resolver({ itemId: context.itemId, defaultProjectItemId: context.projectItemId });
+      }
     }
 
     const baseTask = typeof actionConfig.task === "string" ? actionConfig.task : "";
-    const task = context.itemId ? `${baseTask}\nTriggering item id: ${context.itemId}` : baseTask;
+    const noted = taskNote === null ? baseTask : baseTask === "" ? taskNote : `${baseTask}\n${taskNote}`;
+    const task = context.itemId ? `${noted}\nTriggering item id: ${context.itemId}` : noted;
     // Run start: the tick thread (one per heartbeat) is created on first use and the run is linked
     // to it in the same transaction; subscribers are told once that transaction commits.
     const started = await withTransaction(pool, async (client) => {
@@ -160,7 +247,7 @@ export function coreAgentRunAction(pool: Pool, runAgent: RunAgentFn): ActionHand
         return { run: retry, thread: tickThread };
       }
       const runInput = {
-        projectItemId: context.projectItemId,
+        projectItemId: runProjectItemId,
         parentRunId: context.triggeredByRunId ?? null,
         heartbeatId: context.heartbeatId,
         threadId: tickThread.id,
@@ -204,7 +291,9 @@ export function coreAgentRunAction(pool: Pool, runAgent: RunAgentFn): ActionHand
       try {
         outcome = await runAgent({
           agentRunId: run.id,
-          projectItemId: context.projectItemId,
+          // The project the run row holds: the resolved one for a fire of an item, and for a retry the project of
+          // the run it retries, which a resolver may have moved away from the heartbeat's.
+          projectItemId: run.projectItemId ?? context.projectItemId,
           task: run.task,
           ...(context.itemId ? { itemId: context.itemId } : {}),
         });

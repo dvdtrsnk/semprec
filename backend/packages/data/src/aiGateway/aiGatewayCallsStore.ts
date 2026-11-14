@@ -323,6 +323,30 @@ export async function getAgentRunCosts(
   return costs;
 }
 
+/**
+ * The cost in USD of the calls attributed to each of the Semp messages `sempMessageIds` (`ai_gateway_calls.semp_message_id`,
+ * issue gh-1932), in one statement however many messages there are: the sum of `cost_usd`, which counts a `reserved`
+ * call at its estimate and a `failed` one at 0, as `getAgentRunCosts` does. A call counts whichever run it names.
+ * The result holds an entry for every id given: a message without such calls, and a message of another tenant whose
+ * calls row-level security hides, cost `0`. No ids means no statement.
+ */
+export async function getSempMessageCosts(
+  client: Pool | PoolClient,
+  sempMessageIds: readonly string[],
+): Promise<Map<string, number>> {
+  const costs = new Map<string, number>(sempMessageIds.map((id) => [id, 0]));
+  if (sempMessageIds.length === 0) return costs;
+  const { rows } = await client.query<{ semp_message_id: string; cost_usd: string }>(
+    `SELECT semp_message_id, SUM(cost_usd)::text AS cost_usd
+     FROM ai_gateway_calls
+     WHERE semp_message_id = ANY($1::uuid[])
+     GROUP BY semp_message_id`,
+    [sempMessageIds],
+  );
+  for (const row of rows) costs.set(row.semp_message_id, Number(row.cost_usd));
+  return costs;
+}
+
 export interface GatewaySpend {
   spentToday: number;
   spentMonth: number;

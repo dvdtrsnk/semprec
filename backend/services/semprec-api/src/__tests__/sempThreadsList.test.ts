@@ -371,6 +371,37 @@ describe("GET /api/semp/threads (issue #1729)", () => {
       pendingApproval: { description: moduleToolDescription, sourceKind: "moduleTool" },
     });
 
+    // A request of an agent's mail send (issue gh-1913), created last: a request of the module tool family too.
+    const mailSendDescription = { key: "approval.emailSend", params: { mailboxName: "Personal", recipientCount: 2 } };
+    const mailSendId = await runInTenant(session.tenant, async () => {
+      const request = await createPendingApprovalRequest(pool, {
+        agentRunId: requests.delegatedRunId,
+        toolName: "mail.draft.send",
+        riskClass: "outbound",
+        payload: {
+          draftId: randomUUID(),
+          draftHash: "0".repeat(64),
+          mailboxId: randomUUID(),
+          to: [{ address: "x@example.test" }],
+          subject: "Subject",
+          body: "Body",
+        },
+        resourceSnapshot: { kind: "mail_draft", resourceId: randomUUID(), sha256: "0".repeat(64) },
+        description: mailSendDescription,
+      });
+      return request.id;
+    });
+    expect(byId((await list(session)).rows, threadId)).toMatchObject({
+      hasPendingApproval: true,
+      pendingApproval: { description: mailSendDescription, sourceKind: "moduleTool" },
+    });
+
+    await decide(session, mailSendId, "rejected");
+    expect(byId((await list(session)).rows, threadId)).toMatchObject({
+      hasPendingApproval: true,
+      pendingApproval: { description: moduleToolDescription, sourceKind: "moduleTool" },
+    });
+
     await decide(session, moduleToolId, "rejected");
     expect(byId((await list(session)).rows, threadId)).toMatchObject({
       hasPendingApproval: true,

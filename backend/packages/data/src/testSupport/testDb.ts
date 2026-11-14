@@ -10,6 +10,8 @@ export { runMailboxAddressesOwnerCutoverMigration } from "../mail/mailboxAddress
 export { ensureFolderItem } from "../mail/folderDiscovery.js";
 // Test-only: exercises the existing mail-ingest owner from cross-package integration fixtures.
 export { ingestEmailMessage } from "../mail/ingest.js";
+// Test-only: the production writer of a task made from a mail thread, for cross-package fixtures of the thread task jobs.
+export { createThreadTask } from "../mail/threadTasks.js";
 export { reconcileGmailAccount, type GmailMailClient } from "../mail/gmailReconcile.js";
 export {
   bindToTenantZero,

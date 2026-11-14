@@ -180,3 +180,7 @@ export function createLinkEmailToPeopleAction(pool: Pool): ActionHandler {
     });
   };
 }
+
+// Issue gh-1941: the composition of the `newEmail` heartbeat's `core.agentRun`, exported with the mail module's other
+// heartbeat actions.
+export { createNewEmailAgentRunDependencies } from "./newEmailAgentRun.js";

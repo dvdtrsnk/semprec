@@ -73,6 +73,105 @@ describe("link rule manifest schema", () => {
   });
 });
 
+const resolverRule = {
+  key: "rule.resolved",
+  target: { databaseKey: "dbOne", propertyKey: "company" },
+  resolverExport: "someResolver",
+};
+
+describe("resolver link rule manifest schema", () => {
+  const parse = (rule: object) => moduleManifestSchema.safeParse({ ...baseManifest, linkRules: [rule] });
+
+  it("accepts a resolver rule beside a via rule and keeps both as written", () => {
+    const parsed = moduleManifestSchema.safeParse({ ...baseManifest, linkRules: [validRule, resolverRule] });
+    expect(parsed.success).toBe(true);
+    expect(parsed.data?.linkRules).toEqual([validRule, resolverRule]);
+  });
+
+  it("rejects a resolver rule with an unknown field, a source, a via or an empty key", () => {
+    expect(parse({ ...resolverRule, extra: 1 }).success).toBe(false);
+    expect(parse({ ...resolverRule, source: validRule.source }).success).toBe(false);
+    expect(parse({ ...resolverRule, via: validRule.via }).success).toBe(false);
+    expect(parse({ ...resolverRule, resolverExport: "" }).success).toBe(false);
+    expect(parse({ ...resolverRule, key: "" }).success).toBe(false);
+    expect(parse({ ...resolverRule, target: { ...resolverRule.target, extra: 1 } }).success).toBe(false);
+  });
+
+  it("rejects a rule that names both a resolver and a via", () => {
+    expect(parse({ ...validRule, resolverExport: "someResolver" }).success).toBe(false);
+  });
+});
+
+describe("ModuleRegistry resolver link rules", () => {
+  const resolverActive = (): ReadonlySet<string> =>
+    new Set([
+      "fixture-link-resolver",
+      "fixture-link-a",
+      "fixture-link-resolver-missing",
+      "fixture-link-resolver-not-object",
+      "fixture-link-resolver-unknown-db",
+      "fixture-link-resolver-duplicate",
+    ]);
+
+  it("loads a resolver rule next to a via rule and validates both", async () => {
+    const registry = new ModuleRegistry(resolverActive);
+    await load(registry, "linkRulesResolverModule.js");
+    expect(() => registry.validateLinkRules()).not.toThrow();
+  });
+
+  it("getLinkRules leaves the resolver rule out and getLinkResolverRules returns it with the module's export", async () => {
+    const registry = new ModuleRegistry(resolverActive);
+    await load(registry, "linkRulesResolverModule.js");
+    expect((await registry.getLinkRules()).map((rule) => rule.key)).toEqual(["fixtureLink.viaBesideResolver"]);
+    const exported = (await import(fixturePath("linkRulesResolverModule.js"))) as { fixtureResolver: object };
+    expect(await registry.getLinkResolverRules()).toEqual([
+      {
+        moduleId: "fixture-link-resolver",
+        key: "fixtureLink.resolved",
+        target: { databaseKey: "linkResolverItems", propertyKey: "company" },
+        resolver: exported.fixtureResolver,
+      },
+    ]);
+  });
+
+  it("getLinkResolverRules omits the rules of an inactive module", async () => {
+    const active = new Set(["fixture-link-resolver"]);
+    const registry = new ModuleRegistry(() => active);
+    await load(registry, "linkRulesResolverModule.js");
+    expect(await registry.getLinkResolverRules()).toHaveLength(1);
+    active.clear();
+    expect(await registry.getLinkResolverRules()).toEqual([]);
+  });
+
+  it("fails loading a resolver export the module does not have", async () => {
+    const registry = new ModuleRegistry(resolverActive);
+    await expect(load(registry, "linkRulesResolverMissingExportModule.js")).rejects.toThrow(
+      /link rule "fixtureLink.resolverMissing" references missing export "noSuchResolver"/,
+    );
+  });
+
+  it("fails loading a resolver export that is not an object", async () => {
+    const registry = new ModuleRegistry(resolverActive);
+    await expect(load(registry, "linkRulesResolverNotObjectModule.js")).rejects.toThrow(
+      /link rule "fixtureLink.resolverNotObject" export "notAnObject" is not an object/,
+    );
+  });
+
+  it("fails validation when the resolver rule's target names a database no loaded module declares", async () => {
+    const registry = new ModuleRegistry(resolverActive);
+    await load(registry, "linkRulesResolverUnknownDatabaseModule.js");
+    expect(() => registry.validateLinkRules()).toThrow(/"fixtureLink.resolverUnknownDatabase".*"noSuchDatabase"/);
+  });
+
+  it("fails loading a resolver rule whose key a via rule of another module already claimed", async () => {
+    const registry = new ModuleRegistry(resolverActive);
+    await load(registry, "linkRulesAModule.js");
+    await expect(load(registry, "linkRulesResolverDuplicateKeyModule.js")).rejects.toThrow(
+      /Duplicate link rule key "fixtureLink.aToB".*already claimed by module "fixture-link-a"/,
+    );
+  });
+});
+
 describe("ModuleRegistry link rules", () => {
   it("fails loading a rule key already claimed by another module", async () => {
     const registry = new ModuleRegistry(allActive);

@@ -21,6 +21,7 @@ import { EMAILS_MODULE_ID, MAILBOXES_MODULE_ID } from "./seed/emailModuleKeys.js
 import { registerItemReadProjection } from "./chokePoint/hooks.js";
 import { registerRelatedRowContributor } from "./chokePoint/relatedContributors.js";
 import { personMailThreadsRelatedRow } from "./mail/threadRelatedCount.js";
+import { threadTaskPeopleEdgeChangedHook } from "./mail/threadTaskPeople.js";
 // The composition point for the choke point's per-process hook registries (chokePoint/hooks.ts):
 // the one place that imports every domain's hook by name and registers it, so chokePoint/ itself
 // never has to. Side-effect only — imported for its registration calls, not any export.
@@ -37,6 +38,7 @@ import {
   registerItemUpdatePreLockHook,
   registerItemDeletePreLockHook,
   registerItemRestorePreLockHook,
+  registerItemPurgePreLockHook,
   registerRelationEdgeWriteHook,
   registerRelationEdgeDeleteHook,
   registerRelationEdgeChangedHook,
@@ -44,10 +46,12 @@ import {
   registerItemRestoreHook,
   registerItemDeleteHook,
   registerItemDeleteApprovalGuard,
+  registerItemCascadeExpansion,
+  registerItemDeleteImpactReader,
   registerItemPurgeHook,
 } from "./chokePoint/hooks.js";
 import { readAutomationForItems } from "./library/itemAutomationStore.js";
-import { linkRuleItemHook } from "./valueLinks/linkRuleItemHook.js";
+import { linkRuleItemCreateHook, linkRuleItemHook, linkRuleItemRestoreHook } from "./valueLinks/linkRuleItemHook.js";
 import { linkRuleEdgeHook } from "./valueLinks/linkRuleEdgeHook.js";
 import { valueLinkSourceDeleteHook } from "./valueLinks/valueLinkSourceDeleteHook.js";
 import { mcpServerItemCreateHook, mcpServerItemUpdateHook } from "./mcp/mcpServerWriteHook.js";
@@ -98,15 +102,39 @@ import {
   calendarItemRestorePreLockHook,
 } from "./calendar/calendarTrashHooks.js";
 import { CALENDARS_MODULE_ID } from "./seed/calendarsKeys.js";
+import {
+  remindersResyncCreateHook,
+  remindersResyncDeleteHook,
+  remindersResyncRestoreHook,
+  remindersResyncUpdateHook,
+} from "./calendar/remindersResyncHooks.js";
+import {
+  calendarSubscriptionUrlTransform,
+  prepareCalendarSubscriptionUrl,
+} from "./calendar/calendarSubscriptionUrlTransform.js";
 import { taskRecurrenceItemUpdateHook } from "./tasks/taskRecurrenceItemUpdateHook.js";
 import { prepareTaskProposal, taskPreWriteTransform } from "./tasks/taskPreWriteTransform.js";
 import { taskSourceEventLinkDetachEdgeChangedHook } from "./tasks/taskSourceEventLinkDetach.js";
 import { taskHostEventEdgeChangedHook, taskHostEventScheduleItemUpdateHook } from "./tasks/taskHostEventHooks.js";
 import { taskCompletedInEventHook } from "./tasks/taskCompletedInEventHook.js";
 import { eventHostedTasksDeleteHook, eventHostedTasksRestoreHook } from "./tasks/eventHostedTasksHooks.js";
-import { threadValueEdgeDeleteHook, threadValueEdgeWriteHook } from "./mail/threadValueEdges.js";
+import {
+  taskDeleteImpactReader,
+  taskSeriesCascadeExpansion,
+  taskSeriesItemDeleteHook,
+  taskSeriesItemDeletePreLockHook,
+  taskSeriesItemPurgePreLockHook,
+  taskSeriesItemRestoreHook,
+  taskSeriesItemRestorePreLockHook,
+} from "./tasks/taskSeriesTrash.js";
+import {
+  threadValueEdgeChangedHook,
+  threadValueEdgeDeleteHook,
+  threadValueEdgeWriteHook,
+} from "./mail/threadValueEdges.js";
 import { transcriptSpeakerEdgeWriteHook } from "./transcription/transcriptionSpeakerEdges.js";
 import { transcriptProblemDeleteHook } from "./transcription/transcriptProblemDeleteHook.js";
+import { transcriptSpeakerSuggestionEdgeChangedHook } from "./transcription/transcriptSpeakerSuggestion.js";
 import { transcriptRestoreHook } from "./transcription/transcriptRestoreHook.js";
 import {
   transcriptCompanyLinkReleaseEdgeChangedHook,
@@ -270,8 +298,16 @@ registerItemCreateHook(areaItemCreateHook);
 registerItemUpdateHook(areaItemUpdateHook);
 
 registerItemUpdateHook(linkRuleItemHook);
+// Issue gh-1869: a company created with a `web`, or restored from the trash, is an input of the resolver rules like
+// an update of its `web`.
+registerItemCreateHook(linkRuleItemCreateHook);
+registerItemRestoreHook(linkRuleItemRestoreHook);
 registerRelationEdgeChangedHook(linkRuleEdgeHook);
 registerItemDeleteHook(valueLinkSourceDeleteHook);
+// Issue gh-1869: every change of a thread's company or project, the link engine's included, publishes the thread's
+// `mailThread` invalidation. Registered after `linkRuleEdgeHook`, which queues the evaluation of the rules that
+// follow the change.
+registerRelationEdgeChangedHook(threadValueEdgeChangedHook);
 registerAutomationBatchReader(readAutomationForItems);
 
 // Issue #1660: People `lastContact` follows its source edges, the sources' dates and their trash state.
@@ -321,6 +357,8 @@ registerItemDeleteHook(hostItemDeleteHook);
 registerItemRestoreHook(hostItemRestoreHook);
 
 // Issue #1778: the name, colour and single-default rules of a row of the Calendars database.
+// Issue gh-1925: a subscription calendar's `subscriptionUrl` is normalized and judged before the row is written.
+registerItemPreWriteTransform(CALENDARS_MODULE_ID, calendarSubscriptionUrlTransform, prepareCalendarSubscriptionUrl);
 registerItemCreateHook(calendarItemCreateHook);
 registerItemUpdateHook(calendarItemUpdateHook);
 // An update that names `isDefault` takes the lock of the default mark before it locks the calendar's row.
@@ -366,6 +404,22 @@ registerItemUpdateHook(taskCompletedInEventHook);
 registerItemDeleteHook(eventHostedTasksDeleteHook);
 registerItemRestoreHook(eventHostedTasksRestoreHook);
 
+// Issue gh-1882: deleting any instance of a recurring task series trashes every instance of the series with it, under one
+// `deletedAt`, and restoring any of them restores the series. The pre-lock hooks lock the series before the cascade locks
+// the task it names; the delete hook turns the repeat rule off and records its instance, the restore hook turns it on
+// again for that instance. The Tasks delete impact (the instances, attachments and host events a delete reaches) is
+// read by the delete preview and by the approval projection of `item.delete`. After the hooks of gh-1601 (the delete and
+// restore registries), gh-1656 (the value link detach registered above, which makes the attachments' links their own),
+// gh-1856 (the preview) and gh-1605 (the series identity), its declared blockers. Recorded in
+// docs/adr/2026-11-14-a-recurring-task-series-is-trashed-and-restored-as-one-cascade.md.
+registerItemCascadeExpansion(TASKS_MODULE_ID, taskSeriesCascadeExpansion);
+registerItemDeletePreLockHook(TASKS_MODULE_ID, taskSeriesItemDeletePreLockHook);
+registerItemRestorePreLockHook(TASKS_MODULE_ID, taskSeriesItemRestorePreLockHook);
+registerItemPurgePreLockHook(TASKS_MODULE_ID, taskSeriesItemPurgePreLockHook);
+registerItemDeleteHook(taskSeriesItemDeleteHook);
+registerItemRestoreHook(taskSeriesItemRestoreHook);
+registerItemDeleteImpactReader(TASKS_MODULE_ID, taskDeleteImpactReader);
+
 // Issue gh-1838: every change of sleep data, and a change of the System settings time zone, enqueues the debounced
 // resync push. After the validation and plan hooks above, so a write they refuse enqueues nothing, and after the hooks
 // of issue #1819, the Shared-file ordering blocker of this issue.
@@ -387,6 +441,21 @@ registerItemDeleteHook(eventInvitationItemDeleteHook);
 // its blocker, and gh-1919 registers no hook, so the entry has no registration order to keep.
 registerItemDeleteHook(transcriptProblemDeleteHook);
 
+// Issue gh-1942: a created or deleted Transcripts `event` edge, and a created or deleted Events `people` edge, queue the
+// speaker suggestion of the transcripts concerned. It reads and writes nothing else, so its place among the edge hooks
+// of other modules does not matter; it follows those of its blocker gh-1940, which registers none.
+registerRelationEdgeChangedHook(transcriptSpeakerSuggestionEdgeChangedHook);
+
+// Issue gh-1879: every write that can change a fire time of the reminders feed (an Event or a Task with a start, an offset, a
+// switch or a status; a calendar's `notify`; the trash and the restore of an Event, a Task or a calendar; the System settings time
+// zone) enqueues the debounced reminders resync push. Registered after the other hooks of this file, so a write one of them
+// refuses throws before it enqueues, and after the sleep resync hooks of issue gh-1838, its Shared-file ordering blocker.
+// Recorded in docs/adr/2026-11-14-a-reminders-change-enqueues-one-debounced-resync-job-per-tenant-in-its-write-transaction.md.
+registerItemCreateHook(remindersResyncCreateHook);
+registerItemUpdateHook(remindersResyncUpdateHook);
+registerItemDeleteHook(remindersResyncDeleteHook);
+registerItemRestoreHook(remindersResyncRestoreHook);
+
 // Issue sp-c30c3251-d5c3-4012-92a1-078257f3f83c: the groups of global search (search/searchGroupRegistry.ts). An item
 // group searches the databases of its owner modules; `chat` is the thread group of the Semp conversations of a person.
 // Issue gh-1864: `mail` is the thread group of the mail threads.
@@ -405,3 +474,7 @@ registerThreadSearchGroup(sempThreadSearchGroup);
 // hook: it runs in the read of `relation.related`
 // (docs/adr/2026-11-13-related-rows-are-contributed-through-a-per-process-registry.md).
 registerRelatedRowContributor(PEOPLE_MODULE_ID, personMailThreadsRelatedRow);
+
+// Issue gh-1923: a person newly linked to a message of a thread is queued for the people of the thread's tasks. gh-1923
+// names #1916 and #2033 for shared-file ordering only; neither registers a hook yet, and their entries go before this one.
+registerRelationEdgeChangedHook(threadTaskPeopleEdgeChangedHook);

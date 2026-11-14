@@ -5,6 +5,7 @@ import type { Pool, PoolClient } from "pg";
 import { runInTenant } from "@semprec/shared";
 import "../domainWriteHooks.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
+import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { withTransaction } from "../db/pool.js";
@@ -19,7 +20,7 @@ import {
   getMailboxRemovalImpact,
   type MailboxRemovalImpact,
 } from "../mail/mailboxRemovalImpact.js";
-import { FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
+import { FOLDERS_MODULE_ID, THREADS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { provisionTenant } from "../tenancy/provisionTenant.js";
 import {
@@ -159,6 +160,22 @@ function ingest(
   }).then((result) => result.itemId);
 }
 
+/**
+ * The Threads item an `ingestAttachments` call for a draft hangs its files on. A draft has no thread, and no production
+ * caller ingests attachments for one, so this stands for the thread item of the message the fixture models: a bare
+ * Threads item with no `mail_threads` row, which no thread count or thread cleanup sees.
+ */
+async function newThreadsItemFor(client: PoolClient): Promise<string> {
+  const threads = await getDatabaseByModuleId(client, THREADS_MODULE_ID);
+  if (!threads) throw new Error("the Threads database is not seeded");
+  const item = await createItemWithClient(
+    client,
+    { databaseId: threads.id, properties: { name: "Draft attachments" } },
+    { allowedSystemKeys: ["name"] },
+  );
+  return item.id;
+}
+
 /** A draft through the production draft writer, with no Message-ID and so no `mail_message_meta` row, as an unsent draft has. */
 async function createDraft(client: PoolClient, draftsFolder: string, attachments: string[] = []): Promise<string> {
   const draft = await createEmailDraft(client, {
@@ -171,6 +188,7 @@ async function createDraft(client: PoolClient, draftsFolder: string, attachments
   if (attachments.length > 0) {
     await ingestAttachments(client, {
       messageItemId: draft.id,
+      threadItemId: await newThreadsItemFor(client),
       filesDatabaseId: ids.files,
       attachmentsRelationPropertyId: ids.emailAttachmentsProperty,
       attachments: attachments.map(attachment),

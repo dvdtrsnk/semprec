@@ -1,6 +1,8 @@
 import type { ModuleManifest } from "@semprec/module-registry";
 import { CALENDAR_MODULE_ID } from "./calendarModuleId.js";
-import { CALENDARS_MODULE_ID } from "../seed/calendarsKeys.js";
+import { CALENDARS_MODULE_ID, SUBSCRIBED_EVENTS_MODULE_ID } from "../seed/calendarsKeys.js";
+import { INVITATIONS_MODULE_ID } from "../seed/invitationsKeys.js";
+import { CALENDAR_INGEST_INVITATION_ACTION_ID } from "./invitationIngestAction.js";
 import { NEXT_OCCURRENCE_REFRESH_ACTION_ID } from "./nextOccurrenceRefreshAction.js";
 
 export { createCalendarTimelineRouteHandler } from "./timelineRouteHandler.js";
@@ -12,7 +14,9 @@ export { createCalendarCancellationImpactRouteHandler } from "./cancellationImpa
  * Manifest of the calendar module. The later calendar issues (invitations, reminders, recurrence, agent
  * tools) add their databases, routes, heartbeat actions and agent tools to this one manifest. The module
  * owns the calendar databases and the system-owned properties on them (`CALENDAR_MODULE_ID` is their owner
- * process). Its first database is `calendars` (issue #1600), seeded by `seed/seedCalendars.ts`, and its
+ * process). Its first database is `calendars` (issue #1600), seeded by `seed/seedCalendars.ts`; `invitations` (issue
+ * gh-1901), seeded by `seed/seedInvitationsDatabase.ts`, holds the incoming meeting invitations; `subscribedEvents`
+ * (issue gh-1962), seeded by `seed/seedSubscribedEvents.ts`, holds the read-only events of subscribed calendars. Its
  * first custom route is the timeline read (issue #1717). Like the Inbox and Mail modules it is
  * non-removable and a system project module.
  *
@@ -26,15 +30,21 @@ export { createCalendarCancellationImpactRouteHandler } from "./cancellationImpa
  */
 export const manifest: ModuleManifest = {
   id: CALENDAR_MODULE_ID,
-  version: "1.0.0",
+  version: "1.1.0",
   name: "Calendar",
   removable: false,
   systemProject: true,
-  databases: [{ key: CALENDARS_MODULE_ID, name: "Calendars" }],
+  databases: [
+    { key: CALENDARS_MODULE_ID, name: "Calendars" },
+    { key: INVITATIONS_MODULE_ID, name: "Invitations" },
+    // Read-only events of subscribed calendars (issue gh-1962); every property is system-owned by this module.
+    { key: SUBSCRIBED_EVENTS_MODULE_ID, name: "Subscribed events" },
+  ],
   capabilities: [],
   agentTools: [],
   // Moves the stored `nextOccurrenceDate` of recurring Events on as days pass (issue gh-1905).
-  heartbeatActions: [NEXT_OCCURRENCE_REFRESH_ACTION_ID],
+  // Also reads the calendar part of a new email into a pending invitation (issue gh-1929).
+  heartbeatActions: [NEXT_OCCURRENCE_REFRESH_ACTION_ID, CALENDAR_INGEST_INVITATION_ACTION_ID],
   customRoutes: [
     {
       name: "calendarTimeline",

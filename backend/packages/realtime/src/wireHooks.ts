@@ -4,13 +4,14 @@ import {
   setInvalidationPublisher,
   setDocUpdateHook,
   setAgentRunEventHook,
+  setAgentRunDeltaHook,
   setNotificationCreatedHook,
   setNotificationReadStateHook,
   setSessionRevokedHook,
   setSempThreadInvalidationHook,
   setInboxCardsInvalidationHook,
 } from "@semprec/data";
-import { publishRealtimeMessage } from "./pgNotifyPublisher.js";
+import { publishAgentRunDelta, publishRealtimeMessage } from "./pgNotifyPublisher.js";
 import { runInTenant } from "@semprec/shared";
 import { logger } from "./logger.js";
 
@@ -78,4 +79,12 @@ export function wireRealtimeHooks(pool: Pool): void {
     });
   });
   setAgentRunEventHook(enqueueAgentRunEvent);
+  setAgentRunDeltaHook(async (event) => {
+    // A typing update is best effort: its loss must not fail the write it announces.
+    try {
+      await publishAgentRunDelta(pool, event.agentRunId, event.delta);
+    } catch (err) {
+      logger.error({ err, agentRunId: event.agentRunId }, "Failed to publish agent_run_delta realtime message");
+    }
+  });
 }

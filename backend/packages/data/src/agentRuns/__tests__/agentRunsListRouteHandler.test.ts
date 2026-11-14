@@ -14,6 +14,8 @@ import {
   assistantEvent,
   finishPlayedTurn,
   playTurn,
+  toolResultEvent,
+  toolUseEvent,
   turnEndEvent,
   turnStartEvent,
   userMessageEvent,
@@ -23,6 +25,19 @@ import {
 import { createSempChatThread } from "../../sempThreads/sempThreadsStore.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createTestProjectItem } from "../../testSupport/projectFixtures.js";
+import { insertApprovalOutcomeSystemMessage } from "../../semp/sempMessagesStore.js";
+import { getOrCreateTickThread } from "../../testSupport/testDb.js";
+import {
+  ANSWER_CLOCK_START,
+  askQuestion,
+  createChatSession,
+  playAnswer,
+  playQueuedAnswer,
+  retryAnswer,
+  settleAnswerCall,
+  type AnswerSetup,
+  type ChatSession,
+} from "./chatAnswerFixtures.js";
 import {
   createAgentRun,
   createChainedAgentRun,
@@ -46,6 +61,8 @@ let tenantB: TenantSetup;
 const rowSchema = z
   .object({
     id: z.string(),
+    agentRunId: z.string(),
+    messageId: z.string().nullable(),
     title: z.string(),
     triggeredBy: z.enum(["user", "heartbeat", "mcp"]),
     triggerLabel: z.string(),
@@ -349,6 +366,8 @@ describe("GET /api/agent-runs of a project (issue gh-1909)", () => {
     expect(await listRows(projectItemId)).toEqual([
       {
         id: failed.id,
+        agentRunId: failed.id,
+        messageId: null,
         title: "Inbox sweep",
         triggeredBy: "heartbeat",
         triggerLabel: "Tick",
@@ -361,6 +380,8 @@ describe("GET /api/agent-runs of a project (issue gh-1909)", () => {
       },
       {
         id: waiting.id,
+        agentRunId: waiting.id,
+        messageId: null,
         title: "Morning review",
         triggeredBy: "heartbeat",
         triggerLabel: "Tick",
@@ -373,6 +394,8 @@ describe("GET /api/agent-runs of a project (issue gh-1909)", () => {
       },
       {
         id: finishedChat.id,
+        agentRunId: finishedChat.id,
+        messageId: null,
         title: "What changed this week?",
         triggeredBy: "user",
         triggerLabel: "Chat",
@@ -385,6 +408,8 @@ describe("GET /api/agent-runs of a project (issue gh-1909)", () => {
       },
       {
         id: finishedHeartbeat.id,
+        agentRunId: finishedHeartbeat.id,
+        messageId: null,
         title: "Morning review",
         triggeredBy: "heartbeat",
         triggerLabel: "Tick",
@@ -665,6 +690,24 @@ describe("GET /api/agent-runs of a project (issue gh-1909)", () => {
       return [record, ...planNodes(record.Plan), ...planNodes(record.Plans)];
     }
 
+    /** The nodes from the root of `plan` down to the first node that satisfies `match`, the matching node last; `[]` when none does. */
+    function ancestorsOf(plan: unknown, match: (node: Record<string, unknown>) => boolean): Record<string, unknown>[] {
+      const root = Array.isArray(plan) ? plan[0] : plan;
+      const visit = (node: unknown, path: Record<string, unknown>[]): Record<string, unknown>[] => {
+        if (typeof node !== "object" || node === null) return [];
+        const record: Record<string, unknown> = Object.fromEntries(Object.entries(node));
+        const here = [...path, record];
+        if (match(record)) return here;
+        const children = [record.Plans, record.Plan].flatMap((child) => (Array.isArray(child) ? child : [child]));
+        for (const child of children) {
+          const found = visit(child, here);
+          if (found.length > 0) return found;
+        }
+        return [];
+      };
+      return visit(root, []);
+    }
+
     it("serves the list query of a project with many runs from agent_runs_tenant_project_started_idx", async () => {
       const projects: string[] = [];
       for (let i = 0; i < 8; i += 1) projects.push(await createProject());
@@ -714,11 +757,20 @@ describe("GET /api/agent-runs of a project (issue gh-1909)", () => {
         .filter((name): name is string => typeof name === "string");
       const nodeTypes = nodes.map((node) => node["Node Type"]);
       // The scan of the project's index reads in the order of the list and the probe for a later attempt uses the
-      // occurrence index, so nothing sorts, groups or ranks the project's history before LIMIT.
-      expect(indexNames.sort()).toEqual(["agent_runs_occurrence_idx", "agent_runs_tenant_project_started_idx"]);
-      for (const unbounded of ["Sort", "Incremental Sort", "WindowAgg", "Aggregate", "Unique", "Seq Scan"]) {
+      // occurrence index, so nothing groups or ranks the project's history before LIMIT, and no table is scanned
+      // whole. (The answers of chat runs are sorted by their start, which no index covers: a Sort over them is
+      // allowed, a Sort over the runs is checked below.)
+      expect(indexNames).toContain("agent_runs_tenant_project_started_idx");
+      expect(indexNames).toContain("agent_runs_occurrence_idx");
+      for (const unbounded of ["WindowAgg", "Aggregate", "Unique", "Seq Scan"]) {
         expect(nodeTypes).not.toContain(unbounded);
       }
+      const projectScan = ancestorsOf(plan, (node) => node["Index Name"] === "agent_runs_tenant_project_started_idx");
+      const nearestLimit = projectScan.map((node) => node["Node Type"]).lastIndexOf("Limit");
+      expect(nearestLimit).toBeGreaterThanOrEqual(0);
+      // Between the scan of the project's runs and the LIMIT that bounds it nothing sorts them.
+      expect(projectScan.slice(nearestLimit).map((node) => node["Node Type"])).not.toContain("Sort");
+      expect(projectScan.slice(nearestLimit).map((node) => node["Node Type"])).not.toContain("Incremental Sort");
     });
   });
 });
@@ -806,6 +858,8 @@ describe("GET /api/agent-runs of a project, retried heartbeat occurrences (issue
     expect(rows).toEqual([
       {
         id: third.id,
+        agentRunId: third.id,
+        messageId: null,
         title: "Daily digest",
         triggeredBy: "heartbeat",
         triggerLabel: "Tick",
@@ -1197,5 +1251,670 @@ describe("GET /api/agent-runs of a project, retried heartbeat occurrences (issue
     expect(foreign.map((row) => row.id)).toEqual([forged]);
     expect(foreign[0]?.attempts?.map((attempt) => attempt.id)).toEqual([forged]);
     expect(foreign[0]?.costUsd).toBe(0);
+  });
+});
+
+describe("GET /api/agent-runs of a project, one row per chat answer (issue gh-1932)", () => {
+  const setupOf = (tenant: TenantSetup): AnswerSetup => ({
+    admin,
+    runtime,
+    tenant: tenant.tenant,
+    userId: tenant.userId,
+  });
+  const setup = (): AnswerSetup => setupOf(tenantA);
+  /** The instant `ms` milliseconds into the fixture clock, as the list writes it. */
+  const at = (ms: number): string => new Date(ANSWER_CLOCK_START + ms).toISOString();
+
+  async function chatSession(projectItemId: string, task = "Chat"): Promise<ChatSession> {
+    return createChatSession(setup(), projectItemId, { task });
+  }
+
+  /** The row a finished answer of `session` with no cost, no retry and no failure has. */
+  function answerRow(
+    session: ChatSession,
+    messageId: string,
+    expected: { title: string; startMs: number; durationMs: number | null } & Partial<ListRow>,
+  ): ListRow {
+    const { title, startMs, durationMs, ...rest } = expected;
+    return {
+      id: session.runId,
+      agentRunId: session.runId,
+      messageId,
+      title,
+      triggeredBy: "user",
+      triggerLabel: "Chat",
+      startedAt: at(startMs),
+      durationMs,
+      costUsd: 0,
+      displayStatus: "done",
+      errorSummary: null,
+      attempt: 1,
+      ...rest,
+    };
+  }
+
+  /** A pending approval request of the run for the tool call `toolCallId`. */
+  async function requestApprovalFor(runId: string, toolCallId: string | null): Promise<void> {
+    await runInTenant(tenantA.tenant, () =>
+      createPendingApprovalRequest(runtime, {
+        agentRunId: runId,
+        toolName: "probe",
+        riskClass: "unclassified",
+        payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
+        resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+        ...(toolCallId === null ? {} : { toolCallId }),
+      }),
+    );
+  }
+
+  const statementsOver = async (table: string, run: () => Promise<unknown>): Promise<number> => {
+    const spy = vi.spyOn(pg.Client.prototype, "query");
+    try {
+      await run();
+      return spy.mock.calls.filter(([statement]) => statementText(statement)?.includes(table) === true).length;
+    } finally {
+      spy.mockRestore();
+    }
+  };
+
+  it("lists a chat run that answered three questions as three rows, each with its question, start, duration and cost", async () => {
+    const projectItemId = await createProject();
+    const session = await chatSession(projectItemId, "What changed this week?");
+    const first = await playAnswer(setup(), session, "What changed this week?", { startMs: 0, durationMs: 4000 });
+    const second = await playAnswer(setup(), session, "Summarize the inbox", { startMs: 60_000, durationMs: 9000 });
+    const third = await playAnswer(setup(), session, "Plan the release", { startMs: 120_000, durationMs: 2500 });
+    await settleAnswerCall(setup(), session.runId, first.assistantMessageId, 0.01);
+    await settleAnswerCall(setup(), session.runId, second.assistantMessageId, 0.02);
+    await settleAnswerCall(setup(), session.runId, second.assistantMessageId, 0.03);
+    await settleAnswerCall(setup(), session.runId, third.assistantMessageId, 0.04);
+    // A call of the run that no message owns is part of no answer.
+    await settleAnswerCall(setup(), session.runId, null, 0.5);
+
+    expect(await listRows(projectItemId)).toEqual([
+      answerRow(session, third.assistantMessageId, {
+        title: "Plan the release",
+        startMs: 120_000,
+        durationMs: 2500,
+        costUsd: 0.04,
+      }),
+      answerRow(session, second.assistantMessageId, {
+        title: "Summarize the inbox",
+        startMs: 60_000,
+        durationMs: 9000,
+        costUsd: 0.05,
+      }),
+      answerRow(session, first.assistantMessageId, {
+        title: "What changed this week?",
+        startMs: 0,
+        durationMs: 4000,
+        costUsd: 0.01,
+      }),
+    ]);
+    expect(await listRows(projectItemId, { userId: randomUUID() })).toEqual([]);
+  });
+
+  it("orders the answers of a chat run together with the other runs of the project by start time", async () => {
+    const projectItemId = await createProject();
+    const session = await chatSession(projectItemId);
+    const first = await playAnswer(setup(), session, "First", { startMs: 0, durationMs: 1000 });
+    const second = await playAnswer(setup(), session, "Second", { startMs: 120_000, durationMs: 1000 });
+    const between = await createRun({ projectItemId, triggeredBy: "heartbeat" });
+    const before = await createRun({ projectItemId, triggeredBy: "mcp" });
+    await setInstants(between.id, at(60_000));
+    await setInstants(before.id, at(-60_000));
+
+    expect((await listRows(projectItemId)).map((row) => [row.id, row.messageId])).toEqual([
+      [session.runId, second.assistantMessageId],
+      [between.id, null],
+      [session.runId, first.assistantMessageId],
+      [before.id, null],
+    ]);
+  });
+
+  it("orders the answers that started at the same instant by message id, descending", async () => {
+    const projectItemId = await createProject();
+    const session = await chatSession(projectItemId);
+    const answers = [
+      await playAnswer(setup(), session, "One", { startMs: 5000, durationMs: 100 }),
+      await playAnswer(setup(), session, "Two", { startMs: 5000, durationMs: 100 }),
+      await playAnswer(setup(), session, "Three", { startMs: 5000, durationMs: 100 }),
+    ];
+
+    expect((await listRows(projectItemId)).map((row) => row.messageId)).toEqual(
+      answers
+        .map((answer) => answer.assistantMessageId)
+        .sort()
+        .reverse(),
+    );
+  });
+
+  it("counts the limit in rows after the answers are expanded", async () => {
+    const projectItemId = await createProject();
+    const session = await chatSession(projectItemId);
+    const answers = [
+      await playAnswer(setup(), session, "A", { startMs: 100_000, durationMs: 10 }),
+      await playAnswer(setup(), session, "B", { startMs: 200_000, durationMs: 10 }),
+      await playAnswer(setup(), session, "C", { startMs: 300_000, durationMs: 10 }),
+    ];
+    const older = await createRun({ projectItemId, triggeredBy: "heartbeat" });
+    await setInstants(older.id, at(0));
+    const newest = await createRun({ projectItemId, triggeredBy: "mcp" });
+    await setInstants(newest.id, at(400_000));
+    const keys = (rows: ListRow[]) => rows.map((row) => row.messageId ?? row.id);
+    const [a, b, c] = answers.map((answer) => answer.assistantMessageId);
+
+    expect(keys(await listRows(projectItemId, { limit: "1" }))).toEqual([newest.id]);
+    expect(keys(await listRows(projectItemId, { limit: "2" }))).toEqual([newest.id, c]);
+    expect(keys(await listRows(projectItemId, { limit: "3" }))).toEqual([newest.id, c, b]);
+    expect(keys(await listRows(projectItemId, { limit: "4" }))).toEqual([newest.id, c, b, a]);
+    expect(keys(await listRows(projectItemId, { limit: "5" }))).toEqual([newest.id, c, b, a, older.id]);
+    expect(keys(await listRows(projectItemId, { limit: "100" }))).toEqual([newest.id, c, b, a, older.id]);
+    const store = await runInTenant(tenantA.tenant, () =>
+      listProjectAgentRuns(runtime, { projectItemId, actorUserId: tenantA.userId, limit: 3 }),
+    );
+    expect(store.map((entry) => entry.answer?.messageId ?? null)).toEqual([null, c, b]);
+  });
+
+  it("lists nothing but the answers when the answers alone fill the limit", async () => {
+    const projectItemId = await createProject();
+    const session = await chatSession(projectItemId);
+    const answers = [];
+    for (let i = 0; i < 4; i += 1) {
+      answers.push(await playAnswer(setup(), session, `Question ${i}`, { startMs: i * 10_000, durationMs: 10 }));
+    }
+    const older = await createRun({ projectItemId, triggeredBy: "heartbeat" });
+    await setInstants(older.id, at(-10_000));
+
+    expect((await listRows(projectItemId, { limit: "4" })).map((row) => row.messageId)).toEqual(
+      answers.map((answer) => answer.assistantMessageId).reverse(),
+    );
+  });
+
+  describe("an answer that was retried", () => {
+    /** A question whose first attempt failed, with the queued retry, and the session it was asked in. */
+    async function failedFirstAttempt(projectItemId: string) {
+      const session = await chatSession(projectItemId);
+      const first = await playAnswer(setup(), session, "Why did it fail?", {
+        startMs: 0,
+        durationMs: 1000,
+        end: "error",
+        errorCode: "modelError",
+      });
+      return { session, first };
+    }
+
+    it("is one row for three attempts, with attempt 3 and the start, duration, cost and status of the latest attempt", async () => {
+      const projectItemId = await createProject();
+      const { session, first } = await failedFirstAttempt(projectItemId);
+      const secondId = await retryAnswer(setup(), session, first.assistantMessageId);
+      const second = await playQueuedAnswer(setup(), session, secondId, first.userMessageId, {
+        startMs: 10_000,
+        durationMs: 2000,
+        end: "error",
+        errorCode: "interrupted",
+      });
+      const thirdId = await retryAnswer(setup(), session, second.assistantMessageId);
+      await playQueuedAnswer(setup(), session, thirdId, first.userMessageId, { startMs: 20_000, durationMs: 3000 });
+      await settleAnswerCall(setup(), session.runId, first.assistantMessageId, 0.1);
+      await settleAnswerCall(setup(), session.runId, second.assistantMessageId, 0.2);
+      await settleAnswerCall(setup(), session.runId, thirdId, 0.3);
+
+      expect(await listRows(projectItemId)).toEqual([
+        answerRow(session, thirdId, {
+          title: "Why did it fail?",
+          startMs: 20_000,
+          durationMs: 3000,
+          costUsd: 0.3,
+          attempt: 3,
+        }),
+      ]);
+    });
+
+    it("shows the error summary of the latest attempt when it failed too", async () => {
+      const projectItemId = await createProject();
+      const { session, first } = await failedFirstAttempt(projectItemId);
+      const secondId = await retryAnswer(setup(), session, first.assistantMessageId);
+      await playQueuedAnswer(setup(), session, secondId, first.userMessageId, {
+        startMs: 10_000,
+        durationMs: 2000,
+        end: "error",
+        errorCode: "budgetExceeded",
+      });
+
+      expect(await listRows(projectItemId)).toEqual([
+        answerRow(session, secondId, {
+          title: "Why did it fail?",
+          startMs: 10_000,
+          durationMs: 2000,
+          attempt: 2,
+          displayStatus: "error",
+          errorSummary: "AI budget used up",
+        }),
+      ]);
+      expect((await listRows(projectItemId, { locale: "cs" }))[0]?.errorSummary).not.toBe("AI budget used up");
+    });
+
+    it("keeps the earlier attempt as the row while the retry is queued and has no run", async () => {
+      const projectItemId = await createProject();
+      const { session, first } = await failedFirstAttempt(projectItemId);
+      await retryAnswer(setup(), session, first.assistantMessageId);
+
+      expect(await listRows(projectItemId)).toEqual([
+        answerRow(session, first.assistantMessageId, {
+          title: "Why did it fail?",
+          startMs: 0,
+          durationMs: 1000,
+          displayStatus: "error",
+          errorSummary: "AI model error",
+        }),
+      ]);
+    });
+
+    it("lists the answer under the run of its latest attempt when the retry started another run, and the earlier run has no row", async () => {
+      const projectItemId = await createProject();
+      const { session, first } = await failedFirstAttempt(projectItemId);
+      const later = await createChatSession(setup(), projectItemId, { threadId: session.threadId });
+      const secondId = await retryAnswer(setup(), session, first.assistantMessageId);
+      await playQueuedAnswer(setup(), later, secondId, first.userMessageId, {
+        startMs: 30_000,
+        durationMs: 500,
+        runId: later.runId,
+      });
+
+      expect(await listRows(projectItemId)).toEqual([
+        answerRow(later, secondId, { title: "Why did it fail?", startMs: 30_000, durationMs: 500, attempt: 2 }),
+      ]);
+    });
+
+    it("never takes a later attempt of another tenant for the latest attempt", async () => {
+      const projectItemId = await createProject();
+      const session = await chatSession(projectItemId);
+      const answer = await playAnswer(setup(), session, "Only attempt", { startMs: 0, durationMs: 100 });
+      // Raw fixture on the admin pool: the composite keys refuse another tenant's thread and message, so this
+      // assistant message of tenant B, which names tenant A's thread, question and run with attempt 9, can only be
+      // forged by skipping the foreign-key triggers for this one insert.
+      await withTransaction(admin, async (client) => {
+        await client.query("SET LOCAL session_replication_role = replica");
+        await client.query(
+          `INSERT INTO semp_messages (tenant_id, thread_id, role, reply_to_message_id, agent_run_id, status, attempt)
+           VALUES ($1, $2, 'assistant', $3, $4, 'done', 9)`,
+          [tenantB.tenant, session.threadId, answer.userMessageId, session.runId],
+        );
+      });
+
+      expect((await listRows(projectItemId)).map((row) => [row.messageId, row.attempt])).toEqual([
+        [answer.assistantMessageId, 1],
+      ]);
+    });
+  });
+
+  describe("the title", () => {
+    /** A tick thread of a new heartbeat of the project, with a chat run the user started in it. */
+    async function tickSession(projectItemId: string): Promise<ChatSession> {
+      const heartbeatId = await createNamedHeartbeat(projectItemId, "Morning review");
+      const threadId = await runInTenant(tenantA.tenant, () =>
+        withTransaction(runtime, async (client) => (await getOrCreateTickThread(client, heartbeatId)).id),
+      );
+      return createChatSession(setup(), projectItemId, { threadId });
+    }
+
+    /** The approval outcome `key` in the tick thread and the answer to it, played as the turn handler plays it. */
+    async function playApprovalOutcome(session: ChatSession, key: string, startMs: number) {
+      await runInTenant(tenantA.tenant, () =>
+        withTransaction(runtime, (client) =>
+          insertApprovalOutcomeSystemMessage(client, session.threadId, randomUUID(), key, {}),
+        ),
+      );
+      const { rows } = await admin.query<{ id: string }>(
+        `SELECT id FROM semp_messages WHERE thread_id = $1 AND role = 'assistant' AND status = 'queued'`,
+        [session.threadId],
+      );
+      const queued = rows[0]?.id;
+      if (queued === undefined || rows.length !== 1) throw new Error("Expected one queued assistant message");
+      return playQueuedAnswer(setup(), session, queued, null, { startMs, durationMs: 100 });
+    }
+
+    it("is the localized label of the system key for an answer to an approval outcome, and a generic label for an unknown key", async () => {
+      const projectItemId = await createProject();
+      const session = await tickSession(projectItemId);
+      const executed = await playApprovalOutcome(session, "approval.outcome.executed", 0);
+      const rejected = await playApprovalOutcome(session, "approval.outcome.rejected", 10_000);
+      const conflict = await playApprovalOutcome(session, "approval.outcome.conflict", 20_000);
+      const unknown = await playApprovalOutcome(session, "approval.outcome.somethingNew", 30_000);
+      const titles = async (locale: string) =>
+        Object.fromEntries((await listRows(projectItemId, { locale })).map((row) => [row.messageId ?? "", row.title]));
+
+      expect(await titles("en")).toEqual({
+        [executed.assistantMessageId]: "Approved action carried out",
+        [rejected.assistantMessageId]: "Action rejected",
+        [conflict.assistantMessageId]: "Approved action could not be carried out",
+        [unknown.assistantMessageId]: "Automatic follow-up",
+      });
+      expect(await titles("cs")).toEqual({
+        [executed.assistantMessageId]: "Schválená akce provedena",
+        [rejected.assistantMessageId]: "Akce zamítnuta",
+        [conflict.assistantMessageId]: "Schválenou akci se nepodařilo provést",
+        [unknown.assistantMessageId]: "Automatické pokračování",
+      });
+      expect(await titles("de")).toEqual(await titles("en"));
+    });
+
+    it("is the run's own task for an answer that replies to no message", async () => {
+      const projectItemId = await createProject();
+      const session = await chatSession(projectItemId, "Weekly planning");
+      // Raw insert: no production write makes an assistant message that answers no message in a chat thread.
+      const queued = await Promise.all(
+        [0, 1].map(async () => {
+          const { rows } = await admin.query<{ id: string }>(
+            `INSERT INTO semp_messages (tenant_id, thread_id, role, status)
+             VALUES ($1, $2, 'assistant', 'queued') RETURNING id`,
+            [tenantA.tenant, session.threadId],
+          );
+          const id = rows[0]?.id;
+          if (id === undefined) throw new Error("The fixture message was not inserted");
+          return id;
+        }),
+      );
+      for (const [index, id] of queued.entries()) {
+        await playQueuedAnswer(setup(), session, id, null, { startMs: index * 10_000, durationMs: 100 });
+      }
+
+      const rows = await listRows(projectItemId);
+
+      expect(rows.map((row) => row.messageId)).toEqual([...queued].reverse());
+      expect(rows.map((row) => row.title)).toEqual(["Weekly planning", "Weekly planning"]);
+      expect(rows.map((row) => row.attempt)).toEqual([1, 1]);
+    });
+  });
+
+  describe("the trigger label", () => {
+    it("is the label of a tick for every answer in a heartbeat tick thread, and the label of a chat in a chat thread", async () => {
+      const projectItemId = await createProject();
+      const heartbeatId = await createNamedHeartbeat(projectItemId, "Morning review");
+      const tickThreadId = await runInTenant(tenantA.tenant, () =>
+        withTransaction(runtime, async (client) => (await getOrCreateTickThread(client, heartbeatId)).id),
+      );
+      const tick = await createChatSession(setup(), projectItemId, { threadId: tickThreadId });
+      const chat = await chatSession(projectItemId);
+      const tickAnswer = await playAnswer(setup(), tick, "Why did the review skip the budget?", {
+        startMs: 0,
+        durationMs: 100,
+      });
+      const chatAnswer = await playAnswer(setup(), chat, "Hello", { startMs: 10_000, durationMs: 100 });
+      const labels = async (locale: string) =>
+        Object.fromEntries(
+          (await listRows(projectItemId, { locale })).map((row) => [
+            row.messageId,
+            [row.triggerLabel, row.triggeredBy],
+          ]),
+        );
+
+      expect(await labels("cs")).toEqual({
+        [tickAnswer.assistantMessageId]: ["Tik", "user"],
+        [chatAnswer.assistantMessageId]: ["Chat", "user"],
+      });
+      expect(await labels("en")).toEqual({
+        [tickAnswer.assistantMessageId]: ["Tick", "user"],
+        [chatAnswer.assistantMessageId]: ["Chat", "user"],
+      });
+    });
+  });
+
+  describe("a chat run without answers", () => {
+    it("stays one row titled with its first task when its thread holds no message, when it has no thread, and when its only reply is still queued", async () => {
+      const projectItemId = await createProject();
+      const noThread = await createRun({ projectItemId, triggeredBy: "user", unit: "session", task: "Old chat" });
+      const emptyThread = await chatSession(projectItemId, "Empty chat");
+      const queued = await chatSession(projectItemId, "Waiting chat");
+      await askQuestion(setup(), queued, "Not answered yet");
+      await setInstants(noThread.id, at(0));
+      await setInstants(emptyThread.runId, at(10_000));
+      await setInstants(queued.runId, at(20_000));
+
+      expect(await listRows(projectItemId)).toEqual([
+        {
+          id: queued.runId,
+          agentRunId: queued.runId,
+          messageId: null,
+          title: "Waiting chat",
+          triggeredBy: "user",
+          triggerLabel: "Chat",
+          startedAt: expect.any(String),
+          durationMs: null,
+          costUsd: 0,
+          displayStatus: "running",
+          errorSummary: null,
+          attempt: 1,
+        },
+        expect.objectContaining({ id: emptyThread.runId, messageId: null, title: "Empty chat" }),
+        expect.objectContaining({ id: noThread.id, messageId: null, title: "Old chat" }),
+      ]);
+    });
+
+    it("does not list the answers of a chat run that another user of the tenant started", async () => {
+      const projectItemId = await createProject();
+      const session = await chatSession(projectItemId);
+      await playAnswer(setup(), session, "Mine", { startMs: 0, durationMs: 100 });
+
+      expect(await listRows(projectItemId)).toHaveLength(1);
+      expect(await listRows(projectItemId, { userId: randomUUID() })).toEqual([]);
+    });
+  });
+
+  describe("status, error and duration of an answer", () => {
+    it("shows an answer whose turn is still running as running, without a duration or an error summary", async () => {
+      const projectItemId = await createProject();
+      const session = await chatSession(projectItemId);
+      const done = await playAnswer(setup(), session, "Finished", { startMs: 0, durationMs: 100 });
+      const running = await playAnswer(setup(), session, "Still working", {
+        startMs: 10_000,
+        durationMs: 0,
+        end: "running",
+      });
+
+      expect(await listRows(projectItemId)).toEqual([
+        answerRow(session, running.assistantMessageId, {
+          title: "Still working",
+          startMs: 10_000,
+          durationMs: null,
+          displayStatus: "running",
+        }),
+        answerRow(session, done.assistantMessageId, { title: "Finished", startMs: 0, durationMs: 100 }),
+      ]);
+    });
+
+    it("shows a finished answer whose reply left a failed tool call as an error with the reason of that reply, and its sibling as done", async () => {
+      const projectItemId = await createProject();
+      const session = await chatSession(projectItemId);
+      const incomplete = await playAnswer(setup(), session, "Search GitHub", {
+        startMs: 0,
+        durationMs: 1000,
+        toolEvents: unavailableMcpCall(),
+      });
+      const complete = await playAnswer(setup(), session, "Say hello", { startMs: 10_000, durationMs: 1000 });
+
+      expect(await listRows(projectItemId)).toMatchObject([
+        { messageId: complete.assistantMessageId, displayStatus: "done", errorSummary: null },
+        { messageId: incomplete.assistantMessageId, displayStatus: "error", errorSummary: "GitHub unavailable" },
+      ]);
+      expect(await listRows(projectItemId, { locale: "cs" })).toMatchObject([
+        { messageId: complete.assistantMessageId },
+        { messageId: incomplete.assistantMessageId, errorSummary: "GitHub není dostupný" },
+      ]);
+    });
+
+    it("waits for approval only on the answer whose tool call asked for it", async () => {
+      const projectItemId = await createProject();
+      const session = await chatSession(projectItemId);
+      const call = { toolCallId: "call-1", name: "database_list", operation: "database.list" };
+      const asking = await playAnswer(setup(), session, "Change the project", {
+        startMs: 0,
+        durationMs: 1000,
+        toolEvents: [toolUseEvent(call, 100), toolResultEvent(call, 200)],
+      });
+      const other = await playAnswer(setup(), session, "Thanks", { startMs: 10_000, durationMs: 100 });
+      await requestApprovalFor(session.runId, "call-1");
+
+      expect((await listRows(projectItemId)).map((row) => [row.messageId, row.displayStatus])).toEqual([
+        [other.assistantMessageId, "done"],
+        [asking.assistantMessageId, "waiting_approval"],
+      ]);
+    });
+
+    it("keeps an answer waiting for approval after retention removed its events, by the steps stored on the message", async () => {
+      const projectItemId = await createProject();
+      const session = await chatSession(projectItemId);
+      const call = { toolCallId: "call-2", name: "database_list", operation: "database.list" };
+      const asking = await playAnswer(setup(), session, "Change the project", {
+        startMs: 0,
+        durationMs: 1000,
+        toolEvents: [toolUseEvent(call, 100), toolResultEvent(call, 200)],
+      });
+      await requestApprovalFor(session.runId, "call-2");
+      // Retention removes the tool call's event but not the steps stored on the message.
+      await admin.query(
+        `DELETE FROM agent_run_events WHERE agent_run_id = $1 AND kind = 'tool_use' AND payload->>'toolCallId' = 'call-2'`,
+        [session.runId],
+      );
+
+      expect((await listRows(projectItemId)).map((row) => [row.messageId, row.displayStatus])).toEqual([
+        [asking.assistantMessageId, "waiting_approval"],
+      ]);
+    });
+
+    it("does not count a pending request stored without a tool call id, or one of a tool call outside the answer, for any answer", async () => {
+      const projectItemId = await createProject();
+      const session = await chatSession(projectItemId);
+      const answer = await playAnswer(setup(), session, "Hello", { startMs: 0, durationMs: 100 });
+      await requestApprovalFor(session.runId, null);
+      await requestApprovalFor(session.runId, "call-of-nobody");
+
+      expect((await listRows(projectItemId)).map((row) => [row.messageId, row.displayStatus])).toEqual([
+        [answer.assistantMessageId, "done"],
+      ]);
+    });
+
+    it("starts a row at the message's creation when retention removed the first event of its turn", async () => {
+      const projectItemId = await createProject();
+      const session = await chatSession(projectItemId);
+      const answer = await playAnswer(setup(), session, "Hello", { startMs: 0, durationMs: 100 });
+      const first = answer.eventIds[0];
+      await admin.query("DELETE FROM agent_run_events WHERE id = $1", [first]);
+      const created = await admin.query<{ created_at: Date }>("SELECT created_at FROM semp_messages WHERE id = $1", [
+        answer.assistantMessageId,
+      ]);
+
+      expect((await listRows(projectItemId)).map((row) => row.startedAt)).toEqual([
+        created.rows[0]?.created_at.toISOString(),
+      ]);
+    });
+  });
+
+  describe("cost of an answer", () => {
+    it("counts a reserved call at its estimate, leaves a failed call out, and is 0 for an answer without calls", async () => {
+      const projectItemId = await createProject();
+      const session = await chatSession(projectItemId);
+      const reserved = await playAnswer(setup(), session, "Reserved", { startMs: 0, durationMs: 10 });
+      const failed = await playAnswer(setup(), session, "Failed", { startMs: 1000, durationMs: 10 });
+      const free = await playAnswer(setup(), session, "Free", { startMs: 2000, durationMs: 10 });
+      await runInTenant(tenantA.tenant, async () => {
+        await reserveGatewayCall(runtime, {
+          provider: "anthropic",
+          model: "claude-sonnet-5",
+          estimatedCostUsd: 0.75,
+          agentRunId: session.runId,
+          sempMessageId: reserved.assistantMessageId,
+        });
+        const failedCall = await reserveGatewayCall(runtime, {
+          provider: "anthropic",
+          model: "claude-sonnet-5",
+          estimatedCostUsd: 5,
+          agentRunId: session.runId,
+          sempMessageId: failed.assistantMessageId,
+        });
+        await failGatewayCall(runtime, failedCall.id);
+      });
+      await settleAnswerCall(setup(), session.runId, failed.assistantMessageId, 0.25);
+
+      expect(new Map((await listRows(projectItemId)).map((row) => [row.messageId, row.costUsd]))).toEqual(
+        new Map([
+          [reserved.assistantMessageId, 0.75],
+          [failed.assistantMessageId, 0.25],
+          [free.assistantMessageId, 0],
+        ]),
+      );
+    });
+
+    it("drops the binary floating-point noise of the sum of the calls", async () => {
+      const projectItemId = await createProject();
+      const session = await chatSession(projectItemId);
+      const answer = await playAnswer(setup(), session, "Noise", { startMs: 0, durationMs: 10 });
+      await settleAnswerCall(setup(), session.runId, answer.assistantMessageId, 0.1 + 0.2);
+
+      expect(0.1 + 0.2).not.toBe(0.3);
+      expect((await listRows(projectItemId))[0]?.costUsd).toBe(0.3);
+    });
+  });
+
+  describe("cost statements", () => {
+    it("reads the costs of all answers with one statement over ai_gateway_calls whatever the number of answers", async () => {
+      const few = await createProject();
+      const many = await createProject();
+      const fewSession = await chatSession(few);
+      const manySession = await chatSession(many);
+      for (let i = 0; i < 2; i += 1) {
+        const answer = await playAnswer(setup(), fewSession, `Few ${i}`, { startMs: i * 1000, durationMs: 10 });
+        await settleAnswerCall(setup(), fewSession.runId, answer.assistantMessageId, 0.01);
+      }
+      for (let i = 0; i < 7; i += 1) {
+        const answer = await playAnswer(setup(), manySession, `Many ${i}`, { startMs: i * 1000, durationMs: 10 });
+        await settleAnswerCall(setup(), manySession.runId, answer.assistantMessageId, 0.01);
+      }
+
+      expect(await statementsOver("ai_gateway_calls", () => listRows(few))).toBe(1);
+      expect(await statementsOver("ai_gateway_calls", () => listRows(many))).toBe(1);
+      expect((await listRows(many)).filter((row) => row.costUsd === 0.01)).toHaveLength(7);
+    });
+
+    it("reads the costs of the other rows with a statement of their own beside the one of the answers", async () => {
+      const projectItemId = await createProject();
+      const session = await chatSession(projectItemId);
+      const answer = await playAnswer(setup(), session, "Hello", { startMs: 0, durationMs: 10 });
+      const run = await createRun({ projectItemId, triggeredBy: "heartbeat" });
+      await settleAnswerCall(setup(), session.runId, answer.assistantMessageId, 0.02);
+      await recordCost(run.id, 0.03);
+
+      expect(await statementsOver("ai_gateway_calls", () => listRows(projectItemId))).toBe(2);
+      expect(new Map((await listRows(projectItemId)).map((row) => [row.messageId ?? row.id, row.costUsd]))).toEqual(
+        new Map([
+          [answer.assistantMessageId, 0.02],
+          [run.id, 0.03],
+        ]),
+      );
+    });
+  });
+
+  describe("another tenant", () => {
+    it("lists no answer of another tenant, and answers a project of another tenant as an unknown project", async () => {
+      const projectA = await createProject();
+      const projectB = await createProject(tenantB);
+      const sessionA = await chatSession(projectA);
+      const sessionB = await createChatSession(setupOf(tenantB), projectB);
+      const answerA = await playAnswer(setup(), sessionA, "Tenant A asks", { startMs: 0, durationMs: 100 });
+      const answerB = await playAnswer(setupOf(tenantB), sessionB, "Tenant B asks", { startMs: 0, durationMs: 100 });
+      await settleAnswerCall(setupOf(tenantB), sessionB.runId, answerB.assistantMessageId, 0.9);
+
+      const own = await listRows(projectA);
+      const ownOfB = await listRows(projectB, { tenant: tenantB });
+      const foreign = await listRows(projectA, { tenant: tenantB });
+      const claimed = await listRows(projectA, { tenant: tenantB, userId: tenantA.userId });
+
+      expect(own.map((row) => row.messageId)).toEqual([answerA.assistantMessageId]);
+      expect(ownOfB.map((row) => [row.messageId, row.costUsd])).toEqual([[answerB.assistantMessageId, 0.9]]);
+      expect(foreign).toEqual(await listRows(randomUUID(), { tenant: tenantB }));
+      expect(foreign).toEqual([]);
+      expect(claimed).toEqual([]);
+      expect(await listRows(projectB)).toEqual([]);
+    });
   });
 });

@@ -35,12 +35,14 @@ import {
   type ProposalEnvelope,
 } from "./inboxTickAction.js";
 import { insertItemOrigins, type ItemOriginSource } from "./itemOriginsStore.js";
+import { MAIL_THREAD_CARD_KIND, assertValidMailThreadCard, confirmMailThreadCard } from "./mailThreadCard.js";
 export {
   updateProposalValuesWithClient,
   type UpdateProposalValuesInput,
   type UpdateProposalValuesResult,
 } from "./proposalValueUpdates.js";
 export { reviseProposalFromThreadWithClient, type ReviseProposalFromThreadInput } from "./proposalThreadRevision.js";
+import { recordTranscriptCardInstruction } from "./transcriptCardInstruction.js";
 export type { ProposalWarning } from "./editorSchema.js";
 import { assertRequiredFieldsHaveValues } from "./proposalEditorRules.js";
 import { assertCardIsNotStdioMcpServer, normalizeEnvelopeForWrite } from "./proposalHiddenFields.js";
@@ -148,6 +150,8 @@ function isHeadingUnavailable(error: ValidationError): boolean {
 export interface EnvelopeForCard {
   transcriptCardEdge: TranscriptCardEdge | null;
   targetDatabase: DatabaseRow | null;
+  /** The Threads item of a `kind = 'mailThread'` card's `sourceThread` edge; absent for any other card. */
+  mailThreadItemId?: string;
 }
 
 /** An unknown stored kind is displayed, never executed: this release cannot validate or run it. */
@@ -240,7 +244,7 @@ async function releaseTrashedEventOfPairingCard(
 }
 
 /** The transcript a `kind = 'transcript'` card was created for, via its `sourceTranscript` edge (written with the card by the match step). */
-async function requireSourceTranscriptId(
+export async function requireSourceTranscriptId(
   client: PoolClient,
   config: ProposalActionConfig,
   proposal: ItemRow,
@@ -320,7 +324,9 @@ async function resolveItemOriginSource(
  * itself would raise. A create-Event envelope also has to pass the Events create rules on its times
  * (`assertEventCreateRules`, issue #1818). Returns the edge confirm must write for a transcript card (`null` for any
  * other card) alongside the envelope's target database row (`null` for a non-`'database'`
- * envelope).
+ * envelope). A `kind = 'mailThread'` card (issue gh-2034) must carry a Tasks `database` envelope with only a `name` and
+ * an optional `date` (`assertValidMailThreadCard`, whose own rules are checked before the generic validation) and a `sourceThread` edge;
+ * it returns that edge's Threads item as `mailThreadItemId`.
  */
 export async function assertValidEnvelopeForCard(
   client: PoolClient,
@@ -328,6 +334,8 @@ export async function assertValidEnvelopeForCard(
   proposal: ItemRow,
   envelope: ProposalEnvelope,
 ): Promise<EnvelopeForCard> {
+  if (proposal.properties.kind === MAIL_THREAD_CARD_KIND)
+    return assertValidMailThreadCard(client, config, proposal, envelope);
   const targetDatabase = await assertValidProposalEnvelope(client, envelope);
   if (proposal.properties.kind !== "transcript") {
     if (envelope.entityKind === "relation") {
@@ -499,6 +507,12 @@ export async function assertValidEnvelopeForCard(
  * `timeTo`, which an Event stores as null, and the time of day inside its `date`), and an MCP server card is written as `{ transport, url }`. A card whose
  * MCP server connection is `stdio` is a `ValidationError` on `transport`, raised before the envelope validation.
  *
+ * A `kind = 'mailThread'` card (issue gh-2034) does not create its task with `createItemWithClient`: it calls
+ * `confirmMailThreadCard`, which writes the task, its `Threads.tasks` edge and the thread's project and people through
+ * `createThreadTask` in this same transaction. It writes no item origin and no origin note, because the card has no
+ * Inbox item or transcript to take them from. A source Threads item that is in the Trash is a 409 `conflict` with
+ * nothing written, and the card stays `proposed`.
+ *
  * `ifVersion` (issue #1852) is the `updatedAt` the caller last saw. It is checked after the card is locked, after
  * the answer for a card that is already `confirmed` (returned unchanged, whatever `ifVersion` says, so a replayed
  * decision succeeds) and after the refusal of any status other than `proposed`: an `ifVersion` that is not the
@@ -538,7 +552,7 @@ export async function confirmProposalWithClient(
     }
     throw error;
   }
-  const { transcriptCardEdge, targetDatabase } = validated;
+  const { transcriptCardEdge, targetDatabase, mailThreadItemId } = validated;
   await assertRequiredFieldsHaveValues(client, proposal, envelope);
   const written = await normalizeEnvelopeForWrite(client, proposal, envelope, targetDatabase);
 
@@ -555,7 +569,17 @@ export async function confirmProposalWithClient(
   const reusedFileRefs = new Set<string>();
   /** The item a `'relation'` envelope linked: its `target`, or the item its synthetic occurrence id became. */
   let linkedTargetId: string | null = null;
-  if (envelope.entityKind === "database") {
+  if (mailThreadItemId !== undefined) {
+    if (credential) {
+      throw new ValidationError("A credential may only be supplied when confirming an MCP server proposal", {
+        field: "credential",
+      });
+    }
+    const task = await confirmMailThreadCard(client, mailThreadItemId, written.properties, actingUserId);
+    resultItemId = task.id;
+    stepResults = [{ ref: "primary", itemId: task.id, databaseId: task.databaseId }];
+    resultLabel = await resolveResultLabel(client, task.databaseId, task);
+  } else if (envelope.entityKind === "database") {
     if (credential) {
       if (targetDatabase?.ownerModuleId !== MCP_SERVERS_MODULE_ID) {
         throw new ValidationError("A credential may only be supplied when confirming an MCP server proposal", {
@@ -1065,8 +1089,10 @@ export type ReviseProposalInput = { ifVersion?: string } & (
  *
  * Without an envelope (issue #1870) only a `kind = 'transcript'` card accepts the call: the `message` is appended
  * to its history as an entry of the revising author (`revisedBy`: the user, or the assistant of an item thread) and
- * nothing else on the card changes; acting on the instruction is not done here. A card that is locked, whose source Inbox item was deleted or whose stored `entityKind` this release
- * does not support is refused as above. Any other card is refused with `validation_failed` on `message`.
+ * nothing else on the card changes (`recordTranscriptCardInstruction`); acting on the instruction is not done here,
+ * but in `semprec-transcribe`, to which the same transaction enqueues the `transcriptCardRecompute` job (issue
+ * gh-1940). A card that is locked, whose source Inbox item was deleted or whose stored `entityKind` this release
+ * does not support is refused as above and enqueues nothing. Any other card is refused with `validation_failed` on `message`.
  *
  * `input.ifVersion` is handed to the card's update, so a card whose `updatedAt` differs is answered
  * `version_conflict` and nothing is written. The envelope is validated before that update, so an invalid
@@ -1113,16 +1139,7 @@ export async function reviseProposalWithClient(
         field: "message",
       });
     }
-    return updateItemWithClient(
-      client,
-      {
-        databaseId: config.processingProposalsDatabaseId,
-        itemId: proposal.id,
-        propertiesPatch: { history: appendRevisionEntry(proposal.properties.history, input.message, revisedBy) },
-        ifVersion: input.ifVersion,
-      },
-      { allowedSystemKeys: ["history"], actingUserId },
-    );
+    return recordTranscriptCardInstruction(client, config, proposal, input, revisedBy, actingUserId);
   }
 
   const envelope: ProposalEnvelope = {

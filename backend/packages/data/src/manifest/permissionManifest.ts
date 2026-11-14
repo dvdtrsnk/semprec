@@ -52,8 +52,9 @@ export interface ManifestHeartbeat {
 }
 
 /**
- * Explicit, whole-project autonomy grants — checked at call time by the relevant choke point
- * (currently only `email.send`, mail/send.ts), never by the agent itself. `autonomous: false`
+ * Explicit, whole-project autonomy grants — checked at call time by the relevant choke point,
+ * never by the agent itself. `email.send` (mail/send.ts) does not read `autonomous` since issue
+ * gh-1913: in v1 every send by an agent needs approval, whatever the project holds. `autonomous: false`
  * is the default for every project unless a human has directly set `emailSendAutonomous: true`
  * on that project item's raw properties (issue #95) via direct DB access — deliberately *not* a
  * property declared in Projects' schema (seed/seedTenDatabases.ts), so this stays specific to

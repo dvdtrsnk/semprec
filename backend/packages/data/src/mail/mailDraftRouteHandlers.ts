@@ -16,57 +16,45 @@ import {
   type MailDraftWriteContext,
 } from "./draft.js";
 import { attachFileToDraft, detachFileFromDraft } from "./mailDraftAttachments.js";
+import { sendMailDraft, type SentMailDraft } from "./mailDraftSend.js";
+import { createPrefilledEmailDraft, isPrefilledDraftMode } from "./mailDraftPrefill.js";
+import {
+  draftAddress as address,
+  draftBody as body,
+  draftRecipients as recipients,
+  draftSubject as subject,
+} from "./mailDraftFields.js";
 import { MAIL_DRAFT_MODES } from "./mailDraftsStore.js";
+import type { MailSendAdapterFactory } from "./send.js";
 
-const MAX_ADDRESS_LENGTH = 320;
-const MAX_NAME_LENGTH = 320;
-/** The longest header line RFC 5322 allows, which the subject has to fit. */
-const MAX_SUBJECT_LENGTH = 998;
-const MAX_BODY_LENGTH = 500_000;
-/** The recipients of one list; a list longer than this is no person's mail. */
-const MAX_RECIPIENTS = 100;
-
-/** One address without whitespace or a comma, the same shape the mailbox connect route accepts. */
-const ADDRESS_PATTERN = /^[^\s@,]+@[^\s@,]+$/;
-/** A control character (general category Cc, line breaks included) or an unpaired surrogate (Cs). */
-const UNSTORABLE_HEADER_CHARACTER = /[\p{Cc}\p{Cs}]/u;
-/** An unpaired surrogate (Cs), which `jsonb` refuses. */
-const UNPAIRED_SURROGATE = /\p{Cs}/u;
-
-/** Postgres refuses U+0000 in `text` and `jsonb`, and `jsonb` refuses an unpaired surrogate. */
-const isStorableBody = (value: string): boolean => !value.includes("\u0000") && !UNPAIRED_SURROGATE.test(value);
-
-/** A value that reaches a header of the outgoing mail may hold no line break, or a client could inject a header. */
-const headerText = (max: number) =>
-  z
-    .string()
-    .max(max)
-    .refine((value) => !UNSTORABLE_HEADER_CHARACTER.test(value));
-const address = z
-  .string()
-  .trim()
-  .max(MAX_ADDRESS_LENGTH)
-  .regex(ADDRESS_PATTERN)
-  .refine((value) => !UNSTORABLE_HEADER_CHARACTER.test(value));
-const recipient = z.object({ address, name: headerText(MAX_NAME_LENGTH).default("") }).strict();
-const recipients = z.array(recipient).max(MAX_RECIPIENTS);
-const subject = headerText(MAX_SUBJECT_LENGTH);
-const body = z.string().max(MAX_BODY_LENGTH).refine(isStorableBody);
-
+/**
+ * The create body as it is first read: every field a prefilled mode computes is optional here. A `new` draft takes
+ * those fields as given and `newDraftFieldsSchema` then requires them.
+ */
 const createBodySchema = z
   .object({
     mailboxId: z.uuid(),
-    from: address,
-    to: recipients,
-    cc: recipients,
-    bcc: recipients,
-    subject,
-    body,
+    from: address.optional(),
+    to: recipients.optional(),
+    cc: recipients.optional(),
+    bcc: recipients.optional(),
+    subject: subject.optional(),
+    body: body.optional(),
     threadId: z.uuid().nullable().default(null),
     mode: z.enum(MAIL_DRAFT_MODES).default("new"),
     sourceEmailId: z.uuid().nullable().default(null),
   })
   .strict();
+
+/** The fields of a `new` draft, which no source message can supply. */
+const newDraftFieldsSchema = z.object({
+  from: address,
+  to: recipients,
+  cc: recipients,
+  bcc: recipients,
+  subject,
+  body,
+});
 
 const updateBodySchema = z
   .object({
@@ -96,6 +84,11 @@ interface DraftRouteContext {
   identity: { user: { id: string } };
 }
 
+/** The create route also reads the locale of the user, in which the quote of a reply is written. */
+interface DraftCreateRouteContext extends DraftRouteContext {
+  identity: { user: { id: string; locale: string } };
+}
+
 type DraftRouteResult<T> = Promise<{ status: number; body: T }>;
 
 /** `items.id` is a uuid: a malformed id names no draft, so it gets the same 404 as an unknown one. */
@@ -119,17 +112,47 @@ function writeContext(
  * and may carry `threadId`, `mode` (default `new`) and `sourceEmailId`; any other key, an address that is no
  * address, a subject with a line break and a list of more than 100 recipients are 400s. The refusals of the
  * operation (`createEmailDraftInMailbox`) are its own.
+ *
+ * With `mode` `reply`, `replyAll` or `forward` (issue gh-1899) the body names the source message in `sourceEmailId`
+ * (a 400 without it) and `from`, `to`, `cc`, `bcc`, `subject` and `threadId` are computed from it
+ * (`createPrefilledEmailDraft`); a value the request gives for them is ignored. `body` is the person's own text, which
+ * may be absent and then is empty, and the draft's body is that text followed by an empty line and the quote of the
+ * source in the locale of the user. A forward's attachments are copied under the upload limit of the composition
+ * root, which only a forward needs.
  */
-export function createMailDraftCreateRouteHandler(pool: Pool) {
+export function createMailDraftCreateRouteHandler(pool: Pool, dependencies: MailDraftAttachmentRouteDependencies = {}) {
   const queueAffinity = createActionQueueAffinity();
-  return async (ctx: DraftRouteContext): DraftRouteResult<EmailDraftView> => {
+  return async (ctx: DraftCreateRouteContext): DraftRouteResult<EmailDraftView> => {
     const parsed = createBodySchema.safeParse(ctx.body);
     if (!parsed.success) throw invalidBody(parsed.error);
-    const { mailboxId, sourceEmailId, ...fields } = parsed.data;
+    const { mailboxId, sourceEmailId, mode, threadId, ...fields } = parsed.data;
+    if (isPrefilledDraftMode(mode)) {
+      if (sourceEmailId === null) {
+        throw new ValidationError("The draft body is invalid", { field: "sourceEmailId" });
+      }
+      const uploadLimitBytes = mode === "forward" ? requireUploadLimit(dependencies) : undefined;
+      const prefilled = await withTransaction(pool, (client) =>
+        createPrefilledEmailDraft(
+          client,
+          {
+            mailboxItemId: mailboxId,
+            sourceEmailItemId: sourceEmailId,
+            mode,
+            locale: ctx.identity.user.locale,
+            body: fields.body ?? "",
+            uploadLimitBytes,
+          },
+          writeContext(ctx, queueAffinity),
+        ),
+      );
+      return { status: 201, body: prefilled };
+    }
+    const newFields = newDraftFieldsSchema.safeParse(fields);
+    if (!newFields.success) throw invalidBody(newFields.error);
     const draft = await withTransaction(pool, (client) =>
       createEmailDraftInMailbox(
         client,
-        { ...fields, mailboxItemId: mailboxId, sourceEmailItemId: sourceEmailId },
+        { ...newFields.data, threadId, mode, mailboxItemId: mailboxId, sourceEmailItemId: sourceEmailId },
         writeContext(ctx, queueAffinity),
       ),
     );
@@ -245,6 +268,48 @@ export function createMailDraftAttachmentRemoveRouteHandler(pool: Pool) {
       ),
     );
     return { status: 200, body: draft };
+  };
+}
+
+/**
+ * The members of the composition root's custom-route container the send route reads
+ * (docs/adr/2026-10-29-custom-route-composition-root-dependencies.md). `semprec-api`'s `CustomRouteDependencies` is
+ * assignable to it.
+ */
+export interface MailDraftSendRouteDependencies {
+  mailServerClients?: {
+    /** The transports and the attachment storage `sendDraftEmail` takes; `createDispatcher` of `semprec-api` supplies them. */
+    send?: MailSendAdapterFactory;
+  };
+}
+
+/**
+ * The send adapters the composition root configured. A root that configured none fails the request with a plain error
+ * and not a `ChokePointError`, as docs/adr/2026-10-29-custom-route-composition-root-dependencies.md decides for a member
+ * that is not set: the adapter logs it and answers a generic 500, and the draft stays as it was.
+ */
+function requireSendAdapters(dependencies: MailDraftSendRouteDependencies): MailSendAdapterFactory {
+  const send = dependencies.mailServerClients?.send;
+  if (send === undefined) {
+    throw new Error('custom route dependency "mailServerClients.send" is not configured by the composition root');
+  }
+  return send;
+}
+
+/**
+ * `POST /api/mail/drafts/:id/send` (issue gh-1896): sends the draft as the user (`sendMailDraft`) and answers 200
+ * with `{ emailId, threadId, sentAt, mailbox: { id, name } }`. The request has no body that is read. A draft id that
+ * is no UUID is a 404. The refusals and failures are those of `sendMailDraft`: 400 without a recipient, 403
+ * `from_address_not_registered`, 404 for an unknown draft or mailbox (another tenant's included), 409
+ * `mail_draft_already_sent` with `{ emailId, threadId }`, `mail_draft_not_editable`, `mail_reauthorization_required`
+ * and `mail_sent_folder_missing`, 422 `mail_recipient_rejected`, and 400 `mail_auth_failed` and
+ * `mail_server_unreachable` for the mail server. A failure before or during delivery leaves the draft unsent.
+ */
+export function createMailDraftSendRouteHandler(pool: Pool, dependencies: MailDraftSendRouteDependencies) {
+  return async (ctx: DraftRouteContext): DraftRouteResult<SentMailDraft> => {
+    const adapters = requireSendAdapters(dependencies);
+    const draftId = draftIdOf(ctx);
+    return { status: 200, body: await sendMailDraft(pool, draftId, adapters) };
   };
 }
 

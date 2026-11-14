@@ -357,6 +357,26 @@ export async function lockAllItemsInDatabaseForShare(client: Queryable, database
 }
 
 /**
+ * Every row of the database, trashed or live, whose text property `propertyKey` equals `value`, in id order (issue
+ * gh-1882: the instances of a recurring task series). With `lock` it reads them `FOR UPDATE`, in that order, and waits
+ * for a row another transaction holds; rows another transaction inserts while it waits are not in the result.
+ */
+export async function listItemsByTextProperty(
+  client: Queryable,
+  databaseId: string,
+  propertyKey: string,
+  value: string,
+  lock: boolean,
+): Promise<ItemRow[]> {
+  const { rows } = await client.query<ItemDbRow>(
+    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at FROM items
+     WHERE database_id = $1 AND properties->>$2 = $3 ORDER BY id${lock ? " FOR UPDATE" : ""}`,
+    [databaseId, propertyKey, value],
+  );
+  return rows.map(mapItemRow);
+}
+
+/**
  * The lowest-id (deterministic, since item ids are random UUIDs with no creation-order meaning)
  * live Files item whose `file` property points at `blobId` — issue #158's convergence rule for
  * concurrent identical uploads: every caller streaming the same bytes ends up dedup'd onto one

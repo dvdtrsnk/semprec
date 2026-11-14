@@ -3,14 +3,19 @@ import { Client, type PoolClient } from "pg";
 import type { Item } from "@semprec/shared";
 import {
   clearHooksForTests,
+  getItemCascadeExpansion,
   getItemDeleteApprovalGuard,
   hasItemPreWriteTransform,
+  readItemDeleteImpact,
+  registerItemCascadeExpansion,
+  registerItemDeleteImpactReader,
   registerItemDeleteApprovalGuard,
   registerItemPreWriteTransform,
   registerItemUpdateHook,
   registerItemUpdatePreLockHook,
   registerItemDeletePreLockHook,
   registerItemRestorePreLockHook,
+  registerItemPurgePreLockHook,
   registerRelationEdgeChangedHook,
   registerAutomationBatchReader,
   registerItemDeleteHook,
@@ -24,6 +29,8 @@ import {
   runItemUpdatePreLockHooks,
   runItemDeletePreLockHooks,
   runItemRestorePreLockHooks,
+  runItemPurgePreLockHooks,
+  type ItemDeleteImpactContext,
   type ItemTrashPreLockHookContext,
   type ItemDeleteHookContext,
   type ItemPreWriteTransformContext,
@@ -387,6 +394,12 @@ describe.each([
     run: runItemRestorePreLockHooks,
     other: { register: registerItemDeletePreLockHook, run: runItemDeletePreLockHooks },
   },
+  {
+    name: "item purge pre-lock",
+    register: registerItemPurgePreLockHook,
+    run: runItemPurgePreLockHooks,
+    other: { register: registerItemDeletePreLockHook, run: runItemDeletePreLockHooks },
+  },
 ])("chokePoint/hooks $name registry", ({ register, run, other }) => {
   beforeEach(() => {
     clearHooksForTests();
@@ -424,7 +437,7 @@ describe.each([
     expect(calls).toBe(1);
   });
 
-  it("keeps each module's hooks apart, and the delete registry apart from the restore registry", async () => {
+  it("keeps each module's hooks apart, and the registries of the delete, the restore and the purge apart from one another", async () => {
     let calls = 0;
     register("calendars", async () => {
       calls += 1;
@@ -584,5 +597,81 @@ describe("chokePoint/hooks item delete approval guard registry (issue gh-2031)",
     clearHooksForTests();
 
     expect(getItemDeleteApprovalGuard("mailboxes")).toBeUndefined();
+  });
+});
+
+describe("chokePoint/hooks item cascade expansion registry (issue gh-1882)", () => {
+  beforeEach(() => {
+    clearHooksForTests();
+  });
+
+  it("answers the expansion registered for a module, and none for a module that registered none", () => {
+    const expansion = vi.fn(async () => []);
+    registerItemCascadeExpansion("tasks", expansion);
+
+    expect(getItemCascadeExpansion("tasks")).toBe(expansion);
+    expect(getItemCascadeExpansion("events")).toBeUndefined();
+  });
+
+  it("refuses a second expansion for the same module and keeps the first", () => {
+    const first = vi.fn(async () => []);
+    registerItemCascadeExpansion("tasks", first);
+
+    expect(() => registerItemCascadeExpansion("tasks", async () => [])).toThrow("Duplicate item cascade expansion");
+    expect(() => registerItemCascadeExpansion("tasks", first)).toThrow("Duplicate item cascade expansion");
+    expect(getItemCascadeExpansion("tasks")).toBe(first);
+  });
+
+  it("is cleared by clearHooksForTests", () => {
+    registerItemCascadeExpansion("tasks", async () => []);
+
+    clearHooksForTests();
+
+    expect(getItemCascadeExpansion("tasks")).toBeUndefined();
+  });
+});
+
+describe("chokePoint/hooks item delete impact reader registry (issue gh-1882)", () => {
+  const IMPACT = { seriesInstanceCount: 3, attachmentCount: 2, hostEventCount: 1 };
+
+  function contextOf(ownerModuleId: string | null): ItemDeleteImpactContext {
+    return { client: offlineClient, database: { ...CONTEXT.database, ownerModuleId }, item: CONTEXT.item };
+  }
+
+  beforeEach(() => {
+    clearHooksForTests();
+  });
+
+  it("answers the reader of the owning module with the context it was given", async () => {
+    const reader = vi.fn(async () => IMPACT);
+    registerItemDeleteImpactReader("tasks", reader);
+    const context = contextOf("tasks");
+
+    await expect(readItemDeleteImpact(context)).resolves.toEqual(IMPACT);
+    expect(reader).toHaveBeenCalledExactlyOnceWith(context);
+  });
+
+  it("answers null for a module that registered none and for a database without an owner module", async () => {
+    registerItemDeleteImpactReader("tasks", async () => IMPACT);
+
+    await expect(readItemDeleteImpact(contextOf("events"))).resolves.toBeNull();
+    await expect(readItemDeleteImpact(contextOf(null))).resolves.toBeNull();
+  });
+
+  it("refuses a second reader for the same module and keeps the first", async () => {
+    registerItemDeleteImpactReader("tasks", async () => IMPACT);
+
+    expect(() => registerItemDeleteImpactReader("tasks", async () => ({ ...IMPACT, seriesInstanceCount: 0 }))).toThrow(
+      "Duplicate item delete impact reader",
+    );
+    await expect(readItemDeleteImpact(contextOf("tasks"))).resolves.toEqual(IMPACT);
+  });
+
+  it("is cleared by clearHooksForTests", async () => {
+    registerItemDeleteImpactReader("tasks", async () => IMPACT);
+
+    clearHooksForTests();
+
+    await expect(readItemDeleteImpact(contextOf("tasks"))).resolves.toBeNull();
   });
 });

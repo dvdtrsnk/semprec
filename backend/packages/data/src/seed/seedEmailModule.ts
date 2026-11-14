@@ -19,7 +19,7 @@ import {
 } from "../mail/personLinkingActions.js";
 import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
 import { EMAILS_MODULE_ID, FOLDERS_MODULE_ID, MAILBOXES_MODULE_ID, THREADS_MODULE_ID } from "./emailModuleKeys.js";
-import { COMPANIES_MODULE_ID, TASKS_MODULE_ID } from "./tenDatabaseKeys.js";
+import { COMPANIES_MODULE_ID, FILES_MODULE_ID, TASKS_MODULE_ID } from "./tenDatabaseKeys.js";
 import { SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS } from "./systemProjectAgentGuidance.js";
 
 // Issue #145: every shipped catalog option `s` becomes `{ key: s }` — see seedTenDatabases.ts's
@@ -106,6 +106,26 @@ export async function createThreadsDatabase(
       owner: "user",
     },
     undefined,
+    computedKeyRegistry,
+  );
+  // Threads -> Files (issue gh-1898): the files that the messages of a thread brought as attachments. Files is
+  // schema-locked, so the relation lives on Threads only. Threads is the "one" side of `one_to_many`, so a file
+  // belongs to at most one thread. System-owned by the `emails` process, the one that writes the Emails
+  // attachments edge (`mail/attachments.ts`); the link rule `fileProjectFromThread` follows the edge.
+  const files = await databasesStore.getDatabaseByModuleId(client, FILES_MODULE_ID);
+  if (!files) throw new Error("Files database is missing");
+  await createRelationPropertyWithClient(
+    client,
+    {
+      sourceDatabaseId: threads.id,
+      key: "attachments",
+      name: null,
+      targetDatabaseId: files.id,
+      cardinality: "one_to_many",
+      owner: "system",
+      ownerProcess: EMAILS_MODULE_ID,
+    },
+    { ownerProcess: EMAILS_MODULE_ID },
     computedKeyRegistry,
   );
   return threads;
@@ -396,7 +416,8 @@ export async function seedEmailModuleInTransaction(
   // the same core.agentRun action any other project heartbeat uses (no mail-specific scheduler),
   // gated by itemRelationFilter.ts so junk/trash-only mail (and reconciliation of an
   // already-known message, which never re-enters createItemWithClient — see mail/ingest.ts)
-  // never triggers it.
+  // never triggers it. Issue gh-1941: the run starts in the thread's project (`runProject`) and only for a message that
+  // expects an answer (`answerExpectedFilter`, after the sender gate).
   await createHeartbeat(client, {
     projectItemId: emailProject.id,
     name: "newEmail",
@@ -405,6 +426,8 @@ export async function seedEmailModuleInTransaction(
     actionConfig: {
       task: "A new message arrived in the Inbox.",
       senderKnownFilter: {},
+      answerExpectedFilter: {},
+      runProject: { resolver: "mailThreadProject" },
       itemRelationFilter: {
         relationPropertyId: folderRelation.property.id,
         property: "specialPurpose",

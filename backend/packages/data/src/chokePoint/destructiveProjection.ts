@@ -1,4 +1,9 @@
-import { getItemDeleteApprovalGuard, getItemPatchApprovalContribution } from "./hooks.js";
+import {
+  getItemDeleteApprovalGuard,
+  getItemPatchApprovalContribution,
+  readItemDeleteImpact,
+  runItemDeletePreLockHooks,
+} from "./hooks.js";
 // Owns the single authorize-and-project call for approved destructive operations: the read-only
 // projection and `resource_snapshot` hash of the resource each approval-gated destructive kind targets,
 // with the exact domain error the matching mutation would throw. `page_restore`, `page_replace`, `page_convert` and `journal_merge` are the kinds
@@ -27,7 +32,7 @@ import {
   normalizeRelationSides,
 } from "./relationEdgeContext.js";
 import { reserveBreakingLinks, reserveEdgeLinks, type BreakingValueLinks } from "./valueLinkApproval.js";
-import { assertWriterDatabaseAccess } from "../agentGrants/agentDatabaseAccess.js";
+import { assertWriterDatabaseAccess, readerOfWriter } from "../agentGrants/agentDatabaseAccess.js";
 import { assertWriterDeleteCascadeAccess } from "./itemSubtreeAccess.js";
 
 /** The approval-gated destructive kinds a `resource_snapshot` can carry (issue #89; `page_restore` is issue #1617's, computed in `docs/docPageRestore.ts`, `page_replace` is issue #1844's, in `docs/pageReplaceApproval.ts`, `page_convert` is issue #1876's, in `docs/pageConvertApproval.ts`, and `journal_merge` is issue #2017's, in `journal/journalMergeApproval.ts`). */
@@ -357,18 +362,34 @@ export async function computeDestructiveResourceProjection(
       // to `itemDeleteWithClient` treats an already-deleted item as an idempotent no-op, but an
       // *approval request* must not be created against (or later replayed as) deleting a
       // resource that is already gone.
-      const [item] = await itemsStore.getItemsByIdsIncludingDeleted(client, [check.input.itemId]);
+      const [unlocked] = await itemsStore.getItemsByIdsIncludingDeleted(client, [check.input.itemId]);
+      if (!unlocked || unlocked.deletedAt) throw new NotFoundError(`Item ${check.input.itemId} not found`);
+      await assertWriterDatabaseAccess(client, check, unlocked.databaseId, "write", unlocked.id);
+      await assertWriterDeleteCascadeAccess(client, check, unlocked);
+      const database = await databasesStore.getDatabase(client, unlocked.databaseId);
+      if (!database) throw new NotFoundError(`Database ${unlocked.databaseId} not found`);
+      // The owning module's locks come first, as they do in `itemDeleteWithClient`, and are held to the end of the
+      // transaction, which also runs the delete of an approved request: what the module's writers add after this point
+      // waits for the delete, so the item and the impact read below are the state the delete finds. Without them an
+      // instance stored between this read and the delete's own locks would be trashed under a snapshot that did not
+      // count it (issue gh-1882).
+      if (database.ownerModuleId !== null) {
+        await runItemDeletePreLockHooks(database.ownerModuleId, { client, database, itemId: unlocked.id });
+      }
+      const [item] = await itemsStore.getItemsByIdsIncludingDeleted(client, [unlocked.id]);
       if (!item || item.deletedAt) throw new NotFoundError(`Item ${check.input.itemId} not found`);
-      await assertWriterDatabaseAccess(client, check, item.databaseId, "write", item.id);
-      await assertWriterDeleteCascadeAccess(client, check, item);
-      const database = await databasesStore.getDatabase(client, item.databaseId);
-      if (!database) throw new NotFoundError(`Database ${item.databaseId} not found`);
+      // The module's impact of the delete is part of the snapshot (issue gh-1882): an approval granted for one impact is
+      // not executed once its counts changed, and the conflict reports the current ones. The counts are those the
+      // writer's reader may see, as in the preview. An item whose module reports none leaves the projection, and so its
+      // snapshot, as it was.
+      const impact = await readItemDeleteImpact({ client, database, item, reader: readerOfWriter(check) });
       const projected = {
         id: item.id,
         databaseId: item.databaseId,
         updatedAt: item.updatedAt,
         deletedAt: item.deletedAt,
         databaseArchivedAt: database.archivedAt,
+        ...(impact === null ? {} : { impact }),
       };
       if (database.archivedAt) {
         throw new ForbiddenError(

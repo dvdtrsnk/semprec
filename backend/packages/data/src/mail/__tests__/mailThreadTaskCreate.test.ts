@@ -284,6 +284,14 @@ describe("POST /api/mail/threads/:threadId/tasks (issue gh-1900)", () => {
         target: { databaseKey: "tasks", propertyKey: "project" },
         via: { databaseKey: "threads", relationKey: "tasks" },
       },
+      // The rule of the attachments of a thread (issue gh-1898) is declared next to it.
+      {
+        moduleId: "mailSync",
+        key: "fileProjectFromThread",
+        source: { databaseKey: "threads", propertyKey: "project" },
+        target: { databaseKey: "files", propertyKey: "projects" },
+        via: { databaseKey: "threads", relationKey: "attachments" },
+      },
     ]);
     expect(() => registry.validateLinkRules()).not.toThrow();
   });

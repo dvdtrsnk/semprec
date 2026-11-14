@@ -33,4 +33,8 @@ export const SEMP_ROUTES: RouteMatrixEntry[] = [
     public: false,
     tenancy: "tenant",
   },
+  // prettier-ignore
+  { name: "semp message retry", method: "POST", path: `/api/semp/threads/${EXAMPLE_ID}/messages/${EXAMPLE_ID}/retry`, surface: "api", public: false, tenancy: "tenant" },
+  // prettier-ignore
+  { name: "semp message regenerate", method: "POST", path: `/api/semp/threads/${EXAMPLE_ID}/messages/${EXAMPLE_ID}/regenerate`, surface: "api", public: false, tenancy: "tenant" },
 ];

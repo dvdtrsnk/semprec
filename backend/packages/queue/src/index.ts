@@ -118,6 +118,12 @@ export const CORE_TASK_NAMES = {
   // paid transcription pipeline) is out of this issue's scope — see transcriptionJob.ts.
   TRANSCRIPTION_JOB: "transcriptionJob",
   TRANSCRIPTION_CREATE: "transcriptionCreate",
+  // Issue gh-1940: recomputes one transcript card from a user's instruction (one gateway call), run by the
+  // short-model-task runner of `semprec-transcribe`.
+  TRANSCRIPT_CARD_RECOMPUTE: "transcriptCardRecompute",
+  // Issue gh-1942: asks the unmapped speakers of one transcript again after its Event or the Event's participants
+  // changed, on the same short-model-task runner of `semprec-transcribe`.
+  TRANSCRIPT_SPEAKER_SUGGESTION: "transcriptSpeakerSuggestion",
   VALUE_LINKS_PROPAGATE: "valueLinksPropagate",
   // Issue #643: the hourly sweep that closes every MCP-triggered run whose run-credential expired.
   MCP_RUN_CREDENTIAL_EXPIRY_SWEEP: "mcpRunCredentialExpirySweep",
@@ -152,6 +158,9 @@ export const CORE_TASK_NAMES = {
   // Issue gh-2024: announces a changed Semp status at the instant a tenant's exhausted AI budget window resets, enqueued by
   // the AI gateway with the first tenant-cap refusal of that window under the job key `aiBudgetReset:<tenantId>:<resetsAt>`.
   AI_BUDGET_RESET: "aiBudgetReset",
+  // Issue gh-1879: sends the silent push that makes the phone read the reminders feed again, enqueued by every write that
+  // can change a fire time under the job key `reminders-resync:<tenantId>` with a 30-second debounce.
+  REMINDERS_RESYNC: "remindersResync",
 } as const;
 export type CoreTaskName = (typeof CORE_TASK_NAMES)[keyof typeof CORE_TASK_NAMES];
 
@@ -198,6 +207,8 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.TRASH_PURGE]: "api",
   [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: "transcribe",
   [CORE_TASK_NAMES.TRANSCRIPTION_CREATE]: "transcribe",
+  [CORE_TASK_NAMES.TRANSCRIPT_CARD_RECOMPUTE]: "transcribe",
+  [CORE_TASK_NAMES.TRANSCRIPT_SPEAKER_SUGGESTION]: "transcribe",
   [CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE]: "api",
   [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: "api",
   [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: "api",
@@ -215,6 +226,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.PAGE_ORPHAN_SWEEP]: "api",
   [CORE_TASK_NAMES.TASK_HOST_EVENT_ENDED]: "api",
   [CORE_TASK_NAMES.AI_BUDGET_RESET]: "api",
+  [CORE_TASK_NAMES.REMINDERS_RESYNC]: "api",
 };
 
 /**
@@ -273,6 +285,8 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.TRASH_PURGE]: "system",
   [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: "tenant",
   [CORE_TASK_NAMES.TRANSCRIPTION_CREATE]: "tenant",
+  [CORE_TASK_NAMES.TRANSCRIPT_CARD_RECOMPUTE]: "tenant",
+  [CORE_TASK_NAMES.TRANSCRIPT_SPEAKER_SUGGESTION]: "tenant",
   [CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE]: "tenant",
   [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: "system",
   [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: "system",
@@ -290,6 +304,7 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.PAGE_ORPHAN_SWEEP]: "system",
   [CORE_TASK_NAMES.TASK_HOST_EVENT_ENDED]: "tenant",
   [CORE_TASK_NAMES.AI_BUDGET_RESET]: "tenant",
+  [CORE_TASK_NAMES.REMINDERS_RESYNC]: "tenant",
   [AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT]: "tenant",
   [AGENT_TASK_NAMES.AGENT_RUN]: "tenant",
   [AGENT_TASK_NAMES.DELEGATED_AGENT_RUN]: "tenant",

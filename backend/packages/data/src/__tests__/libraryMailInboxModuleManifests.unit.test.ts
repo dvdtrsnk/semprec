@@ -146,7 +146,18 @@ describe("library/mail/inbox module manifests (module-contract issue #227)", () 
       MAIL_REINDEX_PERSON_EMAILS_ACTION_ID,
       MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID,
     ]);
-    expect(await registry.getTasks()).toEqual([]);
+    // The module tasks of the mail module are the thread project triage (issue gh-1872) and the thread task people job
+    // (issue gh-1923); the sync and sweep jobs are core's.
+    expect(await registry.getTasks()).toEqual([
+      {
+        moduleId: "mailSync",
+        name: "mailTriageThreadProject",
+        payloadSchemaExport: "mailTriageThreadProjectPayloadSchema",
+        handlerExport: "handleMailTriageThreadProject",
+        queueAffinity: "api",
+      },
+      expect.objectContaining({ moduleId: "mailSync", name: "mailSyncThreadTaskPeople", queueAffinity: "api" }),
+    ]);
     const workers = await registry.getWorkers();
     expect(workers).toEqual([
       { moduleId: "mailSync", name: "semprec-mailsync", handlerExport: "createNoopMailLiveSyncLifecycleFactory" },

@@ -53,6 +53,7 @@ export {
   createTrashRestoreRouteHandler,
 } from "../trash/trashRouteHandlers.js";
 export { createListAgentRunsRouteHandler } from "../agentRuns/agentRunsListRouteHandler.js";
+export { createProjectAgentSummaryRouteHandler } from "../mcp/projectAgentSummaryRouteHandler.js";
 
 /**
  * Retrofit manifest (module-contract issue #226) for the schema/data core: the choke point
@@ -326,6 +327,16 @@ export const manifest: ModuleManifest = {
       // The automations a person made in one project with each one's rule label, last run outcome and tick thread,
       // shaped for exactly one consumer, the project's agent screen (issue gh-1910): the generic item reads know
       // neither `project_heartbeats` nor the runs of its occurrences.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "projectAgentSummary",
+      method: "GET",
+      path: "/api/projects/:id/agent-summary",
+      handlerExport: "createProjectAgentSummaryRouteHandler",
+      // The counts behind one row of the project detail, "Semp in this project", and its attention dot (issue
+      // gh-1935), shaped for exactly one consumer. The counts reuse the owners' functions where they exist (grants,
+      // heartbeats, display status); the drift and approval counts are one count query each.
       justification: "single-consumer-read",
     },
   ],

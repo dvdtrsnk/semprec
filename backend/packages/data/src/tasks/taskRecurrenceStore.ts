@@ -274,6 +274,42 @@ export async function hasSeriesOccurrence(
   return rows.length > 0;
 }
 
+/**
+ * Turns the repeat rule of series `seriesId` off because the series went to the Trash (issue gh-1882) and records, in
+ * `trashed_active_item_id`, the instance the row pointed at while it was active. A rule that is already off, as one
+ * the user turned off or one an earlier row of the same cascade turned off, is left as it is. Returns whether this call
+ * turned the rule off; zero rows is valid, for a series without a row and for a rule that is already off. Call it holding
+ * the locks of the series' instance items (items before `task_recurrence`).
+ */
+export async function deactivateTaskRecurrenceForTrash(client: PoolClient, seriesId: string): Promise<boolean> {
+  const result = await client.query(
+    `UPDATE task_recurrence SET active = false, trashed_active_item_id = item_id
+     WHERE series_id = $1::uuid AND active`,
+    [seriesId],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+/**
+ * Turns the repeat rule of series `seriesId` back on when the restore reached `itemId`, the instance
+ * `deactivateTaskRecurrenceForTrash` recorded, and clears the record. Any other instance, and a series whose rule the trash
+ * did not turn off, change nothing. Returns whether this call turned the rule on; zero rows is valid, as every other
+ * instance of the series reaches this with nothing recorded for it. Call it holding the locks of the series' instance
+ * items (items before `task_recurrence`).
+ */
+export async function reactivateTaskRecurrenceAfterTrash(
+  client: PoolClient,
+  seriesId: string,
+  itemId: string,
+): Promise<boolean> {
+  const result = await client.query(
+    `UPDATE task_recurrence SET active = true, trashed_active_item_id = NULL
+     WHERE series_id = $1::uuid AND trashed_active_item_id = $2::uuid`,
+    [seriesId, itemId],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
 export async function setTaskRecurrenceActive(client: Queryable, itemId: string, active: boolean): Promise<void> {
   await client.query(`UPDATE task_recurrence SET active = $2 WHERE item_id = $1`, [itemId, active]);
 }

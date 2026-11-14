@@ -4,10 +4,13 @@
 // transport asked. It lives beside the trash purge, not in `chokePoint/`, because it reads the page tree of `docs/`,
 // which `chokepoint-knows-no-domain` keeps the choke point from importing.
 // Constrained by: docs/adr/2026-11-12-per-database-agent-grants.md
+// and, for the module counts, docs/adr/2026-11-14-a-recurring-task-series-is-trashed-and-restored-as-one-cascade.md
 import type { PoolClient } from "pg";
 import { listUnreadableDatabaseIds, type DatabaseReader } from "../agentGrants/agentDatabaseAccess.js";
 import { collectSubpageTree } from "../docs/pageTrash.js";
 import { collectItemSubtree } from "../chokePoint/itemSubtreeAccess.js";
+import { readItemDeleteImpact, type ItemDeleteImpact } from "../chokePoint/hooks.js";
+import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { listRelatedWithClient, type RelatedResolver } from "../chokePoint/relatedOps.js";
 import { listValueLinksBySourceItem } from "../chokePoint/valueLinksStore.js";
@@ -27,7 +30,14 @@ export interface DeleteImpactLink {
   propertyKey: string;
 }
 
-export interface DeleteImpact {
+/**
+ * What deleting one item would reach. Besides the four parts below, `seriesInstanceCount`, `attachmentCount` and
+ * `hostEventCount` (issue gh-1882) are counted by the module that owns the item's database and are 0 for an item of a
+ * database whose module counts none: the live instances of the item's recurring task series, itself included (0 for a
+ * task without a series), the live attachments (`Files.tasks` edges) and the live host events (`Tasks.hostEvents`
+ * edges).
+ */
+export interface DeleteImpact extends ItemDeleteImpact {
   /** The counts of `relation.related`, in its order: the connected live records per collection the caller may read. */
   related: DeleteImpactRelated[];
   /** The live records inside the inline databases of the item, recursively, the item itself not counted. */
@@ -65,6 +75,10 @@ function withoutRelatedOmit(resolver: RelatedResolver): RelatedResolver {
  * - `linksToOwn` lists each link that has an item source naming the item, once, as the item that holds the link and the
  *   property it covers. A holder in the Trash or in a database the `reader` may not read is left out.
  *
+ * - `seriesInstanceCount`, `attachmentCount` and `hostEventCount` come from the delete impact reader of the module that
+ *   owns the item's database (`readItemDeleteImpact`), which is given the `reader` and counts nothing the reader may not
+ *   read; an item of a database without one has none of them.
+ *
  * A `reader` (an agent's project, issue #1810, or an external client, issue #1998) needs `read` access to the database
  * of the item, else the read is refused as `forbidden`. A read without a reader, as a person's, sees every database.
  */
@@ -95,10 +109,16 @@ export async function computeDeleteImpact(
     .filter((link) => readableHolderIds.has(link.itemId))
     .map(({ itemId: holderId, propertyKey }) => ({ itemId: holderId, propertyKey }));
 
+  const database = await databasesStore.getDatabase(client, item.databaseId);
+  const moduleImpact = database ? await readItemDeleteImpact({ client, database, item, reader }) : null;
+
   return {
     related: relatedRows.map(({ databaseKey, count }) => ({ databaseKey, count })),
     subtreeItemCount,
     subtreePageCount,
     linksToOwn,
+    seriesInstanceCount: moduleImpact?.seriesInstanceCount ?? 0,
+    attachmentCount: moduleImpact?.attachmentCount ?? 0,
+    hostEventCount: moduleImpact?.hostEventCount ?? 0,
   };
 }

@@ -3,7 +3,10 @@ import { Readable } from "node:stream";
 import type { PoolClient } from "pg";
 import { findOrCreateBlob, tenantBlobStorageKey } from "../blobs/blobsStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
+import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
+import { THREADS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import type { BlobStorageWriter } from "./blobStorage.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { extractAttachmentText, isTextExtractableContentType } from "./attachmentTextExtraction.js";
@@ -37,6 +40,8 @@ export interface ClassifiedAttachment {
 
 export interface IngestAttachmentsInput {
   messageItemId: string;
+  /** The Threads item of the message's thread (`mail_threads.item_id`): the file gets a `Threads.attachments` edge from it. */
+  threadItemId: string;
   filesDatabaseId: string;
   /** The Emails item's `attachments` relation property id — see seedEmailModule.ts. */
   attachmentsRelationPropertyId: string;
@@ -51,8 +56,11 @@ export interface IngestAttachmentsInput {
  * blobStorage.ts), dedups the resulting blob by content hash, records a `mail_attachments`
  * row, and creates a Files item for it — "exactly like the mock already does today in
  * `sendEmailReply` for outgoing attachments," linked through the Emails `attachments`
- * relation so it shows up in the Files DB like any other file. Must run inside the same
- * transaction as the rest of message ingest (see mail/ingest.ts).
+ * relation so it shows up in the Files DB like any other file. Every Files item it creates also gets an
+ * edge from the thread's Threads item (`Threads.attachments`), written in the same transaction; the link rule
+ * `fileProjectFromThread` of the mail manifest then links the file's `Files.projects` to the thread's project, also
+ * while the thread has none (issue gh-1898). Must run inside the same transaction as the rest of message ingest
+ * (see mail/ingest.ts).
  */
 /**
  * `attachment.filename` is attacker-controlled MIME header content — used verbatim as the
@@ -78,12 +86,22 @@ export interface IngestAttachmentsResult {
   extractedTexts: string[];
 }
 
+async function requireThreadAttachmentsPropertyId(client: PoolClient): Promise<string> {
+  const threads = await getDatabaseByModuleId(client, THREADS_MODULE_ID);
+  const property = threads ? await getPropertyByKey(client, threads.id, "attachments") : null;
+  if (!property) throw new Error("Threads.attachments is not seeded");
+  return property.id;
+}
+
 export async function ingestAttachments(
   client: PoolClient,
   input: IngestAttachmentsInput,
 ): Promise<IngestAttachmentsResult> {
   const extractedTexts: string[] = [];
+  let threadAttachmentsPropertyId: string | undefined;
   for (const attachment of input.attachments) {
+    // Before the bytes are written, so a tenant without the relation fails without a stored blob.
+    threadAttachmentsPropertyId ??= await requireThreadAttachmentsPropertyId(client);
     const storageKey = await tenantBlobStorageKey(
       client,
       `${input.storageKeyPrefix}/${randomUUID()}-${safeStorageFilename(attachment.filename)}`,
@@ -144,6 +162,15 @@ export async function ingestAttachments(
         {
           relationPropertyId: input.attachmentsRelationPropertyId,
           callerItemId: input.messageItemId,
+          targetItemId: fileItem.id,
+        },
+        EMAILS_RELATION_CONTEXT,
+      );
+      await createRelationWithClient(
+        client,
+        {
+          relationPropertyId: threadAttachmentsPropertyId,
+          callerItemId: input.threadItemId,
           targetItemId: fileItem.id,
         },
         EMAILS_RELATION_CONTEXT,

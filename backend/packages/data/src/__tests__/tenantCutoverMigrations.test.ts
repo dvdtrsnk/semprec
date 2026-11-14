@@ -1191,6 +1191,132 @@ describe("processing proposals card-state tenant cutover (issue #1451)", () => {
   });
 });
 
+describe("processing proposals split marker tenant cutover (issue #1939)", () => {
+  let zero: string;
+  let b: string;
+
+  beforeAll(() => {
+    adminPool = getTestPool();
+    dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
+  });
+
+  beforeEach(async () => {
+    await resetDatabase(adminPool);
+    zero = getTenantZeroId();
+    b = await createTestTenant(adminPool);
+  });
+
+  afterAll(async () => {
+    await dataPool.end();
+    await adminPool.end();
+  });
+
+  /** Seeds the tenant, then removes `splitFromProposalId`, the shape a populated install had before issue #1939. */
+  async function seedPreSplitShape(tenantId: string): Promise<string> {
+    await runInTenant(tenantId, () => seedSystem(dataPool, createViewTypeRegistry()));
+    const databaseId = await proposalsDatabaseId(tenantId);
+    // Direct SQL is the fixture: the public property writer refuses this schema-locked database.
+    await adminPool.query("DELETE FROM properties WHERE database_id = $1 AND key = 'splitFromProposalId'", [
+      databaseId,
+    ]);
+    return databaseId;
+  }
+
+  it("adds the system text property to an existing Processing proposals database in every tenant, with the shape a fresh seed gives", async () => {
+    await seedPreSplitShape(zero);
+    await seedPreSplitShape(b);
+    const freshReference = await createTestTenant(adminPool);
+    await runInTenant(freshReference, () => seedSystem(dataPool, createViewTypeRegistry()));
+    expect((await proposalShape(b)).map((row) => row.key)).not.toContain("splitFromProposalId");
+
+    await runCutovers(dataPool);
+
+    for (const tenant of [zero, b]) {
+      const added = (await proposalShape(tenant)).find((row) => row.key === "splitFromProposalId");
+      expect(added).toEqual({
+        key: "splitFromProposalId",
+        name: "Split from proposal ID",
+        type: "text",
+        owner: "system",
+        owner_process: null,
+        config: {},
+      });
+      expect(await proposalShape(tenant)).toEqual(await proposalShape(freshReference));
+    }
+  });
+
+  it("changes no card, and a second run changes nothing at all", async () => {
+    const databaseId = await seedPreSplitShape(b);
+    await insertCard(b, databaseId, { kind: "inbox", fingerprint: "card", history: [], status: "proposed" });
+    const cardsBefore = await adminPool.query("SELECT * FROM items WHERE database_id = $1 ORDER BY id", [databaseId]);
+
+    await runCutovers(dataPool);
+    const afterFirst = await proposalSnapshot(databaseId);
+    await runCutovers(dataPool);
+
+    expect(await proposalSnapshot(databaseId)).toEqual(afterFirst);
+    const cardsAfter = await adminPool.query("SELECT * FROM items WHERE database_id = $1 ORDER BY id", [databaseId]);
+    expect(cardsAfter.rows).toEqual(cardsBefore.rows);
+  });
+
+  it("leaves an existing property as it is", async () => {
+    await runInTenant(b, () => seedSystem(dataPool, createViewTypeRegistry()));
+    const databaseId = await proposalsDatabaseId(b);
+    await adminPool.query(
+      "UPDATE properties SET name = 'Kept name' WHERE database_id = $1 AND key = 'splitFromProposalId'",
+      [databaseId],
+    );
+
+    await runCutovers(dataPool);
+
+    const { rows } = await adminPool.query<{ name: string }>(
+      "SELECT name FROM properties WHERE database_id = $1 AND key = 'splitFromProposalId'",
+      [databaseId],
+    );
+    expect(rows).toEqual([{ name: "Kept name" }]);
+  });
+
+  it("does nothing in a tenant without a Processing proposals database", async () => {
+    await seedPreSplitShape(b);
+    await runInTenant(b, () =>
+      dataPool.query("UPDATE databases SET owner_module_id = NULL WHERE owner_module_id = 'processingProposals'"),
+    );
+
+    await runCutovers(dataPool);
+
+    const { rows } = await adminPool.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM properties WHERE key = 'splitFromProposalId' AND tenant_id = $1",
+      [b],
+    );
+    expect(rows[0]?.n).toBe(0);
+  });
+
+  it("refuses a generic item update to the property", async () => {
+    const databaseId = await seedPreSplitShape(b);
+    const cardId = await insertCard(b, databaseId, {
+      kind: "inbox",
+      fingerprint: "card",
+      history: [],
+      status: "proposed",
+    });
+    await runCutovers(dataPool);
+    const chokePoint = createChokePoint(dataPool, undefined, createViewTypeRegistry());
+    const before = await proposalSnapshot(databaseId);
+
+    await runInTenant(b, async () => {
+      await expect(
+        chokePoint.updateItem({
+          databaseId,
+          itemId: cardId,
+          propertiesPatch: { splitFromProposalId: "written by a client" },
+        }),
+      ).rejects.toBeInstanceOf(ForbiddenError);
+    });
+
+    expect(await proposalSnapshot(databaseId)).toEqual(before);
+  });
+});
+
 /**
  * Seeds the tenant, then sets its Emails.senderPeople back to one_to_many, the shape a populated install
  * was seeded with before issue #1457. Direct SQL is the fixture: the seed now declares many_to_many.

@@ -17,8 +17,8 @@ import {
   RetryPendingError,
   SchemaLockedError,
   ValidationError,
+  ChokePointError,
   type ActiveHeartbeatRunSummary,
-  type ChokePointError,
   type ItemRow,
 } from "@semprec/data";
 import {
@@ -114,6 +114,21 @@ const FIXTURES: Array<{ code: ItemErrorCode; status: number; error: ChokePointEr
   { code: "mail_draft_already_sent", status: 409, error: new MailDraftAlreadySentError() },
   { code: "mail_draft_not_editable", status: 409, error: new MailDraftNotEditableError() },
   { code: "mail_attachment_too_large", status: 413, error: new MailAttachmentTooLargeError(20_971_520, 25_000_000) },
+  {
+    code: "mail_reauthorization_required",
+    status: 409,
+    error: new ChokePointError(409, "mail_reauthorization_required", "The mailbox must be reauthorized"),
+  },
+  {
+    code: "mail_recipient_rejected",
+    status: 422,
+    error: new ChokePointError(422, "mail_recipient_rejected", "The mail server refused a recipient"),
+  },
+  {
+    code: "mail_sent_folder_missing",
+    status: 409,
+    error: new ChokePointError(409, "mail_sent_folder_missing", "The mailbox has no Sent folder yet"),
+  },
 ];
 
 const ACTIVE_RUN: ActiveHeartbeatRunSummary = {

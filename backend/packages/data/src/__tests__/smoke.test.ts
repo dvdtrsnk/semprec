@@ -53,6 +53,8 @@ describe("smoke: choke-point end to end", () => {
         "events",
         "files",
         "healthRecords",
+        // The Invitations system database of the calendar module (issue gh-1901).
+        "invitations",
         "journal",
         "movies",
         "people",
@@ -63,6 +65,8 @@ describe("smoke: choke-point end to end", () => {
         "sleepNights",
         "sleepPlans",
         "sleepSettings",
+        // The subscribed events system database of the calendar module (issue gh-1962).
+        "subscribedEvents",
         "tasks",
         "transcripts",
       ].sort(),

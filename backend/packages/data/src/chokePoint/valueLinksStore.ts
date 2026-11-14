@@ -337,19 +337,21 @@ export async function removeValueLinkItemSource(
  * Moves every item source naming `fromItemId` onto `toItemId`, in the caller's transaction (issue #1673: the next
  * instance of a recurring task takes over the sources its predecessor held). Each affected link is locked first,
  * in id order. A source whose link already names `toItemId` for the same property key is removed instead of
- * duplicated. Link states and values are not changed. Returns how many sources were moved or merged.
+ * duplicated. Link states and values are not changed. With `ruleKey`, only the links of that rule are affected. Returns
+ * how many sources were moved or merged.
  */
 export async function moveValueLinkItemSources(
   client: PoolClient,
   fromItemId: string,
   toItemId: string,
+  options: { ruleKey?: string } = {},
 ): Promise<number> {
   const { rows } = await client.query<{ id: string }>(
     `SELECT l.id FROM value_links l
-     WHERE l.tenant_id = app_tenant_default()
+     WHERE l.tenant_id = app_tenant_default() AND ($2::text IS NULL OR l.rule_key = $2)
        AND EXISTS (SELECT 1 FROM value_link_sources s WHERE s.tenant_id = app_tenant_default() AND s.link_id = l.id AND s.source_kind = 'item' AND s.source_item_id = $1)
      ORDER BY l.id FOR UPDATE`,
-    [fromItemId],
+    [fromItemId, options.ruleKey ?? null],
   );
   if (rows.length === 0) return 0;
   const linkIds = rows.map((row) => row.id);
@@ -366,6 +368,77 @@ export async function moveValueLinkItemSources(
     [fromItemId, toItemId, linkIds],
   );
   return (merged.rowCount ?? 0) + (moved.rowCount ?? 0);
+}
+
+/**
+ * Makes the sources of a caller-locked link exactly `sources` (a module resolver's answer): a stored source that is
+ * not in the list is deleted, a listed source that is not stored is inserted, and one that is both stays. Reports
+ * whether any source was deleted or inserted.
+ */
+export async function replaceValueLinkSources(
+  client: PoolClient,
+  linkId: string,
+  sources: ValueLinkSourceInput[],
+): Promise<boolean> {
+  const stored = await listValueLinkSourcesByLinkIds(client, [linkId]);
+  const sameSource = (row: ValueLinkSourceRow, input: ValueLinkSourceInput): boolean =>
+    row.sourcePropertyKey === input.sourcePropertyKey &&
+    ((row.kind === "item" && input.kind === "item" && row.sourceItemId === input.sourceItemId) ||
+      (row.kind === "senderDomain" && input.kind === "senderDomain" && row.domain === input.domain));
+  const obsolete = stored.filter((row) => !sources.some((input) => sameSource(row, input)));
+  const missing = sources.filter((input) => !stored.some((row) => sameSource(row, input)));
+  if (obsolete.length > 0)
+    requireAffectedRows(
+      await client.query(
+        `DELETE FROM value_link_sources WHERE tenant_id = app_tenant_default() AND link_id = $1 AND id = ANY($2::uuid[])`,
+        [linkId, obsolete.map((row) => row.id)],
+      ),
+      "value link source replacement",
+    );
+  for (const source of missing) {
+    await client.query(
+      `INSERT INTO value_link_sources (link_id, source_kind, source_item_id, source_property_key, domain)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [
+        linkId,
+        source.kind,
+        source.kind === "item" ? source.sourceItemId : null,
+        source.sourcePropertyKey,
+        source.kind === "senderDomain" ? source.domain : null,
+      ],
+    );
+  }
+  return obsolete.length > 0 || missing.length > 0;
+}
+
+/** Deletes the link of one item property, its sources with it, and reports whether the item had one. */
+export async function deleteValueLinkOfProperty(
+  client: PoolClient,
+  itemId: string,
+  propertyKey: string,
+): Promise<boolean> {
+  const result = await client.query(
+    `DELETE FROM value_links WHERE tenant_id = app_tenant_default() AND item_id = $1 AND property_key = $2`,
+    [itemId, propertyKey],
+  );
+  return result.rowCount === 1;
+}
+
+/**
+ * Moves the link of `propertyKey` from item `fromItemId` to item `toItemId` (a thread merge, issue gh-1869), keeping its
+ * id, state and sources, and reports whether `fromItemId` had one. The caller has deleted the link `toItemId` has
+ * for that property, which the unique key of `(item_id, property_key)` would refuse to keep.
+ */
+export async function moveValueLinkToItem(
+  client: PoolClient,
+  input: { fromItemId: string; toItemId: string; propertyKey: string },
+): Promise<boolean> {
+  const moved = await client.query(
+    `UPDATE value_links SET item_id = $2, updated_at = now()
+     WHERE tenant_id = app_tenant_default() AND item_id = $1 AND property_key = $3`,
+    [input.fromItemId, input.toItemId, input.propertyKey],
+  );
+  return moved.rowCount === 1;
 }
 
 /** Deletes a caller-locked link after its last source is removed. */

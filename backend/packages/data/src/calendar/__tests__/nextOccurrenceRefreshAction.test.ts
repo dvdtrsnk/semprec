@@ -286,7 +286,7 @@ describe("the daily next-occurrence refresh (issue gh-1905)", () => {
 
   it("is a heartbeat action the calendar module declares and the registry knows", () => {
     expect(NEXT_OCCURRENCE_REFRESH_ACTION_ID).toBe("calendar.refreshNextOccurrence");
-    expect(calendarManifest.heartbeatActions).toEqual([NEXT_OCCURRENCE_REFRESH_ACTION_ID]);
+    expect(calendarManifest.heartbeatActions).toContain(NEXT_OCCURRENCE_REFRESH_ACTION_ID);
     expect(KNOWN_HEARTBEAT_ACTION_IDS.has(NEXT_OCCURRENCE_REFRESH_ACTION_ID)).toBe(true);
   });
 

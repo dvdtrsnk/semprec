@@ -33,8 +33,10 @@ export interface ResolvedModuleAgentTool {
   /**
    * `sensitive` is true when the handler marked its answer as content of a sensitive record (issue #1999); the caller
    * that stores the tool result keeps it redacted, as for a generic-operation answer (issue #1827).
+   * `approvalRequestId` is the id of an approval request the handler itself filed (issue gh-1949, `mail.draft.send`); the
+   * caller that stores the tool result writes it into the result's details like the id of a deferred call's request.
    */
-  invoke: (args: unknown) => Promise<{ result: string; error: boolean; sensitive?: true }>;
+  invoke: (args: unknown) => Promise<{ result: string; error: boolean; sensitive?: true; approvalRequestId?: string }>;
 }
 
 /**
@@ -90,7 +92,9 @@ export async function resolveModuleAgentToolsForRun(
           .update(canonicalizeJson(await snapshot(runId, parsed.data)), "utf8")
           .digest("hex");
       },
-      async invoke(args: unknown): Promise<{ result: string; error: boolean; sensitive?: true }> {
+      async invoke(
+        args: unknown,
+      ): Promise<{ result: string; error: boolean; sensitive?: true; approvalRequestId?: string }> {
         const parsed = definition.parseArguments(args);
         if (!parsed.success) throw new ValidationError("Invalid tool arguments.");
         const result: unknown = await handler(runId, parsed.data);
@@ -100,6 +104,7 @@ export async function resolveModuleAgentToolsForRun(
           result: result.result,
           error: result.error,
           ...(result.sensitive === true ? { sensitive: true } : {}),
+          ...(typeof result.approvalRequestId === "string" ? { approvalRequestId: result.approvalRequestId } : {}),
         };
       },
     };

@@ -246,6 +246,34 @@ export function notifyAgentRunEvent(event: AgentRunEventNotification): void {
 }
 
 /**
+ * An ephemeral typing update of one agent run: it names the run and carries a JSON value the watchers of the run
+ * receive as the `delta` of an `agent:delta` frame. It is never stored and never replayed. The payload types live with
+ * the frame definitions in `@semprec/realtime` (`protocolV1.ts`).
+ */
+export interface AgentRunDeltaEvent {
+  agentRunId: string;
+  delta: unknown;
+}
+
+/**
+ * Publishes an ephemeral agent-run delta and resolves once it has been handed on, so a caller can order it before its own
+ * next step. `@semprec/realtime` wires one (`wireRealtimeHooks`) that sends it to the publisher's tenant and logs a
+ * failure instead of rejecting, because a lost typing update must never fail the write it announces; a process that wired
+ * nothing drops the update.
+ */
+export type AgentRunDeltaHook = (event: AgentRunDeltaEvent) => Promise<void>;
+
+let agentRunDeltaHook: AgentRunDeltaHook = async () => {};
+
+export function setAgentRunDeltaHook(next: AgentRunDeltaHook): void {
+  agentRunDeltaHook = next;
+}
+
+export function notifyAgentRunDelta(event: AgentRunDeltaEvent): Promise<void> {
+  return agentRunDeltaHook(event);
+}
+
+/**
  * Fired after the commit of a write that changed a Semp thread (a message, a state change, a title,
  * a tick run). It names the thread and its tenant only; delivery is best effort, to sockets of
  * `tenantId`, with no replay, and the client refetches the thread.

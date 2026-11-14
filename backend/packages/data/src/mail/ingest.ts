@@ -4,6 +4,7 @@ import type { PoolClient } from "pg";
 import { runAfterCommit } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
+import { getItemsByIds } from "../chokePoint/itemsStore.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { resolveThreadId } from "./threading.js";
@@ -11,6 +12,7 @@ import { buildMailPreviewFromBody } from "./mailPlainText.js";
 import {
   getMailMessageMetaByMailboxAndMessageId,
   getMailMessageMetaByProviderMessageId,
+  getMailThreadItemId,
   isProviderMessageIdConflict,
   upsertMailMessageMeta,
   type MailEnvelope,
@@ -22,9 +24,13 @@ import { reindexItemSearch } from "./search.js";
 import { buildMailSearchText } from "./mailSearchText.js";
 import { detectBulkMail, type BulkMailHeaders } from "./bulkMail.js";
 import { resolveDeliveredToAddress } from "./deliveredTo.js";
+import { retireSupersededSempDrafts } from "./draftRetirement.js";
+import { normalizeEmailAddress } from "./personEmailIndexStore.js";
 import { messageFlagProperties } from "./messageFlags.js";
 import { recordObservedMailMessageFlags } from "./mailMessageFlagSyncStore.js";
 import { applyObservedMailMessageFlags } from "./mailFlagObservation.js";
+import { enqueueThreadLinkRulesForFirstInbound } from "./threadLinkRules.js";
+import { enqueueThreadProjectTriage } from "./threadProjectTriage.js";
 
 /** Shared with mail/draft.ts and mail/send.ts, whose draft/outgoing display fields are formatted identically to a synced message's. */
 export function formatAddress(address: MailEnvelopeAddress): string {
@@ -76,6 +82,22 @@ export interface IngestEmailMessageInput {
   flags?: string[];
 }
 
+/**
+ * True when the message being ingested is the tenant's own and was sent: the folder it is ingested into is the
+ * mailbox's Sent folder, or its sender is one of the registered addresses of the mailbox being synced
+ * (`input.mailboxAliases`). A message filed in the mailbox's Drafts folder is never one that was sent: it is the user's
+ * unsent work in another client, which answers nothing yet, whoever its sender is.
+ */
+async function isOwnMessage(client: PoolClient, input: IngestEmailMessageInput): Promise<boolean> {
+  const [folder] = await getItemsByIds(client, [input.folderItemId]);
+  const specialPurpose = folder?.properties.specialPurpose;
+  if (specialPurpose === "drafts") return false;
+  if (specialPurpose === "sent") return true;
+  const sender = input.envelope.from?.address;
+  if (sender === undefined) return false;
+  return (input.mailboxAliases ?? []).map(normalizeEmailAddress).includes(normalizeEmailAddress(sender));
+}
+
 export interface IngestEmailMessageResult {
   itemId: string;
   /** false when this call converged onto an already-ingested message (dedup by Message-ID/provider id) instead of creating a new item. */
@@ -92,7 +114,11 @@ export interface IngestEmailMessageResult {
  * folder (always — even for an already-known message, since the same message can appear in
  * a newly-observed folder), ingests attachments, and reindexes full-text search. A newly created
  * message announces its thread to the tenant's sockets (a `mailThread` invalidation) once the
- * transaction has committed; a rolled-back or already-known message announces nothing. Must be
+ * transaction has committed; a rolled-back or already-known message announces nothing. A new message that is then
+ * the first inbound message of its thread queues the evaluation of the thread's company and project rules
+ * (`enqueueThreadLinkRulesForFirstInbound`) and the delayed project assignment of the thread
+ * (`enqueueThreadProjectTriage`), which both need a tenant scope. A newly created message of the user's own
+ * (`isOwnMessage`) also retires the thread's outdated Semp drafts (`retireSupersededSempDrafts`). Must be
  * called inside a transaction: the Emails item write and the `mail_message_meta` write need
  * to commit together for the onItemEvent person-linking trigger (personLinkingActions.ts) to
  * see a consistent envelope once its enqueued job actually runs.
@@ -105,6 +131,8 @@ export async function ingestEmailMessage(
   const existing = await getMailMessageMetaByMailboxAndMessageId(client, input.mailboxItemId, input.messageId);
   let itemId: string;
   let created = false;
+  /** The thread of the message this call stored: unset for a converged message and for one that lost a provider-id conflict. */
+  let newMessageThreadId: string | null = null;
 
   if (existing) {
     itemId = existing.itemId;
@@ -188,6 +216,7 @@ export async function ingestEmailMessage(
 
       const { extractedTexts } = await ingestAttachments(client, {
         messageItemId: itemId,
+        threadItemId: await getMailThreadItemId(client, threadId),
         filesDatabaseId: input.filesDatabaseId,
         attachmentsRelationPropertyId: input.attachmentsRelationPropertyId,
         attachments: input.attachments,
@@ -216,6 +245,7 @@ export async function ingestEmailMessage(
       // One announcement per newly created message, for every socket of the tenant (no `userId`). The savepoint
       // is released, so a provider-id conflict that converged onto another message announces nothing here.
       runAfterCommit(client, () => notifyInvalidation({ scope: "mailThread", threadId }));
+      newMessageThreadId = threadId;
     } catch (err) {
       if (!isProviderMessageIdConflict(err)) throw err;
       await client.query("ROLLBACK TO SAVEPOINT ingest_provider_msg_conflict");
@@ -228,6 +258,15 @@ export async function ingestEmailMessage(
       itemId = winner.itemId;
       created = false;
     }
+  }
+
+  // A message of the user's own that enters Semprec answers the thread, so the thread's Semp drafts that were written
+  // for an older message are outdated (issue gh-1902). A message that was in Semprec already was handled then.
+  if (newMessageThreadId !== null && (await isOwnMessage(client, input))) {
+    await retireSupersededSempDrafts(client, {
+      threadId: newMessageThreadId,
+      ownMessageDate: input.date ?? new Date(),
+    });
   }
 
   if (!created && (input.protectedMoveMessageIds?.has(itemId) || (await hasUnsettledMailMove(client, itemId))))
@@ -264,6 +303,14 @@ export async function ingestEmailMessage(
     },
     EMAILS_RELATION_CONTEXT,
   );
+
+  // The folder edge is in place, so the message can be told apart from the user's own mail and from drafts. A new
+  // message that is now the first inbound one of its thread sets the thread's company and project to inherit, and
+  // queues the thread for the AI project assignment (a delayed task, so that the inheritance has run before it).
+  if (created) {
+    const firstInboundThreadItemId = await enqueueThreadLinkRulesForFirstInbound(client, itemId);
+    if (firstInboundThreadItemId !== null) await enqueueThreadProjectTriage(client, firstInboundThreadItemId);
+  }
 
   return { itemId, created };
 }

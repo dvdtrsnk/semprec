@@ -46,6 +46,7 @@ import {
   type MailSyncAdapterFactory,
 } from "./mail/mailSyncJob.js";
 import { LocalFsBlobStorageWriter, resolveBlobStorageDir, type BlobStorageWriter } from "./mail/blobStorage.js";
+import type { MailTransportFactory } from "./mail/mailTransport.js";
 import {
   handleMailLegacyEmailMigrationTask,
   noopLegacyRawMimeFetcher,
@@ -57,6 +58,7 @@ import {
 } from "./mcp/approvalRequestExecution.js";
 import { handleNotificationFanoutTask } from "./notifications/notificationFanoutJob.js";
 import { handlePushBadgeRefreshTask } from "./push/pushBadgeRefreshJob.js";
+import { handleRemindersResyncTask } from "./calendar/remindersResync.js";
 import { handlePushDismissTask } from "./push/pushDismissJob.js";
 import type { PushSenders } from "./push/pushSenders.js";
 import { handleBlobsUnreferencedSweepTask } from "./blobs/unreferencedBlobSweep.js";
@@ -132,6 +134,9 @@ export const CORE_CRONTAB = `* * * * * ${CORE_TASK_NAMES.HEARTBEAT_SWEEP}
  *
  * It takes no mail module ids: the mail jobs resolve them per job inside the job's own tenant
  * scope (`resolveMailModuleIds`), so nothing tenant-specific is captured when the list is built.
+ *
+ * `mailSendTransports` (issue gh-1913) are the transports an approved mail send of an agent leaves through,
+ * with the attachment storage of this list; a list built without them ends such a request without sending.
  */
 export function createCoreTaskList(
   pool: Pool,
@@ -149,6 +154,7 @@ export function createCoreTaskList(
     mailAttachments: resolveBlobStorageDir("MAIL_ATTACHMENTS_DIR"),
   },
   titleGateway?: AiGatewayClientPort,
+  mailSendTransports?: MailTransportFactory,
 ): TaskList {
   const handlers: TaskList = {
     [CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE]: async (payload) => handleLinkPropagation(pool, payload),
@@ -260,6 +266,13 @@ export function createCoreTaskList(
         { approvalRequestId: requireString(payload, "approvalRequestId") },
         genericOperationApprovalReplay,
         moduleRegistry,
+        // Issue gh-1913: an approved mail send leaves through these transports; without them the request ends without sending.
+        mailSendTransports
+          ? {
+              transports: mailSendTransports,
+              attachmentStorage: { files: filesBlobStorage, mailAttachments: mailBlobStorage },
+            }
+          : undefined,
       );
     },
     [CORE_TASK_NAMES.NOTIFICATION_FANOUT]: async (payload) => {
@@ -276,6 +289,10 @@ export function createCoreTaskList(
     // Issue #1891: the badge-only push that refreshes the app icon after a count or a badge switch changed.
     [CORE_TASK_NAMES.PUSH_BADGE_REFRESH]: async (payload) => {
       await handlePushBadgeRefreshTask(pool, payload);
+    },
+    // Issue gh-1879: the silent push that makes the phone read the reminders feed again.
+    [CORE_TASK_NAMES.REMINDERS_RESYNC]: async (payload) => {
+      await handleRemindersResyncTask(pool, payload);
     },
     [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP]: async () => {
       await handleItemTrashPurgeSweepTask(pool, mailBlobStorage, filesBlobStorage);

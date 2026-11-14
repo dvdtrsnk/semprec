@@ -3,10 +3,12 @@
 // the item delete and restore in `itemTrash.ts` and by the approval projection of an `item.delete` in
 // `destructiveProjection.ts`, which may not import each other. It writes nothing.
 // Constrained by: docs/adr/2026-11-12-per-database-agent-grants.md
+// and, for the cascade expansion, docs/adr/2026-11-14-a-recurring-task-series-is-trashed-and-restored-as-one-cascade.md
 import type { PoolClient } from "pg";
 import type { ItemRow } from "../types.js";
 import * as databasesStore from "./databasesStore.js";
 import * as itemsStore from "./itemsStore.js";
+import { getItemCascadeExpansion } from "./hooks.js";
 import type { WriterIdentity } from "./writerKind.js";
 import { assertWriterDatabaseAccess, readerOfWriter } from "../agentGrants/agentDatabaseAccess.js";
 
@@ -53,6 +55,35 @@ export async function collectItemSubtree(
 }
 
 /**
+ * The rows a trash, a restore or a purge of `root` reaches: `collectItemSubtree` of the root, then, when the module that
+ * owns the root's database registered a cascade expansion, each row the expansion adds, in the expansion's order, with
+ * the rows of its own inline databases (`collectItemSubtree` of that row). Root first; a row appears once. `include`
+ * filters the rows the expansion adds and the walk below them as it does the walk below the root. A root of a database
+ * without an owner module, or of a module without an expansion, gives exactly `collectItemSubtree(client, root, include)`.
+ * The impact preview (`trash/deleteImpact.ts`) counts the plain subtree and does not use this.
+ */
+export async function collectCascadeRows(
+  client: PoolClient,
+  root: ItemRow,
+  include?: (row: ItemRow) => boolean,
+): Promise<ItemRow[]> {
+  const rows = await collectItemSubtree(client, root, include);
+  const database = await databasesStore.getDatabase(client, root.databaseId);
+  const expansion = database?.ownerModuleId ? getItemCascadeExpansion(database.ownerModuleId) : undefined;
+  if (!database || !expansion) return rows;
+  const seen = new Set(rows.map((row) => row.id));
+  for (const added of await expansion({ client, database, root })) {
+    if (seen.has(added.id) || (include && !include(added))) continue;
+    for (const row of await collectItemSubtree(client, added, include)) {
+      if (seen.has(row.id)) continue;
+      seen.add(row.id);
+      rows.push(row);
+    }
+  }
+  return rows;
+}
+
+/**
  * A cascade trashes or restores the rows of the databases nested under the item as well, so an agent's project
  * (issue #1810) or an external client (issue #1998) needs `write` access to each of them besides the database of the
  * root, which the caller has checked.
@@ -81,5 +112,5 @@ export async function assertWriterDeleteCascadeAccess(
   root: ItemRow,
 ): Promise<void> {
   if (readerOfWriter(writer) === undefined) return;
-  await assertWriterCascadeAccess(client, writer, root.databaseId, await collectItemSubtree(client, root));
+  await assertWriterCascadeAccess(client, writer, root.databaseId, await collectCascadeRows(client, root));
 }

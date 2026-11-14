@@ -277,7 +277,7 @@ export async function listSempThreads(
     `WITH pending AS (
        SELECT DISTINCT ON (r.thread_id) r.tenant_id, r.thread_id, a.id, a.description,
               CASE WHEN a.payload ? 'operationName' THEN 'genericOperation'
-                   WHEN a.payload ? 'moduleToolName' THEN 'moduleTool'
+                   WHEN a.payload ? 'moduleToolName' OR a.payload ? 'draftHash' THEN 'moduleTool'
                    ELSE 'mcpInvoke' END AS source_kind
          FROM approval_requests a
          JOIN agent_runs r ON r.tenant_id = a.tenant_id AND r.id = a.agent_run_id

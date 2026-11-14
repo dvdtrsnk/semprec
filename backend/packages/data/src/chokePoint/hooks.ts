@@ -16,12 +16,17 @@
 // docs/adr/2026-11-12-deleting-a-calendar-takes-the-default-mark-lock-and-its-events-into-its-epoch.md
 // and, for the delete approval guard registry,
 // docs/adr/2026-11-11-a-mailboxes-item-is-trashed-only-by-the-system-writer.md
+// and, for the cascade expansion and delete impact registries,
+// docs/adr/2026-11-14-a-recurring-task-series-is-trashed-and-restored-as-one-cascade.md
+// and, for the previous values in the update hook context and the defaulted keys in the create hook context,
+// docs/adr/2026-11-14-a-reminders-change-enqueues-one-debounced-resync-job-per-tenant-in-its-write-transaction.md
 import type { PoolClient } from "pg";
 import type { Item } from "@semprec/shared";
 import type { DatabaseRow, ItemRow } from "../types.js";
 import type { RelationEdgeContext } from "./relationEdgeContext.js";
 import type { WriterIdentity, WriterKind } from "./writerKind.js";
 import type { ActionQueueAffinity } from "../scheduler/actions.js";
+import type { DatabaseReader } from "../agentGrants/agentDatabaseAccess.js";
 
 /** One relation a create with initial relations names: a relation property and the items the new item is linked to through it. */
 export interface ItemCreateInitialRelation {
@@ -34,6 +39,12 @@ export interface ItemCreateHookContext {
   database: DatabaseRow;
   item: ItemRow;
   properties: Record<string, unknown>;
+  /**
+   * The keys of `properties` the create filled in from the property's `config.default`: the caller and the
+   * module's pre-write transforms did not name them. A hook that decides by what the caller wrote ignores them.
+   * `createItemWithClient` always sets it; a context built without it has no defaulted key.
+   */
+  defaultedKeys?: ReadonlySet<string>;
   /** The user id of a human REST writer; absent for every agent, `/mcp`, system and internal caller. */
   humanWriterUserId?: string;
   /** Who made the write; `system` when the caller supplied nothing. Sits next to `humanWriterUserId`, not instead of it. */
@@ -56,6 +67,13 @@ export interface ItemUpdateHookContext {
   database: DatabaseRow;
   item: ItemRow;
   propertiesPatch: Record<string, unknown>;
+  /**
+   * The values `propertiesPatch` replaced, by key: for every key of the patch the value the item stored before this
+   * write, `null` when it stored none. A hook that acts on a change compares it with the patch.
+   * `updateItemWithClient` always sets it; a context built without it says nothing about the previous values, and a
+   * hook then treats every key of the patch as changed.
+   */
+  previous?: Readonly<Record<string, unknown>>;
   /** The user id of a human REST writer; absent for every agent, `/mcp`, system and internal caller. */
   humanWriterUserId?: string;
   /** Who made the write; `system` when the caller supplied nothing. Sits next to `humanWriterUserId`, not instead of it. */
@@ -90,8 +108,8 @@ export interface ItemUpdatePreLockHookContext {
 export type ItemUpdatePreLockHook = (context: ItemUpdatePreLockHookContext) => Promise<void>;
 
 /**
- * Context of an item delete or restore pre-lock hook: one trash or restore about to start, before it has locked or
- * changed any row. `itemId` is the item the caller names, the root of the cascade.
+ * Context of an item delete, restore or purge pre-lock hook: one trash, restore or purge about to start, before it has
+ * locked or changed any row. `itemId` is the item the caller names, the root of the cascade.
  */
 export interface ItemTrashPreLockHookContext {
   client: PoolClient;
@@ -110,6 +128,13 @@ export type ItemDeletePreLockHook = (context: ItemTrashPreLockHookContext) => Pr
 
 /** The restore counterpart of `ItemDeletePreLockHook`, run by `restoreItemWithClient` before it locks the root row. */
 export type ItemRestorePreLockHook = (context: ItemTrashPreLockHookContext) => Promise<void>;
+
+/**
+ * The purge counterpart of `ItemDeletePreLockHook`, run by `purgeExpiredTrashSubtree` before it walks the cascade of
+ * the root and locks its first row, so a purge takes a module's locks in the order a trash and a restore do. See
+ * docs/adr/2026-11-14-a-recurring-task-series-is-trashed-and-restored-as-one-cascade.md.
+ */
+export type ItemPurgePreLockHook = (context: ItemTrashPreLockHookContext) => Promise<void>;
 
 /**
  * Context of an item delete hook (issue #1601): one row the trash cascade of `itemDeleteWithClient`
@@ -292,6 +317,8 @@ const itemUpdatePreLockHooks = new Map<string, ItemUpdatePreLockHook[]>();
 const itemDeletePreLockHooks = new Map<string, ItemDeletePreLockHook[]>();
 /** Keyed by owning module id; each module's restore pre-lock hooks keep their registration order. */
 const itemRestorePreLockHooks = new Map<string, ItemRestorePreLockHook[]>();
+/** Keyed by owning module id; each module's purge pre-lock hooks keep their registration order. */
+const itemPurgePreLockHooks = new Map<string, ItemPurgePreLockHook[]>();
 const itemPreWritePreparations = new Map<string, Map<ItemPreWriteTransform, ItemPreWritePreparation>>();
 
 export interface ItemUpdateCommand {
@@ -358,6 +385,78 @@ export function registerItemDeleteApprovalGuard(moduleId: string, guard: ItemDel
 export function getItemDeleteApprovalGuard(moduleId: string): ItemDeleteApprovalGuard | undefined {
   return itemDeleteApprovalGuards.get(moduleId);
 }
+/** Context of a cascade expansion: the root a trash, a restore or a purge walks down from, and its database. */
+export interface ItemCascadeExpansionContext {
+  client: PoolClient;
+  /** The database of `root`; its `ownerModuleId` is the module the expansion is registered for. */
+  database: DatabaseRow;
+  /** The item the cascade starts from, as the caller read it. */
+  root: ItemRow;
+}
+
+/**
+ * A module's part of the rows a trash cascade reaches (`collectCascadeRows` in `itemSubtreeAccess.ts`): the rows, besides
+ * the root and the items of its inline databases, that the module trashes and restores together with it. It returns
+ * those rows in any state (live or in the Trash), without the root, and changes nothing. The cascade then applies its
+ * own rules to them as to any other row: a delete skips a row already in the Trash, a restore takes the rows of the
+ * root's deletion epoch, a purge takes the rows past its cutoff. See
+ * docs/adr/2026-11-14-a-recurring-task-series-is-trashed-and-restored-as-one-cascade.md.
+ */
+export type ItemCascadeExpansion = (context: ItemCascadeExpansionContext) => Promise<ItemRow[]>;
+const itemCascadeExpansions = new Map<string, ItemCascadeExpansion>();
+/** One expansion per owning module; a second registration for the same module is refused. */
+export function registerItemCascadeExpansion(moduleId: string, expansion: ItemCascadeExpansion): void {
+  if (itemCascadeExpansions.has(moduleId)) throw new Error("Duplicate item cascade expansion");
+  itemCascadeExpansions.set(moduleId, expansion);
+}
+export function getItemCascadeExpansion(moduleId: string): ItemCascadeExpansion | undefined {
+  return itemCascadeExpansions.get(moduleId);
+}
+
+/**
+ * What deleting an item reaches beyond its cascade, as a module counts it for the confirmation of the delete (issue
+ * gh-1882): the live instances of the item's recurring series (0 for an item without one), the live attachments and the
+ * live host events it has edges to.
+ */
+export interface ItemDeleteImpact {
+  seriesInstanceCount: number;
+  attachmentCount: number;
+  hostEventCount: number;
+}
+
+/** What an item delete impact reader receives: the live item and its database, and whom the counts are for. */
+export interface ItemDeleteImpactContext {
+  client: PoolClient;
+  /** The database of `item`; its `ownerModuleId` is the module the reader is registered for. */
+  database: DatabaseRow;
+  item: ItemRow;
+  /**
+   * Whom the counts are shown to: an agent's project or an external client. A reader counts nothing the reader may not
+   * read, so a count does not disclose a hidden item. Absent for a person and the system, who see every database.
+   */
+  reader?: DatabaseReader;
+}
+
+/**
+ * A module's counts for the delete impact of one of its items: the preview of issue #1856 (`trash/deleteImpact.ts`) and
+ * the approval projection of `item.delete` (`destructiveProjection.ts`) read it, so an approval snapshot covers the
+ * numbers the confirmation showed. It changes nothing. An item of a database whose module registered none has
+ * no module impact (`readItemDeleteImpact` returns `null`).
+ */
+export type ItemDeleteImpactReader = (context: ItemDeleteImpactContext) => Promise<ItemDeleteImpact>;
+const itemDeleteImpactReaders = new Map<string, ItemDeleteImpactReader>();
+/** One reader per owning module; a second registration for the same module is refused. */
+export function registerItemDeleteImpactReader(moduleId: string, reader: ItemDeleteImpactReader): void {
+  if (itemDeleteImpactReaders.has(moduleId)) throw new Error("Duplicate item delete impact reader");
+  itemDeleteImpactReaders.set(moduleId, reader);
+}
+
+/** The delete impact of `item` from its module's reader; `null` when its database has no owner module or the module has no reader. */
+export async function readItemDeleteImpact(context: ItemDeleteImpactContext): Promise<ItemDeleteImpact | null> {
+  const moduleId = context.database.ownerModuleId;
+  const reader = moduleId === null ? undefined : itemDeleteImpactReaders.get(moduleId);
+  return reader ? reader(context) : null;
+}
 const itemUpdateCommands = new Map<string, ItemUpdateCommand>();
 export function registerItemUpdateCommand(moduleId: string, command: ItemUpdateCommand): void {
   if (itemUpdateCommands.has(moduleId)) throw new Error("Duplicate item update command");
@@ -402,6 +501,13 @@ export function registerItemRestorePreLockHook(moduleId: string, hook: ItemResto
   const registered = itemRestorePreLockHooks.get(moduleId) ?? [];
   if (registered.includes(hook)) return;
   itemRestorePreLockHooks.set(moduleId, [...registered, hook]);
+}
+
+/** Attaches a purge pre-lock hook to one owning module; see `registerItemDeletePreLockHook`. */
+export function registerItemPurgePreLockHook(moduleId: string, hook: ItemPurgePreLockHook): void {
+  const registered = itemPurgePreLockHooks.get(moduleId) ?? [];
+  if (registered.includes(hook)) return;
+  itemPurgePreLockHooks.set(moduleId, [...registered, hook]);
 }
 
 /** Registering the same function twice is a no-op — a hook module imported from more than one place still runs once. */
@@ -605,6 +711,17 @@ export async function runItemRestorePreLockHooks(
   }
 }
 
+/**
+ * Runs a module's purge pre-lock hooks sequentially, in registration order, inside the purge's transaction.
+ * `purgeExpiredTrashSubtree` calls it after it found the root eligible and before it locks any row, and only for a
+ * module that has one. The first rejection propagates and rolls the purge back.
+ */
+export async function runItemPurgePreLockHooks(moduleId: string, context: ItemTrashPreLockHookContext): Promise<void> {
+  for (const hook of itemPurgePreLockHooks.get(moduleId) ?? []) {
+    await hook(context);
+  }
+}
+
 /** Test-only reset of every registry — guarded so it cannot run against a real process's hooks. */
 export function clearHooksForTests(): void {
   if (process.env.NODE_ENV !== "test") {
@@ -623,10 +740,13 @@ export function clearHooksForTests(): void {
   itemUpdatePreLockHooks.clear();
   itemDeletePreLockHooks.clear();
   itemRestorePreLockHooks.clear();
+  itemPurgePreLockHooks.clear();
   itemPreWritePreparations.clear();
   itemUpdateCommands.clear();
   itemPatchApprovalContributions.clear();
   itemDeleteApprovalGuards.clear();
+  itemCascadeExpansions.clear();
+  itemDeleteImpactReaders.clear();
   automationBatchReader = undefined;
 }
 

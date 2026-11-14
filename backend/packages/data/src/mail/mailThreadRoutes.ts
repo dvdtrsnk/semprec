@@ -11,10 +11,18 @@ import { resolveMailModuleIds } from "./mailModuleIds.js";
 import { FLAGGED_PROPERTY_KEY, READ_PROPERTY_KEY } from "./messageFlags.js";
 import {
   announceMailThreadChanged,
+  applyMailThreadMoves,
   listMailThreadActionMessages,
+  listMailThreadMoveCopies,
+  planMailThreadMoves,
   readMailThreadFlagged,
   readMailThreadUnread,
   resolveMailThreadForAction,
+  selectMailThreadArchiveMoves,
+  selectMailThreadRestoreMoves,
+  selectMailThreadTrashMoves,
+  type MailThreadMoveCopy,
+  type MailThreadMoveSelection,
 } from "./mailThreadActions.js";
 import { readMailThreadFacets, type MailThreadFacets } from "./mailThreadsFacetsStore.js";
 
@@ -238,4 +246,72 @@ export function createMailThreadFlagRouteHandler(pool: Pool) {
       return { status: 200, body: { threadId, flagged: threadFlagged } };
     });
   };
+}
+
+/**
+ * Runs one thread move in one transaction and answers `{ threadId, moved }`: the thread id after the translation of a
+ * merged id (issue #1493) and the number of copies moved. `select` chooses the copies and, for each, the purpose of the
+ * folder it moves to in its own mailbox. The transaction starts with the tenant's mail-thread guard
+ * (`resolveMailThreadForAction`); the 409 cases of `select`, of the target folders and of the sources of the moves are decided
+ * before the first write, so a refused call changes nothing. After the commit it sends one `mailThread` invalidation, also when
+ * nothing needed to move; a rolled-back request sends none.
+ */
+async function moveMailThread(
+  pool: Pool,
+  threadParam: string | undefined,
+  select: (copies: readonly MailThreadMoveCopy[]) => MailThreadMoveSelection[],
+): Promise<{ status: number; body: { threadId: string; moved: number } }> {
+  const requested = z.uuid().safeParse(threadParam);
+  if (!requested.success) throw new ValidationError("Invalid threadId", { field: "threadId" });
+  return withTransaction(pool, async (client) => {
+    const threadId = await resolveMailThreadForAction(client, requested.data);
+    const copies = await listMailThreadMoveCopies(client, threadId);
+    if (copies.length === 0) throw new NotFoundError("Thread not found");
+    const plans = await planMailThreadMoves(client, select(copies));
+    const moved = await applyMailThreadMoves(client, plans);
+    announceMailThreadChanged(client, threadId);
+    return { status: 200, body: { threadId, moved } };
+  });
+}
+
+/**
+ * `POST /api/mail/threads/:threadId/archive` (issue gh-1917): moves the conversation's copies that are in an Inbox
+ * folder to the Archive folder of their own mailbox (for a Gmail API mailbox its synthetic Archive), in every account,
+ * and answers `{ threadId, moved }`. Copies in any other folder and drafts stay where they are, and a thread with no
+ * copy in an Inbox answers `moved: 0`. A mailbox that holds such a copy and has no Archive folder fails the whole
+ * call with 409 `mail_archive_folder_missing` and nothing changes. A thread id that is no UUID is a 400; an unknown id,
+ * another tenant's id and a thread without a live message are the same 404. For each moved copy the move is recorded
+ * as a pending move and its mailbox sync is enqueued (`applyMailThreadMoves`); nothing is deleted.
+ */
+export function createMailThreadArchiveRouteHandler(pool: Pool) {
+  return (ctx: { params: Record<string, string> }) =>
+    moveMailThread(pool, ctx.params.threadId, selectMailThreadArchiveMoves);
+}
+
+/**
+ * `POST /api/mail/threads/:threadId/trash` (issue gh-1917): moves every counted copy of the conversation that is not
+ * already in Trash to the Trash folder of its own mailbox, in every account, and answers `{ threadId, moved }`. Drafts
+ * stay where they are. A thread whose counted copies are all in Trash or Junk fails with 409
+ * `mail_thread_already_trashed`, a mailbox that holds a copy to move and has no Trash folder with 409
+ * `mail_trash_folder_missing`, and in both cases nothing changes. The status codes for a bad, unknown or foreign thread
+ * id, the recording of the moves and the invalidation are those of the archive route; nothing is deleted permanently.
+ */
+export function createMailThreadTrashRouteHandler(pool: Pool) {
+  return (ctx: { params: Record<string, string> }) =>
+    moveMailThread(pool, ctx.params.threadId, selectMailThreadTrashMoves);
+}
+
+/**
+ * `POST /api/mail/threads/:threadId/restore` (issue gh-2033): moves the conversation's copies that are in an Archive or
+ * Trash folder back, in every account: an incoming copy to the Inbox folder of its own mailbox, the user's own copy to
+ * its Sent folder (`selectMailThreadRestoreMoves`), and answers `{ threadId, moved }`. Copies in any other folder, Junk
+ * included, and drafts stay where they are. A thread with no copy in Archive or Trash fails with 409
+ * `mail_thread_not_archived_or_trashed`, a mailbox without the folder a copy needs with 409
+ * `mail_inbox_folder_missing` or `mail_sent_folder_missing`, and in each case nothing changes. The status codes for a
+ * bad, unknown or foreign thread id, the recording of the moves (desired purpose `inbox` or `sent`) and the
+ * invalidation are those of the archive route.
+ */
+export function createMailThreadRestoreRouteHandler(pool: Pool) {
+  return (ctx: { params: Record<string, string> }) =>
+    moveMailThread(pool, ctx.params.threadId, selectMailThreadRestoreMoves);
 }

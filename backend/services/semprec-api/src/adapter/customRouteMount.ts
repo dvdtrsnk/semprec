@@ -35,7 +35,11 @@ export interface MailServerClients {
    * each request of that route with a configuration error.
    */
   verifyPassword?: (input: VerifyMailCredentialsInput) => Promise<VerifiedMailServerSettings>;
-  /** The SMTP transports `sendDraftEmail` takes (mail/send.ts). */
+  /**
+   * The transports and attachment storage `sendDraftEmail` takes (mail/send.ts), read by the draft send route (issue
+   * gh-1896). `createDispatcher` builds them from `oauth`, `outboundHttp` and its blob storage when the caller's
+   * container carries none.
+   */
   send?: MailSendAdapterFactory;
 }
 

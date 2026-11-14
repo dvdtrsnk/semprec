@@ -8,6 +8,8 @@ import {
   listSempThreads,
   NotFoundError,
   parseSempThreadListCursor,
+  regenerateSempReply,
+  retrySempReply,
   SEMP_THREAD_KINDS,
   sendSempMessage,
   validateSempMessageRefs,
@@ -203,6 +205,26 @@ export function createSempThreadRoutes(
             context: await validateSempMessageRefs(client, message.context),
           }),
         );
+        return { status: 202, body: result };
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/semp/threads/:id/messages/:messageId/retry",
+      handler: async (ctx) => {
+        const threadId = requireUuidParam(ctx.params, "id");
+        const messageId = requireUuidParam(ctx.params, "messageId");
+        const result = await withTransaction(pool, (client) => retrySempReply(client, threadId, messageId));
+        return { status: 202, body: result };
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/semp/threads/:id/messages/:messageId/regenerate",
+      handler: async (ctx) => {
+        const threadId = requireUuidParam(ctx.params, "id");
+        const messageId = requireUuidParam(ctx.params, "messageId");
+        const result = await withTransaction(pool, (client) => regenerateSempReply(client, threadId, messageId));
         return { status: 202, body: result };
       },
     },

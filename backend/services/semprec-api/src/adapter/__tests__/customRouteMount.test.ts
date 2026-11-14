@@ -467,7 +467,36 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
     expect(seen.dependencies?.throttle).toBe(throttle);
   });
 
-  it("createDispatcher supplies only its registry provider, a limiter and the upload cap when the caller gives no container (issue gh-1895)", async () => {
+  it("createDispatcher keeps the send adapters and the verification client of the caller's container (issue gh-1896)", async () => {
+    const moduleRegistry = await loadFullModuleRegistry();
+    const seen: { dependencies?: CustomRouteDependencies } = {};
+    const capturing: CustomRouteHandlerFactory = (_factoryPool, dependencies) => {
+      seen.dependencies = dependencies;
+      return async () => ({ status: 200, body: {} });
+    };
+    vi.spyOn(moduleRegistry, "getCustomRouteDefinitions").mockResolvedValue([
+      { ...REDIRECT_DEFINITION, handler: capturing },
+    ]);
+    const send = { transports: { forMailbox: async () => ({ send: async () => ({}) }) } };
+    const verifyPassword = async () => {
+      throw new Error("not called by this test");
+    };
+
+    await createDispatcher(pool, {
+      passwordResetMailer: noopPasswordResetMailer,
+      appBaseUrl: "https://app.example.test",
+      setupToken: "deps-setup-token",
+      moduleRegistry,
+      blobStorage: new LocalFsBlobStorageWriter(join(tmpdir(), `semprec-test-blobs-${randomUUID()}`)),
+      maxFileSizeBytes: 1024,
+      customRouteDependencies: { mailServerClients: { send, verifyPassword } },
+    });
+
+    expect(seen.dependencies?.mailServerClients?.send).toBe(send);
+    expect(seen.dependencies?.mailServerClients?.verifyPassword).toBe(verifyPassword);
+  });
+
+  it("createDispatcher supplies only its registry provider, a limiter, the upload cap (issue gh-1895) and the send adapters when the caller gives no container", async () => {
     const moduleRegistry = await loadFullModuleRegistry();
     const registryRules = vi.spyOn(moduleRegistry, "getHeartbeatRuleKindDefinitions");
     const seen: { dependencies?: CustomRouteDependencies } = {};
@@ -488,7 +517,18 @@ describe("composition-root dependencies of custom routes (issue gh-1460)", () =>
       maxFileSizeBytes: 1024,
     });
 
-    expect(Object.keys(seen.dependencies ?? {}).sort()).toEqual(["heartbeatRuleKinds", "maxFileSizeBytes", "throttle"]);
+    expect(Object.keys(seen.dependencies ?? {}).sort()).toEqual([
+      "heartbeatRuleKinds",
+      "mailServerClients",
+      "maxFileSizeBytes",
+      "throttle",
+    ]);
+    // The send route's transports and attachment storage (issue gh-1896); no verification client, which only the root has.
+    expect(Object.keys(seen.dependencies?.mailServerClients ?? {})).toEqual(["send"]);
+    expect(Object.keys(seen.dependencies?.mailServerClients?.send ?? {}).sort()).toEqual([
+      "attachmentStorage",
+      "transports",
+    ]);
     expect(seen.dependencies?.heartbeatRuleKinds).toEqual(expect.any(Function));
     // The upload cap of the dispatcher (issue gh-1895): the draft attachment limit of a mailbox without a provider limit.
     expect(seen.dependencies?.maxFileSizeBytes).toBe(1024);

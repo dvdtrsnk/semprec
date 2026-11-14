@@ -11,6 +11,7 @@ import type { ComputedKeyRegistry } from "../chokePoint/computedKeyRegistry.js";
 import type { ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
 import { INBOX_ITEM_TYPES_MODULE_ID, INBOX_MODULE_ID, PROCESSING_PROPOSALS_MODULE_ID } from "./inboxPipelineKeys.js";
+import { THREADS_MODULE_ID } from "./emailModuleKeys.js";
 import { TEN_DATABASE_MODULE_IDS } from "./tenDatabaseKeys.js";
 import { PROCESSING_METHODS } from "../inbox/inboxTypesStore.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
@@ -65,7 +66,8 @@ export interface InboxPipelineDatabases {
  * issue #24's ten hardcoded databases deliberately exclude — see the epic, #100) as one
  * group of system databases owned by the existing Semprec project, the same class as
  * Mailboxes/Folders/Emails (issue #26). Must run after `seedTenDatabasesInTransaction`
- * (needs Journal for `journalDay` and Transcripts for `sourceTranscript`) and after the
+ * (needs Journal for `journalDay` and Transcripts for `sourceTranscript`), after
+ * `seedEmailModuleInTransaction` (needs Threads for `sourceThread`, issue gh-2034) and after the
  * Semprec project item exists (see seedSystem.ts).
  *
  * The baseline schema, ownership, canonical keys, the Journal relation, (issue #102)
@@ -148,7 +150,15 @@ export async function seedInboxPipelineInTransaction(
   ]);
 
   await createProps(client, processingProposals.id, [
-    { key: "kind", name: "Kind", type: "select", owner: "system", config: selectConfig(["inbox", "transcript"]) },
+    // `mailThread` (issue gh-2034) is the card of a task that Semp proposes from a mail thread. A populated tenant gets
+    // the option from mail/threadTaskProposalCutoverMigration.ts; keep the two lists identical.
+    {
+      key: "kind",
+      name: "Kind",
+      type: "select",
+      owner: "system",
+      config: selectConfig(["inbox", "transcript", "mailThread"]),
+    },
     { key: "fingerprint", name: "Fingerprint", type: "text", owner: "system" },
     // { entityKind, target, properties } — a single generic envelope regardless of
     // processingMethod, so a chat-driven revise can rewrite it wholesale (issue #105);
@@ -192,6 +202,9 @@ export async function seedInboxPipelineInTransaction(
     { key: "results", name: "Results", type: "json", owner: "system" },
     // Producer-written data of a transcript card; declared as an opaque json property until its producer defines the shape.
     { key: "context", name: "Context", type: "json", owner: "system" },
+    // Issue #1939: set on a sibling card made by splitting an Inbox source; holds the primary card's id. Declared here
+    // for fresh installs and added to populated tenants by inbox/processingProposalsSplitCutoverMigration.ts.
+    { key: "splitFromProposalId", name: "Split from proposal ID", type: "text", owner: "system" },
   ]);
 
   // Inbox -> Inbox item types: nullable (an item without a type is valid — it later enters
@@ -258,6 +271,26 @@ export async function seedInboxPipelineInTransaction(
       key: "sourceTranscript",
       name: "Source transcript",
       targetDatabaseId: transcriptsDatabaseId,
+      cardinality: "many_to_many",
+      owner: "system",
+      ownerProcess: PROCESSING_PROPOSALS_MODULE_ID,
+    },
+    processingProposalsContext,
+  );
+
+  // Processing proposals -> Threads (issue gh-2034): the thread a `mailThread` card proposes a task for, written
+  // with the card. The Threads database exists because seedSystem.ts runs seedEmailModuleInTransaction before this
+  // seed. Threads is schema-locked, so the relation is one-directional; `many_to_many` for the reason given above
+  // (a thread can be the source of several cards over time). A populated tenant gets it from
+  // mail/threadTaskProposalCutoverMigration.ts.
+  const threads = await databasesStore.getDatabaseByModuleId(client, THREADS_MODULE_ID);
+  if (!threads) throw new Error("Threads database is missing: the email module must be seeded first");
+  await relate(
+    {
+      sourceDatabaseId: processingProposals.id,
+      key: "sourceThread",
+      name: "Source thread",
+      targetDatabaseId: threads.id,
       cardinality: "many_to_many",
       owner: "system",
       ownerProcess: PROCESSING_PROPOSALS_MODULE_ID,

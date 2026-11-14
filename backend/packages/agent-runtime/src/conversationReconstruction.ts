@@ -132,6 +132,11 @@ function validateProtocolInvariants(entries: ConversationEntry[]): void {
  * same checkpoint instead of re-deriving, and potentially re-compacting, the full raw history all
  * over again. Every consumer of the walk, a compaction included, gets the redacted form of the stored
  * history (issue #2001: `redactReplayedToolCalls`), never the live session.
+ *
+ * For a thread, the events listed leave out the turn of every reply that a regeneration replaced, whole, with its
+ * tool calls and their results (issue gh-1930; `listSessionAgentRunEventsFromLastCompaction`). Both callers then
+ * run `validateProtocolInvariants`, so a range that cut a tool call from its result would fail the reconstruction
+ * and never reach the model as half a call.
  */
 async function walkStoredEntries(
   pool: Pool,

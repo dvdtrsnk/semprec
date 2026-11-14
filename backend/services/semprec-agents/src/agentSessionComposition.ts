@@ -204,7 +204,11 @@ async function createModuleTools(
             const result = await definition.invoke(params);
             return {
               content: [{ type: "text", text: result.result }],
-              details: { error: result.error, ...(result.sensitive === true ? { sensitive: true } : {}) },
+              details: {
+                error: result.error,
+                ...(result.approvalRequestId === undefined ? {} : { approvalRequestId: result.approvalRequestId }),
+                ...(result.sensitive === true ? { sensitive: true } : {}),
+              },
             };
           } catch (err) {
             logger.warn(

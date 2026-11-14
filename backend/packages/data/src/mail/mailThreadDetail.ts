@@ -4,6 +4,7 @@ import { getValueLinksForItems, type ValueLinkEntry } from "../chokePoint/valueL
 import { NotFoundError } from "../errors.js";
 import { sanitizeMailHtml } from "./htmlSanitize.js";
 import { resolveMergedThreadId } from "./mailMessageMetaStore.js";
+import { readMailAttachmentProjects, type MailAttachmentProjects } from "./mailThreadAttachmentProjects.js";
 import { htmlToPlainText } from "./mailPlainText.js";
 import { listMailThreads, MAIL_OWN_ADDRESSES_SQL } from "./mailThreadListQuery.js";
 
@@ -32,6 +33,9 @@ const messageRow = z.object({
     }),
   ),
 });
+
+/** What an attachment that has no Files item shows as its project and links (issue gh-1922). */
+const NO_ATTACHMENT_PROJECT: MailAttachmentProjects = { project: null, links: {} };
 
 /**
  * A normalized envelope address list: entries that are objects with a string `address`, in their
@@ -239,7 +243,9 @@ async function listThreadTasks(client: PoolClient, threadId: string) {
  * shown too, with the same `project` and `company` (`{ id, name }` or `null`, also `null` for one in the
  * Trash) and `links` (issue gh-1897). `tasks` are the tasks linked to the thread (`listThreadTasks`, issue gh-1692), each with a
  * string `status` and its project and people marked `state: 'active'` or `state: 'trashed'` (issue
- * sp-9cf1be65); a trashed task is not listed. Header,
+ * sp-9cf1be65); a trashed task is not listed. Each attachment of a message carries the `project` of its Files item
+ * (`{ id, name }`, `null` for none or one in the Trash) and its `links` (`project` only for a file with a value-link
+ * row), as `readMailAttachmentProjects` reads them in one batch for the whole thread (issue gh-1922). Header,
  * messages and tasks are read in the caller's transaction, so with REPEATABLE READ all come from one
  * snapshot.
  *
@@ -260,10 +266,25 @@ export async function getMailThreadDetail(client: PoolClient, threadId: string, 
   });
   if (!header) throw new NotFoundError("Thread not found");
   const { rows } = await client.query<{ message: unknown }>(MESSAGES_SQL, [targetId]);
-  const messages = rows.map((row) => {
-    const { body, ...message } = messageRow.parse(row.message);
+  const parsed = rows.map((row) => messageRow.parse(row.message));
+  // The projects and links of the files of every message of the thread in one batch (issue gh-1922).
+  const attachmentProjects = await readMailAttachmentProjects(
+    client,
+    parsed.flatMap((message) =>
+      message.attachments.flatMap((file) => (file.fileItemId === null ? [] : [file.fileItemId])),
+    ),
+  );
+  const messages = parsed.map(({ body, ...message }) => {
     const raw = body ?? "";
-    return { ...message, bodyHtml: sanitizeMailHtml(raw, { allowRemoteImages }), bodyText: htmlToPlainText(raw) };
+    return {
+      ...message,
+      attachments: message.attachments.map((file) => ({
+        ...file,
+        ...((file.fileItemId === null ? undefined : attachmentProjects.get(file.fileItemId)) ?? NO_ATTACHMENT_PROJECT),
+      })),
+      bodyHtml: sanitizeMailHtml(raw, { allowRemoteImages }),
+      bodyText: htmlToPlainText(raw),
+    };
   });
   return {
     threadId: header.threadId,

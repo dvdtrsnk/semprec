@@ -183,6 +183,34 @@ describe("Gmail bulk-mail headers (issue #1502)", () => {
   });
 });
 
+describe("Gmail inline calendar part (issue gh-1929)", () => {
+  it("keeps a text/calendar leaf of a multipart/alternative as an attachment candidate beside both bodies", async () => {
+    const invitation = "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nEND:VCALENDAR\r\n";
+    const fetched = await fetchFixture({
+      mimeType: "multipart/alternative",
+      parts: [
+        { mimeType: "text/plain", body: { data: encodeBase64Url("Please join") } },
+        { mimeType: "text/html", body: { data: encodeBase64Url("<p>Please join</p>") } },
+        {
+          mimeType: "text/calendar",
+          filename: "",
+          headers: [{ name: "Content-Type", value: "text/calendar; method=REQUEST" }],
+          body: { size: Buffer.byteLength(invitation), data: encodeBase64Url(invitation) },
+        },
+      ],
+    });
+
+    expect(fetched?.message.bodyText).toBe("Please join");
+    expect(fetched?.message.bodyHtml).toBe("<p>Please join</p>");
+    expect(fetched?.message.attachments).toHaveLength(1);
+    expect(fetched?.message.attachments[0]).toMatchObject({ contentType: "text/calendar", filename: "attachment" });
+    const stream = await fetched?.message.attachments[0]?.openStream();
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream ?? []) chunks.push(Buffer.from(chunk));
+    expect(Buffer.concat(chunks).toString("utf8")).toBe(invitation);
+  });
+});
+
 describe("Gmail Drive replacement attachments", () => {
   it("keeps Gmail's rendered HTML Drive link and label without creating an attachment candidate", async () => {
     const shareUrl = "https://drive.google.com/file/d/drive-file-1/view?usp=drive_link";

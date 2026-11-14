@@ -1,6 +1,7 @@
 import { CORE_AGENT_RUN_ACTION_ID } from "../scheduler/actions.js";
 import { DRIFT_CHECK_ACTION_ID } from "./driftCheck.js";
 import { CALENDAR_MODULE_ID } from "../calendar/calendarModuleId.js";
+import { CALENDAR_INGEST_INVITATION_ACTION_ID } from "../calendar/invitationIngestAction.js";
 import { NEXT_OCCURRENCE_REFRESH_ACTION_ID } from "../calendar/nextOccurrenceRefreshAction.js";
 import { SEMPREC_TICK_ACTION_ID } from "../inbox/inboxTickAction.js";
 import {
@@ -48,6 +49,7 @@ export const KNOWN_HEARTBEAT_ACTION_IDS: ReadonlySet<string> = new Set([
   TASKS_DAY_ROLLOVER_ACTION_ID,
   JOURNAL_WEEKLY_CLEANUP_ACTION_ID,
   NEXT_OCCURRENCE_REFRESH_ACTION_ID,
+  CALENDAR_INGEST_INVITATION_ACTION_ID,
 ]);
 
 /**

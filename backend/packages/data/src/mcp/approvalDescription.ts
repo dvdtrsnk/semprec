@@ -13,7 +13,7 @@
 //   approval.itemPatch        {itemName, databaseKey, databaseName}
 //   approval.relationPut      {fromItemName, fromDatabaseKey, toItemName, toDatabaseKey}
 //   approval.relationSet      {fromItemName, fromDatabaseKey, propertyName}
-//   approval.itemDelete       {itemName, databaseKey, databaseName, projectName?, linkedCount, restorableDays}
+//   approval.itemDelete       {itemName, databaseKey, databaseName, projectName?, linkedCount, restorableDays, seriesInstanceCount?, attachmentCount?, hostEventCount?}   (the three counts, issue gh-1882, are the module's delete impact in the projection and are omitted for an item whose module reports none)
 //   approval.propertyDelete   {propertyName, databaseKey, databaseName, affectedCount}
 //   approval.databaseArchive  {databaseName, affectedCount}
 //   approval.viewDelete       {viewName, databaseName}
@@ -24,6 +24,7 @@
 //   approval.journalMerge     {periodType, period, survivorName, mergedName}   (issue #2017; the stored titles of the two entries, `null` when the period has no two live entries; no page content)
 //   approval.mcpInvoke        {serverName, toolName}
 //   approval.moduleTool       {toolName}   (issue #1791; the manifest name of the module agent tool)
+//   approval.emailSend        {mailboxName, recipientCount}   (issue gh-1913, `mail/mailSendApproval.ts`; the recipients, the subject and the body are argument values, so they are not in the description)
 //   approval.heartbeatCreate      {heartbeatName, projectName, rule, task}   (issue #1846, `scheduler/heartbeatApprovalDescription.ts`; the stored form of the rule and a cut JSON string of the task)
 //   approval.heartbeatUpdate      {heartbeatName, projectName, changes}   (issue #1846; `changes` lists each changed field with its new value)
 //   approval.heartbeatSetEnabled  {heartbeatName, projectName, state}   (issue #1846)
@@ -31,6 +32,8 @@
 //   approval.breaksLink       {itemName, databaseKey, propertyName, sourceItemName, sourceDatabaseKey, newValueName}   (issue #1758, `approvalBreaksLink.ts`)
 // Constrained by: docs/adr/2026-09-18-exactly-once-execution-of-approved-destructive-operations.md
 import type { PoolClient } from "pg";
+import { z } from "zod";
+import type { ItemDeleteImpact } from "../chokePoint/hooks.js";
 import type { DestructiveOperationCheck } from "../chokePoint/destructiveProjection.js";
 import type { PageRestoreCheck } from "../docs/docPageRestore.js";
 import type { PageConvertCheck } from "../docs/pageConvertApproval.js";
@@ -48,6 +51,14 @@ import { describeBreakingLinks, isLinkDeferralOperation } from "./approvalBreaks
 import type { ApprovalDescription } from "./approvalRequestsStore.js";
 
 type DescriptionParams = ApprovalDescription["params"];
+
+const itemDeleteImpactSchema = z
+  .object({
+    seriesInstanceCount: z.number().int(),
+    attachmentCount: z.number().int(),
+    hostEventCount: z.number().int(),
+  })
+  .strict();
 
 async function nameOf(
   client: PoolClient,
@@ -119,6 +130,18 @@ export async function buildDestructiveApprovalDescription(
       ? await buildOperationDescription(client, check, currentResource)
       : breaks.description;
   return { ...ownDescription, ...lists };
+}
+
+/**
+ * The module's delete impact the `item.delete` projection put into `currentResource` (`destructiveProjection.ts`); `null`
+ * when the item's module reports none. The counts are the ones the approval's snapshot covers, so the description says what
+ * the approver is asked about.
+ */
+function itemDeleteImpactOf(currentResource: unknown): ItemDeleteImpact | null {
+  if (typeof currentResource !== "object" || currentResource === null || !("impact" in currentResource)) return null;
+  const parsed = itemDeleteImpactSchema.safeParse(currentResource.impact);
+  if (!parsed.success) throw new Error("Invalid item delete impact in the approval projection");
+  return parsed.data;
 }
 
 function hasModuleDescription(currentResource: unknown): boolean {
@@ -256,6 +279,8 @@ async function buildOperationDescription(
         const projectName = project ? await nameOf(client, project) : null;
         if (projectName !== null) params.projectName = projectName;
       }
+      const impact = itemDeleteImpactOf(currentResource);
+      if (impact !== null) Object.assign(params, impact);
       return { key: "approval.itemDelete", params };
     }
     case "property.delete": {

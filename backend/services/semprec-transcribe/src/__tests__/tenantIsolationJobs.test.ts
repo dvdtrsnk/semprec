@@ -24,16 +24,24 @@ import {
   type AiGatewayCompletionResult,
 } from "@semprec/shared";
 import {
+  appendHistoryEntry,
   assertTaskListMatchesAffinity,
   createBlob,
   createItemWithClient,
+  createTranscriptEventCard,
   createUser,
+  ensureItemAutomation,
   getDatabaseByModuleId,
   LocalFsBlobStorageWriter,
   loadFullModuleRegistry,
+  matchTranscriptToEvent,
   provisionTenant,
   resolveTaskAffinitySets,
+  TRANSCRIPTION_OWNER_PROCESS,
+  transcriptionSourceLink,
+  updateItemWithClient,
   withTransaction,
+  writeComputed,
 } from "@semprec/data";
 import {
   createRuntimeRolePool,
@@ -42,6 +50,8 @@ import {
   getTestPool,
   resetDatabase,
 } from "@semprec/data/testSupport";
+import { createTranscriptCardRecomputeTask } from "../transcriptCardRecompute.js";
+import { createTranscriptSpeakerSuggestionTask } from "../transcriptSpeakerSuggestionTask.js";
 import { createTranscriptionCreateTask, createTranscriptionTask } from "../transcriptionTask.js";
 import type {
   AudioGatewayClient,
@@ -303,6 +313,22 @@ class FakeSummaryGateway implements AiGatewayClientPort {
     if (input.operation === "transcript_speaker_suggestion") {
       return { content: { mappings: [] }, usage: { inputTokens: 10, outputTokens: 5 } };
     }
+    if (input.operation === "transcript_card_recompute") {
+      // Chooses the first target the request lists, as a user's instruction naming it would.
+      const text = JSON.stringify(input.messages);
+      const target = /- id: ([0-9a-f-]{36})/.exec(text)?.[1];
+      if (!target) throw new Error("The request lists no target");
+      return {
+        content: {
+          entityKind: "relation",
+          target,
+          properties: { propertyKey: "event" },
+          explicitlyChangedKeys: [],
+          reason: "Chose the listed Event.",
+        },
+        usage: { inputTokens: 10, outputTokens: 5 },
+      };
+    }
     return {
       content: { title: "Notes", summary: "a summary", shortSummary: "a summary", decisions: [], actionItems: [] },
       usage: { inputTokens: 10, outputTokens: 5 },
@@ -316,7 +342,142 @@ function requirePayloadString(payload: Payload, field: string): string {
   return value;
 }
 
+/**
+ * A transcript of `tenant` that two Events overlap, with its Event card (a new-meeting proposal), and the user's
+ * instruction recorded in the card's history the way a revise records it, without the job that revise enqueues
+ * (it would run in this case's drain, under the tenant it was written in).
+ */
+async function seedTranscriptCardInstruction(tenant: Tenant): Promise<Payload> {
+  return runInTenant(tenant.tenantId, async () => {
+    const database = async (moduleId: string) => {
+      const found = await withTransaction(pool, (client) => getDatabaseByModuleId(client, moduleId));
+      if (!found) throw new Error(`Database '${moduleId}' was not seeded`);
+      return found.id;
+    };
+    const eventsId = await database("events");
+    for (const [name, timeFrom, timeTo] of [
+      ["Sprint planning", "13:00", "13:45"],
+      ["Accountant call", "13:30", "14:00"],
+    ] as const) {
+      await withTransaction(pool, (client) =>
+        createItemWithClient(client, {
+          databaseId: eventsId,
+          properties: { name, type: "meeting", date: "2024-03-01", timeFrom, timeTo },
+        }),
+      );
+    }
+    const transcriptsId = await database("transcripts");
+    const instructionEntryId = randomUUID();
+    const proposalId = await withTransaction(pool, async (client) => {
+      const transcript = await createItemWithClient(
+        client,
+        { databaseId: transcriptsId, properties: { name: "Planning call", date: "2024-03-01T12:00:00.000Z" } },
+        { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+      );
+      await writeComputed(client, transcriptsId, transcript.id, "segments", [
+        { speaker: "SPEAKER_00", text: "Let us plan the sprint.", startsAt: 0, endsAt: 2 },
+      ]);
+      await writeComputed(client, transcriptsId, transcript.id, "durationSeconds", 3600);
+      const matched = await matchTranscriptToEvent(client, { transcriptId: transcript.id, durationSeconds: 3600 });
+      if (typeof matched === "string") throw new Error(`Expected an ambiguous match, got '${matched}'`);
+      const card = await createTranscriptEventCard(client, {
+        transcriptId: transcript.id,
+        candidates: matched.candidates,
+        recommendation: null,
+      });
+      const [stored] = (
+        await client.query<{ properties: Record<string, unknown> }>("SELECT properties FROM items WHERE id = $1", [
+          card.cardId,
+        ])
+      ).rows;
+      await updateItemWithClient(
+        client,
+        {
+          databaseId: await database("processingProposals"),
+          itemId: card.cardId,
+          propertiesPatch: {
+            history: appendHistoryEntry(stored?.properties.history, "it is the accountant call", "user", {
+              id: instructionEntryId,
+            }),
+          },
+        },
+        { allowedSystemKeys: ["history"] },
+      );
+      return card.cardId;
+    });
+    return { proposalId, instructionEntryId };
+  });
+}
+
+/** A finished transcript of `tenant` with two speakers, its Files source and its `item_automation` row, and no Event yet. */
+async function seedFinishedTranscript(tenant: Tenant): Promise<Payload> {
+  return runInTenant(tenant.tenantId, async () => {
+    const files = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "files"));
+    const transcripts = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "transcripts"));
+    if (!files || !transcripts) throw new Error("Transcription databases were not seeded");
+    const file = await withTransaction(pool, (client) =>
+      createItemWithClient(client, { databaseId: files.id, properties: { name: "recording.m4a" } }),
+    );
+    const transcriptId = await withTransaction(pool, async (client) => {
+      const transcript = await createItemWithClient(
+        client,
+        {
+          databaseId: transcripts.id,
+          properties: {
+            name: "Weekly sync",
+            status: "done",
+            link: transcriptionSourceLink(file.id),
+            date: "2024-03-01T12:00:00.000Z",
+          },
+        },
+        { allowedSystemKeys: ["status", "link", "date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+      );
+      await writeComputed(client, transcripts.id, transcript.id, "segments", [
+        { speaker: "SPEAKER_00", text: "Hello.", startsAt: 0, endsAt: 1 },
+        { speaker: "SPEAKER_01", text: "Hi there.", startsAt: 1, endsAt: 2 },
+      ]);
+      await ensureItemAutomation(client, transcript.id);
+      return transcript.id;
+    });
+    return { transcriptId, fileItemId: file.id };
+  });
+}
+
 const cases: Record<string, TaskCase> = {
+  [CORE_TASK_NAMES.TRANSCRIPT_SPEAKER_SUGGESTION]: {
+    tenancy: "tenant",
+    seed: seedFinishedTranscript,
+    async expectDone(tenant, payload) {
+      const checkpoints = await runInTenant(tenant.tenantId, async () => {
+        const { rows } = await pool.query<{ checkpoint: unknown }>(
+          "SELECT computed -> 'suggestSpeakers' AS checkpoint FROM items WHERE id = $1",
+          [requirePayloadString(payload, "fileItemId")],
+        );
+        return rows;
+      });
+      expect(checkpoints).toEqual([
+        { checkpoint: { proposedSpeakers: ["SPEAKER_00", "SPEAKER_01"], eventId: null, candidateIds: [] } },
+      ]);
+    },
+  },
+  [CORE_TASK_NAMES.TRANSCRIPT_CARD_RECOMPUTE]: {
+    tenancy: "tenant",
+    seed: seedTranscriptCardInstruction,
+    async expectDone(tenant, payload) {
+      const history = await runInTenant(tenant.tenantId, async () => {
+        const { rows } = await pool.query<{ kind: string | null; instruction: string | null }>(
+          `SELECT entry ->> 'kind' AS kind, entry ->> 'instructionEntryId' AS instruction
+             FROM items, jsonb_array_elements(properties -> 'history') AS entry WHERE id = $1`,
+          [requirePayloadString(payload, "proposalId")],
+        );
+        return rows;
+      });
+      expect(history).toContainEqual({
+        kind: "threadRevision",
+        instruction: requirePayloadString(payload, "instructionEntryId"),
+      });
+    },
+  },
   [CORE_TASK_NAMES.TRANSCRIPTION_CREATE]: {
     tenancy: "tenant",
     async seed(tenant) {
@@ -394,6 +555,14 @@ describe("background task isolation across two tenants: transcribe runtime (issu
       [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
         CORE_TASK_NAMES.TRANSCRIPTION_JOB,
         createTranscriptionTask(pool, blobStorage, new FakeAudioGateway(), new FakeSummaryGateway()),
+      ),
+      [CORE_TASK_NAMES.TRANSCRIPT_CARD_RECOMPUTE]: registerTask(
+        CORE_TASK_NAMES.TRANSCRIPT_CARD_RECOMPUTE,
+        createTranscriptCardRecomputeTask(pool, new FakeSummaryGateway()),
+      ),
+      [CORE_TASK_NAMES.TRANSCRIPT_SPEAKER_SUGGESTION]: registerTask(
+        CORE_TASK_NAMES.TRANSCRIPT_SPEAKER_SUGGESTION,
+        createTranscriptSpeakerSuggestionTask(pool, new FakeSummaryGateway()),
       ),
     };
     assertTaskListMatchesAffinity(taskList, (await resolveTaskAffinitySets(moduleRegistry)).transcribe, "transcribe");

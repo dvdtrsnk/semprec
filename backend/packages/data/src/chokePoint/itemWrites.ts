@@ -163,6 +163,31 @@ function assertWritableProperties(
 }
 
 /**
+ * A user or agent write into a system database that has no user-owned property is refused whole, not only key by
+ * key (a request that names a system-owned key is refused first, by `assertWritableProperties`, with that key as
+ * the error's field): `assertWritableProperties` and `assertTitlePresent` look at the keys a request names and at a user-owned
+ * title, so an empty create (`{}` or `{"properties":{}}`) or an empty patch names no key to refuse and would insert
+ * or touch a row of a database that only its owning process may write (`subscribedEvents`, issue gh-1962). A
+ * trusted in-process owner (`allowedSystemKeys`) and the system writer are unaffected, and so is a database
+ * that the user created or that has at least one user-owned property.
+ */
+function assertCallerMayWriteDatabase(
+  database: DatabaseRow,
+  properties: PropertyRow[],
+  writer: WriterIdentity,
+  options: AssertWritablePropertiesOptions,
+): void {
+  if (writer.writerKind === "system" || !database.system) return;
+  if (options.allowedSystemKeys !== undefined && options.allowedSystemKeys.length > 0) return;
+  if (properties.some((property) => property.owner === "user")) return;
+  throw new ForbiddenError(
+    `Database ${database.id} has no property this caller may write`,
+    { field: "databaseId" },
+    "owner_violation",
+  );
+}
+
+/**
  * A user or agent write must leave the database's user-owned title property non-blank. Internal
  * writers keep their behavior (several create items whose title is written later or derived) and
  * Transcripts is exempt, since a transcript is named from its event or recording date. Stored
@@ -443,14 +468,16 @@ export async function createItemReportingReplay(
   if (replay) return { item: replay, created: false };
 
   const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
-  assertWritableProperties(properties, Object.keys(input.properties ?? {}), options);
-  assertColorValues(properties, input.properties ?? {});
-  assertMarkdownValues(properties, input.properties ?? {});
-
   const database = await databasesStore.getDatabase(client, input.databaseId);
   if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`);
   const writer = options.writer ?? SYSTEM_WRITER;
+  assertWritableProperties(properties, Object.keys(input.properties ?? {}), options);
+  assertCallerMayWriteDatabase(database, properties, writer, options);
+  assertColorValues(properties, input.properties ?? {});
+  assertMarkdownValues(properties, input.properties ?? {});
+
   let itemProperties = input.properties ?? {};
+  const defaultedKeys = new Set<string>();
   const moduleId = database.ownerModuleId;
   const { item, created } = await itemsStore.insertItemWithReplay(
     client,
@@ -471,7 +498,6 @@ export async function createItemReportingReplay(
         );
       }
       itemProperties = { ...itemProperties };
-      const defaultedKeys = new Set<string>();
       let today: string | undefined;
       for (const property of properties) {
         // A key already set by the caller or by a transform keeps its value; only an absent key takes its default.
@@ -512,6 +538,7 @@ export async function createItemReportingReplay(
     database,
     item,
     properties: itemProperties,
+    defaultedKeys,
     humanWriterUserId: options.humanWriterUserId,
     writer,
     initialRelations,
@@ -604,16 +631,15 @@ export async function updateItemWithClient(
   ) {
     throw new ForbiddenError("Item command owner does not match", { field: command?.key }, "owner_violation");
   }
-  assertWritableProperties(
-    properties,
-    patchKeys,
+  const writeOptions =
     hasCommand && command
       ? { ...options, allowedSystemKeys: [...(options.allowedSystemKeys ?? []), command.key] }
-      : options,
-  );
+      : options;
+  const writer = options.writer ?? SYSTEM_WRITER;
+  assertWritableProperties(properties, patchKeys, writeOptions);
+  assertCallerMayWriteDatabase(database, properties, writer, writeOptions);
   assertColorValues(properties, input.propertiesPatch);
   assertMarkdownValues(properties, input.propertiesPatch);
-  const writer = options.writer ?? SYSTEM_WRITER;
   assertTitlePresent(properties, input.propertiesPatch, database.ownerModuleId, writer, "patch");
   let propertiesPatch = input.propertiesPatch;
   const moduleId = database.ownerModuleId;
@@ -709,6 +735,7 @@ export async function updateItemWithClient(
     database,
     item,
     propertiesPatch,
+    previous,
     humanWriterUserId: options.humanWriterUserId,
     writer,
     skipMailDesiredStateRecording: options.skipMailDesiredStateRecording,

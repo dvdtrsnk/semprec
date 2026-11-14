@@ -1,5 +1,4 @@
 import type { PoolClient } from "pg";
-import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { getItemById, lockItemById } from "../chokePoint/itemsStore.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
@@ -10,11 +9,10 @@ import { createActionQueueAffinity, type ActionQueueAffinity } from "../schedule
 import type { ItemRow } from "../types.js";
 import { parseAddressListProperty } from "./addressListParsing.js";
 import { EMAIL_INGEST_ALLOWED_SYSTEM_KEYS, formatAddress, formatAddressList } from "./ingest.js";
-import { resolveMergedThreadId, type MailEnvelopeAddress } from "./mailMessageMetaStore.js";
+import { getMailMessageMetaByItemId, resolveMergedThreadId, type MailEnvelopeAddress } from "./mailMessageMetaStore.js";
 import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { findFolderBySpecialPurpose } from "./folderDiscovery.js";
 import {
-  deleteMailDraft,
   getMailDraft,
   insertMailDraft,
   updateMailDraft,
@@ -25,7 +23,8 @@ import {
   type MailDraftRecipient,
 } from "./mailDraftsStore.js";
 import { resolveMailModuleIds } from "./mailModuleIds.js";
-import { deleteFilesOfDiscardedDraft, listDraftAttachments, type DraftAttachment } from "./mailDraftAttachmentFiles.js";
+import { listDraftAttachments, type DraftAttachment } from "./mailDraftAttachmentFiles.js";
+import { trashLockedDraft } from "./mailDraftTrash.js";
 import { announceMailThreadChanged } from "./mailThreadActions.js";
 import { normalizeEmailAddress } from "./personEmailIndexStore.js";
 
@@ -57,8 +56,8 @@ export interface CreateEmailDraftInput {
 
 /**
  * `email.draft.create` (issue #95): the generic item-create path, with no authorization check
- * at all — "drafting is safe for agents," unlike `email.send` (mail/send.ts), which is gated
- * on `capabilities.email.send.autonomous`. Reuses ingest.ts's `EMAIL_INGEST_ALLOWED_SYSTEM_KEYS`:
+ * at all — "drafting is safe for agents," unlike `email.send` (mail/send.ts), which an agent can only
+ * ask for, through an approval request (issue gh-1913). Reuses ingest.ts's `EMAIL_INGEST_ALLOWED_SYSTEM_KEYS`:
  * a draft populates the exact same owner:'system' display fields a synced message does, this
  * function is just a second declared writer of those fields (see seedEmailModule.ts). Carries
  * no Message-ID/mail_message_meta row — that's only generated once the draft is actually sent
@@ -104,10 +103,21 @@ export async function createEmailDraft(client: PoolClient, input: CreateEmailDra
   return item;
 }
 
-/** Raised when a draft was sent already (`mail_drafts.sent_at` is set), so it can no longer be edited or discarded. */
+/** Where a sent draft went: its own item id and the thread the sent message is in. */
+export interface MailDraftSentDetails {
+  emailId: string;
+  threadId: string | null;
+}
+
+/**
+ * Raised when a draft was sent already (`mail_drafts.sent_at` is set) or is being sent (a send holds its claim, a
+ * `mail_message_meta` row for the draft's item), so it can no longer be edited or discarded. The send route (issue
+ * gh-1896) and `lockUnsentDraft` pass `details`, so a client whose first call timed out can tell that the message
+ * went, or is going, and where.
+ */
 export class MailDraftAlreadySentError extends ChokePointError {
-  constructor() {
-    super(409, "mail_draft_already_sent", "The draft was sent already");
+  constructor(details?: MailDraftSentDetails) {
+    super(409, "mail_draft_already_sent", "The draft was sent already", details);
     this.name = "MailDraftAlreadySentError";
   }
 }
@@ -145,6 +155,11 @@ export interface MailDraftWriteContext {
   /** The user whose session or run makes the write; the item invalidations are addressed to them. */
   actingUserId?: string;
   queueAffinity?: ActionQueueAffinity;
+  /**
+   * The Semp thread an agent run made the write in (issue gh-1927). `createEmailDraftInMailbox` records it, with the
+   * writer's run id, on the draft's row.
+   */
+  conversationId?: string;
 }
 
 /** What a draft shows and sends: the fields of the draft routes' bodies that every write carries. */
@@ -164,6 +179,10 @@ export interface CreateEmailDraftInMailboxInput extends EmailDraftFields {
   threadId: string | null;
   mode: MailDraftMode;
   sourceEmailItemId: string | null;
+  /** The Message-ID the draft replies to (issue gh-1899); absent for a draft that replies to nothing. */
+  inReplyTo?: string | null;
+  /** The References header of the draft (issue gh-1899). */
+  references?: string[];
 }
 
 export interface UpdateEmailDraftInput extends Partial<EmailDraftFields> {
@@ -258,7 +277,8 @@ export async function announceDraftThreadChanged(client: PoolClient, threadId: s
  * `MailDraftThreadConflictError` (409); the caller's transaction must roll back with it.
  *
  * The Emails item is created as `context.writer` for `context.actingUserId`, so its create invalidation is
- * addressed to that user like those of an update and a discard.
+ * addressed to that user like those of an update and a discard. The row records the run of an agent writer and the
+ * context's conversation.
  *
  * After the commit it announces the change on the draft's thread, when it has one.
  */
@@ -306,11 +326,15 @@ export async function createEmailDraftInMailbox(
       threadId,
       mode: input.mode,
       sourceEmailItemId: input.sourceEmailItemId,
+      inReplyTo: input.inReplyTo,
+      references: input.references,
       fromAddress: input.from,
       to: input.to,
       cc: input.cc,
       bcc: input.bcc,
       createdBy: context.writer.writerKind,
+      agentRunId: context.writer.writerKind === "agent" ? (context.writer.agentRunId ?? null) : null,
+      conversationId: context.conversationId ?? null,
     },
     writer: context.writer,
     actingUserId: context.actingUserId,
@@ -342,7 +366,11 @@ export async function readEmailDraft(client: PoolClient, draftItemId: string): P
 /**
  * Locks the draft's Emails item and then its `mail_drafts` row, for a write that decides on what it reads
  * (the version, `sentAt`). An id that names no live Emails item is a 404; an item without a row is a
- * `MailDraftNotEditableError` and a sent draft a `MailDraftAlreadySentError`, both 409.
+ * `MailDraftNotEditableError` and a sent draft a `MailDraftAlreadySentError`, both 409. A draft that holds the claim
+ * of a send in progress (`sendDraftEmail` writes the item's `mail_message_meta` row before it calls the provider and
+ * sets `sent_at` when it finalizes) is refused the same way, with `{ emailId, threadId }`: its recipients and body are
+ * what the send delivers, and a discard between the claim and the finalization would answer 404 for a message that
+ * went. A send that fails undoes its claim, which makes the draft writable again.
  */
 export async function lockUnsentDraft(
   client: PoolClient,
@@ -354,6 +382,13 @@ export async function lockUnsentDraft(
   const draft = await getMailDraft(client, draftItemId, true);
   if (!draft) throw new MailDraftNotEditableError();
   if (draft.sentAt !== null) throw new MailDraftAlreadySentError();
+  const claim = await getMailMessageMetaByItemId(client, draftItemId);
+  if (claim !== null) {
+    throw new MailDraftAlreadySentError({
+      emailId: draftItemId,
+      threadId: claim.threadId === null ? null : await resolveMergedThreadId(client, claim.threadId),
+    });
+  }
   return { item, draft };
 }
 
@@ -427,11 +462,9 @@ export async function updateEmailDraft(
 }
 
 /**
- * Discards an unsent draft in the caller's transaction and tenant: the files attached to it that were made for it
- * and belong to it alone go to the trash (`deleteFilesOfDiscardedDraft`, issue gh-1895; a file that is older than
- * the draft stays), the Emails item goes to the trash and its `mail_drafts` row is deleted, which frees the thread
- * for a new agent draft. The refusals before it are those of `updateEmailDraft` up to `mail_draft_already_sent`.
- * After the commit it announces the change on the draft's thread, when it has one.
+ * Discards an unsent draft in the caller's transaction and tenant (`trashLockedDraft`). The refusals before it are
+ * those of `updateEmailDraft` up to `mail_draft_already_sent`. After the commit it announces the change on the
+ * draft's thread, when it has one.
  */
 export async function discardEmailDraft(
   client: PoolClient,
@@ -439,21 +472,11 @@ export async function discardEmailDraft(
   context: MailDraftWriteContext,
 ): Promise<void> {
   const ids = await resolveMailModuleIds(client);
-  const { emailsDatabaseId } = ids;
-  const { draft } = await lockUnsentDraft(client, emailsDatabaseId, draftItemId);
-  const queueAffinity = context.queueAffinity ?? createActionQueueAffinity();
-  await deleteFilesOfDiscardedDraft(client, ids, draftItemId, {
+  const { draft } = await lockUnsentDraft(client, ids.emailsDatabaseId, draftItemId);
+  await trashLockedDraft(client, ids, draftItemId, {
     writer: context.writer,
     actingUserId: context.actingUserId,
-    queueAffinity,
+    queueAffinity: context.queueAffinity ?? createActionQueueAffinity(),
   });
-  const trashed = await itemDeleteWithClient(client, emailsDatabaseId, draftItemId, {
-    queueAffinity,
-    actingUserId: context.actingUserId,
-    writer: context.writer,
-  });
-  // The item is locked and was live a statement ago, so the trash finds it.
-  if (trashed === null) throw new Error(`Draft ${draftItemId} disappeared while it was discarded`);
-  await deleteMailDraft(client, draftItemId);
   await announceDraftThreadChanged(client, draft.threadId);
 }

@@ -7,7 +7,7 @@
 import { GENERIC_OPERATION_NAMES, OPERATION_METADATA, PAGE_CONVERT_TARGET_TYPES } from "@semprec/shared";
 import { isGenericOperationApprovalRequestPayload, type ApprovalRequest } from "../mcp/approvalRequestsStore.js";
 import { JOURNAL_PERIOD_TYPES } from "../journal/journalPeriods.js";
-import type { WriteNotificationInput } from "./notify.js";
+import { ITEM_DELETE_IMPACT_BODY_KEY, type WriteNotificationInput } from "./notify.js";
 
 /** Body catalog key per description key (`notifications/i18n/{cs,en}.json`, `notification.approval_pending.body.*`). */
 const BODY_KEY_BY_DESCRIPTION_KEY = new Map<string, string>([
@@ -25,10 +25,24 @@ const BODY_KEY_BY_DESCRIPTION_KEY = new Map<string, string>([
   ["approval.pageReplace", "approval.pageReplace"],
   ["approval.mcpInvoke", "approval.mcpInvoke"],
   ["approval.moduleTool", "approval.moduleTool"],
+  ["approval.emailSend", "approval.emailSend"],
   ["approval.heartbeatCreate", "approval.heartbeatCreate"],
   ["approval.heartbeatUpdate", "approval.heartbeatUpdate"],
   ["approval.heartbeatSetEnabled", "approval.heartbeatSetEnabled"],
 ]);
+
+/**
+ * The body catalog key of an item delete: `approval.itemDeleteImpact` for a description that carries the delete impact of
+ * the item's module (issue gh-1882: the instances of its series, its attachments and the events it is placed in), so the
+ * approver is told what the snapshot covers, and `approval.itemDelete` for every other item, whose description has no
+ * such counts to fill the placeholders of the first.
+ */
+function itemDeleteBodyKey(params: Readonly<Record<string, string | number | null>>): string {
+  const carriesImpact = [params.seriesInstanceCount, params.attachmentCount, params.hostEventCount].every(
+    (count) => typeof count === "number",
+  );
+  return carriesImpact ? ITEM_DELETE_IMPACT_BODY_KEY : "approval.itemDelete";
+}
 
 /**
  * The body catalog key of a Journal merge: one entry per period type (`approval.journalMerge.<type>`), so the period
@@ -68,7 +82,9 @@ export function approvalNotificationBody(
       ? journalMergeBodyKey(description.params)
       : description.key === "approval.pageConvertToBlock"
         ? pageConvertBodyKey(description.params)
-        : BODY_KEY_BY_DESCRIPTION_KEY.get(description.key);
+        : description.key === "approval.itemDelete"
+          ? itemDeleteBodyKey(description.params)
+          : BODY_KEY_BY_DESCRIPTION_KEY.get(description.key);
   if (bodyKey === undefined) {
     throw new Error(`approvalNotificationBody: no body entry for approval description "${description.key}"`);
   }
