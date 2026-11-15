@@ -47,7 +47,7 @@ data class PickerView(
     val propertyKey: String,
     val name: String,
     val loading: Boolean,
-    val failure: FailureKind?,
+    val failure: Failed?,
     val candidates: List<TargetView>,
 )
 
@@ -65,7 +65,7 @@ data class ImpactView(
 )
 
 /** The delete confirmation: it first reads the impact, then waits for the person. */
-data class DeletionView(val loading: Boolean, val failure: FailureKind?, val impact: ImpactView?, val deleting: Boolean)
+data class DeletionView(val loading: Boolean, val failure: Failed?, val impact: ImpactView?, val deleting: Boolean)
 
 /** A write that did not go through; [kind] is `null` for an unexpected failure. */
 data class ItemWriteFailure(val propertyKey: String?, val kind: FailureKind?)

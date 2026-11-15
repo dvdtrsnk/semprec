@@ -408,7 +408,7 @@ class ItemViewModelTest : MainDispatcherTest() {
             fake.queryAnswer = { _, _ -> failure(FailureKind.UNAVAILABLE) }
             vm.onAction(ItemAction.Picker.Open("area"))
             runCurrent()
-            assertEquals(FailureKind.UNAVAILABLE, vm.state.value.picker?.failure)
+            assertEquals(Failed(FailureKind.UNAVAILABLE), vm.state.value.picker?.failure)
             vm.close()
         }
 
@@ -544,7 +544,7 @@ class ItemViewModelTest : MainDispatcherTest() {
         val vm = open()
         vm.onAction(ItemAction.Deletion.Request)
         runCurrent()
-        assertEquals(DeletionView(false, FailureKind.UNAVAILABLE, null, false), vm.state.value.deletion)
+        assertEquals(DeletionView(false, Failed(FailureKind.UNAVAILABLE), null, false), vm.state.value.deletion)
         fake.impactAnswer = { RepositoryResult.Content(DeleteImpact(emptyList(), 0, 0, 0, 0, 0, 0)) }
         vm.onAction(ItemAction.Deletion.Request)
         runCurrent()
@@ -553,7 +553,7 @@ class ItemViewModelTest : MainDispatcherTest() {
         assertTrue(vm.state.value.deletion!!.deleting)
         runCurrent()
         assertEquals(
-            DeletionView(false, FailureKind.REJECTED, vm.state.value.deletion?.impact, false),
+            DeletionView(false, Failed(FailureKind.REJECTED), vm.state.value.deletion?.impact, false),
             vm.state.value.deletion
         )
         assertFalse(vm.state.value.deleted)

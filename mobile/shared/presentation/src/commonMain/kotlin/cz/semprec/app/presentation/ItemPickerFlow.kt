@@ -49,7 +49,7 @@ internal class ItemPickerFlow(
             host.update { state ->
                 val picker = state.picker ?: return@update state
                 when (answered) {
-                    is Answer.Rejected -> state.copy(picker = picker.copy(loading = false, failure = answered.kind))
+                    is Answer.Rejected -> state.copy(picker = picker.copy(loading = false, failure = Failed(answered.kind)))
                     is Answer.Done -> state.copy(
                         picker = picker.copy(
                             loading = false,

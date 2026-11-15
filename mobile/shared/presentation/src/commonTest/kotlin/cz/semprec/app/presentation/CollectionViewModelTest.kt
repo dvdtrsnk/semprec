@@ -315,7 +315,7 @@ class CollectionViewModelTest : MainDispatcherTest() {
         val vm = open()
         vm.onAction(CollectionAction.Filter.Open)
         runCurrent()
-        assertEquals(FilterSheet(false, FailureKind.UNAVAILABLE, emptyList()), vm.state.value.filterSheet)
+        assertEquals(FilterSheet(false, Failed(FailureKind.UNAVAILABLE), emptyList()), vm.state.value.filterSheet)
         vm.close()
     }
 
@@ -466,14 +466,14 @@ class CollectionViewModelTest : MainDispatcherTest() {
             fake.createAnswer = { failure(FailureKind.REJECTED) }
             vm.onAction(CollectionAction.Write.Create("X"))
             runCurrent()
-            assertEquals(WriteFailure(FailureKind.REJECTED), vm.state.value.writeFailure)
+            assertEquals(Failed(FailureKind.REJECTED), vm.state.value.writeFailure)
             assertFalse(vm.state.value.creating)
             vm.onAction(CollectionAction.DismissWriteFailure)
             assertNull(vm.state.value.writeFailure)
             fake.createAnswer = { throw IllegalStateException("boom") }
             vm.onAction(CollectionAction.Write.Create("Y"))
             runCurrent()
-            assertEquals(WriteFailure(null), vm.state.value.writeFailure)
+            assertEquals(Failed(null), vm.state.value.writeFailure)
             vm.close()
         }
 
@@ -491,12 +491,12 @@ class CollectionViewModelTest : MainDispatcherTest() {
     @Test fun `unreadable upload data and a failed upload are write failures`() = runTest(dispatcher) {
         val vm = open(key = "files")
         vm.onAction(CollectionAction.Write.Upload("a.pdf", "application/pdf", "***"))
-        assertEquals(WriteFailure(FailureKind.INVALID_DATA), vm.state.value.writeFailure)
+        assertEquals(Failed(FailureKind.INVALID_DATA), vm.state.value.writeFailure)
         assertTrue(fake.uploads.isEmpty())
         fake.uploadAnswer = { failure(FailureKind.UNAVAILABLE) }
         vm.onAction(CollectionAction.Write.Upload("a.pdf", "application/pdf", Base64.encode(byteArrayOf(1))))
         runCurrent()
-        assertEquals(WriteFailure(FailureKind.UNAVAILABLE), vm.state.value.writeFailure)
+        assertEquals(Failed(FailureKind.UNAVAILABLE), vm.state.value.writeFailure)
         assertEquals(1, fake.queries.size)
         vm.close()
     }

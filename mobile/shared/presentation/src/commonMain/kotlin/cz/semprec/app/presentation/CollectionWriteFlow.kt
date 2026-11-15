@@ -42,7 +42,7 @@ internal class CollectionWriteFlow(
             ensureActive()
             when (created) {
                 is Answer.Rejected ->
-                    host.update { it.copy(creating = false, writeFailure = WriteFailure(created.kind)) }
+                    host.update { it.copy(creating = false, writeFailure = Failed(created.kind)) }
                 is Answer.Done -> {
                     host.update { it.copy(creating = false) }
                     host.emit(CollectionEffect.OpenItem(created.value.id, target.key))
@@ -63,7 +63,7 @@ internal class CollectionWriteFlow(
         if (target == null || job?.isActive == true) return
         val bytes = decode(action.base64)
         if (bytes == null) {
-            host.update { it.copy(writeFailure = WriteFailure(FailureKind.INVALID_DATA)) }
+            host.update { it.copy(writeFailure = Failed(FailureKind.INVALID_DATA)) }
             return
         }
         host.update { it.copy(creating = true, writeFailure = null) }
@@ -72,7 +72,7 @@ internal class CollectionWriteFlow(
             ensureActive()
             when (saved) {
                 is Answer.Rejected ->
-                    host.update { it.copy(creating = false, writeFailure = WriteFailure(saved.kind)) }
+                    host.update { it.copy(creating = false, writeFailure = Failed(saved.kind)) }
                 is Answer.Done -> {
                     host.update { it.copy(creating = false) }
                     onUploaded()
