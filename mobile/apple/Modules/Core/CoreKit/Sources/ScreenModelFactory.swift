@@ -10,4 +10,9 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
     func makeSettings() -> any SettingsScreenModel
     func makeSession() -> any SessionScreenModel
     func makeLogin() -> any LoginScreenModel
+
+    // Journal slice
+    /// `initialDay` is the device's current day, `YYYY-MM-DD`; the server's answer names today.
+    func makeJournal(initialDay: String) -> any JournalScreenModel
+    func makeJournalSubpage(itemId: String) -> any JournalSubpageScreenModel
 }
