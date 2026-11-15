@@ -9,7 +9,8 @@ import kotlinx.serialization.serializer
 
 /** What a backend call answered: a success with its raw body, or the expected failure it maps to. */
 sealed interface ApiResponse {
-    data class Success(val status: Int, val body: String) : ApiResponse
+    /** [etag] is the `ETag` header of the answer, quoted as the server sent it, or `null` when it sent none. */
+    data class Success(val status: Int, val body: String, val etag: String? = null) : ApiResponse
     data class Failure(val kind: FailureKind, val status: Int?) : ApiResponse
 }
 
