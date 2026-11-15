@@ -33,4 +33,13 @@ extension SharedScreenModelFactory: ScreenModelFactory {
     public func makeLogin() -> any LoginScreenModel {
         SharedLoginScreenModel(sdk.loginViewModel())
     }
+
+    // Journal slice
+    public func makeJournal(initialDay: String) -> any JournalScreenModel {
+        SharedJournalScreenModel(sdk.journalViewModel(initialDay: initialDay))
+    }
+
+    public func makeJournalSubpage(itemId: String) -> any JournalSubpageScreenModel {
+        SharedJournalSubpageScreenModel(sdk.journalSubpageViewModel(itemId: itemId))
+    }
 }

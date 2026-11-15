@@ -17,6 +17,12 @@ final class SignedInModels: ScreenModelFactory {
 
     func makeLogin() -> any LoginScreenModel { real.makeLogin() }
 
+    func makeJournal(initialDay: String) -> any JournalScreenModel { real.makeJournal(initialDay: initialDay) }
+
+    func makeJournalSubpage(itemId: String) -> any JournalSubpageScreenModel {
+        real.makeJournalSubpage(itemId: itemId)
+    }
+
     func makeSession() -> any SessionScreenModel {
         ScriptedSessionScreenModel(
             state: .signedIn(SessionUser(email: "a@b.cz", role: "member", serverUrl: "https://s.example"))

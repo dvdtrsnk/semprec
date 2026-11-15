@@ -37,10 +37,12 @@
       "HomeFeatureTests": { "project": "Modules/Features/Home", "sources": "Tests", "allowed": ["HomeFeature", "CoreKit"] },
       "SettingsFeature": { "project": "Modules/Features/Settings", "sources": "Sources", "allowed": ["CoreKit", "DesignSystem"] },
       "SettingsFeatureTests": { "project": "Modules/Features/Settings", "sources": "Tests", "allowed": ["SettingsFeature", "CoreKit"] },
+      "JournalFeature": { "project": "Modules/Features/Journal", "sources": "Sources", "allowed": ["CoreKit", "DesignSystem"] },
+      "JournalFeatureTests": { "project": "Modules/Features/Journal", "sources": "Tests", "allowed": ["JournalFeature", "CoreKit"] },
       "Semprec": {
         "project": "Projects/App",
         "sources": "Sources",
-        "allowed": ["AuthFeature", "CoreKit", "Dependencies", "DesignSystem", "HomeFeature", "SettingsFeature", "NavigatorUI"]
+        "allowed": ["AuthFeature", "CoreKit", "Dependencies", "DesignSystem", "HomeFeature", "SettingsFeature", "JournalFeature", "NavigatorUI"]
       },
       "SemprecTests": { "project": "Projects/App", "sources": "Tests", "allowed": ["Semprec", "CoreKit", "NavigatorUI"] },
       "SemprecUITests": { "project": "Projects/App", "sources": "UITests", "allowed": [], "appUnderTest": "Semprec" }
@@ -50,7 +52,7 @@
     "module": ":shared:presentation",
     "baseClass": "ScreenViewModel",
     "leaseType": "SharedViewModelLease",
-    "appleOnly": ["LoginViewModel", "SessionViewModel"]
+    "appleOnly": ["LoginViewModel", "SessionViewModel", "JournalViewModel", "JournalSubpageViewModel"]
   },
   "navigation": {
     "gradleModules": [":android:app"],
@@ -112,6 +114,69 @@
       "android": ":android:feature:settings",
       "apple": "SettingsFeature",
       "keys": ["settings.title", "settings.row.about", "about.title", "about.description", "about.version", "about.done"]
+    },
+    {
+      "android": null,
+      "apple": "JournalFeature",
+      "keys": [],
+      "appleOnly": [
+        "failure.invalidData",
+        "failure.notFound",
+        "failure.rejected",
+        "failure.unauthorized",
+        "failure.unavailable",
+        "failure.unexpected",
+        "journal.axis.label",
+        "journal.birthday",
+        "journal.event.allDay",
+        "journal.event.default",
+        "journal.event.transcriptReady",
+        "journal.events",
+        "journal.events.none",
+        "journal.inbox",
+        "journal.inbox.attachment",
+        "journal.inbox.process",
+        "journal.inbox.status.confirmed",
+        "journal.inbox.status.failed",
+        "journal.inbox.status.invalid",
+        "journal.inbox.status.needsClarification",
+        "journal.inbox.status.pending",
+        "journal.inbox.status.proposed",
+        "journal.inbox.status.rejected",
+        "journal.kind.bullet",
+        "journal.kind.heading1",
+        "journal.kind.heading2",
+        "journal.kind.heading3",
+        "journal.kind.number",
+        "journal.kind.page",
+        "journal.kind.quote",
+        "journal.kind.text",
+        "journal.kind.todo",
+        "journal.newBlock.add",
+        "journal.newBlock.kind",
+        "journal.notes",
+        "journal.placeholder.day",
+        "journal.placeholder.quarter",
+        "journal.placeholder.subpage",
+        "journal.placeholder.week",
+        "journal.placeholder.year",
+        "journal.problem.dismiss",
+        "journal.problem.failed",
+        "journal.problem.reload",
+        "journal.problem.stale",
+        "journal.subpage.untitled",
+        "journal.subtitle.day",
+        "journal.subtitle.dayToday",
+        "journal.subtitle.month",
+        "journal.subtitle.year",
+        "journal.title",
+        "journal.today",
+        "journal.todo.done",
+        "journal.todo.open",
+        "journal.week",
+        "journal.week.collapsed",
+        "journal.week.expanded"
+      ]
     }
   ]
 }
