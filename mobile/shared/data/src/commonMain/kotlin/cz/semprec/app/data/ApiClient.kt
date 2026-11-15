@@ -33,7 +33,8 @@ class ApiClient internal constructor(engine: HttpClientEngine?) {
 
     /**
      * Sends one request to [serverUrl] (`https://host`, no trailing slash). [body] is a JSON document, or `null`
-     * for none; [query] values are encoded by Ktor.
+     * for none, unless [bodyContentType] names another media type (the Markdown of a page); [query] values are
+     * encoded by Ktor and [extraHeaders] are added as they are (`If-Match`).
      */
     suspend fun send(
         serverUrl: String,
@@ -42,20 +43,26 @@ class ApiClient internal constructor(engine: HttpClientEngine?) {
         token: String? = null,
         query: List<Pair<String, String>> = emptyList(),
         body: String? = null,
+        extraHeaders: List<Pair<String, String>> = emptyList(),
+        bodyContentType: ContentType = ContentType.Application.Json,
     ): ApiResponse = try {
         val response = http.request {
             this.method = method
             url("$serverUrl$path")
             query.forEach { (name, value) -> url.parameters.append(name, value) }
             headers(token)
+            extraHeaders.forEach { (name, value) -> header(name, value) }
             if (body != null) {
-                contentType(ContentType.Application.Json)
+                contentType(bodyContentType)
                 setBody(body)
             }
         }
         val failure = failureKind(response.status)
-        if (failure == null) ApiResponse.Success(response.status.value, response.bodyAsText())
-        else ApiResponse.Failure(failure, response.status.value)
+        if (failure == null) {
+            ApiResponse.Success(response.status.value, response.bodyAsText(), response.headers[HttpHeaders.ETag])
+        } else {
+            ApiResponse.Failure(failure, response.status.value)
+        }
     } catch (cancelled: CancellationException) {
         throw cancelled
     } catch (_: Exception) {
