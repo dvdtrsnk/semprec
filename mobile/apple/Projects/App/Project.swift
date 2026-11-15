@@ -53,6 +53,7 @@ let project = Project(
                 .project(target: "HomeFeature", path: "../../Modules/Features/Home"),
                 .project(target: "JournalFeature", path: "../../Modules/Features/Journal"),
                 .project(target: "SettingsFeature", path: "../../Modules/Features/Settings"),
+                .project(target: "SleepFeature", path: "../../Modules/Features/Sleep"),
                 .external(name: "NavigatorUI"),
             ],
             settings: .settings(

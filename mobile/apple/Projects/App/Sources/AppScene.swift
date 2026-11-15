@@ -2,6 +2,7 @@ import AuthFeature
 import HomeFeature
 import NavigatorUI
 import SettingsFeature
+import SleepFeature
 import SwiftUI
 
 /// The content of one window: a tab per feature, each with its own navigation stack. Each window creates its own
@@ -87,6 +88,10 @@ private extension AppScene {
             HomeScreenFactory.detail { composition.models.makeDetail(itemId: itemId) }
         case .about:
             SettingsScreenFactory.about(version: composition.version, build: composition.build)
+        case .sleepPlan(let night):
+            SleepScreenFactory.plan { composition.models.makeSleep(night: night, startOnNight: false) }
+        case .sleepNight(let night):
+            SleepScreenFactory.night { composition.models.makeSleep(night: night, startOnNight: true) }
         }
     }
 }
