@@ -54,6 +54,18 @@ data class SleepSettingsChange(
     val prepReminderMinutes: Int? = null,
 )
 
+/** The settings after this change: the fields it names are replaced. */
+fun SleepSettingsChange.applyTo(settings: SleepSettings): SleepSettings = settings.copy(
+    enabled = enabled ?: settings.enabled,
+    showInCalendar = showInCalendar ?: settings.showInCalendar,
+    muteSemp = muteSemp ?: settings.muteSemp,
+    alarmSound = alarmSound ?: settings.alarmSound,
+    alarmSnooze = alarmSnooze ?: settings.alarmSnooze,
+    goalMinutes = goalMinutes ?: settings.goalMinutes,
+    prepReminder = prepReminder ?: settings.prepReminder,
+    prepReminderMinutes = prepReminderMinutes ?: settings.prepReminderMinutes,
+)
+
 /** A change of one plan: each field that is not `null` is written. */
 data class SleepPlanChange(
     val name: String? = null,
