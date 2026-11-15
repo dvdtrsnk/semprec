@@ -4,10 +4,7 @@ import cz.semprec.app.core.FailureKind
 import cz.semprec.app.domain.CollectionDatabase
 import cz.semprec.app.domain.FieldValue
 import cz.semprec.app.domain.RepositoryResult
-import io.ktor.client.engine.mock.MockRequestHandleScope
 import io.ktor.client.engine.mock.respond
-import io.ktor.client.request.HttpRequestData
-import io.ktor.client.request.HttpResponseData
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
@@ -26,7 +23,7 @@ private fun <T> RepositoryResult<T>.content(): T = assertIs<RepositoryResult.Con
 class HttpCollectionWritesTest {
     private class Fixture(val reads: HttpCollectionReads, val writes: HttpCollectionWrites, val recorder: Recorder)
 
-    private fun fixture(handler: suspend MockRequestHandleScope.(HttpRequestData) -> HttpResponseData): Fixture {
+    private fun fixture(handler: Handler): Fixture {
         val recorder = Recorder { request ->
             if (request.url.encodedPath == "/api/schema") json(SCHEMA_JSON) else handler(request)
         }
@@ -74,7 +71,10 @@ class HttpCollectionWritesTest {
     @Test
     fun aClearedSelectIsNullAndAConflictingVersionIsRejected() = runTest {
         val f = fixture { respond("", HttpStatusCode.Conflict) }
-        val result = f.writes.update(projects(f), PROJECT_ITEM, "old", mapOf("status" to FieldValue.Choices(emptyList())))
+        val result = f.writes.update(
+            projects(f), PROJECT_ITEM, "old",
+            mapOf("status" to FieldValue.Choices(emptyList()))
+        )
         assertEquals(JsonNull, f.recorder.bodyJson(1).getValue("properties").obj().getValue("status"))
         assertEquals(FailureKind.REJECTED, assertIs<RepositoryResult.Failure>(result).kind)
     }
@@ -112,16 +112,26 @@ class HttpCollectionWritesTest {
         f.writes.link(PROJECT_ITEM, "people", "x").content()
         f.writes.unlinkEdge(PROJECT_ITEM, "people", "x").content()
         val requests = f.recorder.requests
-        assertEquals(HttpMethod.Put to "/api/items/$PROJECT_ITEM/relations/area", requests[0].method to requests[0].url.encodedPath)
+        assertEquals(
+            HttpMethod.Put to "/api/items/$PROJECT_ITEM/relations/area",
+            requests[0].method to requests[0].url.encodedPath
+        )
         assertEquals(AREA_ITEM, f.recorder.bodyJson(0).getValue("targetItemId").jsonPrimitive.content)
         assertEquals(JsonNull, f.recorder.bodyJson(1).getValue("targetItemId"))
-        assertEquals(HttpMethod.Put to "/api/items/$PROJECT_ITEM/relations/people/x", requests[2].method to requests[2].url.encodedPath)
-        assertEquals(HttpMethod.Delete to "/api/items/$PROJECT_ITEM/relations/people/x", requests[3].method to requests[3].url.encodedPath)
+        assertEquals(
+            HttpMethod.Put to "/api/items/$PROJECT_ITEM/relations/people/x",
+            requests[2].method to requests[2].url.encodedPath
+        )
+        assertEquals(
+            HttpMethod.Delete to "/api/items/$PROJECT_ITEM/relations/people/x",
+            requests[3].method to requests[3].url.encodedPath
+        )
     }
 
     @Test
     fun aValueLinkIsEndedAndTakenOverThroughTheItemLinkEndpoints() = runTest {
-        val f = fixture { json("""{"itemId":"i","propertyKey":"project","valueKind":"inheritedBroken","sources":[]}""") }
+        val f =
+            fixture { json("""{"itemId":"i","propertyKey":"project","valueKind":"inheritedBroken","sources":[]}""") }
         f.writes.unlinkValue(PROJECT_ITEM, "status").content()
         f.writes.relinkValue(PROJECT_ITEM, "status").content()
         assertEquals(HttpMethod.Post, f.recorder.requests[0].method)
@@ -140,7 +150,8 @@ class HttpCollectionWritesTest {
 
     @Test
     fun aPageIsReplacedOnlyWhileItsEtagIsCurrent() = runTest {
-        val f = fixture { respond("""{"trashedPages":[]}""", HttpStatusCode.OK, headersOf(HttpHeaders.ETag, "\"new\"")) }
+        val f =
+            fixture { respond("""{"trashedPages":[]}""", HttpStatusCode.OK, headersOf(HttpHeaders.ETag, "\"new\"")) }
         val page = f.writes.replacePage(PROJECT_ITEM, "# Nové", "old").content()
         val request = f.recorder.requests.single()
         assertEquals(HttpMethod.Put, request.method)
@@ -154,16 +165,23 @@ class HttpCollectionWritesTest {
     @Test
     fun aStalePageIsRejectedAndAnAnswerWithoutAnEtagIsInvalid() = runTest {
         val stale = fixture { respond("", HttpStatusCode.Conflict) }
-        assertEquals(FailureKind.REJECTED, assertIs<RepositoryResult.Failure>(stale.writes.replacePage("i", "x", "e")).kind)
+        val refused = stale.writes.replacePage("i", "x", "e")
+        assertEquals(FailureKind.REJECTED, assertIs<RepositoryResult.Failure>(refused).kind)
         val odd = fixture { respond("{}", HttpStatusCode.OK) }
-        assertEquals(FailureKind.INVALID_DATA, assertIs<RepositoryResult.Failure>(odd.writes.replacePage("i", "x", "e")).kind)
+        val unreadable = odd.writes.replacePage("i", "x", "e")
+        assertEquals(FailureKind.INVALID_DATA, assertIs<RepositoryResult.Failure>(unreadable).kind)
     }
 
     @Test
     fun anUploadSendsTheRawBytesWithTheirTypeTheNameAndTheAttachment() = runTest {
-        val file = """{"id":"$PROJECT_ITEM","databaseId":"$FILES_ID","properties":{"name":"a.pdf"},"createdAt":"c","updatedAt":"u"}"""
+        val file = """{"id":"$PROJECT_ITEM","databaseId":"$FILES_ID","properties":{"name":"a.pdf"},
+            |"createdAt":"c","updatedAt":"u"}
+        """.trimMargin()
         val f = fixture { json(file, HttpStatusCode.Created) }
-        val item = f.writes.upload("a.pdf", "application/pdf", byteArrayOf(9, 8, 7), "projects" to PROJECT_ITEM).content()
+        val item = f.writes.upload(
+            "a.pdf", "application/pdf", byteArrayOf(9, 8, 7),
+            "projects" to PROJECT_ITEM
+        ).content()
         val request = f.recorder.requests.single { it.url.encodedPath == "/api/files" }
         assertEquals(HttpMethod.Post, request.method)
         assertEquals("application/pdf", request.body.contentType.toString())

@@ -11,6 +11,7 @@ import cz.semprec.app.data.HttpCollectionWrites
 import cz.semprec.app.data.InMemoryPlaceholderRepository
 import cz.semprec.app.domain.LoadPlaceholderItem
 import cz.semprec.app.domain.LoadPlaceholderItems
+import cz.semprec.app.presentation.CollectionTarget
 import cz.semprec.app.presentation.CollectionViewModel
 import cz.semprec.app.presentation.CollectionViewModelFactory
 import cz.semprec.app.presentation.DetailViewModel
@@ -42,7 +43,8 @@ class HomeSDK(
     private val viewModels =
         HomeViewModelFactory(LoadPlaceholderItems(repository), LoadPlaceholderItem(repository), auth)
     private val collectionReads = HttpCollectionReads(auth.api)
-    private val collections = CollectionViewModelFactory(collectionReads, HttpCollectionWrites(auth.api, collectionReads))
+    private val collections =
+        CollectionViewModelFactory(collectionReads, HttpCollectionWrites(auth.api, collectionReads))
 
     fun homeViewModel(): HomeViewModel = viewModels.homeViewModel()
 
@@ -54,19 +56,8 @@ class HomeSDK(
 
     fun loginViewModel(): LoginViewModel = viewModels.loginViewModel()
 
-    /**
-     * A collection of the items of one database, named by its canonical [databaseKey] or its [databaseId]. At most
-     * one narrowing applies, the first given of [areaId], [relationKey] with [relatedItemId], and [filterJson].
-     */
-    fun collectionViewModel(
-        databaseKey: String?,
-        databaseId: String?,
-        areaId: String?,
-        relationKey: String?,
-        relatedItemId: String?,
-        filterJson: String?,
-    ): CollectionViewModel =
-        collections.collectionViewModel(databaseKey, databaseId, areaId, relationKey, relatedItemId, filterJson)
+    /** A collection of the items of one database that [target] selects. */
+    fun collectionViewModel(target: CollectionTarget): CollectionViewModel = collections.collectionViewModel(target)
 
     /** The detail of one item; [databaseKeyHint] is the canonical key of its database, if the caller knows it. */
     fun itemViewModel(itemId: String, databaseKeyHint: String?): ItemViewModel =

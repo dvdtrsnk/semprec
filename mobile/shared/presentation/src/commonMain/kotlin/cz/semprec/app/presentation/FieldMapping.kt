@@ -36,7 +36,11 @@ internal fun contentOf(property: CollectionProperty, value: FieldValue?): FieldC
     is FieldValue.Flag -> FieldContent.Flag(value.on)
     is FieldValue.Choices -> {
         val options = value.keys.map { key -> property.options.firstOrNull { it.key == key } ?: optionOf(key) }
-        if (options.isEmpty()) FieldContent.Empty else FieldContent.Choices(options.map { OptionView(it.key, it.label, it.color) })
+        if (options.isEmpty()) FieldContent.Empty else FieldContent.Choices(
+            options.map {
+                OptionView(it.key, it.label, it.color)
+            }
+        )
     }
     is FieldValue.Targets ->
         if (value.targets.isEmpty()) FieldContent.Empty

@@ -30,15 +30,10 @@ class AuthenticatedApi(
         return response
     }
 
-    /** Uploads [bytes] as the raw body of a `POST`; [mimeType] is the `Content-Type` of the body. */
-    suspend fun upload(
-        path: String,
-        mimeType: String,
-        bytes: ByteArray,
-        extraHeaders: List<Pair<String, String>>,
-    ): ApiResponse {
+    /** Uploads [body] as the raw body of a `POST`; its media type is the `Content-Type` of the request. */
+    suspend fun upload(path: String, body: RawBody, extraHeaders: List<Pair<String, String>>): ApiResponse {
         val session = storage.load() ?: return ApiResponse.Failure(FailureKind.UNAUTHORIZED, null)
-        val response = client.upload(session.serverUrl, path, session.token, mimeType, bytes, extraHeaders)
+        val response = client.upload(session.serverUrl, path, session.token, body, extraHeaders)
         if (response is ApiResponse.Failure && response.status == UNAUTHORIZED_STATUS) onSessionRejected()
         return response
     }

@@ -60,9 +60,11 @@ class LoadItemDetail(private val reads: CollectionReads) {
         schema: CollectionSchema,
     ): RepositoryResult<CollectionItem> {
         val first = reads.item(itemId, hinted?.contextRelations()?.map { it.key }.orEmpty())
-        if (first !is RepositoryResult.Content) return first
-        val actual = schema.databaseById(first.value.databaseId)
-        if (actual == null || actual.id == hinted?.id) return first
-        return reads.item(itemId, actual.contextRelations().map { it.key })
+        val actual = (first as? RepositoryResult.Content)?.let { schema.databaseById(it.value.databaseId) }
+        return if (actual == null || actual.id == hinted?.id) {
+            first
+        } else {
+            reads.item(itemId, actual.contextRelations().map { it.key })
+        }
     }
 }

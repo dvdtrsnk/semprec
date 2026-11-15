@@ -8,15 +8,16 @@ import cz.semprec.app.domain.CollectionQuery
 import cz.semprec.app.domain.CollectionScope
 import cz.semprec.app.domain.FacetSelection
 import cz.semprec.app.domain.FieldValue
+import cz.semprec.app.domain.FilterTree
 import cz.semprec.app.domain.PropertyKind
 import cz.semprec.app.domain.RepositoryResult
 import cz.semprec.app.domain.SortSpec
 import cz.semprec.app.domain.ValueKind
+import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
-import io.ktor.client.engine.mock.respond
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.boolean
@@ -33,9 +34,14 @@ import kotlin.test.assertTrue
 private fun <T> RepositoryResult<T>.content(): T = assertIs<RepositoryResult.Content<T>>(this).value
 
 class HttpCollectionReadsTest {
-    private fun reads(handler: suspend io.ktor.client.engine.mock.MockRequestHandleScope.(io.ktor.client.request.HttpRequestData) -> io.ktor.client.request.HttpResponseData): Pair<HttpCollectionReads, Recorder> {
+    private fun reads(handler: Handler): Pair<HttpCollectionReads, Recorder> {
         val recorder = Recorder(handler)
         return HttpCollectionReads(recorder.api) to recorder
+    }
+
+    /** Answers the schema request with the fixture schema and every other request with [body]. */
+    private fun schemaAnd(body: String): Handler = { request ->
+        if (request.url.encodedPath == "/api/schema") json(SCHEMA_JSON) else json(body)
     }
 
     @Test
@@ -89,9 +95,7 @@ class HttpCollectionReadsTest {
 
     @Test
     fun aQueryAndsTheCollectionFilterTheAreaTheChipAndTheSelectionsAndAsksForLinksAndRelations() = runTest {
-        val (reads, recorder) = reads { request ->
-            if (request.url.encodedPath == "/api/schema") json(SCHEMA_JSON) else json("""{"items": [], "nextCursor": null}""")
-        }
+        val (reads, recorder) = reads(schemaAnd("""{"items": [], "nextCursor": null}"""))
         val projects = reads.schema().content().database("projects")!!
         val chip = projects.quickFilters.first()
         val query = CollectionQuery(
@@ -124,7 +128,10 @@ class HttpCollectionReadsTest {
             nodes.map { it.getValue("type").jsonPrimitive.content },
         )
         assertEquals(AREA_ITEM, nodes[1].getValue("value").jsonPrimitive.content)
-        assertEquals(listOf("done", "inProgress"), nodes[3].getValue("value").jsonArray.map { it.jsonPrimitive.content })
+        assertEquals(
+            listOf("done", "inProgress"),
+            nodes[3].getValue("value").jsonArray.map { it.jsonPrimitive.content }
+        )
         assertEquals(2, nodes[4].getValue("nodes").jsonArray.size)
         assertEquals("thisWeek", nodes[5].getValue("preset").jsonPrimitive.content)
         assertTrue(nodes[6].getValue("value").jsonPrimitive.boolean)
@@ -144,15 +151,21 @@ class HttpCollectionReadsTest {
 
     @Test
     fun aQueryWithNothingToNarrowByAsksForNoFilterAndASingleConditionIsNotWrapped() = runTest {
-        val (reads, recorder) = reads { request ->
-            if (request.url.encodedPath == "/api/schema") json(SCHEMA_JSON) else json("""{"items": []}""")
-        }
+        val (reads, recorder) = reads(schemaAnd("""{"items": []}"""))
         val schema = reads.schema().content()
         reads.query(schema.database("areas")!!, CollectionQuery()).content()
         assertNull(recorder.bodyJson(1)["filter"])
         assertNull(recorder.bodyJson(1)["q"])
         assertNull(recorder.bodyJson(1)["sort"])
-        reads.query(schema.database("files")!!, CollectionQuery(scope = CollectionScope.Related("projects", PROJECT_ITEM)))
+        reads.query(
+            schema.database("files")!!,
+            CollectionQuery(
+                scope = CollectionScope.Related(
+                    "projects",
+                    PROJECT_ITEM
+                )
+            )
+        )
         val filter = recorder.bodyJson(2).getValue("filter").obj()
         assertEquals("relation_contains", filter.getValue("type").jsonPrimitive.content)
         assertEquals("projects", filter.getValue("property").jsonPrimitive.content)
@@ -161,20 +174,16 @@ class HttpCollectionReadsTest {
 
     @Test
     fun aMatchingScopePassesTheRelatedCollectionsFilterOn() = runTest {
-        val (reads, recorder) = reads { request ->
-            if (request.url.encodedPath == "/api/schema") json(SCHEMA_JSON) else json("""{"items": []}""")
-        }
+        val (reads, recorder) = reads(schemaAnd("""{"items": []}"""))
         val files = reads.schema().content().database("files")!!
-        val filter = cz.semprec.app.domain.FilterTree("""{"type":"relation_contains","property":"projects","value":"p"}""")
+        val filter = FilterTree("""{"type":"relation_contains","property":"projects","value":"p"}""")
         reads.query(files, CollectionQuery(scope = CollectionScope.Matching(filter)))
         assertEquals("p", recorder.bodyJson(1).getValue("filter").obj().getValue("value").jsonPrimitive.content)
     }
 
     @Test
     fun aQueryPageDecodesEveryValueByItsPropertyKind() = runTest {
-        val (reads, _) = reads { request ->
-            if (request.url.encodedPath == "/api/schema") json(SCHEMA_JSON) else json("""{"items": [$PROJECT_JSON], "nextCursor": "next"}""")
-        }
+        val (reads, _) = reads(schemaAnd("""{"items": [$PROJECT_JSON], "nextCursor": "next"}"""))
         val projects = reads.schema().content().database("projects")!!
         val page: CollectionPage = reads.query(projects, CollectionQuery()).content()
         assertEquals("next", page.nextCursor)
@@ -191,9 +200,7 @@ class HttpCollectionReadsTest {
 
     @Test
     fun relationTargetsComeFromTheExpandedRelationsAndTheDerivedAreaOverridesThem() = runTest {
-        val (reads, _) = reads { request ->
-            if (request.url.encodedPath == "/api/schema") json(SCHEMA_JSON) else json(PROJECT_JSON)
-        }
+        val (reads, _) = reads(schemaAnd(PROJECT_JSON))
         reads.schema()
         val item = reads.item(PROJECT_ITEM, listOf("area")).content()
         val targets = assertIs<FieldValue.Targets>(item.values["area"]).targets
@@ -203,9 +210,7 @@ class HttpCollectionReadsTest {
 
     @Test
     fun valueOriginsAreTheLinksOfTheItemAndTheDerivedValues() = runTest {
-        val (reads, _) = reads { request ->
-            if (request.url.encodedPath == "/api/schema") json(SCHEMA_JSON) else json(PROJECT_JSON)
-        }
+        val (reads, _) = reads(schemaAnd(PROJECT_JSON))
         val item = reads.item(PROJECT_ITEM, emptyList()).content()
         val status = assertNotNull(item.origins["status"])
         assertEquals(ValueKind.INHERITED, status.kind)
@@ -224,9 +229,7 @@ class HttpCollectionReadsTest {
 
     @Test
     fun anItemIsReadWithLinksDerivedValuesAndTheNamedRelations() = runTest {
-        val (reads, recorder) = reads { request ->
-            if (request.url.encodedPath == "/api/schema") json(SCHEMA_JSON) else json(PROJECT_JSON)
-        }
+        val (reads, recorder) = reads(schemaAnd(PROJECT_JSON))
         reads.item(PROJECT_ITEM, listOf("area", "company")).content()
         val request = recorder.requests.last()
         assertEquals(HttpMethod.Get, request.method)
@@ -238,9 +241,7 @@ class HttpCollectionReadsTest {
 
     @Test
     fun anItemOfADatabaseTheSchemaLacksIsInvalidDataAndAMissingItemIsNotFound() = runTest {
-        val (strange, _) = reads { request ->
-            if (request.url.encodedPath == "/api/schema") json(SCHEMA_JSON) else json("""{"id":"i","databaseId":"unknown"}""")
-        }
+        val (strange, _) = reads(schemaAnd("""{"id":"i","databaseId":"unknown"}"""))
         assertEquals(FailureKind.INVALID_DATA, assertIs<RepositoryResult.Failure>(strange.item("i", emptyList())).kind)
         val (missing, _) = reads { request ->
             if (request.url.encodedPath == "/api/schema") json(SCHEMA_JSON) else respond("", HttpStatusCode.NotFound)
@@ -326,7 +327,13 @@ class HttpCollectionReadsTest {
             if (request.url.encodedPath.endsWith("missing")) {
                 respond("", HttpStatusCode.NotFound)
             } else {
-                respond(byteArrayOf(1, 2, 3), HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "image/png; charset=binary"))
+                respond(
+                    byteArrayOf(1, 2, 3), HttpStatusCode.OK,
+                    headersOf(
+                        HttpHeaders.ContentType,
+                        "image/png; charset=binary"
+                    )
+                )
             }
         }
         val blob = reads.blob("b1").content()

@@ -13,8 +13,11 @@ class FindRelationTargets(private val reads: CollectionReads) {
             is RepositoryResult.Content -> loaded.value
         }
         val target = property.targetDatabaseId?.let(schema::databaseById)
-            ?: return RepositoryResult.Failure(FailureKind.NOT_FOUND)
-        val query = CollectionQuery(quickFilter = target.pickerFilter, search = search.ifBlank { null }, limit = LIMIT)
+        return if (target == null) RepositoryResult.Failure(FailureKind.NOT_FOUND) else search(target, search)
+    }
+
+    private suspend fun search(target: CollectionDatabase, text: String): RepositoryResult<List<RelationTarget>> {
+        val query = CollectionQuery(quickFilter = target.pickerFilter, search = text.ifBlank { null }, limit = LIMIT)
         return when (val page = reads.query(target, query)) {
             is RepositoryResult.Failure -> page
             is RepositoryResult.Content -> RepositoryResult.Content(
