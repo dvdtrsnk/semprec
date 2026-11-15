@@ -1,4 +1,5 @@
 import NavigatorUI
+import CoreKit
 import SwiftUI
 import XCTest
 
@@ -12,7 +13,7 @@ final class AppSceneNavigationTests: XCTestCase {
     @MainActor
     func testTheHomeRouterPushesTheItemsDetailOntoTheHomeTabsStack() async throws {
         let window = try SceneWindow()
-        let scene = AppComposition()
+        let scene = AppComposition(models: SignedInModels())
         try await window.show(AppScene(composition: scene))
         let home = try await registeredStack(.home, of: scene)
         XCTAssertEqual(window.stackTitle, try Copy.home())
@@ -30,7 +31,7 @@ final class AppSceneNavigationTests: XCTestCase {
     @MainActor
     func testTheSettingsRouterPresentsAboutAsASheetOverTheSettingsTabsStack() async throws {
         let window = try SceneWindow()
-        let scene = AppComposition()
+        let scene = AppComposition(models: SignedInModels())
         try await window.show(AppScene(composition: scene, selectedTab: .settings))
         let settings = try await registeredStack(.settings, of: scene)
 
@@ -56,7 +57,7 @@ final class AppSceneNavigationTests: XCTestCase {
         @MainActor
         func testClickingAHomeRowRightOfItsTitleOpensTheItemsDetail() async throws {
             let window = try SceneWindow()
-            let scene = AppComposition()
+            let scene = AppComposition(models: SignedInModels())
             try await window.show(AppScene(composition: scene))
             let home = try await registeredStack(.home, of: scene)
             try await eventually(timeout: .seconds(10)) { (window.listRowCount ?? 0) > 0 }
@@ -73,7 +74,7 @@ final class AppSceneNavigationTests: XCTestCase {
         @MainActor
         func testClickingTheAboutRowRightOfItsLabelPresentsAbout() async throws {
             let window = try SceneWindow()
-            let scene = AppComposition()
+            let scene = AppComposition(models: SignedInModels())
             try await window.show(AppScene(composition: scene, selectedTab: .settings))
             let settings = try await registeredStack(.settings, of: scene)
             try await eventually(timeout: .seconds(10)) { (window.listRowCount ?? 0) > 0 }

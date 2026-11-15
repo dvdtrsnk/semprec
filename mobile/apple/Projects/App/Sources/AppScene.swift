@@ -1,3 +1,4 @@
+import AuthFeature
 import HomeFeature
 import NavigatorUI
 import SettingsFeature
@@ -29,7 +30,25 @@ struct AppScene: View {
         // outlive the window: AppKit kept a closed macOS window's tab bar environment, root navigator included, alive
         // in SceneLifetimeTests.
         let composition = composition
-        TabView(selection: $selectedTab) {
+        let rootNavigator = rootNavigator
+        let selectedTab = $selectedTab
+        SessionGate(viewModel: SessionViewModel(model: composition.models.makeSession())) {
+            Self.tabs(composition, rootNavigator: rootNavigator, selectedTab: selectedTab)
+        } signedOut: {
+            AuthScreenFactory.login(makeModel: { composition.models.makeLogin() })
+        }
+    }
+}
+
+// MARK: - Subviews
+private extension AppScene {
+
+    static func tabs(
+        _ composition: AppComposition,
+        rootNavigator: Navigator,
+        selectedTab: Binding<AppTab>
+    ) -> some View {
+        TabView(selection: selectedTab) {
             Tab("tab.home", systemImage: "house", value: .home) { Self.homeTab(composition) }
                 .accessibilityIdentifier(AppIdentifiers.homeTab)
             Tab("tab.settings", systemImage: "gearshape", value: .settings) { Self.settingsTab(composition) }
@@ -43,10 +62,6 @@ struct AppScene: View {
         }
         .navigationRoot(rootNavigator)
     }
-}
-
-// MARK: - Subviews
-private extension AppScene {
 
     static func homeTab(_ composition: AppComposition) -> some View {
         ManagedNavigationStack { navigator in

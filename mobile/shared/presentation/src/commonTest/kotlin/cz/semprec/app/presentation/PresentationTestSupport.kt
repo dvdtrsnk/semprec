@@ -80,8 +80,8 @@ class FakeRepository(vararg behaviors: Behavior) : PlaceholderRepository {
 /** Deliberately out of order: the use case sorts by ordinal. */
 val catalog = FakeRepository.Behavior.Content(listOf(PlaceholderItem("item-2", 2), PlaceholderItem("item-1", 1)))
 
-fun factory(repository: FakeRepository) =
-    HomeViewModelFactory(LoadPlaceholderItems(repository), LoadPlaceholderItem(repository))
+fun factory(repository: FakeRepository, auth: FakeAuthRepository = FakeAuthRepository()) =
+    HomeViewModelFactory(LoadPlaceholderItems(repository), LoadPlaceholderItem(repository), auth)
 
 /**
  * Creates a ViewModel through [ViewModelProvider] into this store, the way an Android owner holds it, so that

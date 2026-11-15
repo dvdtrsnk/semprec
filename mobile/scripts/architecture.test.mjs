@@ -386,6 +386,12 @@ describe("VM-BRIDGE", () => {
     assertViolations(root, ["VM-BRIDGE"], /HomeViewModel has no HomeViewModelTest.kt in shared\/presentation\/src\/commonTest/);
   });
 
+  it("fails an Apple-only ViewModel once it is no longer listed in viewModels.appleOnly", () => {
+    const root = copyOfTree();
+    replace(root, POLICY_FILE, '"appleOnly": ["LoginViewModel", "SessionViewModel"]', '"appleOnly": ["SessionViewModel"]');
+    assertViolations(root, ["VM-BRIDGE"], /no Android \*Screen composable takes LoginViewModel as a parameter/);
+  });
+
   it("fails a ViewModel no Android screen takes", () => {
     const root = copyOfTree();
     remove(root, `${HOME_FEATURE}/detail/DetailScreen.kt`);
@@ -531,6 +537,18 @@ describe("COPY-PARITY", () => {
   const homeValues = "android/feature/home/src/main/res/values/strings.xml";
   const homeValuesCs = "android/feature/home/src/main/res/values-cs/strings.xml";
   const appValues = "android/app/src/main/res/values/strings.xml";
+
+  it("fails an Apple key of an Apple-only module that its copy entry does not list", () => {
+    const root = copyOfTree();
+    replace(root, POLICY_FILE, '        "login.forgot",\n', "");
+    assertViolations(root, ["COPY-PARITY"], /has the key login.forgot, but it is not a copy key of AuthFeature/);
+  });
+
+  it("fails an Apple-only key whose catalog entry is missing", () => {
+    const root = copyOfTree();
+    replace(root, POLICY_FILE, '        "login.forgot",\n', '        "login.forgot",\n        "login.unknown",\n');
+    assertViolations(root, ["COPY-PARITY"], /AuthFeature lacks the key login.unknown/);
+  });
 
   it("fails an Android string that is not a copy key of its module", () => {
     const root = copyOfTree();

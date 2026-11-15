@@ -8,4 +8,6 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
     func makeHome() -> any HomeScreenModel
     func makeDetail(itemId: String) -> any DetailScreenModel
     func makeSettings() -> any SettingsScreenModel
+    func makeSession() -> any SessionScreenModel
+    func makeLogin() -> any LoginScreenModel
 }
