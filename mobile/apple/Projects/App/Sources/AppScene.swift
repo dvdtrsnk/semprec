@@ -1,11 +1,10 @@
 import AuthFeature
-import HomeFeature
+import DesignSystem
 import NavigatorUI
-import SettingsFeature
 import SwiftUI
 
-/// The content of one window: a tab per feature, each with its own navigation stack. Each window creates its own
-/// composition, so windows share neither screen models nor navigation.
+/// The content of one window: a tab per area of the app, each with its own navigation stack. Each window creates its
+/// own composition, so windows share neither screen models nor navigation.
 struct AppScene: View {
 
     // MARK: - Properties
@@ -15,7 +14,7 @@ struct AppScene: View {
 
     // MARK: - Init
     /// `composition` runs once per scene, when SwiftUI creates the state object. The window opens on `selectedTab`.
-    init(composition: @autoclosure @escaping () -> AppComposition = AppComposition(), selectedTab: AppTab = .home) {
+    init(composition: @autoclosure @escaping () -> AppComposition = AppComposition(), selectedTab: AppTab = .overview) {
         _composition = StateObject(wrappedValue: composition())
         _selectedTab = State(initialValue: selectedTab)
     }
@@ -49,11 +48,20 @@ private extension AppScene {
         selectedTab: Binding<AppTab>
     ) -> some View {
         TabView(selection: selectedTab) {
-            Tab("tab.home", systemImage: "house", value: .home) { Self.homeTab(composition) }
-                .accessibilityIdentifier(AppIdentifiers.homeTab)
-            Tab("tab.settings", systemImage: "gearshape", value: .settings) { Self.settingsTab(composition) }
-                .accessibilityIdentifier(AppIdentifiers.settingsTab)
+            Tab("tab.overview", systemImage: "list.bullet.rectangle", value: AppTab.overview) {
+                Self.stack(.overview, composition) { OverviewTab.root(composition) }
+            }
+            .accessibilityIdentifier(AppIdentifiers.overviewTab)
+            Tab("tab.calendar", systemImage: "calendar", value: AppTab.calendar) {
+                Self.stack(.calendar, composition) { CalendarTab.root(composition) }
+            }
+            .accessibilityIdentifier(AppIdentifiers.calendarTab)
+            Tab("tab.journal", systemImage: "book", value: AppTab.journal) {
+                Self.stack(.journal, composition) { JournalTab.root(composition) }
+            }
+            .accessibilityIdentifier(AppIdentifiers.journalTab)
         }
+        .adaptiveTabNavigation()
         // A closure, not a method reference: Swift 6.2.1 crashed reabstracting the actor-isolated opaque view method.
         .onNavigationProvidedView(AppDestination.self) { [weak composition] destination in
             if let composition {
@@ -63,30 +71,23 @@ private extension AppScene {
         .navigationRoot(rootNavigator)
     }
 
-    static func homeTab(_ composition: AppComposition) -> some View {
+    /// One tab's navigation stack around `root`; the stack registers itself with the scene's navigation each time its
+    /// root appears.
+    static func stack<Root: View>(
+        _ tab: AppTab,
+        _ composition: AppComposition,
+        @ViewBuilder root: @escaping () -> Root
+    ) -> some View {
         ManagedNavigationStack { navigator in
-            HomeScreenFactory.home(makeModel: { composition.models.makeHome() }, router: composition.homeRouter)
-                .onAppear { composition.navigation.register(navigator, for: .home) }
-        }
-    }
-
-    static func settingsTab(_ composition: AppComposition) -> some View {
-        ManagedNavigationStack { navigator in
-            SettingsScreenFactory.settings(
-                makeModel: { composition.models.makeSettings() },
-                router: composition.settingsRouter
-            )
-            .onAppear { composition.navigation.register(navigator, for: .settings) }
+            root().onAppear { composition.navigation.register(navigator, for: tab) }
         }
     }
 
     @ViewBuilder
     static func destinationView(_ destination: AppDestination, composition: AppComposition) -> some View {
         switch destination {
-        case .detail(let itemId):
-            HomeScreenFactory.detail { composition.models.makeDetail(itemId: itemId) }
-        case .about:
-            SettingsScreenFactory.about(version: composition.version, build: composition.build)
+        case .pending(let title):
+            PendingScreen(title: title)
         }
     }
 }

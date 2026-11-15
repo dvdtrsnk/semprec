@@ -4,8 +4,8 @@ import NavigatorUI
 /// them know neither each other nor the navigation library.
 enum AppDestination: Hashable {
 
-    case detail(itemId: String)
-    case about
+    /// A screen a later wave of the app builds, shown as a notice that names it by `title`.
+    case pending(title: String)
 }
 
 // MARK: - NavigationProvidedDestination

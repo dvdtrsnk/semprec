@@ -9,12 +9,6 @@ final class SignedInModels: ScreenModelFactory {
     private let real = SharedScreenModelFactory()
 
     // MARK: - Protocol conformance
-    func makeHome() -> any HomeScreenModel { real.makeHome() }
-
-    func makeDetail(itemId: String) -> any DetailScreenModel { real.makeDetail(itemId: itemId) }
-
-    func makeSettings() -> any SettingsScreenModel { real.makeSettings() }
-
     func makeLogin() -> any LoginScreenModel { real.makeLogin() }
 
     func makeSession() -> any SessionScreenModel {

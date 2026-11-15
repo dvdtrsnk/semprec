@@ -1,13 +1,5 @@
 @preconcurrency internal import SharedSDK
 
-// MARK: - Shared values
-extension PlaceholderItem {
-
-    init(_ item: SharedSDK.HomeItem) {
-        self.init(id: item.id, ordinal: Int(item.ordinal))
-    }
-}
-
 // MARK: - Shared failures
 extension FailureKind {
 
@@ -18,22 +10,6 @@ extension FailureKind {
         case .unauthorized: self = .unauthorized
         case .notFound: self = .notFound
         case .rejected: self = .rejected
-        }
-    }
-}
-
-// MARK: - Shared settings rows
-extension SettingsRow {
-
-    init(_ row: SharedSDK.SettingsRow) {
-        switch row {
-        case .about: self = .about
-        }
-    }
-
-    var shared: SharedSDK.SettingsRow {
-        switch self {
-        case .about: .about
         }
     }
 }
