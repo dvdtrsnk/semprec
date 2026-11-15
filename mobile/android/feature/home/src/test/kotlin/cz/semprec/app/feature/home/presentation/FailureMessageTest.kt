@@ -26,4 +26,11 @@ class FailureMessageTest {
     fun `an unexpected failure gets the generic message`() {
         assertEquals(R.string.failure_unexpected, failureMessage(null))
     }
+
+    @Test
+    fun `session and request failures get their own messages`() {
+        assertEquals(R.string.failure_unauthorized, failureMessage(FailureKind.UNAUTHORIZED))
+        assertEquals(R.string.failure_notFound, failureMessage(FailureKind.NOT_FOUND))
+        assertEquals(R.string.failure_rejected, failureMessage(FailureKind.REJECTED))
+    }
 }

@@ -5,7 +5,7 @@
 public final class SharedScreenModelFactory {
 
     // MARK: - Dependencies
-    private let sdk = SharedSDK.HomeSDK()
+    private let sdk = SharedSDK.HomeSDK(sessionStorage: KeychainSessionStorage(), device: DeviceIdentity.current())
 
     // MARK: - Init
     public init() {}
@@ -24,5 +24,13 @@ extension SharedScreenModelFactory: ScreenModelFactory {
 
     public func makeSettings() -> any SettingsScreenModel {
         SharedSettingsScreenModel(sdk.settingsViewModel())
+    }
+
+    public func makeSession() -> any SessionScreenModel {
+        SharedSessionScreenModel(sdk.sessionViewModel())
+    }
+
+    public func makeLogin() -> any LoginScreenModel {
+        SharedLoginScreenModel(sdk.loginViewModel())
     }
 }

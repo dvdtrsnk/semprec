@@ -23,13 +23,15 @@
     "allowedImports": ["androidx.lifecycle.ViewModel", "androidx.lifecycle.viewModelScope"]
   },
   "apple": {
-    "systemModules": ["Combine", "Foundation", "SwiftUI", "Synchronization", "XCTest"],
+    "systemModules": ["Combine", "Foundation", "Security", "SwiftUI", "Synchronization", "XCTest"],
     "externalModules": ["FactoryKit", "NavigatorUI"],
     "kotlinFrameworkTarget": "CoreKit",
     "targets": {
       "CoreKit": { "project": "Modules/Core/CoreKit", "sources": "Sources", "allowed": [] },
       "CoreKitTests": { "project": "Modules/Core/CoreKit", "sources": "Tests", "allowed": ["CoreKit", "SharedSDK"] },
       "Dependencies": { "project": "Modules/Core/Dependencies", "sources": "Sources", "allowed": ["CoreKit", "FactoryKit"] },
+      "AuthFeature": { "project": "Modules/Features/Auth", "sources": "Sources", "allowed": ["CoreKit", "DesignSystem"] },
+      "AuthFeatureTests": { "project": "Modules/Features/Auth", "sources": "Tests", "allowed": ["AuthFeature", "CoreKit"] },
       "DesignSystem": { "project": "Modules/Core/DesignSystem", "sources": "Sources", "allowed": [] },
       "HomeFeature": { "project": "Modules/Features/Home", "sources": "Sources", "allowed": ["CoreKit", "DesignSystem"] },
       "HomeFeatureTests": { "project": "Modules/Features/Home", "sources": "Tests", "allowed": ["HomeFeature", "CoreKit"] },
@@ -38,16 +40,17 @@
       "Semprec": {
         "project": "Projects/App",
         "sources": "Sources",
-        "allowed": ["CoreKit", "Dependencies", "HomeFeature", "SettingsFeature", "NavigatorUI"]
+        "allowed": ["AuthFeature", "CoreKit", "Dependencies", "DesignSystem", "HomeFeature", "SettingsFeature", "NavigatorUI"]
       },
-      "SemprecTests": { "project": "Projects/App", "sources": "Tests", "allowed": ["Semprec", "NavigatorUI"] },
+      "SemprecTests": { "project": "Projects/App", "sources": "Tests", "allowed": ["Semprec", "CoreKit", "NavigatorUI"] },
       "SemprecUITests": { "project": "Projects/App", "sources": "UITests", "allowed": [], "appUnderTest": "Semprec" }
     }
   },
   "viewModels": {
     "module": ":shared:presentation",
     "baseClass": "ScreenViewModel",
-    "leaseType": "SharedViewModelLease"
+    "leaseType": "SharedViewModelLease",
+    "appleOnly": ["LoginViewModel", "SessionViewModel"]
   },
   "navigation": {
     "gradleModules": [":android:app"],
@@ -58,7 +61,28 @@
       "android": ":android:app",
       "apple": "Semprec",
       "keys": ["tab.home", "tab.settings"],
+      "appleOnly": ["session.unreachable"],
       "androidUntranslatable": ["app_name"]
+    },
+    {
+      "android": null,
+      "apple": "AuthFeature",
+      "keys": [],
+      "appleOnly": [
+        "login.subtitle",
+        "login.server",
+        "login.email",
+        "login.password",
+        "login.password.placeholder",
+        "login.signIn",
+        "login.signingIn",
+        "login.forgot",
+        "login.resetSent",
+        "login.error.incomplete",
+        "login.error.unauthorized",
+        "login.error.unavailable",
+        "login.error.unexpected"
+      ]
     },
     {
       "android": ":android:core:ui",
@@ -77,6 +101,9 @@
         "detail.notFound",
         "failure.unavailable",
         "failure.invalidData",
+        "failure.unauthorized",
+        "failure.notFound",
+        "failure.rejected",
         "failure.unexpected"
       ],
       "androidOnly": ["detail.back"]

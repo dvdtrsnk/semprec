@@ -9,5 +9,8 @@
     <string name="detail_back">Zpět</string>
     <string name="failure_unavailable">Obsah teď není dostupný.</string>
     <string name="failure_invalidData">Obsah se nepodařilo přečíst.</string>
+    <string name="failure_unauthorized">Nejsi přihlášen nebo na to nemáš oprávnění.</string>
+    <string name="failure_notFound">Tohle se nepodařilo najít.</string>
+    <string name="failure_rejected">Požadavek byl odmítnut.</string>
     <string name="failure_unexpected">Něco se pokazilo.</string>
 </resources>

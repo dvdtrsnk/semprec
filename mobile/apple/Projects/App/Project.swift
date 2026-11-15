@@ -48,6 +48,8 @@ let project = Project(
             dependencies: [
                 .project(target: "CoreKit", path: "../../Modules/Core/CoreKit"),
                 .project(target: "Dependencies", path: "../../Modules/Core/Dependencies"),
+                .project(target: "DesignSystem", path: "../../Modules/Core/DesignSystem"),
+                .project(target: "AuthFeature", path: "../../Modules/Features/Auth"),
                 .project(target: "HomeFeature", path: "../../Modules/Features/Home"),
                 .project(target: "SettingsFeature", path: "../../Modules/Features/Settings"),
                 .external(name: "NavigatorUI"),
@@ -58,7 +60,14 @@ let project = Project(
             )
         ),
         // The app's tests drive its NavigatorUI stacks directly.
-        SemprecProject.tests("\(app)Tests", for: app, dependencies: [.external(name: "NavigatorUI")]),
+        SemprecProject.tests(
+            "\(app)Tests",
+            for: app,
+            dependencies: [
+                .project(target: "CoreKit", path: "../../Modules/Core/CoreKit"),
+                .external(name: "NavigatorUI"),
+            ]
+        ),
         // XCUITest drives the app from outside, by the accessibility identifiers the app and the features declare; it
         // compiles their identifier files, since it links none of their modules. iPhone and iPad only: on macOS
         // XCUITest needs the Accessibility permission to control the app, which a build machine does not grant.
