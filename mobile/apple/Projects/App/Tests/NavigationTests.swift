@@ -7,44 +7,43 @@ final class NavigationTests: XCTestCase {
 
     // MARK: - Tests
     @MainActor
-    func testHomeRouterPushesTheDetailOntoTheHomeStack() {
+    func testAPushReachesTheStackOfItsTabOnly() {
         let context = NavigationContext()
-        let home = StackSpy()
-        let settings = StackSpy()
-        context.register(home, for: .home)
-        context.register(settings, for: .settings)
-        AppHomeRouter(context: context).showDetail(itemId: "item-2")
-        XCTAssertEqual(home.pushed, [.detail(itemId: "item-2")])
-        XCTAssertTrue(home.sheets.isEmpty)
-        XCTAssertTrue(settings.pushed.isEmpty)
+        let overview = StackSpy()
+        let calendar = StackSpy()
+        context.register(overview, for: .overview)
+        context.register(calendar, for: .calendar)
+        context.push(.pending(title: "Inbox"), in: .overview)
+        XCTAssertEqual(overview.pushed, [.pending(title: "Inbox")])
+        XCTAssertTrue(overview.sheets.isEmpty)
+        XCTAssertTrue(calendar.pushed.isEmpty)
     }
 
     @MainActor
-    func testSettingsRouterPresentsAboutAsASheetOverTheSettingsStack() {
+    func testASheetIsPresentedOverTheStackOfItsTabOnly() {
         let context = NavigationContext()
-        let home = StackSpy()
-        let settings = StackSpy()
-        context.register(home, for: .home)
-        context.register(settings, for: .settings)
-        AppSettingsRouter(context: context).showAbout()
-        XCTAssertEqual(settings.sheets, [.about])
-        XCTAssertTrue(settings.pushed.isEmpty)
-        XCTAssertTrue(home.sheets.isEmpty)
+        let overview = StackSpy()
+        let journal = StackSpy()
+        context.register(overview, for: .overview)
+        context.register(journal, for: .journal)
+        context.presentSheet(.pending(title: "Profile"), from: .journal)
+        XCTAssertEqual(journal.sheets, [.pending(title: "Profile")])
+        XCTAssertTrue(journal.pushed.isEmpty)
+        XCTAssertTrue(overview.sheets.isEmpty)
     }
 
     @MainActor
     func testARouteBeforeRegistrationIsDroppedAndALaterStackReplacesTheEarlierOne() {
         let context = NavigationContext()
-        let router = AppHomeRouter(context: context)
-        router.showDetail(itemId: "item-1")
+        context.push(.pending(title: "Inbox"), in: .overview)
         let first = StackSpy()
-        context.register(first, for: .home)
+        context.register(first, for: .overview)
         XCTAssertTrue(first.pushed.isEmpty)
         let second = StackSpy()
-        context.register(second, for: .home)
-        router.showDetail(itemId: "item-3")
+        context.register(second, for: .overview)
+        context.push(.pending(title: "Mail"), in: .overview)
         XCTAssertTrue(first.pushed.isEmpty)
-        XCTAssertEqual(second.pushed, [.detail(itemId: "item-3")])
+        XCTAssertEqual(second.pushed, [.pending(title: "Mail")])
     }
 
     @MainActor
@@ -53,37 +52,39 @@ final class NavigationTests: XCTestCase {
         let second = NavigationContext()
         let firstStack = StackSpy()
         let secondStack = StackSpy()
-        first.register(firstStack, for: .home)
-        second.register(secondStack, for: .home)
-        AppHomeRouter(context: first).showDetail(itemId: "item-1")
-        XCTAssertEqual(firstStack.pushed, [.detail(itemId: "item-1")])
+        first.register(firstStack, for: .overview)
+        second.register(secondStack, for: .overview)
+        first.push(.pending(title: "Inbox"), in: .overview)
+        XCTAssertEqual(firstStack.pushed, [.pending(title: "Inbox")])
         XCTAssertTrue(secondStack.pushed.isEmpty)
     }
 
-    /// A second tap on a row that arrives with the first asks for the detail already on top.
+    /// A second tap that arrives with the first asks for the destination already on top.
     @MainActor
-    func testTheDetailOfTheItemOnTopIsNotPushedAgainAndTheDetailOfAnotherItemStacks() {
+    func testTheDestinationOnTopIsNotPushedAgainAndAnotherOneStacks() {
         let context = NavigationContext()
-        let home = StackSpy()
-        context.register(home, for: .home)
-        let router = AppHomeRouter(context: context)
-        router.showDetail(itemId: "item-3")
-        router.showDetail(itemId: "item-3")
-        XCTAssertEqual(home.pushed, [.detail(itemId: "item-3")])
-        router.showDetail(itemId: "item-4")
-        router.showDetail(itemId: "item-3")
-        XCTAssertEqual(home.pushed, [.detail(itemId: "item-3"), .detail(itemId: "item-4"), .detail(itemId: "item-3")])
+        let overview = StackSpy()
+        context.register(overview, for: .overview)
+        context.push(.pending(title: "Inbox"), in: .overview)
+        context.push(.pending(title: "Inbox"), in: .overview)
+        XCTAssertEqual(overview.pushed, [.pending(title: "Inbox")])
+        context.push(.pending(title: "Mail"), in: .overview)
+        context.push(.pending(title: "Inbox"), in: .overview)
+        XCTAssertEqual(
+            overview.pushed,
+            [.pending(title: "Inbox"), .pending(title: "Mail"), .pending(title: "Inbox")]
+        )
     }
 
     @MainActor
     func testAStackThatCannotTellItsTopTakesEveryPush() {
         let context = NavigationContext()
-        let home = StackSpy()
-        home.knowsTop = false
-        context.register(home, for: .home)
-        AppHomeRouter(context: context).showDetail(itemId: "item-3")
-        AppHomeRouter(context: context).showDetail(itemId: "item-3")
-        XCTAssertEqual(home.pushed, [.detail(itemId: "item-3"), .detail(itemId: "item-3")])
+        let overview = StackSpy()
+        overview.knowsTop = false
+        context.register(overview, for: .overview)
+        context.push(.pending(title: "Inbox"), in: .overview)
+        context.push(.pending(title: "Inbox"), in: .overview)
+        XCTAssertEqual(overview.pushed, [.pending(title: "Inbox"), .pending(title: "Inbox")])
     }
 
     // MARK: - NavigatorUI stack
@@ -93,18 +94,18 @@ final class NavigationTests: XCTestCase {
         let navigator = Navigator(configuration: .init())
         let stack = NavigatorStackAdapter(navigator)
         XCTAssertNil(stack.top)
-        stack.push(.detail(itemId: "item-1"))
-        stack.push(.detail(itemId: "item-2"))
+        stack.push(.pending(title: "One"))
+        stack.push(.pending(title: "Two"))
         XCTAssertEqual(navigator.count, 2)
-        XCTAssertEqual(stack.top, .detail(itemId: "item-2"))
+        XCTAssertEqual(stack.top, .pending(title: "Two"))
         navigator.pop()
-        XCTAssertEqual(stack.top, .detail(itemId: "item-1"))
-        stack.push(.detail(itemId: "item-3"))
+        XCTAssertEqual(stack.top, .pending(title: "One"))
+        stack.push(.pending(title: "Three"))
         XCTAssertEqual(navigator.count, 2)
-        XCTAssertEqual(stack.top, .detail(itemId: "item-3"))
+        XCTAssertEqual(stack.top, .pending(title: "Three"))
         navigator.popAll()
         XCTAssertNil(stack.top)
-        stack.presentSheet(.about)
+        stack.presentSheet(.pending(title: "Sheet"))
         XCTAssertNil(stack.top, "A sheet is no entry of the stack")
     }
 
@@ -112,33 +113,32 @@ final class NavigationTests: XCTestCase {
     func testAnEntryTheAdapterDidNotPushHidesTheTopUntilItIsPopped() {
         let navigator = Navigator(configuration: .init())
         let stack = NavigatorStackAdapter(navigator)
-        stack.push(.detail(itemId: "item-1"))
-        navigator.push(AppDestination.detail(itemId: "item-2"))
+        stack.push(.pending(title: "One"))
+        navigator.push(AppDestination.pending(title: "Two"))
         XCTAssertNil(stack.top)
-        stack.push(.detail(itemId: "item-3"))
+        stack.push(.pending(title: "Three"))
         XCTAssertEqual(navigator.count, 3)
-        XCTAssertEqual(stack.top, .detail(itemId: "item-3"))
+        XCTAssertEqual(stack.top, .pending(title: "Three"))
         navigator.pop()
         XCTAssertNil(stack.top)
         navigator.pop()
-        XCTAssertEqual(stack.top, .detail(itemId: "item-1"))
+        XCTAssertEqual(stack.top, .pending(title: "One"))
     }
 
     @MainActor
-    func testOnARealStackTheDetailOfTheItemOnTopIsPushedOnceAlsoAfterABackSwipe() {
+    func testOnARealStackTheDestinationOnTopIsPushedOnceAlsoAfterABackSwipe() {
         let context = NavigationContext()
         let navigator = Navigator(configuration: .init())
-        context.register(navigator, for: .home)
-        let router = AppHomeRouter(context: context)
-        router.showDetail(itemId: "item-3")
-        router.showDetail(itemId: "item-3")
+        context.register(navigator, for: .overview)
+        context.push(.pending(title: "Three"), in: .overview)
+        context.push(.pending(title: "Three"), in: .overview)
         XCTAssertEqual(navigator.count, 1)
-        router.showDetail(itemId: "item-4")
+        context.push(.pending(title: "Four"), in: .overview)
         XCTAssertEqual(navigator.count, 2)
         navigator.pop()
-        router.showDetail(itemId: "item-3")
-        XCTAssertEqual(navigator.count, 1, "item-3's detail is on top again after the back swipe")
-        router.showDetail(itemId: "item-4")
+        context.push(.pending(title: "Three"), in: .overview)
+        XCTAssertEqual(navigator.count, 1, "Three is on top again after the back swipe")
+        context.push(.pending(title: "Four"), in: .overview)
         XCTAssertEqual(navigator.count, 2)
     }
 
@@ -147,17 +147,17 @@ final class NavigationTests: XCTestCase {
     func testRegisteringTheSameNavigatorAgainKeepsItsAdapterAndAnotherNavigatorReplacesIt() throws {
         let context = NavigationContext()
         let navigator = Navigator(configuration: .init())
-        context.register(navigator, for: .home)
-        let registered = try XCTUnwrap(context.stack(for: .home))
-        AppHomeRouter(context: context).showDetail(itemId: "item-3")
-        context.register(navigator, for: .home)
-        XCTAssertTrue(context.stack(for: .home) === registered)
-        AppHomeRouter(context: context).showDetail(itemId: "item-3")
+        context.register(navigator, for: .overview)
+        let registered = try XCTUnwrap(context.stack(for: .overview))
+        context.push(.pending(title: "Three"), in: .overview)
+        context.register(navigator, for: .overview)
+        XCTAssertTrue(context.stack(for: .overview) === registered)
+        context.push(.pending(title: "Three"), in: .overview)
         XCTAssertEqual(navigator.count, 1)
         let other = Navigator(configuration: .init())
-        context.register(other, for: .home)
-        XCTAssertFalse(context.stack(for: .home) === registered)
-        AppHomeRouter(context: context).showDetail(itemId: "item-3")
+        context.register(other, for: .overview)
+        XCTAssertFalse(context.stack(for: .overview) === registered)
+        context.push(.pending(title: "Three"), in: .overview)
         XCTAssertEqual(other.count, 1)
         XCTAssertEqual(navigator.count, 1)
     }

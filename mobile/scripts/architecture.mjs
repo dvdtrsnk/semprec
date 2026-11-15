@@ -800,6 +800,8 @@ function checkViewModelBridges(ctx) {
   const { module, baseClass, leaseType } = ctx.policy.viewModels;
   // ViewModels whose screen the iOS app ships before an Android screen exists (the Apple-first ADR).
   const appleOnlyViewModels = new Set(ctx.policy.viewModels.appleOnly ?? []);
+  // ViewModels the Android app still hosts and the Apple app has no screen for: they need no CoreKit bridge.
+  const androidOnlyViewModels = new Set(ctx.policy.viewModels.androidOnly ?? []);
 
   // A screen ViewModel extends the base class directly or through classes of the same module (an abstract
   // `ListViewModel : ScreenViewModel` and a concrete `ProfileViewModel : ListViewModel`); the concrete ones are hosted.
@@ -836,7 +838,11 @@ function checkViewModelBridges(ctx) {
       found.push(violation(rule, ...where, `${viewModel.name} has no ${viewModel.name}Test.kt in ${moduleDirectory(module)}/src/commonTest`));
     }
     const bridges = bridgeClasses.filter((declared) => storedType(declared.body, viewModel.name));
-    if (bridges.length !== 1) {
+    if (androidOnlyViewModels.has(viewModel.name)) {
+      for (const bridge of bridges) {
+        found.push(violation(rule, bridge.file, bridge.line, `${viewModel.name} is listed in viewModels.androidOnly but ${bridge.name} bridges it; remove the name from the list`));
+      }
+    } else if (bridges.length !== 1) {
       const names = bridges.map((bridge) => `${bridge.name} (${bridge.file}:${bridge.line})`);
       found.push(violation(rule, ...where, `${viewModel.name} has ${bridges.length} ${owner} bridges, exactly one must store it${names.length ? `: ${names.join(", ")}` : ""}`));
     }
@@ -1117,6 +1123,8 @@ function checkCopy(ctx) {
       androidModules.add(entry.android);
       found.push(...checkAndroidCopy(ctx, entry, androidOnly, untranslatable));
     }
+    // An entry whose apple is null is Android-only copy: a module whose screens the Apple app does not have.
+    if (entry.apple === null) continue;
     const spec = ctx.appleTargets.get(entry.apple);
     if (!spec) {
       found.push(violation(rule, POLICY_FILE, null, `copy names the Apple target ${entry.apple}, which apple.targets does not list`));

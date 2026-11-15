@@ -13,12 +13,6 @@ final class AppComposition: ObservableObject {
     // MARK: - Dependencies
     let models: any ScreenModelFactory
     let navigation: NavigationContext
-    let homeRouter: AppHomeRouter
-    let settingsRouter: AppSettingsRouter
-
-    // MARK: - Properties
-    let version: String
-    let build: String
 
     // MARK: - Init
     convenience init() {
@@ -27,12 +21,7 @@ final class AppComposition: ObservableObject {
 
     /// A composition over the given screen models; tests pass a factory whose session is already signed in.
     init(models: any ScreenModelFactory) {
-        let navigation = NavigationContext()
         self.models = models
-        self.navigation = navigation
-        homeRouter = AppHomeRouter(context: navigation)
-        settingsRouter = AppSettingsRouter(context: navigation)
-        version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
-        build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+        navigation = NavigationContext()
     }
 }

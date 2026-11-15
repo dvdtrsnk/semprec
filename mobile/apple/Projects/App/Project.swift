@@ -50,8 +50,6 @@ let project = Project(
                 .project(target: "Dependencies", path: "../../Modules/Core/Dependencies"),
                 .project(target: "DesignSystem", path: "../../Modules/Core/DesignSystem"),
                 .project(target: "AuthFeature", path: "../../Modules/Features/Auth"),
-                .project(target: "HomeFeature", path: "../../Modules/Features/Home"),
-                .project(target: "SettingsFeature", path: "../../Modules/Features/Settings"),
                 .external(name: "NavigatorUI"),
             ],
             settings: .settings(
@@ -85,8 +83,6 @@ let project = Project(
             sources: [
                 "UITests/**",
                 "Sources/AppIdentifiers.swift",
-                "../../Modules/Features/Home/Sources/HomeIdentifiers.swift",
-                "../../Modules/Features/Settings/Sources/SettingsIdentifiers.swift",
             ],
             dependencies: [.target(name: app)]
         ),

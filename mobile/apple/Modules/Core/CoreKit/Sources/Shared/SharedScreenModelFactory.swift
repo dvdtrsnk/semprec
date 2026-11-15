@@ -14,18 +14,6 @@ public final class SharedScreenModelFactory {
 // MARK: - Protocol conformance
 extension SharedScreenModelFactory: ScreenModelFactory {
 
-    public func makeHome() -> any HomeScreenModel {
-        SharedHomeScreenModel(sdk.homeViewModel())
-    }
-
-    public func makeDetail(itemId: String) -> any DetailScreenModel {
-        SharedDetailScreenModel(sdk.detailViewModel(itemId: itemId))
-    }
-
-    public func makeSettings() -> any SettingsScreenModel {
-        SharedSettingsScreenModel(sdk.settingsViewModel())
-    }
-
     public func makeSession() -> any SessionScreenModel {
         SharedSessionScreenModel(sdk.sessionViewModel())
     }

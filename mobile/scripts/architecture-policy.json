@@ -33,14 +33,10 @@
       "AuthFeature": { "project": "Modules/Features/Auth", "sources": "Sources", "allowed": ["CoreKit", "DesignSystem"] },
       "AuthFeatureTests": { "project": "Modules/Features/Auth", "sources": "Tests", "allowed": ["AuthFeature", "CoreKit"] },
       "DesignSystem": { "project": "Modules/Core/DesignSystem", "sources": "Sources", "allowed": [] },
-      "HomeFeature": { "project": "Modules/Features/Home", "sources": "Sources", "allowed": ["CoreKit", "DesignSystem"] },
-      "HomeFeatureTests": { "project": "Modules/Features/Home", "sources": "Tests", "allowed": ["HomeFeature", "CoreKit"] },
-      "SettingsFeature": { "project": "Modules/Features/Settings", "sources": "Sources", "allowed": ["CoreKit", "DesignSystem"] },
-      "SettingsFeatureTests": { "project": "Modules/Features/Settings", "sources": "Tests", "allowed": ["SettingsFeature", "CoreKit"] },
       "Semprec": {
         "project": "Projects/App",
         "sources": "Sources",
-        "allowed": ["AuthFeature", "CoreKit", "Dependencies", "DesignSystem", "HomeFeature", "SettingsFeature", "NavigatorUI"]
+        "allowed": ["AuthFeature", "CoreKit", "Dependencies", "DesignSystem", "NavigatorUI"]
       },
       "SemprecTests": { "project": "Projects/App", "sources": "Tests", "allowed": ["Semprec", "CoreKit", "NavigatorUI"] },
       "SemprecUITests": { "project": "Projects/App", "sources": "UITests", "allowed": [], "appUnderTest": "Semprec" }
@@ -50,7 +46,8 @@
     "module": ":shared:presentation",
     "baseClass": "ScreenViewModel",
     "leaseType": "SharedViewModelLease",
-    "appleOnly": ["LoginViewModel", "SessionViewModel"]
+    "appleOnly": ["LoginViewModel", "SessionViewModel"],
+    "androidOnly": ["HomeViewModel", "DetailViewModel", "SettingsViewModel"]
   },
   "navigation": {
     "gradleModules": [":android:app"],
@@ -60,8 +57,18 @@
     {
       "android": ":android:app",
       "apple": "Semprec",
-      "keys": ["tab.home", "tab.settings"],
-      "appleOnly": ["session.unreachable"],
+      "keys": [],
+      "androidOnly": ["tab.home", "tab.settings"],
+      "appleOnly": [
+        "session.unreachable",
+        "tab.overview",
+        "tab.calendar",
+        "tab.journal",
+        "tab.overview.placeholder",
+        "tab.calendar.placeholder",
+        "tab.journal.placeholder",
+        "pending.message"
+      ],
       "androidUntranslatable": ["app_name"]
     },
     {
@@ -91,7 +98,7 @@
     },
     {
       "android": ":android:feature:home",
-      "apple": "HomeFeature",
+      "apple": null,
       "keys": [
         "home.title",
         "home.item.title",
@@ -110,7 +117,7 @@
     },
     {
       "android": ":android:feature:settings",
-      "apple": "SettingsFeature",
+      "apple": null,
       "keys": ["settings.title", "settings.row.about", "about.title", "about.description", "about.version", "about.done"]
     }
   ]
