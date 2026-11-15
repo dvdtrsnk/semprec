@@ -109,4 +109,12 @@ class SleepUseCasesTest {
         edit(night, SleepNightChange(reset = true))
         assertEquals(3, repository.calls.size)
     }
+
+    @Test fun `a settings change replaces only the fields it names`() {
+        val change = SleepSettingsChange(goalMinutes = 450, alarmSound = SleepSound.BIRDS)
+        val applied = change.applyTo(sampleSettings())
+        assertEquals(450, applied.goalMinutes)
+        assertEquals(SleepSound.BIRDS, applied.alarmSound)
+        assertEquals(sampleSettings().copy(goalMinutes = 450, alarmSound = SleepSound.BIRDS), applied)
+    }
 }

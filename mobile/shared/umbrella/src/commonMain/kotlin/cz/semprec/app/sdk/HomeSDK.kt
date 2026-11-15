@@ -6,6 +6,7 @@ import cz.semprec.app.core.InMemorySessionStorage
 import cz.semprec.app.core.SessionStorage
 import cz.semprec.app.data.ApiClient
 import cz.semprec.app.data.HttpAuthRepository
+import cz.semprec.app.data.HttpSleepRepository
 import cz.semprec.app.data.InMemoryPlaceholderRepository
 import cz.semprec.app.domain.LoadPlaceholderItem
 import cz.semprec.app.domain.LoadPlaceholderItems
@@ -15,6 +16,8 @@ import cz.semprec.app.presentation.HomeViewModelFactory
 import cz.semprec.app.presentation.LoginViewModel
 import cz.semprec.app.presentation.SessionViewModel
 import cz.semprec.app.presentation.SettingsViewModel
+import cz.semprec.app.presentation.SleepViewModel
+import cz.semprec.app.presentation.SleepViewModelFactory
 
 /**
  * Native SDK and composition root of the screens. Its owner decides which screens share its data:
@@ -46,4 +49,11 @@ class HomeSDK(
     fun sessionViewModel(): SessionViewModel = viewModels.sessionViewModel()
 
     fun loginViewModel(): LoginViewModel = viewModels.loginViewModel()
+
+    // Sleep: plans, night exceptions and settings.
+    private val sleepViewModels = SleepViewModelFactory(HttpSleepRepository(auth.api))
+
+    /** The sleep sheet for the evening [night] (`YYYY-MM-DD`, or `null`); [startOnNight] opens it on that night. */
+    fun sleepViewModel(night: String?, startOnNight: Boolean): SleepViewModel =
+        sleepViewModels.sleepViewModel(night, startOnNight)
 }

@@ -13,6 +13,10 @@ private const val MINUTES_IN_HOUR = 60
  * day from the plan that held it to the plan that takes it).
  */
 object SleepRules {
+    /** What a night that follows no plan starts from when only an exception exists: the server's base night. */
+    val BASE_BED: ClockTime = ClockTime(DEFAULT_NEW_BED_HOUR * MINUTES_IN_HOUR)
+    val BASE_WAKE: ClockTime = ClockTime(DEFAULT_NEW_WAKE_HOUR * MINUTES_IN_HOUR)
+
     /** The sleep goals the settings accept, in minutes. */
     val GOALS: List<Int> = listOf(420, 450, 480, 510, 540)
 
@@ -58,8 +62,8 @@ object SleepRules {
             NewSleepPlan(
                 name = name,
                 wakeDays = days,
-                bed = ClockTime(DEFAULT_NEW_BED_HOUR * MINUTES_IN_HOUR),
-                wake = ClockTime(DEFAULT_NEW_WAKE_HOUR * MINUTES_IN_HOUR),
+                bed = BASE_BED,
+                wake = BASE_WAKE,
                 alarm = true,
                 position = (plans.maxOfOrNull { it.position } ?: -1) + 1,
             )
