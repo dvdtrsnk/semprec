@@ -18,6 +18,7 @@ import type { ModuleRegistry } from "@semprec/module-registry";
 import type { AiGatewayClientPort } from "@semprec/shared";
 import type { AudioGatewayClient } from "./audioGatewayClient.js";
 import { createInboxAttachmentMetadataTask } from "./inboxAttachmentMetadata.js";
+import { createInboxVoiceNoteTranscribeTask } from "./inboxVoiceNoteTranscribe.js";
 import { createTranscriptCardRecomputeTask } from "./transcriptCardRecompute.js";
 import { createTranscriptSpeakerSuggestionTask } from "./transcriptSpeakerSuggestionTask.js";
 import { createTranscriptionCreateTask, createTranscriptionTask } from "./transcriptionTask.js";
@@ -31,9 +32,10 @@ type WorkerStarter = (options: Parameters<typeof runWorker>[0]) => Promise<{ sto
 /**
  * The sole graphile-worker registration site for `transcriptionJob`. `blobStorage` defaults to the same local-filesystem backend semprec-api writes Files blobs to, configured via `FILES_STORAGE_DIR`.
  * Four runners of one slot each: the media pipeline (`transcriptionJob`), the fast row creation (`transcriptionCreate`),
- * the short model tasks (`transcriptCardRecompute`, issue gh-1940, and `transcriptSpeakerSuggestion`, issue gh-1942) and
- * the metadata of Inbox attachments (`inboxAttachmentMetadata`, issue gh-1965), so none of the three short kinds waits
- * behind the long pipeline. The attachment metadata has a runner of its own because it runs `ffprobe` and `ffmpeg` over
+ * the short model tasks (`transcriptCardRecompute`, issue gh-1940, `transcriptSpeakerSuggestion`, issue gh-1942, and
+ * `inboxVoiceNoteTranscribe`, issue gh-1980, the transcript of the voice notes of an Inbox item) and the metadata of
+ * Inbox attachments (`inboxAttachmentMetadata`, issue gh-1965), so none of the three short kinds waits behind the long
+ * pipeline. The attachment metadata has a runner of its own because it runs `ffprobe` and `ffmpeg` over
  * an uploaded file, which can hold its slot for as long as the tools' timeouts, and no other kind should wait for that.
  * `clients.summary` is the completion client of the pipeline's model steps and of the model tasks.
  */
@@ -66,6 +68,10 @@ export async function createTranscribeQueueRuntime(
       CORE_TASK_NAMES.TRANSCRIPT_SPEAKER_SUGGESTION,
       createTranscriptSpeakerSuggestionTask(pool, clients.summary),
     ),
+    [CORE_TASK_NAMES.INBOX_VOICE_NOTE_TRANSCRIBE]: registerTask(
+      CORE_TASK_NAMES.INBOX_VOICE_NOTE_TRANSCRIBE,
+      createInboxVoiceNoteTranscribeTask(pool, blobStorage, clients.audio),
+    ),
   };
   const mediaMetadataTaskList: TaskList = {
     [CORE_TASK_NAMES.INBOX_ATTACHMENT_METADATA]: registerTask(
@@ -83,7 +89,11 @@ export async function createTranscribeQueueRuntime(
   assertTaskListMatchesAffinity(createTaskList, new Set([CORE_TASK_NAMES.TRANSCRIPTION_CREATE]), "transcribe");
   assertTaskListMatchesAffinity(
     modelTaskList,
-    new Set([CORE_TASK_NAMES.TRANSCRIPT_CARD_RECOMPUTE, CORE_TASK_NAMES.TRANSCRIPT_SPEAKER_SUGGESTION]),
+    new Set([
+      CORE_TASK_NAMES.TRANSCRIPT_CARD_RECOMPUTE,
+      CORE_TASK_NAMES.TRANSCRIPT_SPEAKER_SUGGESTION,
+      CORE_TASK_NAMES.INBOX_VOICE_NOTE_TRANSCRIBE,
+    ]),
     "transcribe",
   );
   assertTaskListMatchesAffinity(

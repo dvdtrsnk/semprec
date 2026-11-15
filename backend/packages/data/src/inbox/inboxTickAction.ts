@@ -4,11 +4,15 @@ import {
   assertStepDatabaseWritable,
   assertUpdateStepShape,
 } from "./proposalEnvelopeValidation.js";
+import { lockEnvelopeBlobReferences } from "./proposalBlobReferences.js";
+import { assertValidEnvelopeNewOptions, assertValidEnvelopeNewOptionsPlacement } from "./proposalNewOptions.js";
 import { inboxFingerprintInput, getRelationDefinitionByKey, resolveRecognizedType } from "./inboxSourceFingerprint.js";
 import { prepareComputedUpdates, readProposalTimezone } from "./proposalComputedUpdates.js";
 import {
   buildProposalEnvelope,
   resolveModelPagePlacement,
+  tickComputationInput,
+  buildTickEnvelope,
   type TickSnapshot,
   type ProposalComputationResult,
   type ComputeSemprecProposalFn,
@@ -35,19 +39,16 @@ import { semprecTickActionConfigSchema, type SemprecTickActionConfig } from "./p
 import { invalidReasonLabel } from "./invalidReason.js";
 import { referencedItemIdsOf } from "./proposalReferences.js";
 export { semprecTickActionConfigSchema, type SemprecTickActionConfig } from "./proposalEnvelope.js";
+export { MAX_PROPOSAL_NEW_OPTIONS } from "./proposalEnvelope.js";
 import {
+  assertValidEnvelopePageSections,
   assertValidEnvelopeRelations,
   assertValidV2PageContent,
   assertValidEnvelopeProperties,
   assertValidStepProperties,
   requireProposalPageTarget,
 } from "./proposalEnvelopeValidation.js";
-import {
-  proposalEnvelopeSchema,
-  type ComputedProposalEntityKind,
-  type ProposalStep,
-  type ProposalEnvelope,
-} from "./proposalEnvelope.js";
+import { proposalEnvelopeSchema, type ProposalStep, type ProposalEnvelope } from "./proposalEnvelope.js";
 export {
   proposalEnvelopeSchema,
   unknownStoredEntityKind,
@@ -75,6 +76,9 @@ import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
 import { assertValidMcpServerProposalProperties } from "../mcp/mcpServerProposal.js";
 import { assertValidFileFromAttachmentStep } from "./fileAttachmentStep.js";
 import { assertValidRecordingEnvelope } from "./recordingCardValidation.js";
+import { assertValidJournalEntryEnvelope } from "./journalEntryEnvelope.js";
+import { resolveTickTarget } from "./inboxTickTarget.js";
+import { assertNoDerivedRelations } from "./proposalDerivedRelations.js";
 import { buildRecordingCard } from "./recordingCardProducer.js";
 import { routeInboxAttachments } from "./attachmentRouting.js";
 import { hasAttachmentAwaitingMetadata, listInboxAttachments } from "./inboxAttachmentsStore.js";
@@ -85,7 +89,7 @@ import { publishInboxCardChange } from "./inboxCardsRealtime.js";
 import { isSerializationFailure, isTickWriteTransaction } from "./tickTransaction.js";
 import { withTickTransaction, withTickWriteTransaction } from "./tickTransaction.js";
 import { tryLockInboxType, resolveBoundRecognition } from "./inboxSourceGuard.js";
-import { CardinalityViolationError, ValidationError } from "../errors.js";
+import { CardinalityViolationError, OptionLabelExistsError, ValidationError } from "../errors.js";
 import { getTenantUserLocale } from "../auth/usersStore.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
 
@@ -290,7 +294,11 @@ async function assertValidEnvelopeOperations(
  * never against the generic choke-point schema engine's write path, since a proposal is
  * never itself written to the destination (`computeProposal`'s "no target write" guarantee,
  * carried over from issue #223). Throws `ValidationError` for a wrong `entityKind`, an
- * unknown/malformed target, or properties the destination could not accept. Resolves to the
+ * unknown/malformed target, properties the destination could not accept, or a relation the project derives set next to
+ * that project (`assertNoDerivedRelations`, issue gh-1991). A single-step `'database'` envelope's `newOptions` are checked as
+ * `assertValidEnvelopeNewOptions` says (issue gh-1994): a label that an option of the property already has throws
+ * `OptionLabelExistsError`, which the tick and `storedEnvelopeStillValid` treat as a refusal of the envelope, as they
+ * do a `ValidationError`. Resolves to the
  * target database row for a valid `'database'` envelope (issue #735: so a caller checking
  * `ownerModuleId` afterward reuses this fetch instead of re-querying it), `null` otherwise.
  */
@@ -298,10 +306,13 @@ export async function assertValidProposalEnvelope(
   client: PoolClient,
   envelope: ProposalEnvelope,
 ): Promise<DatabaseRow | null> {
+  assertValidEnvelopePageSections(envelope);
+  assertValidEnvelopeNewOptionsPlacement(envelope);
   if (envelope.entityKind === "transcription") {
     await assertValidRecordingEnvelope(client, envelope);
     return null;
   }
+  if (envelope.entityKind === "journalEntry") return assertValidJournalEntryEnvelope(client, envelope);
   if (
     envelope.entityKind !== "pageContent" &&
     envelope.entityKind !== "database" &&
@@ -349,9 +360,13 @@ export async function assertValidProposalEnvelope(
 
     const targetProperties = await propertiesStore.listPropertiesByDatabase(client, targetDatabase.id);
     const byKey = new Map(targetProperties.map((property) => [property.key, property]));
-    assertValidEnvelopeProperties(envelope, byKey, targetDatabase.id);
+    // A `{ newOption }` value is no option key yet: the key check reads the properties without it (issue gh-1994).
+    const properties = await assertValidEnvelopeNewOptions(envelope, targetDatabase, byKey);
+    assertValidEnvelopeProperties({ ...envelope, properties }, byKey, targetDatabase.id);
+    await lockEnvelopeBlobReferences(client, envelope.properties, byKey);
     if (envelope.relations !== undefined) {
       await assertValidEnvelopeRelations(client, targetDatabase.id, byKey, envelope.relations);
+      assertNoDerivedRelations(targetDatabase, envelope);
     }
     return targetDatabase;
   }
@@ -587,10 +602,18 @@ async function invalidateProposalForDeletedSource(
   publishInboxCardChange(client, locked.id, "updated");
 }
 
+/** Whether `err` is `assertValidProposalEnvelope` refusing the envelope, as opposed to a fault that must propagate. */
+function refusesEnvelope(err: unknown): err is ValidationError | CardinalityViolationError | OptionLabelExistsError {
+  return (
+    err instanceof ValidationError || err instanceof CardinalityViolationError || err instanceof OptionLabelExistsError
+  );
+}
+
 /**
  * True when a card's stored `proposal` envelope passes the check the tick applies to a computed
  * envelope before storing it (`assertValidProposalEnvelope`). A card with no envelope, or one
- * that no longer parses or violates relation cardinality, does not pass. Other errors propagate.
+ * that no longer parses, violates relation cardinality or lists a new option whose label an option has since taken,
+ * does not pass. Other errors propagate.
  */
 export async function storedEnvelopeStillValid(client: PoolClient, proposal: ItemRow): Promise<boolean> {
   const parsed = proposalEnvelopeSchema.safeParse(proposal.properties.proposal);
@@ -599,7 +622,7 @@ export async function storedEnvelopeStillValid(client: PoolClient, proposal: Ite
     await assertValidProposalEnvelope(client, parsed.data);
     return true;
   } catch (err) {
-    if (err instanceof ValidationError || err instanceof CardinalityViolationError) return false;
+    if (refusesEnvelope(err)) return false;
     throw err;
   }
 }
@@ -663,7 +686,8 @@ async function reopenRestoredSourceProposal(
  * or unchanged-fingerprint existing proposal, an item with a long recording, whose recording card needs no model call)
  * are written here and end the tick (`null` return). A `sourceDeleted` card whose source is live again is first returned to `proposed` or
  * `needsClarification` (issue #1604), and the gate then applies to the card as it now stands.
- * Otherwise enters recognition for an untyped source, or resolves the `processingMethod: 'database'` target database here too — so it never
+ * Otherwise enters recognition for an untyped source, or resolves here too the database the type's `processingMethod` writes to
+ * (`resolveTickTarget`: the target database of `database`, the Journal database of `journal`) — so it never
  * needs to be re-derived — and returns a snapshot for the external call and the write
  * transaction that follows it.
  */
@@ -765,19 +789,7 @@ async function readTickSnapshot(
       activeTypes: validRecognitionTypes(await listActiveInboxTypes(client, config.inboxItemTypesDatabaseId)),
     };
   }
-  const entityKind: ComputedProposalEntityKind = processingMethod === "database" ? "database" : "pageContent";
-  let targetDatabaseId: string | undefined;
-  let targetModuleId: string | undefined;
-  if (entityKind === "database") {
-    const typeTarget = type.properties.targetDatabase;
-    if (typeof typeTarget !== "string") {
-      throw new Error(`Inbox item type ${type.id} has processingMethod 'database' but no 'targetDatabase'`);
-    }
-    const targetDatabase = await databasesStore.getDatabaseByModuleId(client, typeTarget);
-    if (!targetDatabase) throw new Error(`No database seeded for owner_module_id '${typeTarget}'`);
-    targetDatabaseId = targetDatabase.id;
-    targetModuleId = typeTarget;
-  }
+  const target = await resolveTickTarget(client, type, processingMethod);
 
   // `cs` is the `users.locale` column default, used when the tenant has no bound user.
   const locale = (await getTenantUserLocale(client)) ?? "cs";
@@ -787,9 +799,7 @@ async function readTickSnapshot(
     type,
     sourceTypeId,
     processingMethod,
-    entityKind,
-    targetDatabaseId,
-    targetModuleId,
+    ...target,
     existingProposal,
     fingerprint,
     locale,
@@ -902,7 +912,7 @@ async function writeTickResult(
   client: PoolClient,
   config: SemprecTickActionConfig,
   snapshot: TickSnapshot,
-  envelope: ProposalEnvelope | null,
+  envelope: ProposalEnvelope | ValidationError | null,
   reason: string | null,
   recognitionPatch: Record<string, unknown> = {},
   invalidProposal = false,
@@ -914,12 +924,13 @@ async function writeTickResult(
 
   try {
     if (!envelope) throw new ValidationError("Page target needs clarification");
+    if (envelope instanceof ValidationError) throw envelope;
     if (invalidProposal) throw new ValidationError("Proposal needs clarification");
     envelope = await resolveModelPagePlacement(client, envelope);
     envelope = await prepareComputedUpdates(client, envelope, snapshot.item.properties.date);
     await assertValidProposalEnvelope(client, envelope);
   } catch (err) {
-    if (!(err instanceof ValidationError) && !(err instanceof CardinalityViolationError)) throw err;
+    if (!refusesEnvelope(err)) throw err;
     // Same race as below: another tick may have created a proposal for this source while this
     // one waited on the AI call, so a null `snapshot.existingProposal` doesn't mean there is
     // still nothing to revise — re-check before falling through to `writeNeedsClarification`'s
@@ -1064,17 +1075,7 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
 
     let result: ProposalComputationResult;
     try {
-      result = await computeProposal({
-        recognition: snapshot.recognition,
-        activeTypes: snapshot.activeTypes,
-        sourceItem: snapshot.item,
-        type: snapshot.type,
-        entityKind: snapshot.entityKind,
-        targetDatabaseId: snapshot.targetDatabaseId,
-        targetModuleId: snapshot.targetModuleId,
-        locale: snapshot.locale,
-        projectItemId: context.projectItemId,
-      });
+      result = await computeProposal(tickComputationInput(snapshot, context.projectItemId));
     } catch (err) {
       if (!(err instanceof AiGatewayFailedError)) throw err;
       const reason = err.reason;
@@ -1137,7 +1138,7 @@ export function createSemprecTickAction(pool: Pool, computeProposal: ComputeSemp
       return;
     }
     const envelope =
-      snapshot.entityKind === "pageContent" && !result.target ? null : buildProposalEnvelope(snapshot, result);
+      snapshot.entityKind === "pageContent" && !result.target ? null : buildTickEnvelope(snapshot, result);
 
     await withTickWriteTransaction(pool, (client) =>
       writeTickResult(

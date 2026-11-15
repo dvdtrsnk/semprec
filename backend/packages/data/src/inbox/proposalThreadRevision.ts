@@ -14,7 +14,9 @@ import {
   unsupportedEntityKindError,
   type ProposalActionConfig,
 } from "./proposalActions.js";
-import { aiProposalPatch, readAiProposal, type ProposalEntityKind, type ProposalEnvelope } from "./proposalEnvelope.js";
+import { aiProposalPatch, readAiProposal, type ProposalEntityKind } from "./proposalEnvelope.js";
+import { carryNewOptions } from "./proposalNewOptions.js";
+import { carryPageSections } from "./proposalPageSections.js";
 import { referencedItemIdsOf } from "./proposalReferences.js";
 import { appendDroppedValuesEntry } from "./proposalRetention.js";
 import { composeEffectiveEnvelope, parseUserOverrides, retainOverridesForThreadRevision } from "./proposalOverrides.js";
@@ -85,7 +87,9 @@ export async function assertCardOfSubject(
  * it (`assertValidEnvelopeForCard`: the credential guard of an MCP server, relation checks, the target's rules). The
  * status becomes `proposed`, a fixable `invalid` card leaves `invalid`, `aiVersion` is incremented, and the history
  * gains an entry of author `ai`, kind `threadRevision`, the thread and the message, followed by a `reset` entry when a
- * manual value was dropped. Nothing is written to a target database.
+ * manual value was dropped. The `pageSections` of the previous assistant envelope are carried over when the revision
+ * keeps its destination (`carryPageSections`, issue gh-1974), and so are its `newOptions` that a value still names
+ * (`carryNewOptions`, issue gh-1994). Nothing is written to a target database.
  *
  * Refused with the `NotFoundError` of a missing card when the card's source is not `subjectItemId`; with a
  * `ValidationError` when the card is `confirmed` or `rejected` or its source Inbox item was deleted, when the envelope
@@ -124,7 +128,12 @@ export async function reviseProposalFromThreadWithClient(
       field: entityKind === undefined ? "entityKind" : "target",
     });
   }
-  const revised: ProposalEnvelope = { entityKind, target, properties: input.properties };
+  // The assistant composes properties alone, so the page sections of the card (issue gh-1974) and the new options its
+  // values still name (issue gh-1994) are carried over.
+  const revised = carryNewOptions(
+    previous,
+    carryPageSections(previous, { entityKind, target, properties: input.properties }),
+  );
 
   const retained = retainOverridesForThreadRevision(
     previous,

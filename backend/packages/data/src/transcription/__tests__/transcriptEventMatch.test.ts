@@ -14,7 +14,12 @@ import { createRelationWithClient } from "../../chokePoint/relationOps.js";
 import { ConflictError, NotFoundError, ValidationError } from "../../errors.js";
 import { getSystemSettingsDatabaseId, getSystemSettingsItemId } from "../../systemSettings.js";
 import { setInboxCardsInvalidationHook, type InboxCardsInvalidationEvent } from "../../realtimeHook.js";
-import { TRANSCRIPTION_OWNER_PROCESS } from "../transcriptionJob.js";
+import {
+  RECORDING_EVENT_DECISION_NO_EVENT,
+  recordRecordingIntake,
+  setRecordingEventDecision,
+} from "../recordingIntake.js";
+import { TRANSCRIPTION_OWNER_PROCESS, transcriptionSourceLink } from "../transcriptionJob.js";
 import {
   buildNewMeetingEnvelope,
   createTranscriptEventCard,
@@ -1671,5 +1676,289 @@ describe("the Event recommendation of an ambiguous recording, through the runtim
         ? []
         : result.candidates.flatMap((candidate) => ("id" in candidate ? candidate.id : [])),
     ).toEqual([mine.meetingId, mine.standupId]);
+  });
+});
+
+describe("the explicit no-event decision of a recording request, through the runtime role (issue gh-1986)", () => {
+  let adminPool: Pool;
+  let dataPool: Pool;
+  let tenant: string;
+  let otherTenant: string;
+
+  beforeAll(async () => {
+    adminPool = getTestPool();
+    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+  });
+
+  beforeEach(async () => {
+    await resetDatabase(adminPool);
+    tenant = await createTestTenant(adminPool);
+    otherTenant = await createTestTenant(adminPool);
+    for (const tenantId of [tenant, otherTenant]) await runInTenant(tenantId, () => seedSystem(dataPool));
+  });
+
+  afterAll(async () => {
+    await dataPool?.end();
+    await adminPool?.end();
+  });
+
+  async function databaseId(moduleId: string): Promise<string> {
+    const { rows } = await dataPool.query<{ id: string }>(
+      "SELECT id FROM databases WHERE owner_module_id = $1 AND system",
+      [moduleId],
+    );
+    if (!rows[0]) throw new Error(`Database '${moduleId}' was not seeded`);
+    return rows[0].id;
+  }
+
+  async function relationPropertyId(moduleId: string, key: string): Promise<string> {
+    const { rows } = await dataPool.query<{ id: string }>(
+      "SELECT id FROM properties WHERE database_id = $1 AND key = $2",
+      [await databaseId(moduleId), key],
+    );
+    if (!rows[0]) throw new Error(`Property '${key}' was not seeded`);
+    return rows[0].id;
+  }
+
+  /** A Files item with the recording request the intake writes for it: the default decision `'none'`. */
+  async function createRecordingFile(withRequest = true, eventId: string | null = null): Promise<string> {
+    return withTransaction(dataPool, async (client) => {
+      const file = await createItemWithClient(client, {
+        databaseId: await databaseId("files"),
+        properties: { name: "Call.mp3" },
+      });
+      if (withRequest) await recordRecordingIntake(client, { fileItemId: file.id, eventId, recordedAt: null });
+      return file.id;
+    });
+  }
+
+  /** A transcript the way the create step leaves it: its `link` names the Files item, and steps 1, 4 and 5 stored their values. */
+  async function createTranscriptOf(fileItemId: string | null): Promise<string> {
+    const transcriptsId = await databaseId("transcripts");
+    return withTransaction(dataPool, async (client) => {
+      const item = await createItemWithClient(
+        client,
+        {
+          databaseId: transcriptsId,
+          properties: {
+            name: "Planning call",
+            date: RECORDING_START,
+            ...(fileItemId === null ? {} : { link: transcriptionSourceLink(fileItemId) }),
+          },
+        },
+        { allowedSystemKeys: ["date", "link"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+      );
+      const computed: Record<string, unknown> = {
+        segments: [{ speaker: "SPEAKER_00", text: "Hello everyone.", startsAt: 0, endsAt: 2 }],
+        durationSeconds: DURATION_SECONDS,
+        meetingNotes: {
+          title: "Planning",
+          summary: "{SPEAKER_00} greets.",
+          shortSummary: "Greeting.",
+          decisions: [],
+          actionItems: [],
+        },
+      };
+      for (const [key, value] of Object.entries(computed))
+        await writeComputed(client, transcriptsId, item.id, key, value);
+      return item.id;
+    });
+  }
+
+  async function createOverlappingEvent(name: string): Promise<string> {
+    return (
+      await withTransaction(dataPool, async (client) =>
+        createItemWithClient(client, {
+          databaseId: await databaseId("events"),
+          properties: { name, type: "meeting", date: "2024-03-01", timeFrom: "13:00", timeTo: "13:45" },
+        }),
+      )
+    ).id;
+  }
+
+  const decideNoEvent = (fileItemId: string) =>
+    withTransaction(dataPool, (client) =>
+      setRecordingEventDecision(client, fileItemId, RECORDING_EVENT_DECISION_NO_EVENT),
+    );
+
+  const match = (transcriptId: string) =>
+    withTransaction(dataPool, (client) =>
+      matchTranscriptToEvent(client, { transcriptId, durationSeconds: DURATION_SECONDS }),
+    );
+
+  const readContext = (transcriptId: string) =>
+    withTransaction(dataPool, (client) =>
+      readEventRecommendationContext(client, { transcriptId, durationSeconds: DURATION_SECONDS }),
+    );
+
+  async function cardCount(transcriptId: string): Promise<number> {
+    const { rows } = await dataPool.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM items i
+       JOIN item_relations r ON (r.item_a = i.id AND r.item_b = $1) OR (r.item_b = i.id AND r.item_a = $1)
+       JOIN relation_definitions d ON d.id = r.relation_definition_id
+       WHERE i.database_id = $2 AND (d.property_id_a = $3 OR d.property_id_b = $3)`,
+      [
+        transcriptId,
+        await databaseId("processingProposals"),
+        await relationPropertyId("processingProposals", "sourceTranscript"),
+      ],
+    );
+    return rows[0]?.n ?? -1;
+  }
+
+  async function edgeCount(transcriptId: string): Promise<number> {
+    const propertyId = await relationPropertyId("transcripts", "event");
+    const { rows } = await dataPool.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM item_relations r JOIN relation_definitions d ON d.id = r.relation_definition_id
+       WHERE (d.property_id_a = $2 OR d.property_id_b = $2) AND (r.item_a = $1 OR r.item_b = $1)`,
+      [transcriptId, propertyId],
+    );
+    return rows[0]?.n ?? -1;
+  }
+
+  it("creates no card and no edge when the decision is noEvent, also on a rerun of the transcription", async () => {
+    await runInTenant(tenant, async () => {
+      const fileId = await createRecordingFile();
+      await decideNoEvent(fileId);
+      const transcriptId = await createTranscriptOf(fileId);
+
+      expect(await match(transcriptId)).toBe("noEventChosen");
+      expect(await match(transcriptId)).toBe("noEventChosen");
+
+      expect(await cardCount(transcriptId)).toBe(0);
+      expect(await edgeCount(transcriptId)).toBe(0);
+    });
+  });
+
+  it("links nothing and asks no recommendation when Events overlap the recording and the decision is noEvent", async () => {
+    await runInTenant(tenant, async () => {
+      const fileId = await createRecordingFile();
+      const oneEventTranscript = await createTranscriptOf(fileId);
+      await createOverlappingEvent("Sprint planning");
+      await decideNoEvent(fileId);
+
+      expect(await match(oneEventTranscript)).toBe("noEventChosen");
+      expect(await edgeCount(oneEventTranscript)).toBe(0);
+
+      await createOverlappingEvent("Accountant call");
+      expect(await readContext(oneEventTranscript)).toBeNull();
+      expect(await match(oneEventTranscript)).toBe("noEventChosen");
+      expect(await cardCount(oneEventTranscript)).toBe(0);
+    });
+  });
+
+  it("still reads the recommendation context for two overlapping Events when the decision is the default", async () => {
+    await runInTenant(tenant, async () => {
+      const fileId = await createRecordingFile();
+      const transcriptId = await createTranscriptOf(fileId);
+      await createOverlappingEvent("Sprint planning");
+      await createOverlappingEvent("Accountant call");
+
+      const context = await readContext(transcriptId);
+
+      expect(context?.candidates).toHaveLength(2);
+    });
+  });
+
+  it("returns noEventChosen before alreadyLinked and before alreadySuggested, and leaves the edge and the card as they are", async () => {
+    await runInTenant(tenant, async () => {
+      const linkedFile = await createRecordingFile();
+      const linkedTranscript = await createTranscriptOf(linkedFile);
+      await createOverlappingEvent("Sprint planning");
+      expect(await match(linkedTranscript)).toBe("linked");
+      await decideNoEvent(linkedFile);
+      expect(await match(linkedTranscript)).toBe("noEventChosen");
+      expect(await edgeCount(linkedTranscript)).toBe(1);
+
+      const suggestedFile = await createRecordingFile();
+      const suggestedTranscript = await createTranscriptOf(suggestedFile);
+      // The Event of the first transcript's recording does not overlap a recording an hour later.
+      await withTransaction(dataPool, async (client) => {
+        const transcriptsId = await databaseId("transcripts");
+        await client.query(
+          'UPDATE items SET properties = properties || \'{"date":"2024-03-02T12:00:00.000Z"}\'::jsonb WHERE database_id = $1 AND id = $2',
+          [transcriptsId, suggestedTranscript],
+        );
+      });
+      expect(await match(suggestedTranscript)).toBe("suggested");
+      await decideNoEvent(suggestedFile);
+      expect(await match(suggestedTranscript)).toBe("noEventChosen");
+      expect(await cardCount(suggestedTranscript)).toBe(1);
+    });
+  });
+
+  it("creates the recording-without-an-event card as before with the default decision, and converges on it on a rerun", async () => {
+    await runInTenant(tenant, async () => {
+      const fileId = await createRecordingFile();
+      const transcriptId = await createTranscriptOf(fileId);
+
+      expect(await match(transcriptId)).toBe("suggested");
+      expect(await match(transcriptId)).toBe("alreadySuggested");
+
+      expect(await cardCount(transcriptId)).toBe(1);
+      expect(await edgeCount(transcriptId)).toBe(0);
+    });
+  });
+
+  it("changes nothing for a request that names an Event with the default decision: the edge stays and no card follows", async () => {
+    await runInTenant(tenant, async () => {
+      const eventId = await createOverlappingEvent("Sprint planning");
+      const fileId = await createRecordingFile(true, eventId);
+      const transcriptId = await createTranscriptOf(fileId);
+      // The edge the confirm of a chosen Event writes (#1574, #1644).
+      await withTransaction(dataPool, async (client) =>
+        createRelationWithClient(client, {
+          relationPropertyId: await relationPropertyId("transcripts", "event"),
+          callerItemId: transcriptId,
+          targetItemId: eventId,
+        }),
+      );
+
+      expect(await match(transcriptId)).toBe("alreadyLinked");
+      expect(await match(transcriptId)).toBe("alreadyLinked");
+
+      expect(await cardCount(transcriptId)).toBe(0);
+      expect(await edgeCount(transcriptId)).toBe(1);
+      expect(await readContext(transcriptId)).toBeNull();
+    });
+  });
+
+  it("is not affected by a stored value other than noEvent", async () => {
+    await runInTenant(tenant, async () => {
+      const fileId = await createRecordingFile();
+      // No writer of another value exists; this scoped fixture creates the stored shape the match must not honor.
+      const updated = await dataPool.query(
+        "UPDATE recording_requests SET event_decision = 'someFutureValue' WHERE tenant_id = app_tenant_default() AND file_item_id = $1",
+        [fileId],
+      );
+      expect(updated.rowCount).toBe(1);
+      const transcriptId = await createTranscriptOf(fileId);
+
+      expect(await match(transcriptId)).toBe("suggested");
+    });
+  });
+
+  it("is not affected for a transcript whose Files item has no recording request, and for one with no link", async () => {
+    await runInTenant(tenant, async () => {
+      const plainFile = await createRecordingFile(false);
+      const plainTranscript = await createTranscriptOf(plainFile);
+      const unlinkedTranscript = await createTranscriptOf(null);
+
+      expect(await match(plainTranscript)).toBe("suggested");
+      expect(await match(unlinkedTranscript)).toBe("suggested");
+    });
+  });
+
+  it("does not honor another tenant's decision for the same Files item id", async () => {
+    const foreignFileId = await runInTenant(otherTenant, async () => {
+      const fileId = await createRecordingFile();
+      await decideNoEvent(fileId);
+      return fileId;
+    });
+    await runInTenant(tenant, async () => {
+      const transcriptId = await createTranscriptOf(foreignFileId);
+
+      expect(await match(transcriptId)).toBe("suggested");
+    });
   });
 });

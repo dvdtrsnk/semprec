@@ -48,6 +48,7 @@ import {
   confirmProposalWithClient,
   readConfirmationResults,
   rejectProposalWithClient,
+  reviseProposalWithClient,
   updateProposalValuesWithClient,
 } from "../proposalActions.js";
 import { recordingCardContextSchema } from "../recordingCardEnvelope.js";
@@ -256,6 +257,12 @@ async function requestRows(): Promise<RequestRow[]> {
   return rows;
 }
 
+/** The `event_decision` of every recording request: `'none'` is the default, `'noEvent'` the explicit choice (issue gh-1986). */
+async function eventDecisions(): Promise<string[]> {
+  const { rows } = await pool.query<{ event_decision: string }>("SELECT event_decision FROM recording_requests");
+  return rows.map((row) => row.event_decision);
+}
+
 beforeEach(async () => {
   pool ??= getTestPool();
   await resetDatabase(pool);
@@ -459,7 +466,7 @@ describe("the recording card the Inbox tick produces for shared audio", () => {
     const { itemId } = await itemWithAudio(undefined);
     await runTick(itemId);
     const card = await cardOf(itemId);
-    await edit(card.id, { language: "cs", numSpeakersMin: 2 });
+    await edit(card.id, { language: "cs", numSpeakersMin: 2, noEvent: true });
 
     await inTransaction((client) =>
       updateItemWithClient(client, {
@@ -476,8 +483,13 @@ describe("the recording card the Inbox tick produces for shared audio", () => {
       name: "Meeting with the architect",
       language: "cs",
       numSpeakersMin: 2,
+      noEvent: true,
     });
-    expect(revised.properties.userEditedKeys).toEqual(["primary.language", "primary.numSpeakersMin"]);
+    expect(revised.properties.userEditedKeys).toEqual([
+      "primary.language",
+      "primary.noEvent",
+      "primary.numSpeakersMin",
+    ]);
     expect(recordingCardContextSchema.safeParse(revised.properties.context).success).toBe(true);
   });
 });
@@ -541,6 +553,9 @@ describe("editing the recording card", () => {
     ["a speaker count beyond the integer column", { numSpeakersExact: 2_147_483_648 }, "numSpeakersExact"],
     ["a minimum speaker count beyond the integer column", { numSpeakersMin: 2_147_483_648 }, "numSpeakersMin"],
     ["an Event id that is not a UUID", { eventId: "tomorrow" }, "eventId"],
+    ["a noEvent that is not a boolean", { noEvent: "yes" }, "noEvent"],
+    ["a noEvent that is a number", { noEvent: 1 }, "noEvent"],
+    ["noEvent true together with an eventId", { noEvent: true, eventId: randomUUID() }, "noEvent"],
   ])("refuses %s and keeps the card as it was", async (_label, values, field) => {
     const { itemId } = await itemWithAudio(undefined);
     await runTick(itemId);
@@ -554,6 +569,39 @@ describe("editing the recording card", () => {
     const after = await cardOf(itemId);
     expect(after.updatedAt).toBe(before.updatedAt);
     expect(after.properties.proposal).toEqual(before.properties.proposal);
+  });
+
+  it("accepts noEvent true, and false or null as no choice", async () => {
+    const { itemId } = await itemWithAudio(undefined);
+    await runTick(itemId);
+    const card = await cardOf(itemId);
+
+    const chosen = await edit(card.id, { noEvent: true });
+    expect(envelopeOf(chosen.item).properties).toEqual({ name: "Nahrávka 3. 11. 14:32", noEvent: true });
+    expect(chosen.item.properties.userEditedKeys).toEqual(["primary.noEvent"]);
+
+    for (const value of [false, null]) {
+      const cleared = await edit(card.id, { noEvent: value });
+      expect(envelopeOf(cleared.item).properties).toMatchObject({ noEvent: value });
+    }
+  });
+
+  it("refuses choosing an Event while the kept choice is noEvent, and accepts the switch in one edit", async () => {
+    const { itemId } = await itemWithAudio(undefined);
+    await runTick(itemId);
+    const card = await cardOf(itemId);
+    const eventId = await createEvent({ name: "Lunch", type: "meeting", date: "2026-11-03", timeFrom: "12:00" });
+    await edit(card.id, { noEvent: true });
+
+    await expect(edit(card.id, { eventId })).rejects.toMatchObject({
+      code: "validation_failed",
+      details: { field: "noEvent" },
+    });
+    expect(envelopeOf(await cardOf(itemId)).properties).toMatchObject({ noEvent: true });
+    expect(envelopeOf(await cardOf(itemId)).properties).not.toHaveProperty("eventId");
+
+    const switched = await edit(card.id, { noEvent: false, eventId });
+    expect(envelopeOf(switched.item).properties).toMatchObject({ noEvent: false, eventId });
   });
 
   it("refuses both speaker counts on one card", async () => {
@@ -579,6 +627,50 @@ describe("editing the recording card", () => {
     await expect(edit(card.id, { eventId: project })).rejects.toMatchObject({ details: { field: "eventId" } });
     await expect(edit(card.id, { projectId: event })).rejects.toMatchObject({ details: { field: "projectId" } });
     await expect(edit(card.id, { projectId: randomUUID() })).rejects.toMatchObject({ details: { field: "projectId" } });
+  });
+});
+
+describe("revising the recording card while the kept choice is noEvent (issue gh-1986)", () => {
+  it("refuses a revise whose assistant envelope names an eventId, and keeps the card as it was", async () => {
+    const { itemId, attachmentId } = await itemWithAudio(undefined);
+    await runTick(itemId);
+    const card = await cardOf(itemId);
+    const eventId = await createEvent({ name: "Lunch", type: "meeting", date: "2026-11-03", timeFrom: "12:00" });
+    await edit(card.id, { noEvent: true });
+    const before = await cardOf(itemId);
+
+    await expect(
+      inTransaction((client) =>
+        reviseProposalWithClient(client, config(), card.id, {
+          message: "It was the lunch",
+          entityKind: "transcription",
+          target: attachmentId,
+          properties: { name: "Lunch recording", eventId },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "validation_failed", details: { field: "noEvent" } });
+
+    const after = await cardOf(itemId);
+    expect(after.updatedAt).toBe(before.updatedAt);
+    expect(after.properties.proposal).toEqual(before.properties.proposal);
+  });
+
+  it("keeps the choice when the revise names no Event", async () => {
+    const { itemId, attachmentId } = await itemWithAudio(undefined);
+    await runTick(itemId);
+    const card = await cardOf(itemId);
+    await edit(card.id, { noEvent: true });
+
+    const revised = await inTransaction((client) =>
+      reviseProposalWithClient(client, config(), card.id, {
+        message: "Another name",
+        entityKind: "transcription",
+        target: attachmentId,
+        properties: { name: "Another name" },
+      }),
+    );
+
+    expect(envelopeOf(revised).properties).toEqual({ name: "Another name", noEvent: true });
   });
 });
 
@@ -1027,6 +1119,101 @@ describe("confirming the recording card", () => {
     await expectNothingStarted(itemId, attachmentId);
     expect(await count("SELECT 1 FROM items")).toBe(itemsBefore);
     expect(await count("SELECT 1 FROM item_origins")).toBe(originsBefore);
+  });
+
+  it("stores the explicit noEvent decision in the confirm's transaction, and the request keeps the default otherwise", async () => {
+    const chosen = await itemWithAudio(undefined);
+    await runTick(chosen.itemId);
+    const chosenCard = await cardOf(chosen.itemId);
+    await edit(chosenCard.id, { noEvent: true });
+
+    await confirm(chosenCard.id);
+
+    expect(await eventDecisions()).toEqual(["noEvent"]);
+    expect(await requestRows()).toHaveLength(1);
+  });
+
+  it.each([
+    ["no choice", {}],
+    ["noEvent false", { noEvent: false }],
+    ["noEvent null", { noEvent: null }],
+  ])("leaves the default decision for a confirm with %s", async (_label, values) => {
+    const { itemId } = await itemWithAudio(undefined);
+    await runTick(itemId);
+    const card = await cardOf(itemId);
+    if (Object.keys(values).length > 0) await edit(card.id, values);
+
+    await confirm(card.id);
+
+    expect(await eventDecisions()).toEqual(["none"]);
+  });
+
+  it("leaves the default decision for a confirm with a chosen Event", async () => {
+    const { itemId } = await itemWithAudio(undefined);
+    await runTick(itemId);
+    const card = await cardOf(itemId);
+    const eventId = await createEvent({ name: "Lunch", type: "meeting", date: "2026-11-03", timeFrom: "12:00" });
+    await edit(card.id, { eventId });
+
+    await confirm(card.id);
+
+    expect(await eventDecisions()).toEqual(["none"]);
+    expect((await requestRows())[0]).toMatchObject({ event_item_id: eventId });
+  });
+
+  it("stores noEvent on a request that already names an Event and keeps that Event, and never clears the decision", async () => {
+    const { itemId, blobId } = await itemWithAudio(undefined);
+    const eventId = await createEvent({ name: "Lunch", type: "meeting", date: "2026-11-03", timeFrom: "12:00" });
+    const existing = await inTransaction(async (client) => {
+      const file = await createItemWithClient(client, {
+        databaseId: filesId,
+        properties: { name: "Earlier", file: { blobId } },
+      });
+      await recordRecordingIntake(client, { fileItemId: file.id, eventId, recordedAt: null });
+      return file.id;
+    });
+    await runTick(itemId);
+    const card = await cardOf(itemId);
+    await edit(card.id, { noEvent: true });
+
+    const confirmed = await confirm(card.id);
+
+    expect(confirmed.properties.resultItemId).toBe(existing);
+    expect(await eventDecisions()).toEqual(["noEvent"]);
+    expect((await requestRows())[0]).toMatchObject({ event_item_id: eventId });
+  });
+
+  it("does not clear a stored noEvent decision when a later confirm of the same Files item makes no such choice", async () => {
+    const first = await itemWithAudio(undefined);
+    await runTick(first.itemId);
+    const firstCard = await cardOf(first.itemId);
+    await edit(firstCard.id, { noEvent: true });
+    const confirmedFirst = await confirm(firstCard.id);
+    // The same blob shared again becomes a second card whose confirm links the Files item that holds the request.
+    const second = await inTransaction(async (client) => {
+      const item = await createInboxItemWithClient(client, {
+        inboxDatabaseId: databaseIds.inboxDatabaseId,
+        date: "2026-11-05",
+        time: "10:00",
+        attachments: [{ blobId: first.blobId, source: "share" }],
+      });
+      const [attachment] = await listInboxAttachments(client, [item.id]);
+      if (!attachment) throw new Error("The attachment was not stored");
+      await recordInboxAttachmentMetadata(client, {
+        attachmentId: attachment.attachmentId,
+        metadata: recordingMetadata(FIXTURE_RECORDED_AT),
+        thumbnail: null,
+        reduced: null,
+      });
+      return item.id;
+    });
+    await runTick(second);
+    const secondCard = await cardOf(second);
+
+    const confirmedSecond = await confirm(secondCard.id);
+
+    expect(confirmedSecond.properties.resultItemId).toBe(confirmedFirst.properties.resultItemId);
+    expect(await eventDecisions()).toEqual(["noEvent"]);
   });
 
   it("confirms with the largest speaker count the request's integer column holds", async () => {

@@ -29,6 +29,8 @@ import { renderMeetingNotes, parseStoredMeetingNotes } from "./meetingNotesRende
 import { transcriptEventCardContextSchema, type TranscriptEventCardContext } from "./transcriptEventCardContext.js";
 import { presentText } from "./transcriptDisplayName.js";
 import { renderTranscriptionLabel } from "./transcriptionLabels.js";
+import { readRecordingEventDecision } from "./recordingIntake.js";
+import { readTranscriptionSourceFileItemId } from "./transcriptionJob.js";
 import { readTranscriptEventEdges, releaseTrashedEventEdges } from "./transcriptEventEdges.js";
 import { listTranscriptSpeakers } from "./transcriptionSpeakerEdges.js";
 import {
@@ -65,8 +67,11 @@ export interface MatchTranscriptToEventInput {
  * - `alreadyLinked`: the transcript already has an edge to an Event that is not in the Trash; nothing
  *   was written. An edge to an Event in the Trash does not count (issue #1743).
  * - `alreadySuggested`: the transcript already has its suggestion card; nothing was written.
+ * - `noEventChosen`: the recording request of the audio file the transcript was created from holds the user's explicit
+ *   `noEvent` decision (issue gh-1986); nothing was written, whatever edge or card the transcript already has.
  */
-export type TranscriptEventMatchOutcome = "linked" | "suggested" | "alreadyLinked" | "alreadySuggested";
+export type TranscriptEventMatchOutcome =
+  "linked" | "suggested" | "alreadyLinked" | "alreadySuggested" | "noEventChosen";
 
 /** The idempotency key of a transcript's one suggestion card: every re-run for the same transcript converges on it. */
 function transcriptSuggestionIdempotencyKey(transcriptId: string): string {
@@ -377,15 +382,20 @@ interface OpenMatch {
 
 /**
  * The read half of a match, shared by `matchTranscriptToEvent` and `readEventRecommendationContext`:
- * `alreadyLinked` or `alreadySuggested` when the transcript has converged, otherwise the Events that
- * overlap the recording, stored or as a virtual occurrence. Writes nothing (`readTranscriptEventEdges` may hold an
- * Event in the Trash `FOR SHARE`); the caller decides whether `transcript` is locked.
+ * `noEventChosen` when the recording request of the transcript's audio file holds the explicit `noEvent` decision
+ * (checked first, before the transcript's edges and card), `alreadyLinked` or `alreadySuggested` when the transcript
+ * has converged, otherwise the Events that overlap the recording, stored or as a virtual occurrence. Writes nothing
+ * (`readTranscriptEventEdges` may hold an Event in the Trash `FOR SHARE`); the caller decides whether `transcript` is
+ * locked.
  */
 async function readOpenMatch(
   client: PoolClient,
   transcript: ItemRow,
   durationSeconds: number,
-): Promise<"alreadyLinked" | "alreadySuggested" | OpenMatch> {
+): Promise<"noEventChosen" | "alreadyLinked" | "alreadySuggested" | OpenMatch> {
+  const sourceFileItemId = readTranscriptionSourceFileItemId(transcript.properties.link);
+  if (sourceFileItemId !== null && (await readRecordingEventDecision(client, sourceFileItemId)) !== null)
+    return "noEventChosen";
   const transcriptsDatabaseId = await requireDatabaseId(client, TRANSCRIPTS_MODULE_ID);
   const eventPropertyId = await requirePropertyId(client, transcriptsDatabaseId, TRANSCRIPT_EVENT_PROPERTY_KEY);
   const eventRelation = await relationsStore.getRelationDefinitionByPropertyId(client, eventPropertyId);
@@ -604,6 +614,11 @@ async function lockTranscript(client: PoolClient, transcriptId: string): Promise
  * caller's transaction and row-locks the transcript first, so concurrent runs for the same
  * transcript serialize and every check below still holds when the write lands.
  *
+ * A recording whose recording request holds the user's explicit `noEvent` decision (issue gh-1986) is finished first:
+ * the outcome is `noEventChosen`, nothing is written, and a transcript's existing edge or card is left as it is.
+ * Any other stored decision, the default `'none'` included, and a transcript without a recording request go on as
+ * below.
+ *
  * A transcript that already has an edge to an Event that is not in the Trash, or already has its
  * suggestion card (found by `transcriptSuggestionIdempotencyKey`, whatever that card's status or
  * deletion), is left as it is — a re-run never writes a second edge or a second card. An edge to an
@@ -690,7 +705,8 @@ export interface EventRecommendationContext {
 
 /**
  * The read half of step 6 for a transcript that may need the recommendation call (issue #1848):
- * `null` when the transcript has converged (an edge to a live Event, or its card) or fewer than two
+ * `null` when the transcript has converged (an edge to a live Event, or its card), its recording request holds the
+ * explicit `noEvent` decision (issue gh-1986, so no paid call is made for it), or fewer than two
  * stored Events overlap the recording, so no call is due (a virtual occurrence is not a candidate of the call);
  * otherwise the candidates, the rendered meeting notes and the locale. Writes nothing. A transcript without stored `meetingNotes` throws
  * `NotFoundError`, since step 5 stores them before step 6.

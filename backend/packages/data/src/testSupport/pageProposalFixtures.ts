@@ -28,12 +28,35 @@ export async function createMarkdownPageContentProposal(
   target: string,
   properties: Record<string, unknown>,
 ): Promise<ItemRow> {
+  return createTickedProposal(pool, databases, "pageContent", { target, properties });
+}
+
+/**
+ * Creates a `journalEntry` proposal card through the production path: an active `journal` Inbox type, an Inbox item of
+ * that type and one tick whose computation answers `{ properties }`, so the server supplies the Journal database as
+ * the target and the item's date as the default `date` (issue gh-1982). The caller supplies the pool and the tenant
+ * scope, and confirms the card through the production confirm.
+ */
+export async function createJournalEntryProposal(
+  pool: Pool,
+  databases: PageProposalDatabases,
+  properties: Record<string, unknown>,
+): Promise<ItemRow> {
+  return createTickedProposal(pool, databases, "journal", { properties });
+}
+
+async function createTickedProposal(
+  pool: Pool,
+  databases: PageProposalDatabases,
+  processingMethod: "pageContent" | "journal",
+  result: { target?: string; properties: Record<string, unknown> },
+): Promise<ItemRow> {
   const type = await withTransaction(pool, (client) =>
     createInboxTypeWithClient(client, {
       inboxItemTypesDatabaseId: databases.typesId,
       name: `Page note ${randomUUID()}`,
       emoji: "📝",
-      processingMethod: "pageContent",
+      processingMethod,
     }),
   );
   const item = await withTransaction(pool, (client) =>
@@ -45,7 +68,7 @@ export async function createMarkdownPageContentProposal(
       type: type.id,
     }),
   );
-  const tick = createSemprecTickAction(pool, async () => ({ target, properties }));
+  const tick = createSemprecTickAction(pool, async () => result);
   await tick(
     {
       inboxDatabaseId: databases.inboxId,

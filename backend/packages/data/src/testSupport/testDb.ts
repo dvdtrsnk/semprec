@@ -117,6 +117,14 @@ export { upsertMailMessageMeta } from "../mail/mailMessageMetaStore.js";
 
 export { createInboxItemWithClient } from "../inbox/inboxStore.js";
 export {
+  GOULASH_ANSWER,
+  createRecipeInboxItem,
+  htmlPage,
+  routedFetch,
+  scriptedGateway,
+  type PhotoFixture,
+} from "./recipeInboxFixtures.js";
+export {
   confirmProposalWithClient,
   reopenProposalWithClient,
   reviseProposalWithClient,

@@ -536,7 +536,7 @@ function parseOptionLabel(label: string): string {
 }
 
 /** A label as two labels are compared: without diacritics, surrounding whitespace and letter case. */
-function foldLabel(label: string): string {
+export function foldLabel(label: string): string {
   return label.normalize("NFD").replace(/\p{M}/gu, "").trim().toLowerCase();
 }
 
@@ -564,6 +564,22 @@ async function assertOptionLabelFree(
       key: existing.key,
     });
   }
+}
+
+/**
+ * `assertOptionLabelFree` for a caller that holds the property row and writes nothing (issue gh-1994): `label`, as
+ * `PropertyOptionLabelSchema` returns it, is refused with `OptionLabelExistsError` when an option in the row's
+ * `config.options` has it. The row is read without a lock, so an option a concurrent transaction adds is not seen;
+ * `addPropertyOption` checks again on the locked row when the option is written.
+ */
+export async function assertPropertyOptionLabelFree(
+  label: string,
+  property: PropertyRow,
+  database: DatabaseRow,
+  catalogResolver: Pick<CatalogResolver, "getCatalogsForDbKey">,
+): Promise<void> {
+  const stored: unknown[] = Array.isArray(property.config.options) ? property.config.options : [];
+  await assertOptionLabelFree(label, stored.filter(isStoredOption), property, database, catalogResolver);
 }
 
 /**

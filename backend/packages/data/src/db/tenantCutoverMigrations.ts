@@ -1,6 +1,9 @@
 import { runInboxMarkdownFormatCutoverMigration } from "../inbox/inboxMarkdownFormatCutoverMigration.js";
 import { runInboxCapturePropertiesCutoverMigration } from "../inbox/inboxCapturePropertiesCutoverMigration.js";
 import { runInboxTypeTargetOptionsCutoverMigration } from "../inbox/inboxTypeTargetOptionsCutoverMigration.js";
+import { runInboxJournalMethodCutoverMigration } from "../inbox/inboxJournalMethodCutoverMigration.js";
+import { runDefaultInboxTypesCutoverMigration } from "../inbox/defaultInboxTypesCutoverMigration.js";
+import { runInboxTranscribedTextCutoverMigration } from "../seed/inboxTranscribedTextCutoverMigration.js";
 import { runAreasUnplannedCutoverMigration } from "../seed/areasUnplannedCutoverMigration.js";
 import { runProjectsCompletedAtCutoverMigration } from "../seed/projectsCompletedAtCutoverMigration.js";
 import { runSelectOptionColorsCutoverMigration } from "../seed/selectOptionColorsCutoverMigration.js";
@@ -62,6 +65,7 @@ import { runNewEmailDraftCutoverMigration } from "../mail/newEmailDraftCutoverMi
 import { runEmailGuidanceCutoverMigration } from "../mail/emailGuidanceCutoverMigration.js";
 import { runAreaNoteCutoverMigration } from "../docs/areaNoteCutoverMigration.js";
 import { runRecipesModuleCutoverMigration } from "../recipes/recipesModuleCutoverMigration.js";
+import { runRecipesSourceUrlCutoverMigration } from "../recipes/recipesSourceUrlCutoverMigration.js";
 import { runMeetingNotesBackfillCutoverMigration } from "../transcription/meetingNotesBackfillCutoverMigration.js";
 import { runSleepModuleCutoverMigration } from "../sleep/sleepModuleCutoverMigration.js";
 import { runLibraryCoverOverrideCutoverMigration } from "../library/libraryCoverOverrideCutoverMigration.js";
@@ -252,6 +256,23 @@ export async function runTenantCutoverMigrations(pool: Pool): Promise<void> {
     // result. It declares #1971 as a shared-file ordering blocker, whose entry stands above. Stands before the
     // area-note cutover that stays last.
     await runInboxTypeTargetOptionsCutoverMigration(pool);
+    // Issue gh-1975: the `journal` option of the Inbox item types `processingMethod` select and the conversion of the
+    // types that targeted the Journal database. It needs no other step's result and stands after the entry of gh-1973,
+    // a blocker of that issue, before the area-note cutover that stays last.
+    await runInboxJournalMethodCutoverMigration(pool);
+    // Issue gh-1977: the `seededDefaultInboxTypes` marker of System settings and the default Inbox item types the tenant
+    // has not been given. It needs the `journal` processing method of the step above (the defaults Thought and Mood use
+    // it) and stands after the entries of the sources it declares as blockers (gh-1975 above; gh-1973 stands above
+    // that), before the area-note cutover that stays last.
+    await runDefaultInboxTypesCutoverMigration(pool);
+    // Issue gh-1980: the system-owned `transcribedText` property of Inbox. It needs no other step's result and stands
+    // after the entries of the sources it declares as blockers (gh-1977 above; #1965 and #1976 have none), before the
+    // area-note cutover that stays last.
+    await runInboxTranscribedTextCutoverMigration(pool);
+    // Issue gh-1974: the `sourceUrl` property of the `recipes` database, for a tenant that had the database before this
+    // source. It needs the database of the Recipes step above (#1707, whose seed it extends) and stands after the entry
+    // of gh-1973, the only blocker of this source that has one, before the area-note cutover that stays last.
+    await runRecipesSourceUrlCutoverMigration(pool);
     // Last: it converts each area in its own transaction and reports failed areas only after every area ran.
     await runAreaNoteCutoverMigration(pool);
   });

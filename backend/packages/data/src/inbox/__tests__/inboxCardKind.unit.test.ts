@@ -5,6 +5,11 @@ import { parseStoredProposalEnvelope } from "../proposalEnvelope.js";
 
 const database: ProposalEnvelope = { entityKind: "database", target: "db-1", properties: {} };
 const pageContent: ProposalEnvelope = { entityKind: "pageContent", target: "page-1", properties: {} };
+const journalEntry: ProposalEnvelope = {
+  entityKind: "journalEntry",
+  target: "journal-db",
+  properties: { date: "2026-10-16", markdown: "Ran" },
+};
 const speakerRelation: ProposalEnvelope = {
   entityKind: "relation",
   target: "item-1",
@@ -109,6 +114,23 @@ describe("deriveInboxCardKind", () => {
         baseKind: "page",
       });
     }
+  });
+
+  it.each(["journal", "pages", null])(
+    "maps a journalEntry envelope to journal whatever owns its target (%s)",
+    (owner) => {
+      expect(deriveInboxCardKind(input({ envelope: journalEntry, ownerModuleId: owner }))).toEqual({
+        cardKind: "journal",
+        baseKind: "journal",
+      });
+    },
+  );
+
+  it("keeps the journal base kind of an invalid journalEntry card", () => {
+    expect(deriveInboxCardKind(input({ status: "invalid", envelope: journalEntry, ownerModuleId: null }))).toEqual({
+      cardKind: "invalid",
+      baseKind: "journal",
+    });
   });
 
   it("derives clarify for needsClarification regardless of the envelope", () => {

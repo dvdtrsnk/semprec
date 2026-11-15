@@ -16,7 +16,13 @@ import { withTransaction } from "../../db/pool.js";
 import { LocalFsBlobStorageWriter } from "../../mail/blobStorage.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
-import { readRecordingRequest, recordRecordingIntake } from "../recordingIntake.js";
+import {
+  RECORDING_EVENT_DECISION_NO_EVENT,
+  readRecordingEventDecision,
+  readRecordingRequest,
+  recordRecordingIntake,
+  setRecordingEventDecision,
+} from "../recordingIntake.js";
 import { findTranscriptionJobId } from "../transcriptionJob.js";
 
 let admin: Pool;
@@ -114,6 +120,101 @@ describe("recording intake", () => {
       );
       expect(updated.rowCount).toBe(1);
       await expect(withTransaction(runtime, (client) => readRecordingRequest(client, fileId))).rejects.toThrow();
+    });
+  });
+
+  describe("the explicit no-event decision (issue gh-1986)", () => {
+    /** A Files item with its recording request, written by the intake, in the current tenant scope. */
+    async function uploadedRecording(name: string): Promise<string> {
+      const files = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "files"));
+      if (!files) throw new Error("Files database missing");
+      const uploaded = await ingestUploadedFileWithTransaction(
+        runtime,
+        {
+          filesDatabaseId: files.id,
+          filename: name,
+          contentType: "audio/mpeg",
+          source: Readable.from([`ID3 ${name}`]),
+          storageKeyPrefix: "files",
+          maxBytes: 1024,
+          storage: new LocalFsBlobStorageWriter(root),
+        },
+        (client, result) =>
+          recordRecordingIntake(client, { fileItemId: result.item.id, eventId: null, recordedAt: null }),
+      );
+      return uploaded.result.item.id;
+    }
+    const storedDecision = async (fileItemId: string): Promise<string | undefined> =>
+      (
+        await runtime.query<{ event_decision: string }>(
+          "SELECT event_decision FROM recording_requests WHERE tenant_id = app_tenant_default() AND file_item_id = $1",
+          [fileItemId],
+        )
+      ).rows[0]?.event_decision;
+
+    it("reads no decision for a default request, and the setter stores noEvent, which the read returns", async () => {
+      await runInTenant(tenant, async () => {
+        const fileId = await uploadedRecording("default.mp3");
+        expect(await storedDecision(fileId)).toBe("none");
+        expect(await withTransaction(runtime, (client) => readRecordingEventDecision(client, fileId))).toBeNull();
+
+        await withTransaction(runtime, (client) =>
+          setRecordingEventDecision(client, fileId, RECORDING_EVENT_DECISION_NO_EVENT),
+        );
+
+        expect(await storedDecision(fileId)).toBe("noEvent");
+        expect(await withTransaction(runtime, (client) => readRecordingEventDecision(client, fileId))).toBe("noEvent");
+        // The decision is a column of the request: the result of readRecordingRequest does not carry it.
+        expect(await withTransaction(runtime, (client) => readRecordingRequest(client, fileId))).not.toHaveProperty(
+          "eventDecision",
+        );
+      });
+    });
+
+    it("reads null for a stored value other than noEvent", async () => {
+      await runInTenant(tenant, async () => {
+        const fileId = await uploadedRecording("other.mp3");
+        // No writer of another value exists; this scoped fixture creates the stored shape the read must not mistake.
+        const updated = await runtime.query(
+          "UPDATE recording_requests SET event_decision = 'someFutureValue' WHERE tenant_id = app_tenant_default() AND file_item_id = $1",
+          [fileId],
+        );
+        expect(updated.rowCount).toBe(1);
+        expect(await withTransaction(runtime, (client) => readRecordingEventDecision(client, fileId))).toBeNull();
+      });
+    });
+
+    it("reads null and refuses to set a decision for a Files item that has no request", async () => {
+      await runInTenant(tenant, async () => {
+        const missing = "b23fa8f2-e184-4315-89ab-fc45b2b1b56b";
+        expect(await withTransaction(runtime, (client) => readRecordingEventDecision(client, missing))).toBeNull();
+        await expect(
+          withTransaction(runtime, (client) =>
+            setRecordingEventDecision(client, missing, RECORDING_EVENT_DECISION_NO_EVENT),
+          ),
+        ).rejects.toThrow("recording event decision");
+      });
+    });
+
+    it("does not read or change another tenant's decision", async () => {
+      const fileId = await runInTenant(tenant, async () => {
+        const id = await uploadedRecording("owned.mp3");
+        await withTransaction(runtime, (client) =>
+          setRecordingEventDecision(client, id, RECORDING_EVENT_DECISION_NO_EVENT),
+        );
+        return id;
+      });
+      await runInTenant(foreign, async () => {
+        expect(await withTransaction(runtime, (client) => readRecordingEventDecision(client, fileId))).toBeNull();
+        await expect(
+          withTransaction(runtime, (client) =>
+            setRecordingEventDecision(client, fileId, RECORDING_EVENT_DECISION_NO_EVENT),
+          ),
+        ).rejects.toThrow("recording event decision");
+      });
+      await runInTenant(tenant, async () => {
+        expect(await storedDecision(fileId)).toBe("noEvent");
+      });
     });
   });
 

@@ -426,7 +426,8 @@ async function buildTargets(
       const database = await stepDatabase(context, step);
       add(database, database ? databaseTargetKind(database) : baseKind);
     }
-  } else if (envelope.entityKind === "database") {
+  } else if (envelope.entityKind === "database" || envelope.entityKind === "journalEntry") {
+    // The target of a `journalEntry` envelope is the Journal database, as a `database` envelope's is its database.
     add(await context.databases.id(envelope.target), baseKind);
   } else {
     const item = context.targetItems.get(targetItemIdOf(envelope.target));

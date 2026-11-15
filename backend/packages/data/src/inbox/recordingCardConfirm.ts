@@ -4,7 +4,11 @@ import { getItemsByIds, lockItemById } from "../chokePoint/itemsStore.js";
 import type { WriterIdentity } from "../chokePoint/writerKind.js";
 import { ConflictError, NotFoundError } from "../errors.js";
 import { EVENTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
-import { recordRecordingIntake } from "../transcription/recordingIntake.js";
+import {
+  RECORDING_EVENT_DECISION_NO_EVENT,
+  recordRecordingIntake,
+  setRecordingEventDecision,
+} from "../transcription/recordingIntake.js";
 import { readEventProjects } from "../transcription/recordingCardCandidates.js";
 import { findTranscriptionCreateJobId, findTranscriptionJobId } from "../transcription/transcriptionJob.js";
 import type { ItemRow } from "../types.js";
@@ -53,7 +57,8 @@ async function ownProjectId(client: PoolClient, properties: RecordingCardPropert
  * into Files as a `fileFromAttachment` step moves it (a Files item with the same blob is linked instead of
  * duplicated), the recording request of the Files item is written through `recordRecordingIntake` with the card's name,
  * language, speaker count and Event, its project when it is the user's own (`ownProjectId`) and the recording time of
- * the attachment's metadata, and the intake enqueues `transcriptionCreate` and `transcriptionJob` for the item unless
+ * the attachment's metadata, and, when the card's `noEvent` is true, the request's `event_decision` is set to
+ * `noEvent` right after the intake (`setRecordingEventDecision`); the intake enqueues `transcriptionCreate` and `transcriptionJob` for the item unless
  * they are already queued (`transcriptionQueued` is true only for jobs this confirm enqueued). The
  * recording time is the metadata's alone: the card never carries one, and metadata without it passes none. The source
  * Inbox item is locked before the metadata is read, as the writer of the metadata locks it. A failing step throws and the
@@ -105,6 +110,11 @@ export async function confirmRecordingCard(
       projectId,
     },
   });
+  // The explicit "no event" choice is stored after the intake wrote or found the request, while this transaction holds
+  // the Files item's row lock. A confirm that makes no such choice writes nothing and never clears a stored decision.
+  if (properties.noEvent) {
+    await setRecordingEventDecision(client, moved.fileItemId, RECORDING_EVENT_DECISION_NO_EVENT);
+  }
   // The intake enqueues the jobs of a Files item that has no transcript yet that are not queued under their keys, and
   // finds the ones that are; a Files item that already has its transcript gets none. Both are read back, so a confirm
   // never succeeds without them, but the result claims a follow-up only for the jobs this confirm enqueued itself.

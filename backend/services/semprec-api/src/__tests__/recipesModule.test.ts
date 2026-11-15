@@ -265,7 +265,7 @@ describe("Recipes module over HTTP (issue #1707)", () => {
     });
   });
 
-  it("projects exactly the six properties in GET /api/schema, with Czech and English labels, option colors and time presets", async () => {
+  it("projects exactly the seven properties in GET /api/schema, with Czech and English labels, option colors and time presets", async () => {
     const property = z.object({
       key: z.string(),
       name: z.string(),
@@ -324,6 +324,7 @@ describe("Recipes module over HTTP (issue #1707)", () => {
         servings: { key: "servings", name: "Porce", type: "number", filterable: false, ...user, config: {} },
         favorite: { key: "favorite", name: "Oblíbené", type: "checkbox", filterable: true, ...user, config: {} },
         photo: { key: "photo", name: "Fotka", type: "image", filterable: false, ...user, config: {} },
+        sourceUrl: { key: "sourceUrl", name: "Zdroj", type: "url", filterable: false, ...user, config: {} },
       },
     });
 
@@ -336,6 +337,7 @@ describe("Recipes module over HTTP (issue #1707)", () => {
       servings: "Servings",
       favorite: "Favorite",
       photo: "Photo",
+      sourceUrl: "Source",
     });
     expect(inEnglish.properties.category?.options?.map((option) => option.label)).toEqual([
       "Main course",
@@ -436,6 +438,49 @@ describe("Recipes module over HTTP (issue #1707)", () => {
       properties: { name: "Stew", photo: { blobId: foreign } },
     });
     expect(own.status).toBe(201);
+  });
+
+  it("answers 400 on sourceUrl for a URL that is not an https URL on a public host name, on a create and on an update, and stores a public one (issue gh-1974)", async () => {
+    const recipes = await database(czech, "recipes");
+    const SOURCE_REFUSED = {
+      status: 400,
+      body: { error: { code: "validation_failed", details: { field: "sourceUrl" } } },
+    };
+    const create = (sourceUrl: unknown) =>
+      request(czech, "POST", `/api/databases/${recipes.id}/items`, { properties: { name: "Goulash", sourceUrl } });
+
+    for (const refused of [
+      "http://recipes.example.com/goulash",
+      "https://127.0.0.1/goulash",
+      "https://10.0.0.5/goulash",
+      "https://169.254.169.254/latest/meta-data",
+      "https://localhost/goulash",
+      "https://user:secret@recipes.example.com/goulash",
+      "https://recipes.example.com:8443/goulash",
+      "goulash",
+      42,
+    ]) {
+      expect(await create(refused)).toEqual(SOURCE_REFUSED);
+    }
+    expect(await recipeIds(czech, recipes.id)).toEqual([]);
+
+    const created = await create("https://recipes.example.com/goulash");
+    expect(created.status).toBe(201);
+    const recipe = itemBody.parse(created.body);
+    expect(recipe.properties.sourceUrl).toBe("https://recipes.example.com/goulash");
+
+    // An update is checked the same way, and a refused one leaves the stored URL.
+    const patch = (sourceUrl: unknown) =>
+      request(czech, "PATCH", `/api/items/${recipe.id}`, { properties: { sourceUrl }, ifVersion: recipe.updatedAt });
+    expect(await patch("https://192.168.1.10/goulash")).toEqual(SOURCE_REFUSED);
+    const read = await request(czech, "GET", `/api/items/${recipe.id}`);
+    expect(itemBody.parse(read.body)).toMatchObject({
+      updatedAt: recipe.updatedAt,
+      properties: { sourceUrl: "https://recipes.example.com/goulash" },
+    });
+    const replaced = await patch("https://kitchen.example.org/goulash");
+    expect(replaced.status).toBe(200);
+    expect(itemBody.parse(replaced.body).properties.sourceUrl).toBe("https://kitchen.example.org/goulash");
   });
 
   it("matches recipes of 10 and 25 minutes with prepMinutes lte 30, not one of 35 minutes or without a time", async () => {

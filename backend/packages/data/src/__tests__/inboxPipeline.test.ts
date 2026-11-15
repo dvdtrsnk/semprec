@@ -81,6 +81,7 @@ describe("Inbox pipeline databases (issue #101)", () => {
       "sourceApp",
       "text",
       "time",
+      "transcribedText",
       "type",
     ]);
     expect(inboxProps.find((p) => p.key === "date")).toMatchObject({ type: "date", owner: "user" });
@@ -102,6 +103,12 @@ describe("Inbox pipeline databases (issue #101)", () => {
       ownerProcess: "inbox",
       config: { includeTime: true },
     });
+    // Issue gh-1980.
+    expect(inboxProps.find((p) => p.key === "transcribedText")).toMatchObject({
+      type: "text",
+      owner: "system",
+      ownerProcess: "transcribe",
+    });
 
     const typeProps = await chokePoint.listProperties(typesId);
     expect(typeProps.map((p) => p.key).sort()).toEqual([
@@ -119,7 +126,7 @@ describe("Inbox pipeline databases (issue #101)", () => {
     expect(typeProps.find((p) => p.key === "processingMethod")).toMatchObject({
       type: "select",
       owner: "user",
-      config: { options: [{ key: "pageContent" }, { key: "database" }] },
+      config: { options: [{ key: "pageContent" }, { key: "database" }, { key: "journal" }] },
     });
     expect(typeProps.find((p) => p.key === "targetDatabase")).toMatchObject({ type: "select", owner: "user" });
     expect(
@@ -402,6 +409,56 @@ describe("Inbox pipeline databases (issue #101)", () => {
     );
     expect(thought.properties.processingMethod).toBe("pageContent");
     expect(thought.properties.targetDatabase).toBeUndefined();
+  });
+
+  it("accepts 'journal' with no targetDatabase and rejects it with one (issue gh-1975)", async () => {
+    const typesId = await databaseIdFor("inboxItemTypes");
+
+    const entry = await withTransaction(pool, (client) =>
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Voice note",
+        emoji: "🎙️",
+        processingMethod: "journal",
+      }),
+    );
+    expect(entry.properties.processingMethod).toBe("journal");
+    expect(entry.properties.targetDatabase).toBeUndefined();
+
+    await expect(
+      withTransaction(pool, (client) =>
+        createInboxTypeWithClient(client, {
+          inboxItemTypesDatabaseId: typesId,
+          name: "Voice note 2",
+          emoji: "🎙️",
+          processingMethod: "journal",
+          targetDatabase: "tasks",
+        }),
+      ),
+    ).rejects.toBeInstanceOf(ValidationError);
+    const { rows } = await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
+      typesId,
+    ]);
+    expect(rows[0]?.n).toBe(1);
+  });
+
+  it("rejects 'database' targeting the Journal database with a message that points to the 'journal' method (issue gh-1975)", async () => {
+    const typesId = await databaseIdFor("inboxItemTypes");
+
+    const error: unknown = await withTransaction(pool, (client) =>
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: typesId,
+        name: "Entry",
+        emoji: "📓",
+        processingMethod: "database",
+        // @ts-expect-error — the Journal database is not a target of a 'database' type any more
+        targetDatabase: "journal",
+      }),
+    ).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).message).toContain("processingMethod 'journal'");
+    expect(error).toMatchObject({ details: { field: "targetDatabase" } });
   });
 
   it("rejects 'database' without a targetDatabase, and 'pageContent' with one", async () => {

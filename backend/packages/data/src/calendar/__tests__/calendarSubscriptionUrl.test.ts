@@ -461,7 +461,11 @@ describe("calendar subscription URL cutover (issue gh-1925)", () => {
     const [fresh] = await definitions(active);
     await revertToOldShape(active);
     await revertToOldShape(suspended);
-    const calendars = await admin.query("SELECT id, properties, updated_at FROM items ORDER BY id");
+    // Only the Calendars items: the same cutover run creates the default Inbox item types and records them in System settings.
+    const calendars = await admin.query(
+      `SELECT i.id, i.properties, i.updated_at FROM items i JOIN databases d ON d.id = i.database_id
+        WHERE d.owner_module_id = 'calendars' ORDER BY i.id`,
+    );
     expect(await definitions(active)).toEqual([]);
     expect(await definitions(suspended)).toEqual([]);
 
@@ -471,9 +475,14 @@ describe("calendar subscription URL cutover (issue gh-1925)", () => {
       const added = await definitions(tenantId);
       expect(added).toEqual([{ ...fresh, id: expect.any(String) }]);
     }
-    expect((await admin.query("SELECT id, properties, updated_at FROM items ORDER BY id")).rows).toEqual(
-      calendars.rows,
-    );
+    expect(
+      (
+        await admin.query(
+          `SELECT i.id, i.properties, i.updated_at FROM items i JOIN databases d ON d.id = i.database_id
+        WHERE d.owner_module_id = 'calendars' ORDER BY i.id`,
+        )
+      ).rows,
+    ).toEqual(calendars.rows);
   });
 
   it("makes the added property writable on a subscription calendar through the choke point", async () => {

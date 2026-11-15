@@ -594,6 +594,7 @@ export {
   type ProposalWorkspaceEntry,
   type ProposalRelationCatalogEntry,
 } from "./inbox/proposalWorkspaceContext.js";
+export { buildTargetCatalog, type TargetCatalog } from "./inbox/proposalTargetCatalog.js";
 export {
   MAX_PROPOSAL_OPERATIONS,
   listWritableProposalTargets,
@@ -602,7 +603,9 @@ export {
 } from "./inbox/proposalOperations.js";
 export * from "./inbox/inboxAttachmentsStore.js";
 export * from "./inbox/inboxAttachmentMetadata.js";
+export * from "./inbox/inboxVoiceNote.js";
 export * from "./inbox/attachmentExtraction.js";
+export { proposeRecipe, type RecipeProposalPorts } from "./inbox/recipeExtraction.js";
 export { CALENDAR_MODULE_ID } from "./calendar/calendarModuleId.js";
 export { manifest as calendarModuleManifest, createCalendarTimelineTool } from "./calendar/calendarModuleManifest.js";
 export { manifest as recipesModuleManifest } from "./recipes/recipesModuleManifest.js";

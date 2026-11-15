@@ -2001,6 +2001,98 @@ describe("inbox custom route handlers (issue #239)", () => {
       });
     });
 
+    describe("journal entry (issue gh-1981)", () => {
+      const DAY = "2026-10-16";
+
+      async function createJournalCard(properties: Record<string, unknown>): Promise<string> {
+        return createCardWith({
+          entityKind: "journalEntry",
+          target: await databaseIdFor("journal"),
+          properties: { date: DAY, markdown: "Went for a run.", ...properties },
+        });
+      }
+
+      async function dayItem(): Promise<ItemRow | null> {
+        const { rows } = await pool.query<{ id: string }>(
+          "SELECT id FROM items WHERE database_id = $1 AND properties->>'type' = 'day' AND properties->>'period' = $2",
+          [await databaseIdFor("journal"), DAY],
+        );
+        return rows[0] ? anyItem(rows[0].id) : null;
+      }
+
+      async function dayPage(): Promise<string> {
+        const day = await dayItem();
+        return day ? (await createDocStore(pool).readPageMarkdown(day.id)).markdown : "";
+      }
+
+      tenantIt(
+        "removes the entry's blocks and the project edge it inserted, keeps the day, and lets the card be confirmed again",
+        async () => {
+          const projectId = await createIn(await databaseIdFor("projects"), { name: "Website" });
+          const cardId = await createJournalCard({ projectId });
+          const confirmed = await confirmCard(cardId);
+          const day = (await dayItem())!;
+          expect(await dayPage()).toBe("Went for a run.");
+          expect(await edgeExists(day.id, projectId)).toBe(true);
+          expect(readConfirmationResults(confirmed.properties)[0]!.blockIds).toHaveLength(1);
+
+          const { item, keptItems } = await reopenCard(cardId);
+
+          expect(item.properties.status).toBe("proposed");
+          expect(item.properties.resultItemId).toBeNull();
+          expect(keptItems).toEqual([]);
+          expect(await dayPage()).not.toContain("Went for a run.");
+          expect(await edgeExists(day.id, projectId)).toBe(false);
+          // The day was created by the confirmation and stays, as every lazily created day does.
+          expect((await anyItem(day.id)).deletedAt).toBeNull();
+
+          await confirmCard(cardId);
+
+          // Removing the page's only blocks leaves the editor's empty block, so the page is not compared whole.
+          expect(await dayPage()).toContain("Went for a run.");
+          expect(await edgeExists(day.id, projectId)).toBe(true);
+        },
+      );
+
+      tenantIt("removes only its own blocks and leaves an edge the day already had", async () => {
+        const areaId = await createIn(await databaseIdFor("areas"), { name: "Health" });
+        const first = await createJournalCard({ areaId, markdown: "Morning." });
+        const second = await createJournalCard({ areaId, markdown: "Evening." });
+        await confirmCard(first);
+        await confirmCard(second);
+        const day = (await dayItem())!;
+        expect(await dayPage()).toBe("Morning.\n\nEvening.");
+
+        const { item } = await reopenCard(second);
+
+        expect(item.properties.status).toBe("proposed");
+        expect(await dayPage()).toBe("Morning.");
+        // The first entry inserted the edge, the second only found it.
+        expect(await edgeExists(day.id, areaId)).toBe(true);
+      });
+
+      tenantIt(
+        "answers 409 when the day was moved to the Trash after the confirmation, and writes nothing",
+        async () => {
+          const cardId = await createJournalCard({});
+          await confirmCard(cardId);
+          const day = (await dayItem())!;
+          await withTransaction(pool, (client) =>
+            itemDeleteWithClient(client, day.databaseId, day.id, { queueAffinity: createActionQueueAffinity() }),
+          );
+          const before = await writtenState();
+
+          await expect(callReopen(cardId)).rejects.toMatchObject({
+            status: 409,
+            details: { itemId: day.id, databaseKey: "journal" },
+          });
+
+          expect(await writtenState()).toEqual(before);
+          expect((await storedCard(cardId)).properties.status).toBe("confirmed");
+        },
+      );
+    });
+
     describe("transcript cards", () => {
       async function createTranscript(name: string): Promise<string> {
         return withTransaction(pool, async (client) => {

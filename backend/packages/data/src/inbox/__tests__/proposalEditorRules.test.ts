@@ -126,6 +126,21 @@ describe("loadCardEditorRules (issue #1928)", () => {
     expect(rules).toBeNull();
   });
 
+  it("applies no schema to a journalEntry envelope, so the journal day schema never calls a complete card incomplete", async () => {
+    const envelope: ProposalEnvelope = {
+      entityKind: "journalEntry",
+      target: idOf("journal"),
+      properties: { date: "2026-10-16", markdown: "Went for a run." },
+    };
+
+    expect(await rulesFor("inbox", envelope)).toBeNull();
+    await expect(
+      withTransaction(pool, (client) =>
+        assertRequiredFieldsHaveValues(client, { id: randomUUID(), properties: {} }, envelope),
+      ),
+    ).resolves.toBeUndefined();
+  });
+
   it("applies no schema to a destination that no module maps to a card kind", async () => {
     expect(await rulesFor("inbox", database("mcpServers", { name: "Remote tool" }))).toBeNull();
   });

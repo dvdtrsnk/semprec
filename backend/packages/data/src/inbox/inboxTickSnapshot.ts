@@ -2,16 +2,22 @@ import type { PoolClient } from "pg";
 import { z } from "zod";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
 import { readPageSummary } from "../docs/pageSummary.js";
+import { ValidationError } from "../errors.js";
 import type { ItemRow } from "../types.js";
 import type { ProcessingMethod } from "./inboxTypesStore.js";
 import type { RecognitionType, RecognitionCandidate } from "./inboxRecognition.js";
-import type { ProposalEnvelope, ProposalEntityKind } from "./proposalEnvelope.js";
+import type {
+  ProposalEnvelope,
+  ComputedProposalEntityKind,
+  ProposalNewOption,
+  ProposalPageSection,
+} from "./proposalEnvelope.js";
 import {
   MAX_PROPOSAL_OPERATIONS,
   buildProposalSteps,
   type ProposalComputationOperation,
 } from "./proposalOperations.js";
-type ComputedProposalEntityKind = Exclude<ProposalEntityKind, "relation" | "transcription">;
+
 export interface ProposalComputationInput {
   recognition?: boolean;
   activeTypes?: RecognitionType[];
@@ -24,10 +30,37 @@ export interface ProposalComputationInput {
   targetDatabaseId?: string;
   /** The module id of the target database, for `entityKind: 'database'`; the primary operation of a multi-step answer must write to it. */
   targetModuleId?: string;
+  /** The tenant's Journal database id, for `entityKind: 'journalEntry'` (issue gh-1982); the server-owned `target` of the envelope. */
+  journalDatabaseId?: string;
+  /** The source item's date (`YYYY-MM-DD`), for `entityKind: 'journalEntry'`: the day the entry lands on when the answer names none. */
+  sourceDate?: string;
   /** The language (the person's `users.locale`, e.g. `cs`) the proposal's person-facing texts must be written in. */
   locale: string;
   /** The project the heartbeat belongs to (`ActionContext.projectItemId`); the model call is attributed to it. */
   projectItemId: string;
+  /** The stored state of the card this is a recompute for (issue gh-1987); absent for a first computation. */
+  previousProposal?: PreviousProposalState;
+}
+
+/** The parts of an existing card's state a recompute must respect: only those that are set (neither absent nor null). */
+export interface PreviousProposalState {
+  /** The last automated proposal. */
+  aiProposal?: unknown;
+  history?: unknown;
+  /** The keys of the proposal the person edited. */
+  userEditedKeys?: unknown;
+}
+
+/** The set parts of `card`'s `aiProposal`, `history` and `userEditedKeys`; `undefined` when none is set or there is no card. */
+function previousProposalState(card: ItemRow | null): PreviousProposalState | undefined {
+  if (!card) return undefined;
+  const { aiProposal, history, userEditedKeys } = card.properties;
+  const state: PreviousProposalState = {
+    ...(aiProposal === undefined || aiProposal === null ? {} : { aiProposal }),
+    ...(history === undefined || history === null ? {} : { history }),
+    ...(userEditedKeys === undefined || userEditedKeys === null ? {} : { userEditedKeys }),
+  };
+  return Object.keys(state).length === 0 ? undefined : state;
 }
 
 export interface ProposalComputationResult {
@@ -39,10 +72,24 @@ export interface ProposalComputationResult {
     targetModuleId: string | null;
     targetDatabaseId: string | null;
   };
-  /** The target page id, for `entityKind: 'pageContent'` — ignored otherwise, since a `'database'` target is always the type's resolved `targetDatabase` id. */
+  /**
+   * The target page id, for `entityKind: 'pageContent'` — ignored for `'database'`, whose target is always the type's resolved
+   * `targetDatabase` id. For `'journalEntry'` the target is server-owned, so a result that carries one is refused.
+   */
   target?: string;
   properties: Record<string, unknown>;
   relations?: Record<string, string[]>;
+  /**
+   * For a single-step `entityKind: 'database'` answer only: the page sections the created item gets on confirm
+   * (issue gh-1974), stored on the envelope as `pageSections`. Ignored for a multi-step answer and for the other kinds.
+   */
+  pageSections?: ProposalPageSection[];
+  /**
+   * For a single-step `entityKind: 'database'` answer only: the select options the answer proposes to create (issue
+   * gh-1994), stored on the envelope as `newOptions`; a value of `properties` names one as `{ newOption: "<label>" }`.
+   * Ignored for a multi-step answer and for the other kinds.
+   */
+  newOptions?: ProposalNewOption[];
   invalidProposal?: "workspaceReference" | "unrepresentableOperations";
   /**
    * Present only when the answer has more than one operation (at most `MAX_PROPOSAL_OPERATIONS`); then
@@ -76,13 +123,80 @@ export interface TickSnapshot {
   entityKind: ComputedProposalEntityKind;
   targetDatabaseId?: string;
   targetModuleId?: string;
+  journalDatabaseId?: string;
   existingProposal: ItemRow | null;
   fingerprint: string;
   locale: string;
 }
 
+/** The source item's `date` when it is a string; its form is checked with the rest of the envelope. */
+function sourceItemDate(item: ItemRow): string | undefined {
+  const date = item.properties.date;
+  return typeof date === "string" ? date : undefined;
+}
+
+/** The input of the computation function for `snapshot`; `projectItemId` is the heartbeat's project. */
+export function tickComputationInput(snapshot: TickSnapshot, projectItemId: string): ProposalComputationInput {
+  const previousProposal = previousProposalState(snapshot.existingProposal);
+  return {
+    recognition: snapshot.recognition,
+    activeTypes: snapshot.activeTypes,
+    sourceItem: snapshot.item,
+    type: snapshot.type,
+    entityKind: snapshot.entityKind,
+    targetDatabaseId: snapshot.targetDatabaseId,
+    targetModuleId: snapshot.targetModuleId,
+    ...(snapshot.entityKind === "journalEntry"
+      ? { journalDatabaseId: snapshot.journalDatabaseId, sourceDate: sourceItemDate(snapshot.item) }
+      : {}),
+    locale: snapshot.locale,
+    projectItemId,
+    ...(previousProposal ? { previousProposal } : {}),
+  };
+}
+
+/**
+ * The envelope of a `journalEntry` snapshot: `target` is the Journal database the snapshot resolved, `date` defaults to
+ * the source item's date, and an area is dropped when the answer also names a project, because the area of a Journal
+ * entry is derived from its project. Throws a `ValidationError` for a result that carries a `target` of its own.
+ */
+function buildJournalEntryEnvelope(snapshot: TickSnapshot, result: ProposalComputationResult): ProposalEnvelope {
+  if (result.target !== undefined)
+    throw new ValidationError("The target of a journal entry proposal is set by the server", { field: "target" });
+  if (!snapshot.journalDatabaseId)
+    throw new Error(`Snapshot for Inbox item ${snapshot.item.id} (entityKind 'journalEntry') has no journalDatabaseId`);
+  const { areaId, ...rest } = result.properties;
+  const date = rest.date === undefined ? sourceItemDate(snapshot.item) : rest.date;
+  return {
+    entityKind: "journalEntry",
+    target: snapshot.journalDatabaseId,
+    properties: {
+      ...rest,
+      ...(date === undefined ? {} : { date }),
+      ...(areaId !== undefined && rest.projectId === undefined ? { areaId } : {}),
+    },
+  };
+}
+
+/**
+ * `buildProposalEnvelope` with the `ValidationError` it raises for a result it refuses returned instead of thrown, so
+ * the write phase records the refusal the way it records an envelope that fails validation (`needsClarification`).
+ */
+export function buildTickEnvelope(
+  snapshot: TickSnapshot,
+  result: ProposalComputationResult,
+): ProposalEnvelope | ValidationError {
+  try {
+    return buildProposalEnvelope(snapshot, result);
+  } catch (error) {
+    if (error instanceof ValidationError) return error;
+    throw error;
+  }
+}
+
 /** Combines the external call's result with the snapshot into a stored envelope — no I/O. */
 export function buildProposalEnvelope(snapshot: TickSnapshot, result: ProposalComputationResult): ProposalEnvelope {
+  if (snapshot.entityKind === "journalEntry") return buildJournalEntryEnvelope(snapshot, result);
   if (snapshot.entityKind === "database") {
     if (!snapshot.targetDatabaseId)
       throw new Error(`Snapshot for Inbox item ${snapshot.item.id} (entityKind 'database') has no targetDatabaseId`);
@@ -102,6 +216,8 @@ export function buildProposalEnvelope(snapshot: TickSnapshot, result: ProposalCo
       target: snapshot.targetDatabaseId,
       properties: result.properties,
       ...(result.relations ? { relations: result.relations } : {}),
+      ...(result.pageSections ? { pageSections: result.pageSections } : {}),
+      ...(result.newOptions?.length ? { newOptions: result.newOptions } : {}),
     };
   }
   if (!result.target)

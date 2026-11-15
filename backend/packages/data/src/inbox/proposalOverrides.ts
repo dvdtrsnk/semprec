@@ -18,7 +18,7 @@ import { effectiveStepRelations } from "./proposalStepGraph.js";
 export type UserOverrides = Record<string, Record<string, unknown>>;
 
 /** The ref a single-step envelope answers to. */
-const SINGLE_STEP_REF = "primary";
+export const SINGLE_STEP_REF = "primary";
 
 const NO_KEYS: ReadonlySet<string> = new Set();
 

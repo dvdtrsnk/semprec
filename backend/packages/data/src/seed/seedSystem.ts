@@ -42,6 +42,8 @@ import { ensureJournalWeeklyCleanupHeartbeat } from "../journal/journalWeeklyCle
 import { seedLibraryModuleInTransaction } from "./seedLibraryModule.js";
 import { seedEmailModuleInTransaction } from "./seedEmailModule.js";
 import { seedInboxPipelineInTransaction } from "./seedInboxPipeline.js";
+import { INBOX_MODULE_ID } from "./inboxPipelineKeys.js";
+import { SEEDED_DEFAULT_INBOX_TYPES_KEY, SEEDED_DEFAULT_INBOX_TYPES_NAME } from "../inbox/defaultInboxTypes.js";
 import { seedMcpModuleInTransaction } from "./seedMcpModule.js";
 import { seedCalendarsInTransaction } from "./seedCalendars.js";
 import { seedInvitationsDatabaseInTransaction } from "./seedInvitationsDatabase.js";
@@ -230,11 +232,23 @@ export async function seedSystem(
       owner: "user",
     });
 
+    // The defaults of the Inbox item types that were seeded (issue gh-1977), none yet. A populated tenant gets the
+    // property from inbox/defaultInboxTypesCutoverMigration.ts; keep the two identical.
+    await propertiesStore.createProperty(client, {
+      databaseId: settingsDb.id,
+      key: SEEDED_DEFAULT_INBOX_TYPES_KEY,
+      name: SEEDED_DEFAULT_INBOX_TYPES_NAME,
+      type: "json",
+      owner: "system",
+      ownerProcess: INBOX_MODULE_ID,
+    });
+
     await itemsStore.insertItem(client, {
       databaseId: settingsDb.id,
       properties: {
         name: "Semp",
         timezone: DEFAULT_TIMEZONE,
+        [SEEDED_DEFAULT_INBOX_TYPES_KEY]: [],
       },
     });
 

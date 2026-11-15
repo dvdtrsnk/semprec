@@ -49,10 +49,13 @@ function getModuleRegistry(): Promise<ModuleRegistry> {
 /**
  * Whether the schema describes what the envelope writes. A `relation` envelope links an item and creates nothing; a
  * multi-step envelope whose primary step is an `update` or `link` edits an item that already has its values; and a
- * `pageContent` envelope without `markdown` is the legacy block shape, which the Markdown fields do not describe.
+ * `pageContent` envelope without `markdown` is the legacy block shape, which the Markdown fields do not describe. A
+ * `journalEntry` envelope is described by none: the `journal` schema declares the day and the entry of a page-content
+ * proposal onto a Journal day (`day`, `markdown`), while the envelope carries `date` and `markdown` and is validated
+ * by `assertValidJournalEntryEnvelope` (issue gh-1975), so applying the schema would call a complete card incomplete.
  */
 function schemaDescribes(envelope: ProposalEnvelope): boolean {
-  if (envelope.entityKind === "relation") return false;
+  if (envelope.entityKind === "relation" || envelope.entityKind === "journalEntry") return false;
   if (envelope.entityKind === "pageContent") return Object.hasOwn(envelope.properties, "markdown");
   return !envelope.operations || envelope.operations.find((step) => step.role === "primary")?.op === "create";
 }

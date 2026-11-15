@@ -56,6 +56,7 @@ import { linkRuleEdgeHook } from "./valueLinks/linkRuleEdgeHook.js";
 import { valueLinkSourceDeleteHook } from "./valueLinks/valueLinkSourceDeleteHook.js";
 import { mcpServerItemCreateHook, mcpServerItemUpdateHook } from "./mcp/mcpServerWriteHook.js";
 import { recipePhotoWriteHook } from "./recipes/recipePhotoHook.js";
+import { recipeSourceUrlWriteHook } from "./recipes/recipeSourceUrlHook.js";
 import { mailMessageFlagsItemUpdateHook } from "./mail/mailMessageFlagSyncStore.js";
 import { mailItemPurgeHook } from "./mail/mailPurgeHook.js";
 import { mailboxDeleteApprovalGuard, mailboxDeleteHook } from "./mail/mailboxDeleteHook.js";
@@ -243,9 +244,12 @@ registerItemUpdateHook(blobReferenceItemUpdateHook);
 registerItemCreateHook(mcpServerItemCreateHook);
 // Issue #1707: one hook for both registries, after the blob reference hooks above.
 registerItemCreateHook(recipePhotoWriteHook);
+// Issue gh-1974: the `sourceUrl` of a recipe, one hook for both registries, after the photo hook above.
+registerItemCreateHook(recipeSourceUrlWriteHook);
 registerItemCreateHook(itemSearchCreateHook);
 registerItemUpdateHook(mcpServerItemUpdateHook);
 registerItemUpdateHook(recipePhotoWriteHook);
+registerItemUpdateHook(recipeSourceUrlWriteHook);
 registerItemUpdateHook(mailMessageFlagsItemUpdateHook);
 registerItemUpdateHook(taskRecurrenceItemUpdateHook);
 registerItemUpdateHook(itemSearchUpdateHook);

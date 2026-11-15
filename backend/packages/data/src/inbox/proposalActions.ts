@@ -12,14 +12,11 @@ import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
-import {
-  assertRelationCreatableWithClient,
-  createRelationIfAbsentWithClient,
-  createRelationWithClient,
-} from "../chokePoint/relationOps.js";
+import { assertRelationCreatableWithClient, createRelationIfAbsentWithClient } from "../chokePoint/relationOps.js";
 import { putBlockWithClient } from "../docs/docStore.js";
 import { pageContentV2Schema } from "./proposalEnvelope.js";
 import { insertProposalPageContent } from "./proposalPageContent.js";
+import { carryPageSections, insertProposalPageSections } from "./proposalPageSections.js";
 import { LOCKED_PROPOSAL_STATUSES } from "./inboxTypesStore.js";
 import { assertProposalVersion, incompatibleStatusError } from "./proposalPreconditions.js";
 import {
@@ -37,6 +34,9 @@ import { requireRelationPropertyId, resolveItemOriginSource } from "./proposalIt
 import { MAIL_THREAD_CARD_KIND, assertValidMailThreadCard, confirmMailThreadCard } from "./mailThreadCard.js";
 import { assertRecordingEnvelopeFitsCard } from "./recordingCardValidation.js";
 import { confirmRecordingCard } from "./recordingCardConfirm.js";
+import { assertJournalEntryReferencesLive, confirmJournalEntry } from "./journalEntryConfirm.js";
+import { relationEnvelopeMetadata, writeEnvelopeRelations } from "./proposalEnvelopeRelations.js";
+import { carryNewOptions, createEnvelopeNewOptions } from "./proposalNewOptions.js";
 import type { RecordingCardProperties } from "./recordingCardEnvelope.js";
 export {
   updateProposalValuesWithClient,
@@ -66,7 +66,7 @@ import { transcriptSpeakerCardContextSchema } from "../transcription/transcriptS
 import { TRANSCRIPT_SPEAKERS_PROPERTY_KEY } from "../transcription/transcriptionSpeakerEdges.js";
 import { storeCredential, type CredentialType } from "../credentials/externalCredentialsStore.js";
 import { enqueueMcpServerSyncForConfirm } from "../mcp/mcpSync.js";
-import { ChokePointError, ConflictError, NotFoundError, ValidationError } from "../errors.js";
+import { ConflictError, NotFoundError, ValidationError } from "../errors.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
 import type { WriterIdentity } from "../chokePoint/writerKind.js";
 
@@ -178,53 +178,10 @@ export function transcriptCardRole(envelope: ProposalEnvelope): TranscriptCardRo
     : "event";
 }
 
-/** A `'relation'` envelope's optional edge metadata; `assertValidProposalEnvelope` has already rejected anything but a plain object. */
-function relationEnvelopeMetadata(envelope: ProposalEnvelope): Record<string, unknown> | undefined {
-  const { metadata } = envelope.properties;
-  if (metadata === undefined) return undefined;
-  if (typeof metadata !== "object" || metadata === null || Array.isArray(metadata)) {
-    throw new ValidationError("Relation proposal metadata must be an object", { field: "properties" });
-  }
-  return { ...metadata };
-}
-
 async function requireDatabaseIdByModuleId(client: PoolClient, moduleId: string): Promise<string> {
   const database = await databasesStore.getDatabaseByModuleId(client, moduleId);
   if (!database) throw new NotFoundError(`Database for module '${moduleId}' not found`);
   return database.id;
-}
-
-/**
- * Writes the envelope's `relations` edges from the freshly created item, in the order of the keys
- * and ids in the envelope. Runs in the confirm transaction, so a failing edge aborts the item and
- * every earlier edge; the edge's own canonical error is rethrown with `details.field` set to the
- * relation key.
- */
-async function writeEnvelopeRelations(
-  client: PoolClient,
-  databaseId: string,
-  itemId: string,
-  relations: ProposalEnvelope["relations"],
-  actingUserId?: string,
-): Promise<void> {
-  for (const [key, targetItemIds] of Object.entries(relations ?? {})) {
-    const relationPropertyId = await requireRelationPropertyId(client, databaseId, key);
-    for (const targetItemId of targetItemIds) {
-      try {
-        await createRelationWithClient(
-          client,
-          { relationPropertyId, callerItemId: itemId, targetItemId },
-          undefined,
-          CONFIRMING_USER_WRITER,
-          actingUserId,
-        );
-      } catch (error) {
-        if (!(error instanceof ChokePointError)) throw error;
-        const details = typeof error.details === "object" && error.details !== null ? error.details : {};
-        throw new ChokePointError(error.status, error.code, error.message, { ...details, field: key });
-      }
-    }
-  }
 }
 
 /**
@@ -279,8 +236,9 @@ export async function requireSourceTranscriptId(
  * itself would raise. A create-Event envelope also has to pass the Events create rules on its times
  * (`assertEventCreateRules`, issue #1818). Returns the edge confirm must write for a transcript card (`null` for any
  * other card) alongside the envelope's target database row (`null` for a non-`'database'`
- * envelope). A `kind = 'mailThread'` card (issue gh-2034) must carry a Tasks `database` envelope with only a `name` and
- * an optional `date` (`assertValidMailThreadCard`, whose own rules are checked before the generic validation) and a `sourceThread` edge;
+ * envelope). A `journalEntry` envelope (issue gh-1975) is valid on an inbox card; a transcript card and a `mailThread` card
+ * refuse it, each with a `ValidationError` on `entityKind`. A `kind = 'mailThread'` card (issue gh-2034) must carry a Tasks `database`
+ * envelope with only a `name` and an optional `date` (`assertValidMailThreadCard`, whose own rules are checked before the generic validation) and a `sourceThread` edge;
  * it returns that edge's Threads item as `mailThreadItemId`.
  */
 export async function assertValidEnvelopeForCard(
@@ -381,6 +339,8 @@ export async function assertValidEnvelopeForCard(
       break;
     case "pageContent":
       throw new ValidationError("A transcript proposal cannot append page content", { field: "entityKind" });
+    case "journalEntry":
+      throw new ValidationError("A transcript proposal cannot hold a journal entry", { field: "entityKind" });
     default: {
       const exhaustive: never = envelope.entityKind;
       throw new Error(`Unhandled proposal entityKind: ${String(exhaustive)}`);
@@ -479,12 +439,28 @@ export async function assertValidEnvelopeForCard(
  * Inbox item or transcript to take them from. A source Threads item that is in the Trash is a 409 `conflict` with
  * nothing written, and the card stays `proposed`.
  *
+ * A `journalEntry` envelope (issue gh-1981) is written by `confirmJournalEntry` in this same transaction: the day and
+ * its page are created when missing, the entry is inserted at the end of the page authored `user` with block ids derived
+ * from the proposal id, and the day gets the `project` edge, or only the `area` edge when no project is named; that
+ * edge is recorded like any other (`writtenRelations`), so reopening the card reverses it. The result
+ * is the day (`resultItemId`) labelled with its key (`resultLabel`), and the primary result lists the inserted block ids.
+ * A Journal database, area or project that no longer resolves (a trashed one, or an archived project) is a 409 `conflict` (`assertJournalEntryReferencesLive`),
+ * raised before any write; the card stays `proposed`.
+ *
  * The reference hooks leave this card alone while its steps run (`runWhileConfirmingCard`, issue #1916).
  *
  * The edges the confirm writes between items that already existed (a link step, the edges an update step adds, the
- * edge of a transcript card) and the edges an update step deletes are recorded in the history entry of the confirmation
+ * edge of a transcript card, the edge of a journal day) and the edges an update step deletes are recorded in the history entry of the confirmation
  * (`writtenRelations`, `removedRelations`; `proposalEdgeRecording.ts`), so the undo reverses only those
  * (`docs/adr/2026-11-14-the-undo-of-a-confirmation-reverses-only-the-edges-it-recorded.md`).
+ *
+ * A single-step `database` envelope's `newOptions` (issue gh-1994) are created before its item: each option that a
+ * `{ newOption }` value names is added to its property in this transaction (`createEnvelopeNewOptions`, the option-add
+ * of issue #1699) and the key it gets replaces the value, so an option, the item and the confirmed card commit together
+ * and any failure after the option is added, the item write's included, rolls the option back. A card that is rejected,
+ * or confirmed a second time (answered from the card as it is), creates none.
+ * A card that is reopened after its confirmation uses the option it created by key (`adoptCreatedNewOptions`), so
+ * confirming it again creates none either.
  *
  * `ifVersion` (issue #1852) is the `updatedAt` the caller last saw. It is checked after the card is locked, after
  * the answer for a card that is already `confirmed` (returned unchanged, whatever `ifVersion` says, so a replayed
@@ -511,6 +487,8 @@ export async function confirmProposalWithClient(
     const envelope = parseStoredProposalEnvelope(proposal.properties.proposal, proposal.id);
     if (!envelope) throw new ValidationError("Proposal has no computed envelope to confirm", { field: "proposal" });
     if ("unknownKind" in envelope) throw unsupportedEntityKindError(envelope.entityKind);
+    // The Journal database, the area and the project may be gone since the card was computed: a 409, before any write.
+    await assertJournalEntryReferencesLive(client, envelope);
     const markdownPageContent = envelope.entityKind === "pageContent" && Object.hasOwn(envelope.properties, "markdown");
     if (markdownPageContent && proposal.properties.kind === "transcript")
       throw new ValidationError("A transcript proposal cannot target page content", { field: "entityKind" });
@@ -579,6 +557,10 @@ export async function confirmProposalWithClient(
       resultLabel = recording.properties.name;
       stepResults = [{ ref: "primary", itemId: started.fileItemId, databaseId: started.filesDatabaseId }];
       if (started.transcriptionQueued) transcriptionQueuedRef = "primary";
+    } else if (envelope.entityKind === "journalEntry") {
+      const entry = await confirmJournalEntry(client, proposal.id, envelope, CONFIRMING_USER_WRITER, actingUserId);
+      ({ resultItemId, resultLabel, stepResults, blockIds } = entry);
+      recorder.written.push(...entry.recordedEdges.written);
     } else if (envelope.entityKind === "database") {
       if (credential) {
         if (targetDatabase?.ownerModuleId !== MCP_SERVERS_MODULE_ID) {
@@ -608,15 +590,21 @@ export async function confirmProposalWithClient(
         recorder.written.push(...executed.recordedEdges.written);
         recorder.removed.push(...executed.recordedEdges.removed);
       } else {
+        // Issue gh-1994: the options the card proposes are created first, in this transaction, and their keys replace the labels.
+        const properties = await createEnvelopeNewOptions(client, envelope, written.properties, actingUserId);
         created = await createItemWithClient(
           client,
-          { databaseId: envelope.target, properties: written.properties },
+          { databaseId: envelope.target, properties },
           { writer: CONFIRMING_USER_WRITER, actingUserId },
         );
         createdItemIds = [created.id];
       }
       await insertItemOrigins(client, createdItemIds, origin);
       await insertInboxOriginNotes(client, createdItemIds, origin.inboxItemId, actingUserId);
+      // Issue gh-1974: the sections of the created item's page, in this transaction like the item.
+      if (envelope.pageSections) {
+        blockIds = await insertProposalPageSections(client, proposal.id, created.id, envelope.pageSections);
+      }
       resultItemId = created.id;
       if (!envelope.operations) stepResults = [{ ref: "primary", itemId: created.id, databaseId: created.databaseId }];
       resultLabel = await resolveResultLabel(client, resultDatabaseId, created);
@@ -635,7 +623,14 @@ export async function confirmProposalWithClient(
       // The Event gets its envelope relations and its participants before the transcript's own edge (issue #1818).
       // A multi-step envelope's relations live on its steps and were written by them.
       if (!envelope.operations) {
-        await writeEnvelopeRelations(client, envelope.target, created.id, envelope.relations, actingUserId);
+        await writeEnvelopeRelations(
+          client,
+          envelope.target,
+          created.id,
+          envelope.relations,
+          CONFIRMING_USER_WRITER,
+          actingUserId,
+        );
       }
       if (transcriptCardEdge?.role === "event") {
         addedRelations.push(
@@ -1128,7 +1123,10 @@ export type ReviseProposalInput = { ifVersion?: string } & (
  * without an entry. When a value was dropped, a history entry of kind `reset` listing the dropped `ref.key`s follows
  * the revise entry. The new envelope is stored as the assistant's output (`aiProposal`), and `proposal` holds the
  * effective envelope: the new envelope with the values that stay laid over it, validated as confirm validates it,
- * so a kept value is what confirm writes. A revision made in an Inbox item thread has rules of its own
+ * so a kept value is what confirm writes. The envelope's `pageSections` and `newOptions` are not inputs: those of the
+ * card's previous assistant envelope are carried over when the revision keeps its destination (`carryPageSections`,
+ * issue gh-1974; `carryNewOptions`, issue gh-1994, only the options a value of the revision still names).
+ * A revision made in an Inbox item thread has rules of its own
  * (`reviseProposalFromThreadWithClient`, issue #1938).
  */
 export async function reviseProposalWithClient(
@@ -1160,12 +1158,18 @@ export async function reviseProposalWithClient(
     return recordTranscriptCardInstruction(client, config, proposal, input, revisedBy, actingUserId);
   }
 
-  const envelope: ProposalEnvelope = {
-    entityKind: input.entityKind,
-    target: input.target,
-    properties: input.properties,
-    ...(input.relations === undefined ? {} : { relations: input.relations }),
-  };
+  // The caller supplies properties and relations only, so the card's page sections (issue gh-1974) and the new
+  // options its values still name (issue gh-1994) are carried over.
+  const previousEnvelope = proposal.properties.aiProposal ?? proposal.properties.proposal;
+  const envelope = carryNewOptions(
+    previousEnvelope,
+    carryPageSections(previousEnvelope, {
+      entityKind: input.entityKind,
+      target: input.target,
+      properties: input.properties,
+      ...(input.relations === undefined ? {} : { relations: input.relations }),
+    }),
+  );
   await assertValidEnvelopeForCard(client, config, proposal, envelope);
 
   // The user's manual values only fit the destination they were typed for (issue #1924).

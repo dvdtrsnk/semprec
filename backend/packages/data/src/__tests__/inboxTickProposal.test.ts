@@ -3,7 +3,7 @@ import { writeBlock } from "@semprec/block-model";
 import { mutateDoc } from "../docs/docPersistence.js";
 import { createDocStore } from "../docs/docStore.js";
 import { getOrCreateJournalItem } from "../journal/journalStore.js";
-import { resolveModelPagePlacement } from "../inbox/inboxTickSnapshot.js";
+import { buildProposalEnvelope, resolveModelPagePlacement, type TickSnapshot } from "../inbox/inboxTickSnapshot.js";
 import "../domainWriteHooks.js";
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -55,6 +55,7 @@ import {
   parseStoredProposalEnvelope,
   readAiProposal,
   type ComputeSemprecProposalFn,
+  type ProposalComputationInput,
   type ProposalEnvelope,
   type ProposalStep,
 } from "../inbox/inboxTickAction.js";
@@ -5135,6 +5136,141 @@ describe("assertValidProposalEnvelope validates envelope relations (issue #1426)
   });
 });
 
+describe("assertValidProposalEnvelope refuses relations the project derives (issue gh-1991)", () => {
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    viewTypeRegistry = createViewTypeRegistry();
+    await resetDatabase(pool);
+    await seedSystem(pool, viewTypeRegistry);
+  });
+
+  async function itemIn(moduleId: string, properties: Record<string, unknown> = {}): Promise<string> {
+    const databaseId = await databaseIdFor(moduleId);
+    return withTransaction(
+      pool,
+      async (client) =>
+        (await createItemWithClient(client, { databaseId, properties: { name: moduleId, ...properties } })).id,
+    );
+  }
+
+  async function validate(moduleId: string, relations?: Record<string, string[]>) {
+    const target = await databaseIdFor(moduleId);
+    return withTransaction(pool, (client) =>
+      assertValidProposalEnvelope(client, {
+        entityKind: "database",
+        target,
+        properties: { name: "Proposal" },
+        ...(relations ? { relations } : {}),
+      }),
+    );
+  }
+
+  async function refusal(moduleId: string, relations: Record<string, string[]>): Promise<unknown> {
+    return validate(moduleId, relations).catch((error: unknown) => error);
+  }
+
+  const derived = (field: string) => ({ status: 400, details: { field, code: "derivedRelation" } });
+
+  it("refuses an Event that sets a company and a project, on company", async () => {
+    const project = await itemIn("projects");
+    const company = await itemIn("companies");
+
+    const error = await refusal("events", { project: [project], company: [company] });
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error).toMatchObject(derived("company"));
+  });
+
+  it("refuses an Event that sets an area and a project, on area", async () => {
+    const error = await refusal("events", { project: [await itemIn("projects")], area: [await itemIn("areas")] });
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error).toMatchObject(derived("area"));
+  });
+
+  it("accepts an Event that sets only a company or only an area, the project being absent or empty", async () => {
+    const company = await itemIn("companies");
+    const area = await itemIn("areas");
+
+    await expect(validate("events", { company: [company] })).resolves.not.toBeNull();
+    await expect(validate("events", { area: [area] })).resolves.not.toBeNull();
+    await expect(validate("events", { project: [], company: [company] })).resolves.not.toBeNull();
+    await expect(validate("events", { project: [await itemIn("projects")], company: [] })).resolves.not.toBeNull();
+  });
+
+  it("refuses a File that sets an area and a project, on area, and accepts the area alone", async () => {
+    const project = await itemIn("projects");
+    const area = await itemIn("areas");
+
+    const error = await refusal("files", { projects: [project], area: [area] });
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error).toMatchObject(derived("area"));
+    await expect(validate("files", { area: [area] })).resolves.not.toBeNull();
+    await expect(validate("files", { projects: [project] })).resolves.not.toBeNull();
+  });
+
+  it("refuses a health record that sets an area and a project, on area", async () => {
+    const error = await refusal("healthRecords", {
+      projects: [await itemIn("projects")],
+      area: [await itemIn("areas")],
+    });
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error).toMatchObject(derived("area"));
+  });
+
+  it("is not affected for a database that has no derived relation, nor for a relation an Event does not derive", async () => {
+    const project = await itemIn("projects");
+    const person = await itemIn("people");
+    const company = await itemIn("companies");
+
+    await expect(validate("tasks", { project: [project] })).resolves.not.toBeNull();
+    await expect(validate("events", { project: [project], people: [person] })).resolves.not.toBeNull();
+    await expect(validate("people", { companies: [company] })).resolves.not.toBeNull();
+    // Transcripts has a `company` and a `project` relation too, under the same keys as Events, but derives neither.
+    await expect(validate("transcripts", { project: [project], company: [company] })).resolves.not.toBeNull();
+    await expect(validate("tasks")).resolves.not.toBeNull();
+  });
+
+  it("refuses the same envelope the tick would write, as needsClarification with no stored envelope", async () => {
+    const project = await itemIn("projects");
+    const company = await itemIn("companies");
+    const databaseIds: TickDatabaseIds = {
+      inboxDatabaseId: await databaseIdFor("inbox"),
+      inboxItemTypesDatabaseId: await databaseIdFor("inboxItemTypes"),
+      processingProposalsDatabaseId: await databaseIdFor("processingProposals"),
+    };
+    const type = await withTransaction(pool, (client) =>
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: databaseIds.inboxItemTypesDatabaseId,
+        name: "Meeting",
+        emoji: "M",
+        processingMethod: "database",
+        targetDatabase: "events",
+      }),
+    );
+    const item = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: databaseIds.inboxDatabaseId,
+        date: "2026-10-16",
+        time: "09:00",
+        text: "Meeting at Acme about the project",
+        type: type.id,
+      }),
+    );
+
+    await runTick(pool, databaseIds, item.id, async () => ({
+      properties: { name: "Meeting" },
+      relations: { project: [project], company: [company] },
+    }));
+
+    const card = await findProposalForItem(pool, databaseIds.processingProposalsDatabaseId, item.id);
+    expect(card?.properties).toMatchObject({ status: "needsClarification", proposal: null });
+    expect(JSON.stringify(card?.properties.history)).toContain("derived from the item's project");
+  });
+});
+
 describe("assertValidProposalEnvelope validates multi-step envelopes (issue #1479)", () => {
   let peopleDbId: string;
   let companiesDbId: string;
@@ -6974,4 +7110,324 @@ describe("Markdown page proposal validation", () => {
       if (cleanupFailed) throw cleanupFailure;
     },
   );
+});
+
+describe("semprec.tick proposes a journal entry for the journal method (issue gh-1982)", () => {
+  const PAGE_LINK = "[Sub page](semprec://page/00000000-0000-4000-8000-000000000001)";
+  let databaseIds: TickDatabaseIds;
+  let proposalsId: string;
+  let journalId: string;
+  let areasId: string;
+  let projectsId: string;
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    viewTypeRegistry = createViewTypeRegistry();
+    await resetDatabase(pool);
+    await seedSystem(pool, viewTypeRegistry);
+    proposalsId = await databaseIdFor("processingProposals");
+    databaseIds = {
+      inboxDatabaseId: await databaseIdFor("inbox"),
+      inboxItemTypesDatabaseId: await databaseIdFor("inboxItemTypes"),
+      processingProposalsDatabaseId: proposalsId,
+    };
+    journalId = await databaseIdFor("journal");
+    areasId = await databaseIdFor("areas");
+    projectsId = await databaseIdFor("projects");
+  });
+
+  /** An Inbox item of a type with the given method, dated `date`. */
+  async function typedItem(
+    method: "journal" | "pageContent" | "database",
+    date = "2026-10-16",
+  ): Promise<{ typeId: string; itemId: string }> {
+    const type = await withTransaction(pool, (client) =>
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: databaseIds.inboxItemTypesDatabaseId,
+        name: method === "journal" ? "Note" : "Task",
+        emoji: "N",
+        processingMethod: method,
+        ...(method === "database" ? { targetDatabase: "tasks" } : {}),
+      }),
+    );
+    const item = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: databaseIds.inboxDatabaseId,
+        date,
+        time: "09:00",
+        text: "Went for a run",
+        type: type.id,
+      }),
+    );
+    return { typeId: type.id, itemId: item.id };
+  }
+
+  async function liveItem(databaseId: string, name: string): Promise<string> {
+    return (await withTransaction(pool, (client) => createItemWithClient(client, { databaseId, properties: { name } })))
+      .id;
+  }
+
+  /** Ticks `itemId` with a computation that answers `properties` (and `extra`), and returns the card and the input. */
+  async function tickJournal(
+    itemId: string,
+    properties: Record<string, unknown>,
+    extra: { target?: string } = {},
+  ): Promise<{ card: Awaited<ReturnType<typeof findProposalForItem>>; inputs: ProposalComputationInput[] }> {
+    const inputs: ProposalComputationInput[] = [];
+    await runTick(pool, databaseIds, itemId, async (input) => {
+      inputs.push(input);
+      return { properties, ...extra };
+    });
+    return { card: await findProposalForItem(pool, proposalsId, itemId), inputs };
+  }
+
+  it("creates a journalEntry card with the Journal database as target and hands the computation the database and the date", async () => {
+    const { itemId } = await typedItem("journal");
+
+    const { card, inputs } = await tickJournal(itemId, { date: "2026-10-15", markdown: "Went for a run." });
+
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0]).toMatchObject({
+      entityKind: "journalEntry",
+      journalDatabaseId: journalId,
+      sourceDate: "2026-10-16",
+    });
+    expect(inputs[0]?.targetDatabaseId).toBeUndefined();
+    expect(card?.properties.status).toBe("proposed");
+    const expected = {
+      entityKind: "journalEntry",
+      target: journalId,
+      properties: { date: "2026-10-15", markdown: "Went for a run." },
+    };
+    expect(card?.properties.proposal).toEqual(expected);
+    expect(card?.properties.aiProposal).toEqual(expected);
+  });
+
+  it("stores the source item's date when the computation returns none", async () => {
+    const { itemId } = await typedItem("journal", "2026-10-12");
+
+    const { card } = await tickJournal(itemId, { markdown: "Went for a run." });
+
+    expect(card?.properties.proposal).toEqual({
+      entityKind: "journalEntry",
+      target: journalId,
+      properties: { date: "2026-10-12", markdown: "Went for a run." },
+    });
+  });
+
+  it("keeps only the project when the computation returns an area and a project", async () => {
+    const areaId = await liveItem(areasId, "Health");
+    const projectId = await liveItem(projectsId, "Website");
+    const { itemId } = await typedItem("journal");
+
+    const { card } = await tickJournal(itemId, { markdown: "Went for a run.", areaId, projectId });
+
+    expect(card?.properties.status).toBe("proposed");
+    expect(card?.properties.proposal).toEqual({
+      entityKind: "journalEntry",
+      target: journalId,
+      properties: { date: "2026-10-16", markdown: "Went for a run.", projectId },
+    });
+  });
+
+  it.each([
+    ["an area alone", "areaId"],
+    ["a project alone", "projectId"],
+  ] as const)("keeps %s as the computation returned it", async (_label, key) => {
+    const id = await liveItem(key === "areaId" ? areasId : projectsId, "Related");
+    const { itemId } = await typedItem("journal");
+
+    const { card } = await tickJournal(itemId, { markdown: "Went for a run.", [key]: id });
+
+    expect(card?.properties.proposal).toEqual({
+      entityKind: "journalEntry",
+      target: journalId,
+      properties: { date: "2026-10-16", markdown: "Went for a run.", [key]: id },
+    });
+  });
+
+  // One Inbox item per target: a second tick of the same item stops at the stored card's current fingerprint and never
+  // reaches the computation, so a loop over the targets would assert on the first one only.
+  it.each([
+    ["the Journal database", () => journalId],
+    ["an id that is no Journal database", () => randomUUID()],
+  ] as const)(
+    "refuses a computation result that carries %s as a target of its own and creates no journalEntry card",
+    async (_label, targetOf) => {
+      const { itemId } = await typedItem("journal");
+
+      const { card, inputs } = await tickJournal(itemId, { markdown: "Went for a run." }, { target: targetOf() });
+
+      expect(inputs).toHaveLength(1);
+      expect(card?.properties).toMatchObject({ status: "needsClarification", proposal: null, aiProposal: null });
+      expect(JSON.stringify(card?.properties.history)).toContain("set by the server");
+      const { rows } = await pool.query<{ n: number }>(
+        "SELECT count(*)::int AS n FROM items WHERE database_id = $1 AND properties->'proposal'->>'entityKind' = 'journalEntry'",
+        [proposalsId],
+      );
+      expect(rows).toEqual([{ n: 0 }]);
+    },
+  );
+
+  it.each([
+    ["no markdown", () => ({ date: "2026-10-16" }), "markdown"],
+    ["a blank markdown", () => ({ markdown: "  " }), "markdown"],
+    ["a page block in the markdown", () => ({ markdown: `A line\n\n${PAGE_LINK}` }), "markdown"],
+    ["an area that names no item", () => ({ markdown: "Run.", areaId: randomUUID() }), "areaId"],
+    ["a project that names no item", () => ({ markdown: "Run.", projectId: randomUUID() }), "projectId"],
+    ["a date that is no calendar day", () => ({ markdown: "Run.", date: "2026-02-30" }), "date"],
+  ] as const)("records %s as needsClarification and stores no envelope", async (_label, build, field) => {
+    const { itemId } = await typedItem("journal");
+
+    const { card } = await tickJournal(itemId, build());
+
+    expect(card?.properties).toMatchObject({ status: "needsClarification", proposal: null, aiProposal: null });
+    expect(JSON.stringify(card?.properties.history)).toContain("Computed proposal failed validation");
+    expect(JSON.stringify(card?.properties.history)).toContain(field);
+  });
+
+  it("leaves a pageContent type as it was: no Journal database or date in the input, the page target from the result", async () => {
+    const { itemId } = await typedItem("pageContent");
+    const pageId = await liveItem(projectsId, "Reference page");
+
+    const { card, inputs } = await tickJournal(itemId, { markdown: "A note.", placement: "end" }, { target: pageId });
+
+    expect(inputs[0]?.entityKind).toBe("pageContent");
+    expect(inputs[0]?.journalDatabaseId).toBeUndefined();
+    expect(inputs[0]?.sourceDate).toBeUndefined();
+    expect(card?.properties.proposal).toEqual({
+      entityKind: "pageContent",
+      target: pageId,
+      properties: { markdown: "A note.", placement: "end" },
+    });
+  });
+
+  it("leaves a database type as it was: the type's target database, no Journal database or date in the input", async () => {
+    const { itemId } = await typedItem("database");
+
+    const { card, inputs } = await tickJournal(itemId, { name: "Buy milk" });
+
+    expect(inputs[0]?.entityKind).toBe("database");
+    expect(inputs[0]?.targetDatabaseId).toBe(await databaseIdFor("tasks"));
+    expect(inputs[0]?.journalDatabaseId).toBeUndefined();
+    expect(inputs[0]?.sourceDate).toBeUndefined();
+    expect(card?.properties.proposal).toEqual({
+      entityKind: "database",
+      target: await databaseIdFor("tasks"),
+      properties: { name: "Buy milk" },
+    });
+  });
+
+  it("fails the tick, writing no card, when the tenant has no Journal database", async () => {
+    const { itemId } = await typedItem("journal");
+    // Raw SQL: no API removes a system database; this is the state a tenant seeded without the Journal module has.
+    await pool.query("UPDATE databases SET owner_module_id = 'journalRemoved' WHERE owner_module_id = 'journal'");
+
+    await expect(tickJournal(itemId, { markdown: "Went for a run." })).rejects.toThrow(
+      "No database seeded for owner_module_id 'journal'",
+    );
+
+    expect(await findProposalForItem(pool, proposalsId, itemId)).toBeNull();
+  });
+
+  describe("buildProposalEnvelope for a journalEntry snapshot", () => {
+    async function snapshotOf(journalDatabaseId: string | undefined, dropDate = false): Promise<TickSnapshot> {
+      const { itemId } = await typedItem("journal");
+      const item = await withTransaction(pool, (client) =>
+        itemsStore.getItemById(client, databaseIds.inboxDatabaseId, itemId),
+      );
+      if (!item) throw new Error("Missing item");
+      const { date: _date, ...withoutDate } = item.properties;
+      return {
+        sourceTypeId: null,
+        item: dropDate ? { ...item, properties: withoutDate } : item,
+        type: null,
+        processingMethod: "journal",
+        entityKind: "journalEntry",
+        journalDatabaseId,
+        existingProposal: null,
+        fingerprint: "fingerprint",
+        locale: "en",
+      };
+    }
+
+    it("throws a ValidationError on target for a result that carries a target", async () => {
+      const snapshot = await snapshotOf(journalId);
+
+      const error: unknown = (() => {
+        try {
+          return buildProposalEnvelope(snapshot, { target: journalId, properties: { markdown: "Run." } });
+        } catch (caught) {
+          return caught;
+        }
+      })();
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toMatchObject({ details: { field: "target" } });
+    });
+
+    it("throws a plain Error, not a clarification, for a snapshot that has no Journal database", async () => {
+      const snapshot = await snapshotOf(undefined);
+
+      expect(() => buildProposalEnvelope(snapshot, { properties: { markdown: "Run." } })).toThrow(
+        /has no journalDatabaseId/,
+      );
+      expect(() => buildProposalEnvelope(snapshot, { properties: { markdown: "Run." } })).not.toThrow(ValidationError);
+    });
+
+    it("leaves the date out, for the envelope validation to refuse, when neither the result nor the item has one", async () => {
+      const snapshot = await snapshotOf(journalId, true);
+
+      expect(buildProposalEnvelope(snapshot, { properties: { markdown: "Run." } })).toEqual({
+        entityKind: "journalEntry",
+        target: journalId,
+        properties: { markdown: "Run." },
+      });
+    });
+  });
+
+  it("does not accept an area of another tenant: the card is needsClarification, as for an id that names no item", async () => {
+    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    try {
+      const own = getTenantZeroId();
+      // The own item is created while the tenant is the only one: the superuser pool resolves its tenant by that.
+      const { itemId } = await typedItem("journal");
+      const foreign = await createTestTenant(pool);
+      await createUser(pool, { tenantId: foreign, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
+      await runInTenant(foreign, () => seedSystem(runtime));
+      const foreignAreasId = await runInTenant(foreign, () =>
+        withTransaction(runtime, async (client) => (await databasesStore.getDatabaseByModuleId(client, "areas"))?.id),
+      );
+      if (!foreignAreasId) throw new Error("Foreign tenant has no Areas database");
+      const foreignAreaId = await runInTenant(foreign, () =>
+        withTransaction(
+          runtime,
+          async (client) =>
+            (await createItemWithClient(client, { databaseId: foreignAreasId, properties: { name: "Foreign" } })).id,
+        ),
+      );
+
+      const card = await runInTenant(own, async () => {
+        const handler = createSemprecTickAction(runtime, async () => ({
+          properties: { markdown: "Went for a run.", areaId: foreignAreaId },
+        }));
+        await handler(databaseIds, { heartbeatId: "hb", projectItemId: "proj", itemId });
+        return withTransaction(runtime, async (client) => {
+          const { rows } = await client.query<{ properties: Record<string, unknown> }>(
+            "SELECT properties FROM items WHERE database_id = $1",
+            [proposalsId],
+          );
+          return rows;
+        });
+      });
+
+      expect(card).toHaveLength(1);
+      expect(card[0]?.properties).toMatchObject({ status: "needsClarification", proposal: null });
+      // The answer is the one an id that names no item gets, and nothing of the foreign item is on the card.
+      expect(JSON.stringify(card[0]?.properties.history)).toContain("is not a live item of areas");
+      expect(JSON.stringify(card[0]?.properties)).not.toContain("Foreign");
+    } finally {
+      await runtime.end();
+    }
+  });
 });
