@@ -260,7 +260,7 @@ public enum ItemAction: Equatable, Sendable {
         case rename(String)
         case setText(propertyKey: String, text: String)
         case setNumber(propertyKey: String, number: Double?)
-        case setFlag(propertyKey: String, on: Bool)
+        case setFlag(propertyKey: String, isOn: Bool)
         case setChoices(propertyKey: String, keys: [String])
         /// Ends the link that makes a value follow its source; the value stays as the item's own.
         case unlink(propertyKey: String)

@@ -23,7 +23,7 @@
     "allowedImports": ["androidx.lifecycle.ViewModel", "androidx.lifecycle.viewModelScope"]
   },
   "apple": {
-    "systemModules": ["Combine", "Foundation", "Security", "SwiftUI", "Synchronization", "XCTest"],
+    "systemModules": ["Combine", "CoreGraphics", "Foundation", "ImageIO", "Security", "SwiftUI", "Synchronization", "UniformTypeIdentifiers", "XCTest"],
     "externalModules": ["FactoryKit", "NavigatorUI"],
     "kotlinFrameworkTarget": "CoreKit",
     "targets": {
@@ -32,6 +32,8 @@
       "Dependencies": { "project": "Modules/Core/Dependencies", "sources": "Sources", "allowed": ["CoreKit", "FactoryKit"] },
       "AuthFeature": { "project": "Modules/Features/Auth", "sources": "Sources", "allowed": ["CoreKit", "DesignSystem"] },
       "AuthFeatureTests": { "project": "Modules/Features/Auth", "sources": "Tests", "allowed": ["AuthFeature", "CoreKit"] },
+      "CollectionsFeature": { "project": "Modules/Features/Collections", "sources": "Sources", "allowed": ["CoreKit", "DesignSystem"] },
+      "CollectionsFeatureTests": { "project": "Modules/Features/Collections", "sources": "Tests", "allowed": ["CollectionsFeature", "CoreKit"] },
       "DesignSystem": { "project": "Modules/Core/DesignSystem", "sources": "Sources", "allowed": [] },
       "HomeFeature": { "project": "Modules/Features/Home", "sources": "Sources", "allowed": ["CoreKit", "DesignSystem"] },
       "HomeFeatureTests": { "project": "Modules/Features/Home", "sources": "Tests", "allowed": ["HomeFeature", "CoreKit"] },
@@ -40,7 +42,7 @@
       "Semprec": {
         "project": "Projects/App",
         "sources": "Sources",
-        "allowed": ["AuthFeature", "CoreKit", "Dependencies", "DesignSystem", "HomeFeature", "SettingsFeature", "NavigatorUI"]
+        "allowed": ["AuthFeature", "CollectionsFeature", "CoreKit", "Dependencies", "DesignSystem", "HomeFeature", "SettingsFeature", "NavigatorUI"]
       },
       "SemprecTests": { "project": "Projects/App", "sources": "Tests", "allowed": ["Semprec", "CoreKit", "NavigatorUI"] },
       "SemprecUITests": { "project": "Projects/App", "sources": "UITests", "allowed": [], "appUnderTest": "Semprec" }
@@ -50,7 +52,7 @@
     "module": ":shared:presentation",
     "baseClass": "ScreenViewModel",
     "leaseType": "SharedViewModelLease",
-    "appleOnly": ["LoginViewModel", "SessionViewModel"]
+    "appleOnly": ["LoginViewModel", "SessionViewModel", "CollectionViewModel", "ItemViewModel"]
   },
   "navigation": {
     "gradleModules": [":android:app"],
