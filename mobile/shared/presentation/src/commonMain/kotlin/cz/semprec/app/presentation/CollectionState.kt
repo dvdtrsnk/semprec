@@ -67,10 +67,7 @@ data class FilterGroup(
 )
 
 /** What the filter sheet shows once it was opened: its groups, or why they are missing. */
-data class FilterSheet(val loading: Boolean, val failure: FailureKind?, val groups: List<FilterGroup>)
-
-/** A write that failed; [kind] is `null` for an unexpected failure, which has no typed reason. */
-data class WriteFailure(val kind: FailureKind?)
+data class FilterSheet(val loading: Boolean, val failure: Failed?, val groups: List<FilterGroup>)
 
 /**
  * Everything one collection screen shows. [refreshing] is true while a new query runs over the rows still on
@@ -97,5 +94,5 @@ data class CollectionState(
     val canCreate: Boolean = false,
     val canUpload: Boolean = false,
     val creating: Boolean = false,
-    val writeFailure: WriteFailure? = null,
+    val writeFailure: Failed? = null,
 )

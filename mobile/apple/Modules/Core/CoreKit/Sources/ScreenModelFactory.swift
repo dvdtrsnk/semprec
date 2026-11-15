@@ -10,4 +10,8 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
     func makeSettings() -> any SettingsScreenModel
     func makeSession() -> any SessionScreenModel
     func makeLogin() -> any LoginScreenModel
+
+    // MARK: - Collections
+    func makeCollection(target: CollectionTarget) -> any CollectionScreenModel
+    func makeItem(itemId: String, databaseKey: String?) -> any ItemScreenModel
 }

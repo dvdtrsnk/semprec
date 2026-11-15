@@ -38,7 +38,7 @@ internal class ItemDeletionFlow(
             ensureActive()
             host.update {
                 when (impact) {
-                    is Answer.Rejected -> it.copy(deletion = DeletionView(false, impact.kind, null, false))
+                    is Answer.Rejected -> it.copy(deletion = DeletionView(false, Failed(impact.kind), null, false))
                     is Answer.Done -> it.copy(deletion = DeletionView(false, null, impact.value.toView(), false))
                 }
             }
@@ -53,7 +53,7 @@ internal class ItemDeletionFlow(
             ensureActive()
             when (deleted) {
                 is Answer.Rejected ->
-                    host.update { it.copy(deletion = it.deletion?.copy(deleting = false, failure = deleted.kind)) }
+                    host.update { it.copy(deletion = it.deletion?.copy(deleting = false, failure = Failed(deleted.kind))) }
                 is Answer.Done -> {
                     host.update { it.copy(deleted = true, deletion = null) }
                     host.emit(ItemEffect.Close)
