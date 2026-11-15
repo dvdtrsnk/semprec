@@ -14,6 +14,7 @@ let workspace = Workspace(
         "Modules/Features/Home",
         "Modules/Features/Journal",
         "Modules/Features/Settings",
+        "Modules/Features/Sleep",
     ],
     schemes: [
         .scheme(
@@ -27,6 +28,7 @@ let workspace = Workspace(
                     .testableTarget(target: .project(path: "Modules/Features/Home", target: "HomeFeatureTests")),
                     .testableTarget(target: .project(path: "Modules/Features/Journal", target: "JournalFeatureTests")),
                     .testableTarget(target: .project(path: "Modules/Features/Settings", target: "SettingsFeatureTests")),
+                    .testableTarget(target: .project(path: "Modules/Features/Sleep", target: "SleepFeatureTests")),
                     .testableTarget(target: .project(path: "Projects/App", target: "\(app)Tests")),
                 ],
                 options: .options(language: "en", region: "US")

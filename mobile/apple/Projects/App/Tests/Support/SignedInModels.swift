@@ -23,6 +23,10 @@ final class SignedInModels: ScreenModelFactory {
         real.makeJournalSubpage(itemId: itemId)
     }
 
+    func makeSleep(night: String?, startOnNight: Bool) -> any SleepScreenModel {
+        real.makeSleep(night: night, startOnNight: startOnNight)
+    }
+
     func makeSession() -> any SessionScreenModel {
         ScriptedSessionScreenModel(
             state: .signedIn(SessionUser(email: "a@b.cz", role: "member", serverUrl: "https://s.example"))

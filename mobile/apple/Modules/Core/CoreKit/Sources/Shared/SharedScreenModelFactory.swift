@@ -42,4 +42,8 @@ extension SharedScreenModelFactory: ScreenModelFactory {
     public func makeJournalSubpage(itemId: String) -> any JournalSubpageScreenModel {
         SharedJournalSubpageScreenModel(sdk.journalSubpageViewModel(itemId: itemId))
     }
+
+    public func makeSleep(night: String?, startOnNight: Bool) -> any SleepScreenModel {
+        SharedSleepScreenModel(sdk.sleepViewModel(night: night, startOnNight: startOnNight))
+    }
 }

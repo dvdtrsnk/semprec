@@ -15,4 +15,7 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
     /// `initialDay` is the device's current day, `YYYY-MM-DD`; the server's answer names today.
     func makeJournal(initialDay: String) -> any JournalScreenModel
     func makeJournalSubpage(itemId: String) -> any JournalSubpageScreenModel
+
+    /// The sleep sheet for the evening `night` (`YYYY-MM-DD`, or nil); `startOnNight` opens it on that night.
+    func makeSleep(night: String?, startOnNight: Bool) -> any SleepScreenModel
 }
