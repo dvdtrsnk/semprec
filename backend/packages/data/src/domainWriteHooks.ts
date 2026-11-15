@@ -72,6 +72,9 @@ import {
 import { registerItemSearchGroup, registerThreadSearchGroup } from "./search/searchGroupRegistry.js";
 import { sempThreadSearchGroup } from "./search/sempThreadSearch.js";
 import { mailGlobalSearchGroup } from "./mail/mailGlobalSearchGroup.js";
+import { calendarFeedStatePurgeHook } from "./calendar/calendarFeedStatePurgeHook.js";
+import { registerCalendarFeedConsumer } from "./calendar/calendarSubscriptionSweep.js";
+import { importSubscribedEvents } from "./calendar/subscribedEventsImport.js";
 import { eventTimePreWriteTransform, prepareEventTime } from "./calendar/eventTime.js";
 import { eventIcalIdentityTransform, prepareEventIcalIdentity } from "./calendar/eventIcalIdentityTransform.js";
 import { nextOccurrenceDateTransform, prepareNextOccurrenceDate } from "./calendar/nextOccurrenceDateTransform.js";
@@ -436,6 +439,16 @@ registerItemRestoreHook(sleepResyncRestoreHook);
 // Issue gh-1812: the cover candidates of a permanently deleted item go with it, whatever its database (an item of
 // another database has none). gh-1812 declares only #1809 as a blocker, and that one for shared-file ordering.
 registerItemPurgeHook(libraryCoverCandidatesPurgeHook);
+
+// Issue gh-1960: the download state of a permanently deleted subscription calendar goes with it. gh-1960 adds no hook of a
+// source it declares as a blocker, so this entry has no order to keep relative to theirs.
+registerItemPurgeHook(calendarFeedStatePurgeHook);
+
+// Issue gh-2004: a downloaded ICS feed becomes the calendar's `subscribedEvents` items. The sweep of gh-1960, a blocker of
+// gh-2004, calls the consumer inside its own per-calendar transaction; the consumer is no write hook and has no order to keep.
+registerCalendarFeedConsumer(async (client, feed) => {
+  await importSubscribedEvents(client, feed);
+});
 
 // Issue #1774: a moved or relocated Event queues an updated invitation for the people it was sent to, and a trashed
 // Event queues a cancellation for the people it has an invitation for. No restore hook: a restore sends nothing.

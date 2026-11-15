@@ -15,9 +15,13 @@ export { createMailThreadTaskCreateRouteHandler } from "./mailThreadTaskRouteHan
 export { threadCompanyLinkResolver, threadProjectLinkResolver } from "./threadLinkRules.js";
 export {
   createMailDraftCreateTool,
+  createMailDraftCreateUserTool,
   createMailDraftSendTool,
+  createMailDraftSendUserTool,
   createMailDraftUpdateTool,
+  createMailDraftUpdateUserTool,
   createMailThreadGetTool,
+  createMailThreadGetUserTool,
   createMailThreadProposeTaskTool,
   mailDraftCreateArgsSchema,
   mailDraftSendArgsSchema,
@@ -87,6 +91,10 @@ export { createMailboxRemovalRouteHandler } from "./mailboxRemoval.js";
  * runs its handler, which files the approval request of the send (issue gh-1913) and sends nothing, and the generic
  * deferral would put a second approval in front of that request
  * (docs/adr/2026-11-14-the-mail-send-tool-is-declared-without-deferral-and-files-its-own-approval-request.md).
+ * The four tools are also offered over `/mcp` (issue gh-1956): each declares `mcp` with the handler a human session runs as
+ * its user (`mailAgentTools.ts`), and a run credential runs the handler above as its run
+ * (docs/adr/2026-11-14-mail-tools-over-mcp-run-as-their-run-or-as-the-session-user.md). `mail.thread.proposeTask` is not
+ * one of them.
  * `mail.thread.proposeTask` (issue gh-2035, capability `mail.taskProposal`, `threadTaskProposals.ts`) proposes a task of a
  * thread as a card in the Inbox and creates none, so it declares no approval either; the user's confirm of the card
  * creates the task (issue gh-2034).
@@ -130,6 +138,7 @@ export const manifest: ModuleManifest = {
       capability: "mail.read",
       approval: "none",
       riskClass: "read",
+      mcp: { humanHandlerExport: "createMailThreadGetUserTool" },
     },
     // A draft stays in Semprec and nothing sends it, so creating and updating one needs no approval; sending is a
     // separate tool (docs/adr/2026-10-28-module-agent-tools-approval-and-grants.md).
@@ -140,6 +149,7 @@ export const manifest: ModuleManifest = {
       capability: "mail.draft",
       approval: "none",
       riskClass: "write",
+      mcp: { humanHandlerExport: "createMailDraftCreateUserTool" },
     },
     {
       name: "mail.draft.update",
@@ -148,6 +158,7 @@ export const manifest: ModuleManifest = {
       capability: "mail.draft",
       approval: "none",
       riskClass: "write",
+      mcp: { humanHandlerExport: "createMailDraftUpdateUserTool" },
     },
     // Issue gh-1949. Not `requiresApproval`, not `approval: "always"` and not `outbound`: see the manifest docstring.
     {
@@ -156,6 +167,8 @@ export const manifest: ModuleManifest = {
       argumentSchemaExport: "mailDraftSendArgsSchema",
       capability: "mail.send",
       approval: "none",
+      // Over MCP a run credential's call files the request like a session's; a human session's call sends as the user.
+      mcp: { humanHandlerExport: "createMailDraftSendUserTool" },
     },
     // Issue gh-2035. It writes one Processing proposals card and its source edge and no task: the user's confirm of the card
     // creates the task, so nothing outside the Inbox changes until then and no approval is needed

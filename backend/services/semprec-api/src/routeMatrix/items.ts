@@ -145,4 +145,12 @@ export const ITEMS_ROUTES: RouteMatrixEntry[] = [
   { name: "convert page block", method: "POST", path: `/api/items/${EXAMPLE_ID}/page/convert`, surface: "api", public: false, tenancy: "tenant" },
   // prettier-ignore
   { name: "database facets", method: "POST", path: `/api/databases/${EXAMPLE_ID}/facets`, surface: "api", public: false, tenancy: "tenant" },
+  {
+    name: "item origin",
+    method: "GET",
+    path: `/api/items/${EXAMPLE_ID}/origin`,
+    surface: "api",
+    public: false,
+    tenancy: "tenant",
+  },
 ];

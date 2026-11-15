@@ -11,6 +11,7 @@ import {
   resolveTaskAffinitySets,
   runHeartbeatFireQueueSplitMigration,
   setEventInvitationDelivery,
+  setInvitationReplyDelivery,
   setThreadProjectTriageRuntime,
   setThreadTaskPeopleDelivery,
 } from "@semprec/data";
@@ -49,7 +50,9 @@ export interface ApiQueueRuntime {
  * concern once it exists. The calendar's `calendarSendEventInvitation` module task sends through the mail
  * transports `createMailTransportFactory` builds from the same Gmail and Microsoft OAuth client keys; this root
  * binds them with `setEventInvitationDelivery` before the runner starts and unbinds them in `stop()`
- * (docs/adr/2026-11-12-module-queue-tasks-read-their-composition-root-dependencies-from-a-binding.md). The mail
+ * (docs/adr/2026-11-12-module-queue-tasks-read-their-composition-root-dependencies-from-a-binding.md); its
+ * `calendarSendInvitationReply` task (issue gh-1953) sends the reply to an answered invitation through the same
+ * transports, bound with `setInvitationReplyDelivery` the same way. The mail
  * module's `mailTriageThreadProject` task (issue gh-1872) reads the pool and the gateway client of this root the same way
  * (`setThreadProjectTriageRuntime`), and its `mailSyncThreadTaskPeople` task (issue gh-1923) opens its transactions on
  * `pool` through `setThreadTaskPeopleDelivery`, bound and unbound the same way. The same transports are handed to
@@ -99,6 +102,7 @@ export async function createApiQueueRuntime(
   assertTaskListMatchesAffinity(taskList, affinitySets.api, "api");
 
   setEventInvitationDelivery({ pool, transports: mailTransports });
+  setInvitationReplyDelivery({ pool, transports: mailTransports });
   setThreadProjectTriageRuntime({ pool, gateway: aiGateway });
   setThreadTaskPeopleDelivery({ pool });
   let runner: Awaited<ReturnType<typeof runWorker>>;
@@ -111,6 +115,7 @@ export async function createApiQueueRuntime(
     });
   } catch (error) {
     setEventInvitationDelivery(null);
+    setInvitationReplyDelivery(null);
     setThreadProjectTriageRuntime(null);
     setThreadTaskPeopleDelivery(null);
     throw error;
@@ -121,6 +126,7 @@ export async function createApiQueueRuntime(
     stop(): Promise<void> {
       stopped ??= runner.stop().finally(() => {
         setEventInvitationDelivery(null);
+        setInvitationReplyDelivery(null);
         setThreadProjectTriageRuntime(null);
         setThreadTaskPeopleDelivery(null);
       });

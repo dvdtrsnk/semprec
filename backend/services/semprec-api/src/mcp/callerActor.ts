@@ -7,6 +7,12 @@ export interface RunCredentialCaller {
   actor: AuthenticatedActor;
   /** The credential's own capabilities intersected with the process's granted set: a credential only ever narrows it. */
   capabilities: ReadonlySet<CapabilityId>;
+  /**
+   * The module capability ids the credential lists (issue gh-1956): what it lists that is not a core id. They are not
+   * intersected with the process's set, which holds core ids only; the module tool resolver intersects them with what
+   * the credential's project holds, so a credential never gets the tools of a module capability it does not list.
+   */
+  moduleCapabilities: ReadonlySet<string>;
   tenantId: string;
 }
 
@@ -39,6 +45,9 @@ export async function resolveRunCredentialCaller(
       agentProjectItemId: credential.agentProjectItemId,
     },
     capabilities,
+    moduleCapabilities: new Set(
+      credential.capabilities.filter((id) => !(CAPABILITY_IDS as readonly string[]).includes(id)),
+    ),
     tenantId: credential.tenantId,
   };
 }

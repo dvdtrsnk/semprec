@@ -272,6 +272,7 @@ describe("Event occurrences in the calendar timeline (issue gh-1877)", () => {
           today: "2026-10-16",
           now: { date: "2026-10-16", time: "10:00" },
           at: new Date("2026-10-16T08:00:00.000Z"),
+          includeSleep: true,
         }),
       );
       expect(coreItems.map((entry) => entry.id)).toEqual([plain]);

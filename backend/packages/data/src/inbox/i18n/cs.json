@@ -5,6 +5,12 @@
   "property.inbox.text.name": "Text",
   "property.inbox.type.name": "Typ",
   "property.inbox.journalDay.name": "Den v deníku",
+  "property.inbox.captureChannel.name": "Způsob zachycení",
+  "property.inbox.captureChannel.option.typed": "Napsáno",
+  "property.inbox.captureChannel.option.voice": "Hlasem",
+  "property.inbox.captureChannel.option.share": "Sdíleno",
+  "property.inbox.sourceApp.name": "Zdrojová aplikace",
+  "property.inbox.addedAt.name": "Přidáno",
   "database.inboxItemTypes.name": "Typy položek Inboxu",
   "property.inboxItemTypes.name.name": "Název",
   "property.inboxItemTypes.emoji.name": "Emoji",
@@ -25,6 +31,7 @@
   "property.inboxItemTypes.targetDatabase.option.companies": "Firmy",
   "property.inboxItemTypes.targetDatabase.option.transcripts": "Přepisy",
   "property.inboxItemTypes.targetDatabase.option.journal": "Deník",
+  "property.inboxItemTypes.targetDatabase.option.mcpServers": "MCP servery",
   "database.processingProposals.name": "Návrhy zpracování",
   "property.processingProposals.kind.name": "Druh",
   "property.processingProposals.kind.option.inbox": "Inbox",
@@ -90,5 +97,9 @@
   "card.target.person": "Osoba",
   "card.target.health": "Zdravotní záznam",
   "card.target.file": "Soubor",
-  "card.target.speaker": "Mluvčí"
+  "card.target.speaker": "Mluvčí",
+  "options.none.project": "Bez projektu",
+  "options.none.area": "Bez oblasti",
+  "options.none.company": "Bez firmy",
+  "options.newStep.hint": "Nový - bude vytvořen"
 }

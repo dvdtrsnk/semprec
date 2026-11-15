@@ -194,8 +194,11 @@ export function setEventInvitationDelivery(next: EventInvitationDelivery | null)
 
 const NO_ATTACHMENTS_MESSAGE = "An invitation message carries no attachment";
 
-/** Attachment storage for `buildOutgoingMime`, which reads it only for an attachment; an invitation has none. */
-const noAttachmentStorage: BlobStorageWriter = {
+/**
+ * Attachment storage for `buildOutgoingMime`, which reads it only for an attachment; an invitation message and the
+ * reply to one (`invitationReplyJob.ts`) have none.
+ */
+export const noAttachmentStorage: BlobStorageWriter = {
   writeStream: () => Promise.reject(new Error(NO_ATTACHMENTS_MESSAGE)),
   delete: () => Promise.reject(new Error(NO_ATTACHMENTS_MESSAGE)),
   readStream: () => {
@@ -206,7 +209,7 @@ const noAttachmentStorage: BlobStorageWriter = {
 let catalogsPromise: Promise<ModuleCatalogs> | undefined;
 
 /** Loaded once per process; a failed load is not cached, so the next job retries it. */
-function getCatalogs(): Promise<ModuleCatalogs> {
+export function getCatalogs(): Promise<ModuleCatalogs> {
   catalogsPromise ??= loadModuleCatalogs(import.meta.url).catch((error: unknown) => {
     catalogsPromise = undefined;
     throw error;

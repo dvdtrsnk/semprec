@@ -1,12 +1,14 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Readable } from "node:stream";
 import { runOnce, CORE_TASK_NAMES } from "@semprec/queue";
+import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
 import { runInTenant } from "@semprec/shared";
 import type { Pool, PoolClient } from "pg";
+import { z } from "zod";
 import {
   createRuntimeRolePool,
   getTenantZeroId,
@@ -28,7 +30,11 @@ import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
-import { insertInboxAttachments, listInboxAttachments } from "../inbox/inboxAttachmentsStore.js";
+import {
+  insertInboxAttachments,
+  listInboxAttachments,
+  recordInboxAttachmentMetadata,
+} from "../inbox/inboxAttachmentsStore.js";
 import { createSemprecTickAction, type ComputeSemprecProposalFn, type ProposalStep } from "../inbox/inboxTickAction.js";
 import { confirmProposalWithClient } from "../inbox/proposalActions.js";
 import { executeProposalSteps } from "../inbox/proposalSteps.js";
@@ -44,6 +50,8 @@ import type { ItemRow } from "../types.js";
 // Issue #1703: confirming a `fileFromAttachment` step moves an Inbox attachment into Files. These tests
 // run the real confirm path against the seeded database, through the runtime that owns the tables.
 // Every envelope has a Task as its primary step: a file step is never primary (see the ADR).
+
+const dayRecomputeJobSchema = z.object({ payload: z.object({ journalDayItemId: z.string() }) });
 
 let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
@@ -476,6 +484,34 @@ async function plainInboxItem(text: string): Promise<string> {
   return item.id;
 }
 
+/** The Journal day item an Inbox item sits on. */
+async function journalDayIdOf(inboxItemId: string): Promise<string> {
+  return withTransaction(pool, async (client) => {
+    const property = await propertiesStore.getPropertyByKey(client, inboxId, "journalDay");
+    const definition = await relationsStore.getRelationDefinitionByPropertyId(client, property!.id);
+    const [edge] = await relationsStore.listRelationsForItem(client, definition!.id, inboxItemId);
+    return relationsStore.otherSide(edge!, inboxItemId);
+  });
+}
+
+/** The Journal days with a pending recompute job, read from the job payloads (issue gh-1969). */
+async function pendingDayRecomputes(): Promise<string[]> {
+  const payloads = await readJobPayloadsByIdentifier(pool, CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE);
+  return payloads.flatMap((raw) => {
+    const parsed = dayRecomputeJobSchema.safeParse(raw);
+    return parsed.success ? [parsed.data.payload.journalDayItemId] : [];
+  });
+}
+
+/** Removes the pending recompute jobs, so only an enqueue made after this call is observed. */
+async function clearDayRecomputes(): Promise<void> {
+  await pool.query(
+    `DELETE FROM graphile_worker._private_jobs
+     WHERE task_id IN (SELECT id FROM graphile_worker._private_tasks WHERE identifier = $1)`,
+    [CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE],
+  );
+}
+
 /** A Task-typed Inbox item and the Processing proposal the tick computes for it. */
 async function inboxItemWithCard(text: string): Promise<{ inboxItemId: string; cardId: string }> {
   const item = await withTransaction(pool, (client) =>
@@ -681,6 +717,47 @@ describe("file from attachment on confirm (issue #1703)", () => {
     ]);
     expect(executed.createdItemIds).toContain(files!.id);
     expect(executed.primaryItemId).not.toBe(files!.id);
+  });
+
+  it("enqueues the recompute of the Inbox item's Journal day when an attachment is moved out (issue gh-1969)", async () => {
+    const inboxItemId = await plainInboxItem("Receipt");
+    const dayId = await journalDayIdOf(inboxItemId);
+    const attachmentId = await attach(inboxItemId, await newBlob("application/pdf"));
+    await clearDayRecomputes();
+
+    await withTransaction(pool, (client) =>
+      executeProposalSteps(client, [taskPrimary(), fileStep(attachmentId)], {
+        writer: { writerKind: "user" },
+        sourceInboxItemId: inboxItemId,
+      }),
+    );
+
+    expect(await attachmentCount(inboxItemId)).toBe(0);
+    expect(await pendingDayRecomputes()).toContain(dayId);
+  });
+
+  it("enqueues no recompute of the day when the move rolls back (issue gh-1969)", async () => {
+    const inboxItemId = await plainInboxItem("Receipt that stays");
+    const attachmentId = await attach(inboxItemId, await newBlob("application/pdf"));
+    await clearDayRecomputes();
+
+    await expect(
+      withTransaction(pool, (client) =>
+        executeProposalSteps(
+          client,
+          [
+            taskPrimary(),
+            fileStep(attachmentId),
+            // A wrong value type passes envelope validation and fails only in the choke point's write, after the move ran.
+            { ref: "broken", op: "create", databaseKey: "tasks", role: "secondary", properties: { name: 42 } },
+          ],
+          { writer: { writerKind: "user" }, sourceInboxItemId: inboxItemId },
+        ),
+      ),
+    ).rejects.toMatchObject({ status: 400, details: { ref: "broken" } });
+
+    expect(await attachmentCount(inboxItemId)).toBe(1);
+    expect(await pendingDayRecomputes()).toEqual([]);
   });
 
   it("leaves out the type when the blob's mime type has no Files type", async () => {
@@ -957,6 +1034,105 @@ describe("file from attachment on confirm (issue #1703)", () => {
     expect(released.blobStorageKeys).toEqual([]);
     expect(await withTransaction(pool, (client) => getBlob(client, blobId))).not.toBeNull();
     expect(await attachmentCount(otherInboxItemId)).toBe(1);
+  });
+
+  describe("the preview and the reduced copy of the moved attachment (issue gh-1965)", () => {
+    /** An attachment of a photo whose metadata job has run: two derived blobs, their bytes written under `directory`. */
+    async function photoWithDerivedImages(inboxItemId: string, directory: string) {
+      const storage = new LocalFsBlobStorageWriter(directory);
+      const keys = [
+        `t/inbox-attachments/${randomUUID()}-preview.jpg`,
+        `t/inbox-attachments/${randomUUID()}-reduced.jpg`,
+      ];
+      for (const key of keys) await storage.writeStream(key, Readable.from([Buffer.from(key)]));
+      const blobId = await newBlob("image/jpeg");
+      const attachmentId = await attach(inboxItemId, blobId);
+      const image = (storageKey: string) => ({
+        mimeType: "image/jpeg",
+        byteSize: storageKey.length,
+        storageKey,
+        contentHash: Buffer.from(storageKey).toString("hex").slice(-64).padStart(64, "0"),
+      });
+      await withTransaction(pool, (client) =>
+        recordInboxAttachmentMetadata(client, {
+          attachmentId,
+          metadata: { width: 10, height: 10, pages: null },
+          thumbnail: image(keys[0]!),
+          reduced: image(keys[1]!),
+        }),
+      );
+      return { blobId, attachmentId, keys };
+    }
+
+    it("frees both derived blobs when the attachment is filed, and removes their bytes once the confirm commits", async () => {
+      const directory = await mkdtemp(join(tmpdir(), "semprec-move-derived-"));
+      vi.stubEnv("FILES_STORAGE_DIR", directory);
+      try {
+        const { inboxItemId, cardId } = await inboxItemWithCard("Move photo");
+        const photo = await photoWithDerivedImages(inboxItemId, directory);
+        const blobsBefore = await blobCount();
+        await storeSteps(cardId, [taskPrimary(), fileStep(photo.attachmentId)]);
+
+        await confirm(cardId);
+
+        expect(await blobCount()).toBe(blobsBefore - 2);
+        expect(await withTransaction(pool, (client) => getBlob(client, photo.blobId))).not.toBeNull();
+        expect(await filesItemsFor(photo.blobId)).toHaveLength(1);
+        await vi.waitFor(async () => {
+          expect(await readdir(join(directory, "t", "inbox-attachments"))).toEqual([]);
+        });
+      } finally {
+        vi.unstubAllEnvs();
+        await rm(directory, { recursive: true, force: true });
+      }
+    });
+
+    it("keeps the derived blobs and their bytes when the confirm rolls back after the move", async () => {
+      const directory = await mkdtemp(join(tmpdir(), "semprec-move-derived-"));
+      vi.stubEnv("FILES_STORAGE_DIR", directory);
+      try {
+        const { inboxItemId, cardId } = await inboxItemWithCard("Move photo, then fail");
+        const photo = await photoWithDerivedImages(inboxItemId, directory);
+        const blobsBefore = await blobCount();
+        await storeSteps(cardId, [
+          taskPrimary(),
+          fileStep(photo.attachmentId),
+          { ref: "broken", op: "create", databaseKey: "tasks", role: "secondary", properties: { name: 42 } },
+        ]);
+
+        await expect(confirm(cardId)).rejects.toMatchObject({ status: 400, details: { ref: "broken" } });
+
+        expect(await blobCount()).toBe(blobsBefore);
+        expect((await readdir(join(directory, "t", "inbox-attachments"))).sort()).toEqual(
+          photo.keys.map((key) => key.split("/")[2]!).sort(),
+        );
+      } finally {
+        vi.unstubAllEnvs();
+        await rm(directory, { recursive: true, force: true });
+      }
+    });
+
+    it("leaves the bytes where they are, and logs, when no blob storage is configured", async () => {
+      const directory = await mkdtemp(join(tmpdir(), "semprec-move-derived-"));
+      vi.stubEnv("NODE_ENV", "production");
+      vi.stubEnv("FILES_STORAGE_DIR", "");
+      try {
+        const { inboxItemId, cardId } = await inboxItemWithCard("Move photo, no storage");
+        const photo = await photoWithDerivedImages(inboxItemId, directory);
+        const blobsBefore = await blobCount();
+        await storeSteps(cardId, [taskPrimary(), fileStep(photo.attachmentId)]);
+
+        const confirmed = await confirm(cardId);
+
+        expect(confirmed.properties.status).toBe("confirmed");
+        expect(await blobCount()).toBe(blobsBefore - 2);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(await readdir(join(directory, "t", "inbox-attachments"))).toHaveLength(2);
+      } finally {
+        vi.unstubAllEnvs();
+        await rm(directory, { recursive: true, force: true });
+      }
+    });
   });
 
   it("keeps the original physical bytes through a move and later Files purge", async () => {

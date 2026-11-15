@@ -75,7 +75,7 @@ describe("runEventsCalendarPropertiesCutoverMigration (issue #1416)", () => {
     for (const [key, [type, owner, locked]] of Object.entries(expected)) {
       expect(byKey.get(key), key).toMatchObject({ type, owner, locked });
     }
-    expect(byKey.get("date")?.config).toEqual({ includeTime: true });
+    expect(byKey.get("date")?.config).toEqual({});
   });
 
   it("adds exactly the missing properties to a previously seeded database, identical to a fresh seed, once", async () => {

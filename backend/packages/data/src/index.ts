@@ -85,7 +85,7 @@ export { postApprovalOutcomeMessage } from "./mcp/approvalOutcomeMessage.js";
 export { getDatabaseByModuleId, type CreateDatabaseInput } from "./chokePoint/databasesStore.js";
 export { type CreatePropertyInput, listPropertiesByDatabase } from "./chokePoint/propertiesStore.js";
 export { findIdempotentReplay, getItemById, getItemsByIds, lockItemById } from "./chokePoint/itemsStore.js";
-export { type ListItemsOptions, writeComputed } from "./chokePoint/itemsStore.js";
+export { findFileItemByBlobId, type ListItemsOptions, writeComputed } from "./chokePoint/itemsStore.js";
 export type { CreateViewInput, PatchViewInput } from "./chokePoint/viewsStore.js";
 export * from "./chokePoint/viewTypeRegistry.js";
 export { manifest as schemaCoreModuleManifest } from "./chokePoint/schemaCoreModuleManifest.js";
@@ -503,7 +503,6 @@ export * from "./blobs/openBlobFromRoots.js";
 export { loadBlobMetadataForItems, type BlobMetadata, type ItemBlobMetadata } from "./blobs/blobMetadata.js";
 export { detectFileType, type DetectedFile, type DetectedFileType } from "./blobs/fileTypeDetection.js";
 export { recomputePersonLastContact } from "./people/lastContact.js";
-export { findFileItemByBlobId } from "./chokePoint/itemsStore.js";
 export * from "./mail/blobStorage.js";
 export { extractAttachmentText, isTextExtractableContentType } from "./mail/attachmentTextExtraction.js";
 
@@ -601,18 +600,11 @@ export {
   type ProposalComputationOperation,
   type WritableProposalTarget,
 } from "./inbox/proposalOperations.js";
-export {
-  deleteInboxAttachment,
-  deleteInboxAttachmentsForItem,
-  getInboxAttachment,
-  insertInboxAttachments,
-  listInboxAttachments,
-  type InboxAttachmentRow,
-  type InboxAttachmentSource,
-  type NewInboxAttachment,
-} from "./inbox/inboxAttachmentsStore.js";
+export * from "./inbox/inboxAttachmentsStore.js";
+export * from "./inbox/inboxAttachmentMetadata.js";
+export * from "./inbox/attachmentExtraction.js";
 export { CALENDAR_MODULE_ID } from "./calendar/calendarModuleId.js";
-export { manifest as calendarModuleManifest } from "./calendar/calendarModuleManifest.js";
+export { manifest as calendarModuleManifest, createCalendarTimelineTool } from "./calendar/calendarModuleManifest.js";
 export { manifest as recipesModuleManifest } from "./recipes/recipesModuleManifest.js";
 export { manifest as sleepModuleManifest } from "./sleep/sleepModuleManifest.js";
 export {
@@ -628,6 +620,7 @@ export { createCalendarAgendaRouteHandler } from "./calendar/agendaRouteHandler.
 export { createRemindersFeedRouteHandler } from "./calendar/remindersFeedRouteHandler.js";
 export { createCalendarCancellationImpactRouteHandler } from "./calendar/cancellationImpactRouteHandler.js";
 export { createRespondToInvitationRouteHandler } from "./calendar/invitationRouteHandlers.js";
+export * from "./calendar/calendarSubscriptionSweep.js";
 export {
   createInviteEventPersonRouteHandler,
   createListEventPeopleRouteHandler,
@@ -646,6 +639,7 @@ export {
   type EventInvitationDelivery,
   type EventInvitationSnapshot,
 } from "./calendar/eventInvitationJob.js";
+export { setInvitationReplyDelivery, type InvitationReplyDelivery } from "./calendar/invitationReplyJob.js";
 export {
   eventRecurrenceOccursOn,
   parseEventRecurrenceRule,
@@ -715,7 +709,16 @@ export {
   type McpConnectionErrorReason,
 } from "./mcp/mcpConnectionError.js";
 export { type McpClientHandle, type ConnectMcpServerOptions, connectMcpServer } from "./mcp/mcpConnectionFactory.js";
-export { syncMcpServerTools, type SyncMcpServerToolsOptions, type SyncMcpServerToolsResult } from "./mcp/mcpSync.js";
+export {
+  enqueueMcpServerSync,
+  handleMcpServerSyncTask,
+  mcpServerSyncJobKey,
+  syncMcpServerTools,
+  type McpServerSyncPayload,
+  type SyncMcpServerToolsOptions,
+  type SyncMcpServerToolsResult,
+} from "./mcp/mcpSync.js";
+export { suggestMcpToolLabels } from "./mcp/mcpToolLabelSuggestion.js";
 export { getGrantedMcpAgentTools, type McpAgentToolProjection } from "./mcp/mcpAgentTools.js";
 export { resolveGrantedMcpTool, type McpToolInvocationTarget } from "./mcp/mcpToolInvocation.js";
 export {
@@ -794,12 +797,9 @@ export * from "./mcp/moduleToolApprovalRequest.js";
 // `sessionsStore.ts`'s `getActiveSessionByTokenHash`: only the action-layer wrapper that hashes the
 // presented token internally (`resolveMcpRunCredential`) is reachable from a composition root.
 export type { ActiveMcpRunCredential } from "./mcp/mcpRunCredentialsStore.js";
-export type { MintMcpRunCredentialInput, MintMcpRunCredentialResult } from "./mcp/mcpRunCredentialAction.js";
-export {
-  mintMcpRunCredential,
-  resolveMcpRunCredential,
-  MCP_RUN_CREDENTIAL_TTL_SECONDS,
-} from "./mcp/mcpRunCredentialAction.js";
+// The module exports exactly MintMcpRunCredentialInput, MintMcpRunCredentialResult, mintMcpRunCredential,
+// resolveMcpRunCredential and MCP_RUN_CREDENTIAL_TTL_SECONDS; publicSurface.test.ts pins the runtime names.
+export * from "./mcp/mcpRunCredentialAction.js";
 
 export {
   projectAgentGuidanceStore,
@@ -879,6 +879,7 @@ export { handleMailLinkPersonEmailsTask } from "./mail/linkPersonEmailsJob.js";
 
 export type { ConfirmationResult, ProposalWarning } from "./inbox/proposalActions.js";
 export type { KeptItem } from "./inbox/undoConfirmedProposal.js";
+export type { CaptureAttachmentResponse } from "./inbox/captureAttachments.js";
 
 export {
   createSempChatThread,
@@ -925,7 +926,7 @@ export { projectSempReplySteps, type SempReplyStep } from "./semp/sempReplySteps
 export { classifySempTurnFailure, renderSempReplyFailure } from "./semp/sempReplyErrors.js";
 export { projectSempReplyChanges, type SempReplyChange } from "./semp/sempReplyChanges.js";
 
-export { resolveModuleAgentToolsForRun, type ResolvedModuleAgentTool } from "./agentTools/moduleAgentTools.js";
+export * from "./agentTools/moduleAgentTools.js";
 export { describeModuleToolFailure } from "./agentTools/describeModuleToolFailure.js";
 
 export { createMailboxListRouteHandler, createMailboxDetailRouteHandler } from "./mail/mailboxRouteHandlers.js";

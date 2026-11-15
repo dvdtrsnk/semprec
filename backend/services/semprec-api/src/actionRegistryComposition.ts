@@ -30,6 +30,7 @@ import {
   CALENDAR_INGEST_INVITATION_ACTION_ID,
   CALENDAR_APPLY_INVITATION_REPLY_ACTION_ID,
   LocalFsBlobStorageWriter,
+  openBlobFromRoots,
   resolveBlobStorageDir,
   NEXT_OCCURRENCE_REFRESH_ACTION_ID,
   type ActionRegistry,
@@ -85,7 +86,21 @@ export function createApiActionRegistry(pool: Pool, moduleRegistry: ModuleRegist
     CALENDAR_APPLY_INVITATION_REPLY_ACTION_ID,
     createInvitationReplyAction(pool, { storage: mailAttachmentStorage }),
   );
-  registry.set(SEMPREC_TICK_ACTION_ID, createSemprecTickAction(pool, createProposalComputation({ pool, gateway })));
+  // The reduced copies of Inbox photos are written to the files root by `semprec-transcribe`; a copy that duplicates an
+  // existing blob can lie in the mail attachments root.
+  const filesStorage = new LocalFsBlobStorageWriter(resolveBlobStorageDir("FILES_STORAGE_DIR"));
+  registry.set(
+    SEMPREC_TICK_ACTION_ID,
+    createSemprecTickAction(
+      pool,
+      createProposalComputation({
+        pool,
+        gateway,
+        openBlob: (storageKey) =>
+          openBlobFromRoots({ primary: filesStorage, alternate: mailAttachmentStorage, storageKey }),
+      }),
+    ),
+  );
   registry.set(AGENT_GUIDANCE_DRIFT_ACTION_ID, (_actionConfig, context) =>
     agentGuidanceDrift({ projectItemId: context.projectItemId }),
   );

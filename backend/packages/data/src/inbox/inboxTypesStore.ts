@@ -10,15 +10,10 @@ import { deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { enqueueRollupRecomputeForEdge } from "../rollup/recompute.js";
 import { triggerOnItemEventHeartbeats } from "../scheduler/schedulerStore.js";
 import {
-  AREAS_MODULE_ID,
-  COMPANIES_MODULE_ID,
-  EVENTS_MODULE_ID,
-  FILES_MODULE_ID,
-  HEALTH_RECORDS_MODULE_ID,
-  PEOPLE_MODULE_ID,
-  PROJECTS_MODULE_ID,
-  TASKS_MODULE_ID,
-} from "../seed/tenDatabaseKeys.js";
+  INBOX_TYPE_MODULE_TARGET_DATABASES,
+  INBOX_TYPE_TARGET_DATABASES,
+  type InboxTypeTargetDatabase,
+} from "./inboxTypeTargets.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import type { ItemRow } from "../types.js";
 
@@ -36,24 +31,7 @@ export interface InboxTypeSummary {
 export const PROCESSING_METHODS = ["pageContent", "database"] as const;
 export type ProcessingMethod = (typeof PROCESSING_METHODS)[number];
 
-/**
- * The system databases an Inbox item type with `processingMethod: 'database'` may target (issue #1436).
- * An explicit list, not the module registry: `journal` and `transcripts` are not processing targets here.
- * A journal entry will get its own processing method in issue #1975, and a recording will be a card the tick
- * makes for an audio attachment in issue #1978. A database that a later issue makes a target is added here
- * together with its select option.
- */
-export const INBOX_TYPE_TARGET_DATABASES = [
-  AREAS_MODULE_ID,
-  PROJECTS_MODULE_ID,
-  TASKS_MODULE_ID,
-  PEOPLE_MODULE_ID,
-  FILES_MODULE_ID,
-  EVENTS_MODULE_ID,
-  HEALTH_RECORDS_MODULE_ID,
-  COMPANIES_MODULE_ID,
-] as const;
-export type InboxTypeTargetDatabase = (typeof INBOX_TYPE_TARGET_DATABASES)[number];
+export { INBOX_TYPE_MODULE_TARGET_DATABASES, INBOX_TYPE_TARGET_DATABASES, type InboxTypeTargetDatabase };
 
 /**
  * Cross-field validation for `processingMethod`/`targetDatabase` — the schema engine has no

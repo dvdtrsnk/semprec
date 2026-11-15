@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { CORE_TASK_NAMES, cancelJob, enqueueJob } from "@semprec/queue";
 import { tenantLane } from "../tenancy/tenantLane.js";
 
 /** The sole process allowed to write Transcriptions' system-owned fields. */
@@ -9,6 +9,11 @@ export const TRANSCRIPTION_OWNER_PROCESS = "transcribe";
 /** Issue #180's fixed job-key scheme: a repeat enqueue for the same file converges onto one job (`jobKeyMode` default `'replace'`), satisfying "repeated delivery converges on one job" without any extra dedup check. */
 export function transcriptionJobKey(fileItemId: string): string {
   return `transcription-job:${fileItemId}`;
+}
+
+/** The key of the fast `transcriptionCreate` job of a file, the counterpart of `transcriptionJobKey`. */
+export function transcriptionCreateJobKey(fileItemId: string): string {
+  return `transcription-create:${fileItemId}`;
 }
 
 const TRANSCRIPTION_SOURCE_LINK_PREFIX = "semprec://items/";
@@ -68,7 +73,7 @@ export async function enqueueTranscriptionCreate(
     CORE_TASK_NAMES.TRANSCRIPTION_CREATE,
     { fileItemId: input.fileItemId },
     {
-      jobKey: `transcription-create:${input.fileItemId}`,
+      jobKey: transcriptionCreateJobKey(input.fileItemId),
       maxAttempts: 3,
       queueName: tenantLane("transcription-create"),
     },
@@ -92,9 +97,20 @@ export async function findTranscriptionJobId(client: PoolClient, fileItemId: str
 export async function findTranscriptionCreateJobId(client: PoolClient, fileItemId: string): Promise<string | null> {
   const { rows } = await client.query<{ id: string }>(
     `SELECT id::text AS id FROM graphile_worker.jobs WHERE key = $1`,
-    [`transcription-create:${fileItemId}`],
+    [transcriptionCreateJobKey(fileItemId)],
   );
   return rows[0]?.id ?? null;
+}
+
+/**
+ * The inverse of `enqueueTranscriptionCreate` and `enqueueTranscriptionJob` (issue gh-1984): removes the `transcriptionCreate`
+ * and the `transcriptionJob` of a file on the caller's open transaction, so the removal commits or rolls back with it.
+ * A job no worker has started is deleted; one a worker is running is detached from its key and not retried (`cancelJob`),
+ * and a file that has no job removes nothing. It does not touch the Transcripts item a job that already ran created.
+ */
+export async function cancelTranscriptionJobs(client: PoolClient, fileItemId: string): Promise<void> {
+  await cancelJob(client, transcriptionCreateJobKey(fileItemId));
+  await cancelJob(client, transcriptionJobKey(fileItemId));
 }
 
 /**

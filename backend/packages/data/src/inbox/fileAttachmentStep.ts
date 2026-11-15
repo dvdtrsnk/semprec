@@ -1,5 +1,18 @@
+import type { PoolClient } from "pg";
 import { z } from "zod";
+import * as databasesStore from "../chokePoint/databasesStore.js";
+import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { ValidationError } from "../errors.js";
+import { FILES_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import type { DatabaseRow } from "../types.js";
+import type { ProposalStep } from "./proposalEnvelope.js";
+import {
+  assertStepDatabaseWritable,
+  assertValidEnvelopeRelations,
+  existingItemRelations,
+  withStepRef,
+} from "./proposalEnvelopeValidation.js";
+import { stepError } from "./proposalStepGraph.js";
 
 // The `fileFromAttachment` step kind of a multi-step proposal envelope (issue #1703): on confirm it moves
 // one attachment of the source Inbox item into Files. The shape is recorded in
@@ -48,4 +61,28 @@ export function parseFileFromAttachmentProperties(
     ref,
     field,
   });
+}
+
+/**
+ * Validates a `fileFromAttachment` step (issue #1703): it names neither a `databaseKey` nor an `itemId`,
+ * its properties are exactly the allowed fields, and its relations are checked as a create step's are.
+ * The attachment itself is checked at confirm, where the proposal's source Inbox item is known.
+ */
+export async function assertValidFileFromAttachmentStep(client: PoolClient, step: ProposalStep): Promise<DatabaseRow> {
+  if (step.databaseKey !== undefined)
+    throw stepError(step, "a fileFromAttachment step cannot name a databaseKey", "databaseKey");
+  if (step.itemId !== undefined) throw stepError(step, "a fileFromAttachment step cannot name an itemId", "itemId");
+  parseFileFromAttachmentProperties(step.ref, step.properties ?? {});
+  const database = assertStepDatabaseWritable(
+    step,
+    await databasesStore.getDatabaseByModuleId(client, FILES_MODULE_ID),
+    "properties",
+  );
+  await withStepRef(step.ref, async () => {
+    const byKey = new Map(
+      (await propertiesStore.listPropertiesByDatabase(client, database.id)).map((property) => [property.key, property]),
+    );
+    await assertValidEnvelopeRelations(client, database.id, byKey, existingItemRelations(step));
+  });
+  return database;
 }

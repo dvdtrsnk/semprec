@@ -32,6 +32,7 @@ import {
   createUser,
   ensureItemAutomation,
   getDatabaseByModuleId,
+  insertInboxAttachments,
   LocalFsBlobStorageWriter,
   loadFullModuleRegistry,
   matchTranscriptToEvent,
@@ -50,6 +51,7 @@ import {
   getTestPool,
   resetDatabase,
 } from "@semprec/data/testSupport";
+import { createInboxAttachmentMetadataTask } from "../inboxAttachmentMetadata.js";
 import { createTranscriptCardRecomputeTask } from "../transcriptCardRecompute.js";
 import { createTranscriptSpeakerSuggestionTask } from "../transcriptSpeakerSuggestionTask.js";
 import { createTranscriptionCreateTask, createTranscriptionTask } from "../transcriptionTask.js";
@@ -60,7 +62,7 @@ import type {
   TranscribeRequest,
   TranscriptionResult,
 } from "../audioGatewayClient.js";
-import { FIXTURE_CREATION_TIME, generateMp4Fixture } from "./fixtures/mediaFixtures.js";
+import { FIXTURE_CREATION_TIME, generateImageFixture, generateMp4Fixture } from "./fixtures/mediaFixtures.js";
 
 /**
  * Two-tenant proof that every task of the `transcribe` affinity set keeps its data, notifications
@@ -443,7 +445,43 @@ async function seedFinishedTranscript(tenant: Tenant): Promise<Payload> {
   });
 }
 
+/** An Inbox item of `tenant` with a photo attached, as a capture leaves it before the metadata job has run. */
+async function seedInboxPhotoAttachment(tenant: Tenant): Promise<Payload> {
+  const photo = await generateImageFixture({ width: 640, height: 480, format: "jpeg" });
+  return runInTenant(tenant.tenantId, async () => {
+    const inbox = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "inbox"));
+    if (!inbox) throw new Error("Inbox database was not seeded");
+    const storageKey = `${tenant.tenantId}/blobs/${randomUUID()}`;
+    await blobStorage.writeStream(storageKey, Readable.from(photo));
+    return withTransaction(pool, async (client) => {
+      const blob = await createBlob(client, { mimeType: "image/jpeg", byteSize: photo.byteLength, storageKey });
+      const item = await createItemWithClient(client, {
+        databaseId: inbox.id,
+        properties: { date: "2026-11-02", time: "10:15", text: "" },
+      });
+      const [attachmentId] = await insertInboxAttachments(client, item.id, [{ blobId: blob.id, source: "camera" }]);
+      if (attachmentId === undefined) throw new Error("No attachment was inserted");
+      return { attachmentId };
+    });
+  });
+}
+
 const cases: Record<string, TaskCase> = {
+  [CORE_TASK_NAMES.INBOX_ATTACHMENT_METADATA]: {
+    tenancy: "tenant",
+    seed: seedInboxPhotoAttachment,
+    async expectDone(tenant, payload) {
+      const attachments = await runInTenant(tenant.tenantId, async () => {
+        const { rows } = await pool.query<{ metadata: unknown; derived: number }>(
+          `SELECT metadata, (thumbnail_blob_id IS NOT NULL)::int + (reduced_blob_id IS NOT NULL)::int AS derived
+             FROM inbox_attachments WHERE attachment_id = $1`,
+          [requirePayloadString(payload, "attachmentId")],
+        );
+        return rows;
+      });
+      expect(attachments).toEqual([{ metadata: { width: 640, height: 480, pages: null }, derived: 2 }]);
+    },
+  },
   [CORE_TASK_NAMES.TRANSCRIPT_SPEAKER_SUGGESTION]: {
     tenancy: "tenant",
     seed: seedFinishedTranscript,
@@ -563,6 +601,10 @@ describe("background task isolation across two tenants: transcribe runtime (issu
       [CORE_TASK_NAMES.TRANSCRIPT_SPEAKER_SUGGESTION]: registerTask(
         CORE_TASK_NAMES.TRANSCRIPT_SPEAKER_SUGGESTION,
         createTranscriptSpeakerSuggestionTask(pool, new FakeSummaryGateway()),
+      ),
+      [CORE_TASK_NAMES.INBOX_ATTACHMENT_METADATA]: registerTask(
+        CORE_TASK_NAMES.INBOX_ATTACHMENT_METADATA,
+        createInboxAttachmentMetadataTask(pool, blobStorage),
       ),
     };
     assertTaskListMatchesAffinity(taskList, (await resolveTaskAffinitySets(moduleRegistry)).transcribe, "transcribe");

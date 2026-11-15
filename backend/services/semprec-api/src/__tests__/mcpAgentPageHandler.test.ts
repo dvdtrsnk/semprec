@@ -1,7 +1,7 @@
 import { ModuleRegistry } from "@semprec/module-registry";
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import {
   createTestProjectItem,
@@ -10,14 +10,30 @@ import {
   resetDatabase,
   tenantForNextTestUser,
 } from "@semprec/data/testSupport";
-import { CAPABILITY_IDS, GENERIC_OPERATION_NAMES, REST_ONLY_OPERATION_NAMES, runInTenant } from "@semprec/shared";
+import {
+  allowLoopbackOutboundForTests,
+  startHttpContractServer,
+  type ContractServerTool,
+} from "@semprec/data/testSupport/mcpContractServers";
+import {
+  AiGatewayFailedError,
+  CAPABILITY_IDS,
+  GENERIC_OPERATION_NAMES,
+  REST_ONLY_OPERATION_NAMES,
+  runInTenant,
+  type AiGatewayClientPort,
+  type AiGatewayCompletionInput,
+} from "@semprec/shared";
 import { createGenericOperationGateway } from "@semprec/application";
 import {
   createViewTypeRegistry,
   seedSystem,
   withTransaction,
   createItemWithClient,
+  getItemById,
+  listMcpToolRegistrationsForServer,
   upsertMcpToolRegistration,
+  type McpConnectionConfig,
   createUser,
   hashPassword,
   login,
@@ -271,6 +287,63 @@ describe("createMcpAgentPageRequestListener", () => {
     expect(res.status).toBe(200);
     const body: unknown = await res.json();
     expect(body).toMatchObject({ riskClass: "destructive", requiresApproval: true });
+  });
+
+  describe("classification source (issue gh-1979)", () => {
+    async function classificationSource(registrationId: string): Promise<string> {
+      const { rows } = await pool.query<{ classification_source: string }>(
+        "SELECT classification_source FROM mcp_tool_registrations WHERE id = $1",
+        [registrationId],
+      );
+      return rows[0]!.classification_source;
+    }
+
+    /**
+     * A registration the sync classified from annotations: `@semprec/data` exports no write of the classification,
+     * so the state is set up with SQL. The sync's own handling of an `annotation` and a `manual` row is tested in
+     * the data package (`mcpSyncClassification.test.ts`).
+     */
+    async function annotationRegistration(): Promise<{ id: string; mcpServerItemId: string }> {
+      const server1 = await createMcpServerItem("Server", true);
+      const registration = await upsertMcpToolRegistration(pool, {
+        mcpServerItemId: server1.id,
+        toolName: "tool",
+        toolSchema: {},
+      });
+      await pool.query(
+        "UPDATE mcp_tool_registrations SET risk_class = 'read', requires_approval = false WHERE id = $1",
+        [registration.id],
+      );
+      return registration;
+    }
+
+    it("marks a registration manual when PATCH changes only its approval", async () => {
+      const registration = await annotationRegistration();
+      expect(await classificationSource(registration.id)).toBe("annotation");
+
+      const res = await fetch(`${baseUrl}/api/mcp-tool-registrations/${registration.id}`, {
+        method: "PATCH",
+        headers: { ...(await authHeader()), "Content-Type": "application/json" },
+        body: JSON.stringify({ requiresApproval: true }),
+      });
+      expect(res.status).toBe(200);
+      expect(await classificationSource(registration.id)).toBe("manual");
+
+      const [after] = await listMcpToolRegistrationsForServer(pool, registration.mcpServerItemId);
+      expect(after).toMatchObject({ riskClass: "read", requiresApproval: true });
+    });
+
+    it("keeps a registration on annotation when PATCH changes only its display label", async () => {
+      const registration = await annotationRegistration();
+
+      const res = await fetch(`${baseUrl}/api/mcp-tool-registrations/${registration.id}`, {
+        method: "PATCH",
+        headers: { ...(await authHeader()), "Content-Type": "application/json" },
+        body: JSON.stringify({ displayLabel: { en: "Tool" } }),
+      });
+      expect(res.status).toBe(200);
+      expect(await classificationSource(registration.id)).toBe("annotation");
+    });
   });
 
   it("maps a validation error (neither field set) to a 400 response", async () => {
@@ -527,6 +600,267 @@ describe("createMcpAgentPageRequestListener", () => {
     );
   });
 
+  describe("POST /api/mcp-servers/:id/sync", () => {
+    const TOOLS: ContractServerTool[] = [
+      { name: "search_web", description: "Searches the web", inputSchema: { type: "object" } },
+      { name: "fetch_page", description: "Fetches a page", inputSchema: { type: "object" } },
+    ];
+
+    // The contract servers listen on loopback, which the default outbound policy refuses.
+    let restoreOutboundPolicy: () => void;
+    beforeAll(() => {
+      restoreOutboundPolicy = allowLoopbackOutboundForTests();
+    });
+    afterAll(() => {
+      restoreOutboundPolicy();
+    });
+
+    async function createSyncTarget(connectionConfig?: McpConnectionConfig) {
+      const item = await createMcpServerItem("Sync target", true);
+      if (connectionConfig) {
+        // Raw SQL because the write hook refuses a loopback URL, which is all a contract server has.
+        await pool.query(
+          "UPDATE items SET properties = properties || jsonb_build_object('connectionConfig', $2::jsonb) WHERE id = $1",
+          [item.id, JSON.stringify(connectionConfig)],
+        );
+      }
+      return item;
+    }
+
+    async function syncState(id: string): Promise<{ syncStatus: unknown; syncError: unknown }> {
+      const item = await withTransaction(pool, (client) => getItemById(client, mcpServersId, id));
+      if (!item) throw new Error("server item disappeared");
+      return { syncStatus: item.properties.syncStatus, syncError: item.properties.syncError };
+    }
+
+    async function postSync(id: string, headers: Record<string, string>, method = "POST"): Promise<Response> {
+      return fetch(`${baseUrl}/api/mcp-servers/${id}/sync`, { method, headers });
+    }
+
+    it("rejects a request with no credentials and syncs nothing", async () => {
+      const contract = await startHttpContractServer(TOOLS);
+      try {
+        const target = await createSyncTarget(contract.connectionConfig);
+        const res = await postSync(target.id, {});
+        expect(res.status).toBe(401);
+        expect(contract.getHandshakeCount()).toBe(0);
+        expect(await listMcpToolRegistrationsForServer(pool, target.id)).toEqual([]);
+        expect((await syncState(target.id)).syncStatus).toBeUndefined();
+      } finally {
+        await contract.stop();
+      }
+    });
+
+    it("answers 200 with the tool count, registers both tools and records syncStatus ok", async () => {
+      const contract = await startHttpContractServer(TOOLS);
+      try {
+        const target = await createSyncTarget(contract.connectionConfig);
+        const res = await postSync(target.id, await authHeader());
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ toolCount: 2, syncStatus: "ok" });
+        const registrations = await listMcpToolRegistrationsForServer(pool, target.id);
+        expect(registrations.map((registration) => registration.toolName).sort()).toEqual(["fetch_page", "search_web"]);
+        expect(registrations.every((registration) => registration.active)).toBe(true);
+        expect(await syncState(target.id)).toEqual({ syncStatus: "ok", syncError: null });
+      } finally {
+        await contract.stop();
+      }
+    });
+
+    describe("tool label suggestions (issue gh-1983)", () => {
+      let labelServer: Server;
+      let labelBaseUrl: string;
+      const gatewayCalls: AiGatewayCompletionInput[] = [];
+
+      /** Serves the same listener with a gateway whose answer is computed by `answer`. */
+      async function startLabelListener(answer: (input: AiGatewayCompletionInput) => unknown): Promise<void> {
+        gatewayCalls.length = 0;
+        const gateway: AiGatewayClientPort = {
+          complete: async (input) => {
+            gatewayCalls.push(input);
+            return { content: answer(input), usage: { inputTokens: 1, outputTokens: 1 } };
+          },
+        };
+        labelServer = createServer(createMcpAgentPageRequestListener(pool, gateway));
+        await new Promise<void>((resolve) => labelServer.listen(0, resolve));
+        const address = labelServer.address();
+        if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+        labelBaseUrl = `http://127.0.0.1:${address.port}`;
+      }
+
+      afterEach(async () => {
+        await new Promise<void>((resolve) => labelServer.close(() => resolve()));
+      });
+
+      async function postLabelSync(id: string): Promise<Response> {
+        return fetch(`${labelBaseUrl}/api/mcp-servers/${id}/sync`, { method: "POST", headers: await authHeader() });
+      }
+
+      async function storedLabels(id: string): Promise<Record<string, unknown>> {
+        const registrations = await listMcpToolRegistrationsForServer(pool, id);
+        return Object.fromEntries(
+          registrations.map((registration) => [registration.toolName, registration.displayLabel]),
+        );
+      }
+
+      it("labels the tools the sync registered, through the gateway operation of no project, and answers as before", async () => {
+        await startLabelListener(() => ({
+          labels: [
+            { toolName: "search_web", cs: "Hledat na webu", en: "Search the web" },
+            { toolName: "fetch_page", cs: "Načíst stránku", en: "Fetch a page" },
+          ],
+        }));
+        const contract = await startHttpContractServer(TOOLS);
+        try {
+          const target = await createSyncTarget(contract.connectionConfig);
+          const res = await postLabelSync(target.id);
+          expect(res.status).toBe(200);
+          expect(await res.json()).toEqual({ toolCount: 2, syncStatus: "ok" });
+          expect(await storedLabels(target.id)).toEqual({
+            search_web: { cs: "Hledat na webu", en: "Search the web" },
+            fetch_page: { cs: "Načíst stránku", en: "Fetch a page" },
+          });
+          expect(gatewayCalls).toHaveLength(1);
+          expect(gatewayCalls[0]).toMatchObject({ operation: "mcp_tool_label", projectItemId: null });
+        } finally {
+          await contract.stop();
+        }
+      });
+
+      it.each(["budget_exceeded", "timeout", "invalid_response"] as const)(
+        "answers 200 and leaves the labels empty when the gateway fails with %s",
+        async (reason) => {
+          await startLabelListener(() => {
+            throw new AiGatewayFailedError(reason);
+          });
+          const contract = await startHttpContractServer(TOOLS);
+          try {
+            const target = await createSyncTarget(contract.connectionConfig);
+            const res = await postLabelSync(target.id);
+            expect(res.status).toBe(200);
+            expect(await res.json()).toEqual({ toolCount: 2, syncStatus: "ok" });
+            expect(gatewayCalls).toHaveLength(1);
+            expect(await storedLabels(target.id)).toEqual({ search_web: null, fetch_page: null });
+            expect(await syncState(target.id)).toEqual({ syncStatus: "ok", syncError: null });
+          } finally {
+            await contract.stop();
+          }
+        },
+      );
+
+      it("asks the gateway nothing when the sync fails", async () => {
+        await startLabelListener(() => ({ labels: [] }));
+        const contract = await startHttpContractServer(TOOLS);
+        const { connectionConfig } = contract;
+        await contract.stop();
+        const target = await createSyncTarget(connectionConfig);
+        const res = await postLabelSync(target.id);
+        expect(res.status).toBe(502);
+        expect(gatewayCalls).toHaveLength(0);
+      });
+    });
+
+    it("answers 502 with the typed reason and nothing else for an unreachable server, and records syncStatus error", async () => {
+      const contract = await startHttpContractServer(TOOLS);
+      const { connectionConfig } = contract;
+      await contract.stop();
+      const target = await createSyncTarget(connectionConfig);
+      const res = await postSync(target.id, await authHeader());
+      expect(res.status).toBe(502);
+      expect(await res.json()).toEqual({ error: "Could not connect to the MCP server", reason: "handshake_failed" });
+      expect(await listMcpToolRegistrationsForServer(pool, target.id)).toEqual([]);
+      expect(await syncState(target.id)).toEqual({ syncStatus: "error", syncError: expect.any(String) });
+    });
+
+    it("answers 502 with the reason of a server whose stored connection config is invalid", async () => {
+      const target = await createSyncTarget();
+      const res = await postSync(target.id, await authHeader());
+      expect(res.status).toBe(502);
+      expect(await res.json()).toEqual({ error: "Could not connect to the MCP server", reason: "invalid_config" });
+      expect((await syncState(target.id)).syncStatus).toBe("error");
+    });
+
+    it("keeps the 400 validation_failed of an invalid tool list, registers nothing and records syncStatus error", async () => {
+      const contract = await startHttpContractServer([TOOLS[0]!, TOOLS[0]!]);
+      try {
+        const target = await createSyncTarget(contract.connectionConfig);
+        const res = await postSync(target.id, await authHeader());
+        expect(res.status).toBe(400);
+        expect(await res.json()).toMatchObject({ code: "validation_failed" });
+        expect(await listMcpToolRegistrationsForServer(pool, target.id)).toEqual([]);
+        expect((await syncState(target.id)).syncStatus).toBe("error");
+      } finally {
+        await contract.stop();
+      }
+    });
+
+    it("answers 404 for an unknown server id", async () => {
+      const res = await postSync(randomUUID(), await authHeader());
+      expect(res.status).toBe(404);
+      expect(await res.json()).toMatchObject({ code: "not_found" });
+    });
+
+    it("answers 404 for the id of an item of another database and connects to nothing", async () => {
+      const contract = await startHttpContractServer(TOOLS);
+      try {
+        const projectItemId = await runInTenant(getTenantZeroId(), () => createTestProjectItem(pool));
+        // The project item itself points at the contract server, so a route that wrongly synced it would
+        // be counted by the handshake assertion below.
+        await pool.query(
+          "UPDATE items SET properties = properties || jsonb_build_object('connectionConfig', $2::jsonb) WHERE id = $1",
+          [projectItemId, JSON.stringify(contract.connectionConfig)],
+        );
+        const res = await postSync(projectItemId, await authHeader());
+        expect(res.status).toBe(404);
+        expect(contract.getHandshakeCount()).toBe(0);
+      } finally {
+        await contract.stop();
+      }
+    });
+
+    it("answers 404 for a method other than POST and syncs nothing", async () => {
+      const contract = await startHttpContractServer(TOOLS);
+      try {
+        const target = await createSyncTarget(contract.connectionConfig);
+        const res = await postSync(target.id, await authHeader(), "GET");
+        expect(res.status).toBe(404);
+        expect(contract.getHandshakeCount()).toBe(0);
+        expect((await syncState(target.id)).syncStatus).toBeUndefined();
+      } finally {
+        await contract.stop();
+      }
+    });
+
+    it("refuses a valid MCP run credential and syncs nothing, while the human session of the same tenant may sync", async () => {
+      const contract = await startHttpContractServer(TOOLS);
+      try {
+        const target = await createSyncTarget(contract.connectionConfig);
+        const tenantId = getTenantZeroId();
+        const email = `${randomUUID()}@example.com`;
+        const user = await createUser(pool, { tenantId, email, passwordHash: await hashPassword(PASSWORD) });
+        const session = await login(pool, { email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
+        const projectItemId = await runInTenant(tenantId, () => createTestProjectItem(pool));
+        const minted = await runInTenant(tenantId, () =>
+          withTransaction(pool, (client) =>
+            mintMcpRunCredential(client, { projectItemId, userId: user.id, capabilities: [...CAPABILITY_IDS] }),
+          ),
+        );
+        expect((await resolveMcpRunCredential(pool, minted.token))?.runId).toBe(minted.run.id);
+
+        const refused = await postSync(target.id, { Authorization: `Bearer ${minted.token}` });
+        expect(refused.status).toBe(401);
+        expect(contract.getHandshakeCount()).toBe(0);
+        expect(await listMcpToolRegistrationsForServer(pool, target.id)).toEqual([]);
+
+        const allowed = await postSync(target.id, { Authorization: `Bearer ${session.token}` });
+        expect(allowed.status).toBe(200);
+        expect(await listMcpToolRegistrationsForServer(pool, target.id)).toHaveLength(2);
+      } finally {
+        await contract.stop();
+      }
+    });
+  });
+
   describe("non-UUID path ids", () => {
     async function expectFieldError(res: Response, field: string): Promise<void> {
       expect(res.status).toBe(400);
@@ -546,6 +880,14 @@ describe("createMcpAgentPageRequestListener", () => {
         body: JSON.stringify({ granted: true }),
       });
       await expectFieldError(res, "mcpToolRegistrationId");
+    });
+
+    it("answers 400 validation_failed naming 'id' for a non-UUID MCP server id", async () => {
+      const res = await fetch(`${baseUrl}/api/mcp-servers/foo/sync`, {
+        method: "POST",
+        headers: await authHeader(),
+      });
+      await expectFieldError(res, "id");
     });
 
     it("answers 400 validation_failed naming 'mcpToolRegistrationId' for a non-UUID registration id", async () => {

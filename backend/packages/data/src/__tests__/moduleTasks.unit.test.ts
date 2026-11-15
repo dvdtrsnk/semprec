@@ -90,6 +90,14 @@ describe("resolveTaskAffinitySets", () => {
     expect(api.has(CORE_TASK_NAMES.TRANSCRIPTION_JOB)).toBe(false);
   });
 
+  it("assigns the Inbox attachment metadata job (issue gh-1965) to the transcribe runtime alone", async () => {
+    const { api, agents, transcribe } = await resolveTaskAffinitySets(fakeTaskRegistry([]));
+
+    expect(transcribe.has(CORE_TASK_NAMES.INBOX_ATTACHMENT_METADATA)).toBe(true);
+    expect(api.has(CORE_TASK_NAMES.INBOX_ATTACHMENT_METADATA)).toBe(false);
+    expect(agents.has(CORE_TASK_NAMES.INBOX_ATTACHMENT_METADATA)).toBe(false);
+  });
+
   it("rejects a module task name colliding with a core/agent catalog name, even if the registry didn't reserve it", async () => {
     const registry = fakeTaskRegistry([
       {

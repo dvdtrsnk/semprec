@@ -315,9 +315,9 @@ function derivedBlobIds(row: ItemRow): string[] {
  * the blob checks below rely on the row already being gone.
  *
  * The doc, recurrence rule, automation state, origin and blob rows are each deleted through their
- * owning store. Every blob an Inbox attachment row named is released through
- * `blobsStore.deleteBlobIfUnreferenced` once those rows are gone, so a blob a Files item or another
- * attachment still names keeps its row. For a Files item it also deletes the `blobs` row its
+ * owning store. Every blob an Inbox attachment row named, its derived preview and reduced copy included
+ * (issue gh-1965), is released through `blobsStore.deleteBlobIfUnreferenced` once those rows are gone, so a blob a Files
+ * item or another attachment still names keeps its row. For a Files item it also deletes the `blobs` row its
  * `properties.file.blobId` names, but only when nothing else references that blob. Returns the
  * deleted blob's `storage_key`, and the derived blobs named by its `computed.prepare` checkpoint
  * (`normalizedBlobId`, `playbackBlobId`) are deleted unconditionally through

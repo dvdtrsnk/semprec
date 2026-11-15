@@ -473,6 +473,7 @@ describe("calendar timeline: recurring task occurrences (issue gh-1886)", () => 
           today: "2026-10-16",
           now: { date: "2026-10-16", time: "10:00" },
           at: new Date(at(16)),
+          includeSleep: true,
         };
         return readTaskTimelineItems(client, context);
       }),
@@ -738,6 +739,7 @@ describe("calendar timeline: recurring task occurrences (issue gh-1886)", () => 
           today: "2026-10-16",
           now: { date: "2026-10-16", time: "10:00" },
           at: new Date(at(16)),
+          includeSleep: true,
         }),
       ),
     );

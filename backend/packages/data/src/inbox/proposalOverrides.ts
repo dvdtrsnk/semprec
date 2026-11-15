@@ -200,7 +200,8 @@ export function composeEffectiveEnvelope(
     Object.fromEntries(Object.entries(fieldOverridesOf(userOverrides, ref)).filter(([key]) => !pseudoKeys.has(key)));
   for (const ref of Object.keys(userOverrides)) {
     requireRefProperties(aiEnvelope, ref);
-    if (aiEnvelope.entityKind === "database") continue;
+    // A recording card's optional parameters (language, Event, project, ...) are absent from the assistant's envelope.
+    if (aiEnvelope.entityKind === "database" || aiEnvelope.entityKind === "transcription") continue;
     for (const key of Object.keys(fieldOverridesOf(userOverrides, ref))) {
       if (!pseudoKeys.has(key) && !Object.hasOwn(aiEnvelope.properties, key)) {
         throw new ValidationError(`Proposal of kind '${aiEnvelope.entityKind}' has no field '${key}'`, {

@@ -1,3 +1,5 @@
+import { looksLikeMp3 } from "./audioTypeDetection.js";
+
 export type DetectedFileType = "pdf" | "xlsx" | "docx" | "jpg" | "png" | "heic" | "audio";
 
 export interface DetectedFile {
@@ -26,16 +28,6 @@ function isoBmffBrands(head: Buffer): string[] | null {
     brands.push(head.toString("latin1", offset, offset + 4));
   }
   return brands;
-}
-
-function isMp3(head: Buffer): boolean {
-  if (head.length >= 3 && head.toString("latin1", 0, 3) === "ID3") return true;
-  if (head.length < 2 || head[0] !== 0xff) return false;
-  const second = head[1] as number;
-  const syncOk = (second & 0xe0) === 0xe0;
-  const versionOk = ((second >> 3) & 0x03) !== 0x01; // 01 is reserved
-  const layerIii = ((second >> 1) & 0x03) === 0x01;
-  return syncOk && versionOk && layerIii;
 }
 
 /** Office type from the entry names of the ZIP's local file headers, or null for a plain ZIP. */
@@ -103,7 +95,7 @@ export function detectFileType(head: Buffer): DetectedFile | null {
     if (brands.some((brand) => HEIC_BRANDS.has(brand))) return { type: "heic", mimeType: "image/heic" };
     return null;
   }
-  if (isMp3(head)) return { type: "audio", mimeType: "audio/mpeg" };
+  if (looksLikeMp3(head)) return { type: "audio", mimeType: "audio/mpeg" };
   if (head.length >= 4 && head.subarray(0, 4).equals(ZIP_LOCAL_HEADER)) {
     const office = officeTypeFromZip(head.subarray(0, FILE_TYPE_DETECTION_HEAD_BYTES));
     if (office === "xlsx") {

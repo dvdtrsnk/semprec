@@ -73,12 +73,35 @@ describe("Inbox pipeline databases (issue #101)", () => {
     }
 
     const inboxProps = await chokePoint.listProperties(inboxId);
-    expect(inboxProps.map((p) => p.key).sort()).toEqual(["date", "journalDay", "text", "time", "type"]);
+    expect(inboxProps.map((p) => p.key).sort()).toEqual([
+      "addedAt",
+      "captureChannel",
+      "date",
+      "journalDay",
+      "sourceApp",
+      "text",
+      "time",
+      "type",
+    ]);
     expect(inboxProps.find((p) => p.key === "date")).toMatchObject({ type: "date", owner: "user" });
     expect(inboxProps.find((p) => p.key === "time")).toMatchObject({ type: "time", owner: "user" });
     expect(inboxProps.find((p) => p.key === "text")).toMatchObject({ type: "text", owner: "user" });
     expect(inboxProps.find((p) => p.key === "type")).toMatchObject({ type: "relation", owner: "user" });
     expect(inboxProps.find((p) => p.key === "journalDay")).toMatchObject({ type: "relation", owner: "system" });
+    // Issue gh-1964.
+    expect(inboxProps.find((p) => p.key === "captureChannel")).toMatchObject({
+      type: "select",
+      owner: "user",
+      ownerProcess: null,
+      config: { options: [{ key: "typed" }, { key: "voice" }, { key: "share" }] },
+    });
+    expect(inboxProps.find((p) => p.key === "sourceApp")).toMatchObject({ type: "text", owner: "user" });
+    expect(inboxProps.find((p) => p.key === "addedAt")).toMatchObject({
+      type: "date",
+      owner: "system",
+      ownerProcess: "inbox",
+      config: { includeTime: true },
+    });
 
     const typeProps = await chokePoint.listProperties(typesId);
     expect(typeProps.map((p) => p.key).sort()).toEqual([

@@ -1,19 +1,10 @@
 import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registry";
 import { z } from "zod";
+import { INBOX_TYPE_TARGET_DATABASES } from "./inboxTypeTargets.js";
 import type { InboxTypeSummary } from "./inboxTypesStore.js";
-const INBOX_TYPE_TARGET_DATABASES = [
-  "areas",
-  "projects",
-  "tasks",
-  "people",
-  "files",
-  "events",
-  "healthRecords",
-  "companies",
-] as const;
 
 export const RECOGNITION_CONFIDENCE_THRESHOLD = 0.7;
-export const RECOGNITION_TARGETS = [...INBOX_TYPE_TARGET_DATABASES, "mcpServers"] as const;
+export const RECOGNITION_TARGETS = INBOX_TYPE_TARGET_DATABASES;
 export type RecognitionType = InboxTypeSummary;
 export const recognitionCandidateSchema = z.union([
   z.object({ typeId: z.string(), confidence: z.number().min(0).max(1) }),

@@ -16,6 +16,8 @@ import {
   PropertyLockedError,
   RetryPendingError,
   SchemaLockedError,
+  UnsupportedAttachmentTypeError,
+  UnsupportedMediaTypeError,
   ValidationError,
   ChokePointError,
   type ActiveHeartbeatRunSummary,
@@ -129,6 +131,19 @@ const FIXTURES: Array<{ code: ItemErrorCode; status: number; error: ChokePointEr
     status: 409,
     error: new ChokePointError(409, "mail_sent_folder_missing", "The mailbox has no Sent folder yet"),
   },
+  {
+    code: "unsupported_media_type",
+    status: 415,
+    error: new UnsupportedMediaTypeError("The upload's type is not accepted"),
+  },
+  {
+    code: "unsupported_attachment_type",
+    status: 415,
+    error: new UnsupportedAttachmentTypeError({
+      blobId: "66666666-6666-6666-6666-666666666666",
+      mimeType: "image/heic",
+    }),
+  },
 ];
 
 const ACTIVE_RUN: ActiveHeartbeatRunSummary = {
@@ -158,6 +173,11 @@ describe("error contract (issue #238)", () => {
       expect(body.error.code).toBe(fixture.code);
     });
   }
+
+  it("carries unsupported_attachment_type's blob id and mime type in details", () => {
+    const details = { blobId: "66666666-6666-6666-6666-666666666666", mimeType: "image/heic" };
+    expect(toErrorResponseBody(new UnsupportedAttachmentTypeError(details)).error.details).toEqual(details);
+  });
 
   it("projects version_conflict's details.current onto the full item envelope as details.currentItem", () => {
     const error = new ConflictError("conflict", { current: SAMPLE_ITEM });

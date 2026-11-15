@@ -10,12 +10,16 @@ import {
   createRelationWithClient,
   deleteRelationWithClient,
 } from "../chokePoint/relationOps.js";
-import { createActionQueueAffinity } from "../scheduler/actions.js";
+import { createActionQueueAffinity, type ActionQueueAffinity } from "../scheduler/actions.js";
 import { deleteCredential } from "../credentials/externalCredentialsStore.js";
 import { deleteBlocksWithClient } from "../docs/docStore.js";
 import { lockLiveItem } from "../docs/lockLiveItem.js";
 import { ConflictError, ValidationError } from "../errors.js";
+import { cancelMcpServerSync } from "../mcp/mcpSync.js";
 import { MCP_SERVERS_MODULE_ID } from "../seed/mcpModuleKeys.js";
+import { TRANSCRIPTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { TRANSCRIPTION_CREATE_COMPUTED_KEY } from "../transcription/transcriptionComputedKeys.js";
+import { cancelTranscriptionJobs, readTranscriptionSourceFileItemId } from "../transcription/transcriptionJob.js";
 import type { ItemRow } from "../types.js";
 import type { WriterIdentity } from "../chokePoint/writerKind.js";
 import { parseStoredProposalEnvelope, type ProposalEnvelope } from "./proposalEnvelope.js";
@@ -194,12 +198,72 @@ async function restoreUpdatedItems(
 }
 
 /**
+ * (f) Cancels what the confirmation of a transcription card queued (issue gh-1984): the `transcriptionCreate` and
+ * `transcriptionJob` of its Files item (`cancelTranscriptionJobs`), then, when a job already ran and checkpointed a
+ * Transcripts item on the file, that item goes to the Trash. The locks are taken in the order every producer of these
+ * jobs takes them (`recordRecordingIntake`, the upload, a rerun): the Files row first, then the job rows its enqueue
+ * upserts, then the transcript. The file row is therefore locked before the jobs are removed, which also lets a step of
+ * the pipeline that holds the file commit first, after which the undo finds its transcript. Taking the job rows first
+ * would wait for the file lock while holding a job row that a producer holding the file lock is waiting for, and
+ * PostgreSQL would abort one of the two with a deadlock. A transcript that is already in the Trash or purged changes
+ * nothing. The Files item itself is not touched: it is the confirmation's own move, which
+ * `undoConfirmedProposalWithClient` leaves as it is.
+ *
+ * Only a confirmation that enqueued the jobs itself records `transcriptionQueued` (`confirmRecordingCard`), so the jobs
+ * of a Files item that the user's own upload had already queued are not cancelled by the undo of a card that reused it.
+ */
+async function cancelRecordingTranscription(
+  client: PoolClient,
+  fileItemId: string,
+  options: { queueAffinity: ActionQueueAffinity; actingUserId: string | undefined },
+): Promise<void> {
+  const [visible] = await itemsStore.getItemsByIdsIncludingDeleted(client, [fileItemId]);
+  const file = visible ? await itemsStore.lockItemById(client, visible.databaseId, visible.id) : null;
+  await cancelTranscriptionJobs(client, fileItemId);
+  const checkpoint = file?.computed[TRANSCRIPTION_CREATE_COMPUTED_KEY];
+  if (checkpoint === undefined) return;
+  const transcriptId = z.uuid().parse(checkpoint);
+  const transcripts = await databasesStore.getDatabaseByModuleId(client, TRANSCRIPTS_MODULE_ID);
+  if (!transcripts) throw new Error(`Database for module '${TRANSCRIPTS_MODULE_ID}' not found`);
+  const deleted = await itemDeleteWithClient(client, transcripts.id, transcriptId, {
+    ...options,
+    writer: UNDOING_USER_WRITER,
+  });
+  // The trash above is rolled back with the undo when the checkpoint named a transcript of another file.
+  if (deleted && readTranscriptionSourceFileItemId(deleted.properties.link) !== fileItemId) {
+    throw new Error(`Transcript ${transcriptId} is not the transcript of Files item ${fileItemId}`);
+  }
+}
+
+/**
+ * (f) For every result whose confirmation queued a follow-up job (`results[].followUp`), cancels that job in the undo's
+ * transaction and removes what it already produced. `mcpSyncQueued` removes the sync job of the server item; the item is
+ * in the Trash by then, and the readers that offer or invoke a tool (`mcpAgentTools.ts`, `mcpToolInvocation.ts`,
+ * `mcpAgentPageGrants.ts`) join the live server item, so the registrations of a sync that already ran are no longer
+ * offered. `transcriptionQueued` is `cancelRecordingTranscription`. A job a worker is already running is not
+ * stopped, only detached from its key and not retried (`cancelJob`): an MCP sync ends without writing once it finds the
+ * server item in the Trash, and a transcription run stops at its next step once it finds the transcript in the Trash.
+ * A create step that is running when the undo commits and has not written its checkpoint is not stopped, because the
+ * Files item stays live: it creates its transcript after the undo. A result without a follow-up touches no job.
+ */
+async function cancelFollowUps(
+  client: PoolClient,
+  classified: ClassifiedResult[],
+  options: { queueAffinity: ActionQueueAffinity; actingUserId: string | undefined },
+): Promise<void> {
+  for (const { result } of classified) {
+    if (result.followUp === "mcpSyncQueued") await cancelMcpServerSync(client, result.itemId);
+    if (result.followUp === "transcriptionQueued") await cancelRecordingTranscription(client, result.itemId, options);
+  }
+}
+
+/**
  * Reverses a confirmed card's writes in the caller's transaction, under the card's row lock, and returns the items it
  * kept. The precondition comes first and writes nothing; then, in this order: the edges between existing items that the
  * confirmation recorded as its own writes (`reverseWrittenEdges`), the `before` values of patched items and the edges
  * they lost (`restoreUpdatedItems`), the page blocks the confirmation inserted, the items it created (to the Trash, each
- * with its origin row removed), and the credential stored for a created MCP server. A failure at any point throws, and
- * the caller's transaction undoes every earlier write.
+ * with its origin row removed), the credential stored for a created MCP server, and last the follow-up jobs it queued
+ * (`cancelFollowUps`). A failure at any point throws, and the caller's transaction undoes every earlier write.
  *
  * - An item the confirmation created is trashed with the item delete of the choke point, so its relation edges stay and a
  *   restore from the Trash brings it back with them. A Files item that received a moved Inbox attachment (a
@@ -259,6 +323,7 @@ export async function undoConfirmedProposalWithClient(
     const database = item ? await databasesStore.getDatabase(client, item.databaseId) : null;
     if (item && database?.ownerModuleId === MCP_SERVERS_MODULE_ID) await deleteCredential(client, item.id);
   }
+  await cancelFollowUps(client, classified, { queueAffinity: affinity, actingUserId });
 
   const kept: KeptItem[] = [];
   for (const { result, role } of classified) {

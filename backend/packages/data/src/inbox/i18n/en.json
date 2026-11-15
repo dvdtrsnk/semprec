@@ -5,6 +5,12 @@
   "property.inbox.text.name": "Text",
   "property.inbox.type.name": "Type",
   "property.inbox.journalDay.name": "Journal day",
+  "property.inbox.captureChannel.name": "Capture channel",
+  "property.inbox.captureChannel.option.typed": "Typed",
+  "property.inbox.captureChannel.option.voice": "Voice",
+  "property.inbox.captureChannel.option.share": "Share",
+  "property.inbox.sourceApp.name": "Source app",
+  "property.inbox.addedAt.name": "Added at",
   "database.inboxItemTypes.name": "Inbox item types",
   "property.inboxItemTypes.name.name": "Name",
   "property.inboxItemTypes.emoji.name": "Emoji",
@@ -25,6 +31,7 @@
   "property.inboxItemTypes.targetDatabase.option.companies": "Companies",
   "property.inboxItemTypes.targetDatabase.option.transcripts": "Transcripts",
   "property.inboxItemTypes.targetDatabase.option.journal": "Journal",
+  "property.inboxItemTypes.targetDatabase.option.mcpServers": "MCP servers",
   "database.processingProposals.name": "Processing proposals",
   "property.processingProposals.kind.name": "Kind",
   "property.processingProposals.kind.option.inbox": "Inbox",
@@ -90,5 +97,9 @@
   "card.target.person": "Person",
   "card.target.health": "Health record",
   "card.target.file": "File",
-  "card.target.speaker": "Speaker"
+  "card.target.speaker": "Speaker",
+  "options.none.project": "No project",
+  "options.none.area": "No area",
+  "options.none.company": "No company",
+  "options.newStep.hint": "New - will be created"
 }

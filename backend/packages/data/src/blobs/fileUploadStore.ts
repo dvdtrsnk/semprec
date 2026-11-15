@@ -7,10 +7,12 @@ import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { findFileItemByBlobId } from "../chokePoint/itemsStore.js";
 import { findOrCreateBlob, lockBlobById, recordDetectedBlobMimeType, tenantBlobStorageKey } from "./blobsStore.js";
-import { ValidationError } from "../errors.js";
+import { UnsupportedMediaTypeError, ValidationError } from "../errors.js";
 import type { BlobRow, ItemRow } from "../types.js";
 import { logger } from "./logger.js";
 import { detectFileType, FILE_TYPE_DETECTION_HEAD_BYTES } from "./fileTypeDetection.js";
+import { detectAudioMimeType } from "./audioTypeDetection.js";
+import { INBOX_ATTACHMENT_MIME_TYPES } from "../inbox/attachmentTypes.js";
 
 const UNKNOWN_CONTENT_MIME = "application/octet-stream";
 
@@ -166,8 +168,21 @@ export async function ingestUploadedFileWithTransaction<T>(
   }
 }
 
+/**
+ * The mime types a standalone blob may have (issue gh-1963): every Inbox attachment type, plus HEIC, which was
+ * accepted before the allowlist existed and which a capture then refuses with its own error. An exception to the
+ * unknown-bytes-accepted rule of [[2026-11-04-blob-content-classification-preserves-legacy-metadata]], recorded in
+ * [[2026-11-14-a-standalone-blob-upload-accepts-only-the-inbox-attachment-types]].
+ */
+const BLOB_UPLOAD_MIME_TYPES: ReadonlySet<string> = new Set([...INBOX_ATTACHMENT_MIME_TYPES, "image/heic"]);
+
+/** The mime type of an uploaded blob, decided from its leading bytes: audio first, then documents and images. */
+function detectBlobMimeType(head: Buffer): string | null {
+  return detectAudioMimeType(head) ?? detectFileType(head)?.mimeType ?? null;
+}
+
 export interface IngestUploadedBlobInput {
-  /** The caller-validated content type; admission is independent of detection from stored bytes. */
+  /** The caller's declared content type, already checked to be well formed; the stored mime comes from the bytes and ignores it. */
   mimeType: string;
   source: Readable;
   /** Hard cap enforced while streaming — see `BlobStorageWriter.writeStream`'s `maxBytes`. */
@@ -186,6 +201,12 @@ export interface IngestUploadedBlobResult {
  * duplicate-bytes cleanup of `ingestUploadedFile`, but no item is created. Bytes go under the
  * `blobs/` key prefix (`<tenantId>/blobs/<uuid>`), which is how `blobsUnreferencedSweep` tells a
  * standalone blob from one a Files item, a library cover or a recording owns.
+ *
+ * The stored mime type comes from the bytes, never from `input.mimeType`. A dedup hit keeps its first row's
+ * `mime_type` and answers it unchanged ([[2026-11-04-blob-content-classification-preserves-legacy-metadata]]); the
+ * verified type recorded beside it is what a capture then judges the blob by (`effectiveBlobMimeTypeSql`). Bytes
+ * whose type is not one of `BLOB_UPLOAD_MIME_TYPES` (or is not recognised at all) are removed again and refused with
+ * `UnsupportedMediaTypeError`, before any row is written.
  */
 export async function ingestUploadedBlob(
   pool: Pool,
@@ -206,10 +227,13 @@ export async function ingestUploadedBlob(
   }
 
   try {
-    const detected = detectFileType(await readHead(input.storage, storageKey, byteSize));
+    const detectedMimeType = detectBlobMimeType(await readHead(input.storage, storageKey, byteSize));
+    if (detectedMimeType === null || !BLOB_UPLOAD_MIME_TYPES.has(detectedMimeType)) {
+      throw new UnsupportedMediaTypeError("The uploaded bytes are not a type a blob may have");
+    }
     return await withTransaction(pool, async (client) => {
       const blob = await findOrCreateBlob(client, {
-        mimeType: detected?.mimeType ?? UNKNOWN_CONTENT_MIME,
+        mimeType: detectedMimeType,
         byteSize,
         storageKey,
         contentHash,
@@ -217,7 +241,7 @@ export async function ingestUploadedBlob(
       if (!(await lockBlobById(client, blob.id))) {
         throw new ValidationError("Invalid blob reference", { field: "blobId" });
       }
-      await recordDetectedBlobMimeType(client, blob.id, detected?.mimeType ?? UNKNOWN_CONTENT_MIME);
+      await recordDetectedBlobMimeType(client, blob.id, detectedMimeType);
       if (blob.storageKey === storageKey) return { blob, created: true };
       // A dedup hit: the bytes just streamed duplicate the existing blob's; drop them once this commits.
       runAfterCommit(client, () => {

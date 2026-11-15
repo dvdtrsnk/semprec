@@ -3,6 +3,7 @@ import { z } from "zod";
 import { currentTenantScope } from "@semprec/shared";
 import { withTransaction } from "../db/pool.js";
 import { getDatabaseByKey, getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
+import * as itemsStore from "../chokePoint/itemsStore.js";
 import {
   confirmProposalWithClient,
   readConfirmationResults,
@@ -30,7 +31,20 @@ import {
   INBOX_MODULE_ID,
   PROCESSING_PROPOSALS_MODULE_ID,
 } from "../seed/inboxPipelineKeys.js";
-import { changeInboxItemTypeWithClient, type ChangeInboxItemTypeInput } from "./inboxTypeChange.js";
+import { createInboxItemWithClient } from "./inboxStore.js";
+import { parseCaptureSource, type CaptureSource } from "./captureSource.js";
+import {
+  parseCaptureAttachments,
+  readCaptureAttachments,
+  requireAttachableBlobs,
+  type CaptureAttachmentResponse,
+} from "./captureAttachments.js";
+import type { NewInboxAttachment } from "./inboxAttachmentsStore.js";
+import {
+  changeInboxItemTypeWithClient,
+  lockActiveInboxType,
+  type ChangeInboxItemTypeInput,
+} from "./inboxTypeChange.js";
 import { CREDENTIAL_TYPES, type CredentialType } from "../credentials/externalCredentialsStore.js";
 import {
   createCatalogResolver,
@@ -45,6 +59,8 @@ import { UUID_RE } from "../docs/pageOwnerDatabase.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { containsNul, MAX_REVISE_MESSAGE_LENGTH } from "./reviseInputChecks.js";
 import type { ItemRow } from "../types.js";
+import { isProposalOptionField, listProposalOptions, PROPOSAL_OPTION_FIELDS } from "./proposalOptions.js";
+import { readItemOrigin } from "./itemOriginsStore.js";
 
 /**
  * The custom-route handler shape this file's exports are cast to by `semprec-api`'s mount
@@ -55,10 +71,10 @@ import type { ItemRow } from "../types.js";
 interface CustomRouteRequestContext {
   params: Record<string, string>;
   body: unknown;
-  /** The authenticated caller; only the confirm, reopen, revise, update-values, recompute and change-type routes read it. */
-  identity?: { user: { id: string } };
-  /** The request, which carries the `Idempotency-Key` header the update-values route reads. */
-  req?: { headers: Record<string, string | string[] | undefined> };
+  /** The authenticated caller; only the confirm, reopen, revise, update-values, recompute, change-type and options routes read it. */
+  identity?: { user: { id: string; locale?: string } };
+  /** The request: the `Idempotency-Key` header the update-values route reads, and the `url` whose query the options route reads. */
+  req?: { headers: Record<string, string | string[] | undefined>; url?: string };
 }
 
 type CustomRouteResult =
@@ -68,6 +84,7 @@ type CustomRouteResult =
       results?: ConfirmationResult[];
       warnings?: ProposalWarning[];
       keptItems?: KeptItem[];
+      attachments?: CaptureAttachmentResponse[];
     }
   | { status: number; body: unknown };
 
@@ -526,6 +543,64 @@ export function createRecomputeProposalRouteHandler(pool: Pool) {
   };
 }
 
+/** The value `includeDone` takes to list `done` projects; it is absent, or this, and nothing else. */
+const INCLUDE_DONE_VALUE = "true";
+
+/**
+ * `GET /api/proposals/:id/options?field=<key>[&includeDone=true]` (issue gh-1959) — the choices of one field of a card's
+ * picker, a read shaped for exactly one consumer, the card editor. `field` is one of `PROPOSAL_OPTION_FIELDS` and any other
+ * value, or none, is a `ValidationError` on `field`; `includeDone` is absent or `true`. Thin mapping only: the card, the
+ * order, the disabled states and the hints live in `listProposalOptions`. The tenant and the locale come only from the
+ * session, and a card of another tenant is as unknown as a random id. Answers `200 { options }`.
+ */
+export function createProposalOptionsRouteHandler(pool: Pool) {
+  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+    const proposalId = requireParam(ctx.params, "id");
+    if (!UUID_RE.test(proposalId)) throw new ValidationError("'id' must be a UUID string", { field: "id" });
+    const query = new URL(ctx.req?.url ?? "/", "http://localhost").searchParams;
+    const field = query.get("field");
+    if (field === null || !isProposalOptionField(field)) {
+      throw new ValidationError(`'field' must be one of: ${PROPOSAL_OPTION_FIELDS.join(", ")}`, { field: "field" });
+    }
+    const includeDone = query.get("includeDone");
+    if (includeDone !== null && includeDone !== INCLUDE_DONE_VALUE) {
+      throw new ValidationError(`'includeDone' must be ${INCLUDE_DONE_VALUE} when present`, { field: "includeDone" });
+    }
+    const locale = ctx.identity?.user.locale ?? "en";
+    const options = await withTransaction(pool, async (client) =>
+      listProposalOptions(
+        client,
+        { processingProposalsDatabaseId: await resolveDatabaseIdByModuleId(client, PROCESSING_PROPOSALS_MODULE_ID) },
+        proposalId,
+        field,
+        locale,
+        includeDone !== null,
+      ),
+    );
+    return { status: 200, body: { options } };
+  };
+}
+
+/** The one message `GET /api/items/:id/origin` answers a missing origin with, so no case of the 404 differs from another and none names the id. */
+const ITEM_ORIGIN_NOT_FOUND_MESSAGE = "Item origin not found";
+
+/**
+ * `GET /api/items/:id/origin` (issue gh-1967): where one item came from, `{ proposalId, inboxItemId, capturedAt,
+ * captureTimeBasis, captureChannel, sourceText, siblings }` (`readItemOrigin`), shaped for one consumer, the item detail
+ * screen, which is why it is a custom route. A list screen must not call it per row. An item that does not exist, belongs
+ * to another tenant, is in the Trash or was not created by a confirmed proposal answers the same 404 `not_found` with
+ * the same body. The tenant comes only from the session; a path segment that is not a UUID is a `ValidationError`.
+ */
+export function createItemOriginRouteHandler(pool: Pool) {
+  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+    const itemId = requireParam(ctx.params, "id");
+    if (!UUID_RE.test(itemId)) throw new ValidationError("'id' must be a UUID string", { field: "id" });
+    const origin = await withTransaction(pool, (client) => readItemOrigin(client, itemId));
+    if (origin === null) throw new NotFoundError(ITEM_ORIGIN_NOT_FOUND_MESSAGE);
+    return { status: 200, body: origin };
+  };
+}
+
 /** The keys `PUT /api/inbox/items/:id/type` accepts. */
 const CHANGE_TYPE_BODY_KEYS: readonly string[] = ["typeId", "ifVersion"];
 
@@ -572,6 +647,110 @@ export function createChangeInboxItemTypeRouteHandler(pool: Pool) {
       ),
     );
     return { status: 200, body: result };
+  };
+}
+
+/** The keys `POST /api/inbox/items` accepts. */
+const CAPTURE_BODY_KEYS: readonly string[] = [
+  "text",
+  "date",
+  "time",
+  "typeId",
+  "attachments",
+  "captureChannel",
+  "sourceApp",
+];
+
+/** What a capture body holds once its shape is checked. */
+interface CaptureInput extends CaptureSource {
+  text: string;
+  date: string;
+  time: string;
+  typeId?: string;
+  attachments: NewInboxAttachment[];
+}
+
+/**
+ * The body of `POST /api/inbox/items`: a JSON object with a string `text` that holds no U+0000 (which Postgres cannot
+ * store) and is not blank after trimming unless the capture has an attachment, a string `date` and a string `time`, an
+ * optional UUID string `typeId`, optional `attachments` (`parseCaptureAttachments`), a `captureChannel` and an optional
+ * `sourceApp` (`parseCaptureSource`), and no other key. Whether `date` is a calendar date and `time` a 24-hour time is the create hook's question (issue #1432), whether the type is an active
+ * one is `lockActiveInboxType`'s, and whether each attached blob exists and may be attached is `requireAttachableBlobs`'s.
+ */
+function parseCaptureBody(body: unknown): CaptureInput {
+  if (!isPlainObject(body)) throw new ValidationError("Request body must be a JSON object");
+  for (const key of Object.keys(body)) {
+    if (!CAPTURE_BODY_KEYS.includes(key)) throw new ValidationError(`Unknown field '${key}'`, { field: key });
+  }
+  const { text, date, time, typeId } = body;
+  const attachments = parseCaptureAttachments(body.attachments);
+  if (typeof text !== "string" || (text.trim().length === 0 && attachments.length === 0)) {
+    throw new ValidationError("'text' must be a non-empty string unless the capture has an attachment", {
+      field: "text",
+    });
+  }
+  if (containsNul(text)) throw new ValidationError("'text' must not contain NUL characters", { field: "text" });
+  if (typeof date !== "string") throw new ValidationError("'date' must be a string 'YYYY-MM-DD'", { field: "date" });
+  if (typeof time !== "string") throw new ValidationError("'time' must be a string 'HH:mm'", { field: "time" });
+  const source = parseCaptureSource(body);
+  if (typeId === undefined) return { text, date, time, attachments, ...source };
+  if (typeof typeId !== "string" || !UUID_RE.test(typeId)) {
+    throw new ValidationError("'typeId' must be a UUID string", { field: "typeId" });
+  }
+  return { text, date, time, typeId, attachments, ...source };
+}
+
+/**
+ * `POST /api/inbox/items` (issue gh-1961): captures an Inbox item with its optional `type` edge and its attachments in
+ * one transaction, which is why it is a custom route and not the generic create, which knows nothing of the edge or the
+ * attachments. Body `{ text, date, time, captureChannel, sourceApp?, typeId?, attachments? }` (`parseCaptureBody`);
+ * `date` and `time` are the user's wall clock and are validated, and the item linked to its Journal day, by the create
+ * hook inside `createInboxItemWithClient`, which also stamps `addedAt` with the server's receive time. `captureChannel`
+ * (`typed`, `voice` or `share`) is required and `sourceApp` names the app a share came from (`parseCaptureSource`). A
+ * `typeId` must name a live, active Inbox item type (`lockActiveInboxType`, a `ValidationError` on `typeId` otherwise). Each attachment must name an uploaded blob of the caller's tenant whose stored
+ * type may be attached (`requireAttachableBlobs`: a `ValidationError` on `attachments`, or a 415
+ * `unsupported_attachment_type`). Both checks run before anything is written, and a refusal rolls the transaction back,
+ * so a refused capture leaves no item and no attachment.
+ *
+ * With an `Idempotency-Key` header, a live item the key already reserved is answered as it is, before the type or the
+ * attachments are looked at, and nothing is written: no second item, no second `type` edge, no second set of attachments.
+ * A trashed item does not count, as in the generic create. Answers `201` with the item and its `attachments` in their
+ * order (`[]` for none), a replay included.
+ */
+export function createCaptureInboxItemRouteHandler(pool: Pool) {
+  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+    const input = parseCaptureBody(ctx.body);
+    const idempotencyKey = readIdempotencyKeyHeader(ctx.req?.headers);
+    const { item, attachments } = await withTransaction(pool, async (client) => {
+      const inboxDatabaseId = await resolveDatabaseIdByModuleId(client, INBOX_MODULE_ID);
+      if (idempotencyKey !== undefined) {
+        const replay = await itemsStore.findIdempotentReplay(client, inboxDatabaseId, idempotencyKey, {
+          requireLive: true,
+        });
+        if (replay) return { item: replay, attachments: await readCaptureAttachments(client, replay.id) };
+      }
+      if (input.typeId !== undefined) {
+        await lockActiveInboxType(
+          client,
+          await resolveDatabaseIdByModuleId(client, INBOX_ITEM_TYPES_MODULE_ID),
+          input.typeId,
+        );
+      }
+      await requireAttachableBlobs(client, input.attachments);
+      const created = await createInboxItemWithClient(client, {
+        inboxDatabaseId,
+        date: input.date,
+        time: input.time,
+        text: input.text,
+        captureChannel: input.captureChannel,
+        ...(input.sourceApp === undefined ? {} : { sourceApp: input.sourceApp }),
+        ...(input.typeId === undefined ? {} : { type: input.typeId }),
+        attachments: input.attachments,
+        ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
+      });
+      return { item: created, attachments: await readCaptureAttachments(client, created.id) };
+    });
+    return { status: 201, item, attachments };
   };
 }
 

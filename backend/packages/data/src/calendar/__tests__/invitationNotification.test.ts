@@ -36,6 +36,12 @@ import { createRespondToInvitationRouteHandler } from "../invitationRouteHandler
 let admin: Pool;
 let runtime: Pool;
 
+/**
+ * A fixed clock for the fan-out handler: a seeded tenant has the sleep mute on by default (23:00 to 06:45), so
+ * the real time would hold the push back whenever the suite runs at night.
+ */
+const FAN_OUT_AT = new Date("2026-11-10T12:00:00Z");
+
 const notificationRow = z.object({
   id: z.string(),
   user_id: z.string(),
@@ -409,6 +415,7 @@ describe("calendar invitation notification (issue gh-1954)", () => {
       return {
         sendWebPush: vi.fn<PushSenders["sendWebPush"]>().mockResolvedValue({ outcome: "delivered" }),
         sendApns: vi.fn<PushSenders["sendApns"]>().mockResolvedValue({ outcome: "delivered" }),
+        now: () => FAN_OUT_AT,
       };
     }
 

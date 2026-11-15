@@ -32,6 +32,32 @@ export class UpstreamUnavailableError extends ChokePointError {
   }
 }
 
+/**
+ * The `unsupported_media_type` code of the REST error contract (issue gh-1963) — `POST /api/blobs` stored the body's
+ * bytes, detected their type from the first bytes, and found it outside the types a blob may have. The bytes are
+ * removed again before the error surfaces.
+ */
+export class UnsupportedMediaTypeError extends ChokePointError {
+  constructor(message: string, details?: unknown) {
+    super(415, "unsupported_media_type", message, details);
+    this.name = "UnsupportedMediaTypeError";
+  }
+}
+
+/**
+ * The `unsupported_attachment_type` code of the REST error contract (issue gh-1963) — the blob a capture names exists
+ * in the caller's tenant but its stored mime type is not one an Inbox attachment may have. `details` carries the blob's
+ * id and its mime type so the client can say what was refused.
+ */
+export class UnsupportedAttachmentTypeError extends ChokePointError {
+  declare readonly details: { blobId: string; mimeType: string };
+
+  constructor(details: { blobId: string; mimeType: string }) {
+    super(415, "unsupported_attachment_type", "The blob's type cannot be attached to an Inbox item", details);
+    this.name = "UnsupportedAttachmentTypeError";
+  }
+}
+
 export class ForbiddenError extends ChokePointError {
   constructor(message: string, details?: unknown, code = "forbidden") {
     super(403, code, message, details);

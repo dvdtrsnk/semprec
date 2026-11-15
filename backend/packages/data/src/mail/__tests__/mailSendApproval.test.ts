@@ -962,7 +962,7 @@ describe("approval of a mail send by an agent (issue gh-1913)", () => {
           undefined, // genericOperationApprovalReplay
           storage, // filesBlobStorage
           undefined, // tenantBlobStorageDirs
-          undefined, // titleGateway
+          undefined, // aiGateway
           mailSendTransports,
         )[CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE];
         if (!handler) throw new Error("approvalExecute is not registered");

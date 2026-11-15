@@ -155,7 +155,10 @@ function readPrepReminder(settings: SleepSettingsItem): SleepNightsSettings {
  * not stored rows and their ids are not item ids; they are not read-only, because a night is edited on its own
  * and not through the item routes (docs/adr/2026-11-12-a-sleep-night-in-the-timeline-is-a-derived-entry-the-user-edits.md).
  *
- * It returns nothing when the tenant has no sleep settings item, when `enabled` or `showInCalendar` of that
+ * It returns nothing, and reads nothing, when `context.includeSleep` is false: the sleep databases are sensitive and
+ * a caller that may not read them is given no night derived from them
+ * (docs/adr/2026-11-14-the-calendar-timeline-tool-leaves-out-sleep-nights-the-caller-may-not-read.md). It returns
+ * nothing when the tenant has no sleep settings item, when `enabled` or `showInCalendar` of that
  * item is not `true`, and when the tenant has several settings items; the plans and the night items are then
  * not read. Whether the Sleep calendar is hidden does not matter. A plan or a night exception that does not
  * have the value types of `planProperties` or `nightProperties` is left out with one log line, so one broken
@@ -165,6 +168,7 @@ export async function readSleepTimelineItems(
   client: PoolClient,
   context: CalendarTimelineContext,
 ): Promise<CalendarSleepTimelineItem[]> {
+  if (!context.includeSleep) return [];
   const settings = await readSettings(client);
   if (settings === null || settings.properties.enabled !== true || settings.properties.showInCalendar !== true)
     return [];

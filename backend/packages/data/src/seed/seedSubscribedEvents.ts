@@ -6,6 +6,9 @@ import { requireAffectedRows, requireSingleRow } from "../db/pool.js";
 import type { DatabaseRow, PropertyType } from "../types.js";
 import { SUBSCRIBED_EVENTS_MODULE_ID } from "./calendarsKeys.js";
 
+/** The keys of the recurrence properties (issue gh-1966), the ones `calendar/subscribedEventsRecurrenceCutoverMigration.ts` adds. */
+export const SUBSCRIBED_EVENT_RECURRENCE_KEYS = ["recurrenceRule", "exceptionDates", "recurrenceId"] as const;
+
 interface PropSpec {
   key: string;
   type: PropertyType;
@@ -16,8 +19,11 @@ interface PropSpec {
  * The scalar properties of a subscribed event (issue gh-1962), all `owner: 'system'` with the calendar module as
  * owner process. `startsAt` and `endsAt` are date properties with a time (`includeTime`); `timeZone` keeps the
  * IANA zone the feed named. The seed does not validate the format of a date value: the format a writer stores
- * is the convention of the feed import (#2004) and of the timeline source that reads it. The `calendar` relation
- * is added by `createSubscribedEventsRelation`.
+ * is the convention of the feed import (#2004) and of the timeline source that reads it. The three recurrence
+ * properties (issue gh-1966) are text: `recurrenceRule` is the feed's `RRULE`, `exceptionDates` a JSON array of the
+ * excluded occurrences' original starts and `recurrenceId` the original start of the occurrence an override row
+ * replaces, the starts being tenant wall-clock values. The `calendar` relation is added by
+ * `createSubscribedEventsRelation`.
  */
 const SUBSCRIBED_EVENT_PROPERTIES: readonly PropSpec[] = [
   { key: "uid", type: "text" },
@@ -27,6 +33,7 @@ const SUBSCRIBED_EVENT_PROPERTIES: readonly PropSpec[] = [
   { key: "timeZone", type: "text" },
   { key: "allDay", type: "checkbox" },
   { key: "place", type: "text" },
+  ...SUBSCRIBED_EVENT_RECURRENCE_KEYS.map((key): PropSpec => ({ key, type: "text" })),
 ];
 
 async function insertCalendarOwnedRelationProperty(

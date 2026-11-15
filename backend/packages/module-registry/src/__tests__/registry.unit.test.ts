@@ -392,6 +392,64 @@ describe("ModuleRegistry projections", () => {
     expect(byName.get("gated.free")).toMatchObject({ riskClass: "read" });
   });
 
+  it("accepts an mcp declaration only for a tool with a capability and either approval none or requiresApproval (issues gh-1956, gh-1957)", () => {
+    const base = {
+      name: "sample",
+      handlerExport: "handler",
+      argumentSchemaExport: "schema",
+      capability: "sample.read",
+      approval: "none",
+    };
+    const valid = (tool: unknown) =>
+      moduleManifestSchema.safeParse({
+        id: "sample",
+        version: "1",
+        name: "Sample",
+        removable: true,
+        systemProject: false,
+        databases: [],
+        capabilities: ["sample.read"],
+        agentTools: [tool],
+      }).success;
+    const mcp = { humanHandlerExport: "humanHandler" };
+    expect(valid({ ...base, mcp })).toBe(true);
+    expect(valid(base)).toBe(true);
+    expect(valid({ ...base, capability: undefined, mcp })).toBe(false);
+    expect(valid({ ...base, approval: "always", mcp })).toBe(false);
+    expect(valid({ ...base, approval: "unlessProjectPermitted", projectPermission: "allowed", mcp })).toBe(false);
+    // A gated tool may declare it (the calendar write tools, issue gh-1957), but the flag is what admits it: the mode
+    // alone is not.
+    expect(valid({ ...base, approval: "always", requiresApproval: true, mcp })).toBe(true);
+    expect(valid({ ...base, requiresApproval: true, mcp })).toBe(true);
+    expect(valid({ ...base, approval: "always", requiresApproval: false, mcp })).toBe(false);
+    expect(valid({ ...base, capability: undefined, approval: "always", requiresApproval: true, mcp })).toBe(false);
+    expect(valid({ ...base, mcp: { humanHandlerExport: "" } })).toBe(false);
+    expect(valid({ ...base, mcp: {} })).toBe(false);
+    expect(valid({ ...base, mcp: { humanHandlerExport: "humanHandler", extra: true } })).toBe(false);
+  });
+
+  it("rejects a module whose mcp human handler export is not a function (issue gh-1956)", async () => {
+    const registry = new ModuleRegistry(() => new Set(["mcpMissingHumanHandler"]));
+    await expect(registry.loadModule(fixturePath("mcpMissingHumanHandlerModule.js"))).rejects.toThrow(
+      /missing export "doesNotExist"/,
+    );
+    expect(registry.listModuleIds()).toEqual([]);
+  });
+
+  it("resolves the capability and the human handler of a tool declared with mcp, and of no other (issue gh-1956)", async () => {
+    const registry = new ModuleRegistry(() => new Set(["mcpTools"]));
+    await registry.loadModule(fixturePath("mcpToolsModule.js"));
+
+    const definitions = await registry.getAgentToolDefinitions(new Set(["mcpTools.read"]));
+    const byName = new Map(definitions.map((definition) => [definition.name, definition]));
+    expect([...byName.keys()]).toEqual(["mcpTools.exposed", "mcpTools.sessionOnly", "mcpTools.badResult"]);
+    expect(byName.get("mcpTools.exposed")).toMatchObject({ capability: "mcpTools.read" });
+    expect(typeof byName.get("mcpTools.exposed")?.mcp?.humanHandler).toBe("function");
+    expect(byName.get("mcpTools.sessionOnly")).toMatchObject({ capability: "mcpTools.read" });
+    expect(byName.get("mcpTools.sessionOnly")).not.toHaveProperty("mcp");
+    expect(await registry.getAgentToolDefinitions(new Set())).toEqual([]);
+  });
+
   it("re-evaluates activation on every call instead of caching it at load time", async () => {
     let active = new Set<string>();
     const registry = await loadBoth(() => active);

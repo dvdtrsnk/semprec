@@ -17,10 +17,13 @@ export {
 } from "./inboxAgentTools.js";
 export {
   createChangeInboxItemTypeRouteHandler,
+  createCaptureInboxItemRouteHandler,
   createConfirmProposalRouteHandler,
   createInboxCardsCountRouteHandler,
   createInboxCardsRouteHandler,
   createInboxTypesRouteHandler,
+  createItemOriginRouteHandler,
+  createProposalOptionsRouteHandler,
   createReopenProposalRouteHandler,
   createRecomputeProposalRouteHandler,
   createRejectProposalRouteHandler,
@@ -69,6 +72,13 @@ export {
  * card that is still `needsClarification` and has no user entry in its history, under the card's `NOWAIT` row lock; a
  * card of any other status, or one the user touched, is never rewritten. The production sites above are unchanged:
  * the recompute task creates no card, and the suggestion task creates the cards of the speaker suggestion step.
+ *
+ * Recording cards (issue gh-1978, `docs/adr/2026-11-14-inbox-recording-cards-confirm-into-recording-intake.md`): an
+ * `inbox` card whose envelope is `transcription` proposes transcribing an audio attachment of the card's Inbox item.
+ * `semprec.tick` is still its only producer, from the attachment and without a model call. Its confirm runs in
+ * `semprec-api` (`confirmProposalWithClient`): it writes the recording request (`recordRecordingIntake`), moves the
+ * attachment into Files and enqueues the transcription. `semprec-transcribe` still creates every `transcript` card and
+ * every Transcripts row, from that request.
  */
 export const manifest: ModuleManifest = {
   id: "inboxPipeline",
@@ -179,12 +189,39 @@ export const manifest: ModuleManifest = {
       justification: "transactional-semantics",
     },
     {
+      name: "listProposalOptions",
+      method: "GET",
+      path: "/api/proposals/:id/options",
+      handlerExport: "createProposalOptionsRouteHandler",
+      // The picker of one field of a card, merging a source database, the card's own envelope and the edge counts of its
+      // relation in one fixed order — shaped for exactly one consumer, the card editor, not a generic query.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "getItemOrigin",
+      method: "GET",
+      path: "/api/items/:id/origin",
+      handlerExport: "createItemOriginRouteHandler",
+      // Joins `item_origins`, the sibling items of the same card and the source Inbox item for one consumer, the item
+      // detail screen — not a read the generic item surface can express.
+      justification: "single-consumer-read",
+    },
+    {
       name: "changeInboxItemType",
       method: "PUT",
       path: "/api/inbox/items/:id/type",
       handlerExport: "createChangeInboxItemTypeRouteHandler",
       // The replacement of the `type` edge, the clearing of the card's manual values, its `computing` status and the
       // trigger of the tick commit in one transaction, which no generic edge write can express.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "captureInboxItem",
+      method: "POST",
+      path: "/api/inbox/items",
+      handlerExport: "createCaptureInboxItemRouteHandler",
+      // The item, its `type` edge and its attachments commit together, which the generic create cannot express: it
+      // knows nothing of the edge or the attachments, so a client would need several requests with no common transaction.
       justification: "transactional-semantics",
     },
     {

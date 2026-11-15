@@ -17,6 +17,7 @@ import {
 import type { ModuleRegistry } from "@semprec/module-registry";
 import type { AiGatewayClientPort } from "@semprec/shared";
 import type { AudioGatewayClient } from "./audioGatewayClient.js";
+import { createInboxAttachmentMetadataTask } from "./inboxAttachmentMetadata.js";
 import { createTranscriptCardRecomputeTask } from "./transcriptCardRecompute.js";
 import { createTranscriptSpeakerSuggestionTask } from "./transcriptSpeakerSuggestionTask.js";
 import { createTranscriptionCreateTask, createTranscriptionTask } from "./transcriptionTask.js";
@@ -29,9 +30,12 @@ type WorkerStarter = (options: Parameters<typeof runWorker>[0]) => Promise<{ sto
 
 /**
  * The sole graphile-worker registration site for `transcriptionJob`. `blobStorage` defaults to the same local-filesystem backend semprec-api writes Files blobs to, configured via `FILES_STORAGE_DIR`.
- * Three runners of one slot each: the media pipeline (`transcriptionJob`), the fast row creation (`transcriptionCreate`)
- * and the short model tasks (`transcriptCardRecompute`, issue gh-1940, and `transcriptSpeakerSuggestion`, issue gh-1942), so neither of the two short kinds waits behind
- * the long pipeline. `clients.summary` is the completion client of the pipeline's model steps and of the model tasks.
+ * Four runners of one slot each: the media pipeline (`transcriptionJob`), the fast row creation (`transcriptionCreate`),
+ * the short model tasks (`transcriptCardRecompute`, issue gh-1940, and `transcriptSpeakerSuggestion`, issue gh-1942) and
+ * the metadata of Inbox attachments (`inboxAttachmentMetadata`, issue gh-1965), so none of the three short kinds waits
+ * behind the long pipeline. The attachment metadata has a runner of its own because it runs `ffprobe` and `ffmpeg` over
+ * an uploaded file, which can hold its slot for as long as the tools' timeouts, and no other kind should wait for that.
+ * `clients.summary` is the completion client of the pipeline's model steps and of the model tasks.
  */
 export async function createTranscribeQueueRuntime(
   pool: Pool,
@@ -63,9 +67,15 @@ export async function createTranscribeQueueRuntime(
       createTranscriptSpeakerSuggestionTask(pool, clients.summary),
     ),
   };
+  const mediaMetadataTaskList: TaskList = {
+    [CORE_TASK_NAMES.INBOX_ATTACHMENT_METADATA]: registerTask(
+      CORE_TASK_NAMES.INBOX_ATTACHMENT_METADATA,
+      createInboxAttachmentMetadataTask(pool, blobStorage),
+    ),
+  };
   const affinitySets = await resolveTaskAffinitySets(moduleRegistry);
   assertTaskListMatchesAffinity(
-    { ...taskList, ...createTaskList, ...modelTaskList },
+    { ...taskList, ...createTaskList, ...modelTaskList, ...mediaMetadataTaskList },
     affinitySets.transcribe,
     "transcribe",
   );
@@ -76,11 +86,16 @@ export async function createTranscribeQueueRuntime(
     new Set([CORE_TASK_NAMES.TRANSCRIPT_CARD_RECOMPUTE, CORE_TASK_NAMES.TRANSCRIPT_SPEAKER_SUGGESTION]),
     "transcribe",
   );
+  assertTaskListMatchesAffinity(
+    mediaMetadataTaskList,
+    new Set([CORE_TASK_NAMES.INBOX_ATTACHMENT_METADATA]),
+    "transcribe",
+  );
   const startWorker = clients.startWorker ?? runWorker;
   // One ffmpeg/ASR pipeline per host: the TRANSCRIPTION_JOB handler is CPU- and disk-bound. Every runner takes one job at a time.
   const runners: Array<Awaited<ReturnType<WorkerStarter>>> = [];
   try {
-    for (const list of [taskList, createTaskList, modelTaskList]) {
+    for (const list of [taskList, createTaskList, modelTaskList, mediaMetadataTaskList]) {
       runners.push(await startWorker({ pgPool: pool, taskList: list, noHandleSignals: true, concurrency: 1 }));
     }
   } catch (error) {

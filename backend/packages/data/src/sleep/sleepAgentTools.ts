@@ -74,7 +74,7 @@ function invalidArguments(): SleepAgentToolResult {
  * without the sleep module gets a 404. The reads lock the decision rows `FOR SHARE` in the transaction of `client`
  * (`assertAgentDatabaseAccess`), so a revoke waits for the transaction that passed.
  */
-async function assertSleepAccess(
+export async function assertSleepAccess(
   client: PoolClient,
   agentProjectItemId: string,
   nights: "read" | "write",

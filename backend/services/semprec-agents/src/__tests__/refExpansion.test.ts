@@ -1122,7 +1122,7 @@ describe("tenant-scoped reference blob expansion", () => {
       "Large",
       Buffer.concat([Buffer.from("%PDF-1.4\n"), Buffer.alloc(10 * 1024 * 1024)]),
     );
-    const unknown = await createFile(tenant, "Unknown", Buffer.from("unknown payload"));
+    const unknown = await createFile(tenant, "Unknown", Buffer.from("ID3 unknown payload"));
     const other = await createFile(foreign, "Private", pdfFixture());
     const before = await runInTenant(tenant, () =>
       runtime.query<{ count: number }>("SELECT count(*)::int AS count FROM blobs"),
@@ -1146,8 +1146,8 @@ describe("tenant-scoped reference blob expansion", () => {
   });
 
   it("preserves historical labels while fresh unavailable references carry empty labels", async () => {
-    const own = await createFile(tenant, "Current label", Buffer.from("unsupported"));
-    const other = await createFile(foreign, "Foreign label", Buffer.from("unsupported"));
+    const own = await createFile(tenant, "Current label", Buffer.from("ID3 unsupported"));
+    const other = await createFile(foreign, "Foreign label", Buffer.from("ID3 unsupported"));
     const missing = { ...own, itemId: randomUUID() };
     const refs = [own, other, missing, { ...own, label: "Historical label" }, { ...missing, label: "Old missing" }];
     const result = await runInTenant(tenant, () => expandSempRefs(runtime, refs, { files, mailAttachments }));

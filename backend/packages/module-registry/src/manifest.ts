@@ -171,6 +171,18 @@ export interface ModuleAgentToolDescriptor {
    * with `requiresApproval: true`. A gated tool without it is never checked for a changed source.
    */
   snapshotExport?: string;
+  /**
+   * Present when the tool is also offered on `POST /mcp` although its capability is a module's own and not one of the
+   * core capability ids (issue gh-1956); a tool without it is offered there only when it has no capability or a core one,
+   * and only to a run credential. The tool is then offered to a run credential whose project holds the capability and whose
+   * own list names it, and to a human session whenever its module is active. `humanHandlerExport` names an export of the module file: a factory
+   * `(pool, dependencies)` that returns `(userId, args)`, the handler a human session runs as that user, with the same
+   * result shape as `handlerExport`'s handler. `dependencies` is the container the composition root hands the module's
+   * custom routes. Allowed only for a tool with a capability that is either `approval: "none"` without `requiresApproval`,
+   * or declared with `requiresApproval` (issue gh-1957): a run credential's call of that one files a `moduleTool` approval
+   * request, and a human session runs its human handler as the user without one.
+   */
+  mcp?: { humanHandlerExport: string };
 }
 
 /**
@@ -584,8 +596,17 @@ const moduleAgentToolDescriptorSchema = z
     projectPermission: z.string().min(1).optional(),
     requiresApproval: z.boolean().optional(),
     snapshotExport: z.string().min(1).optional(),
+    mcp: z.strictObject({ humanHandlerExport: z.string().min(1) }).optional(),
   })
   .superRefine((tool, ctx) => {
+    if (tool.mcp !== undefined && tool.capability === undefined)
+      ctx.addIssue({ code: "custom", message: "MCP exposure requires a capability", path: ["mcp"] });
+    if (tool.mcp !== undefined && tool.requiresApproval !== true && tool.approval !== "none")
+      ctx.addIssue({
+        code: "custom",
+        message: "MCP exposure requires approval none or requiresApproval",
+        path: ["mcp"],
+      });
     if (tool.snapshotExport !== undefined && tool.requiresApproval !== true)
       ctx.addIssue({
         code: "custom",

@@ -1004,7 +1004,7 @@ describe("createSchemaRequestListener (issue #147)", () => {
     expect(next.rest).toEqual(original.rest);
   });
 
-  it("loads the calendar module with its calendars database and no agent tool (issue #1600)", async () => {
+  it("loads the calendar module with its calendars database and its three write tools (issues #1600 and gh-1957)", async () => {
     expect(moduleRegistry.listModuleIds()).toContain("calendar");
     expect(await moduleRegistry.listActiveModuleIds()).toContain("calendar");
 
@@ -1014,7 +1014,12 @@ describe("createSchemaRequestListener (issue #147)", () => {
     expect(body.databases.filter((db) => db.key?.startsWith("calendar")).map((db) => [db.key, db.name])).toEqual([
       ["calendars", "Calendars"],
     ]);
-    expect(body.agentTools.filter((tool) => tool.moduleId === "calendar")).toEqual([]);
+    expect(body.agentTools.filter((tool) => tool.moduleId === "calendar")).toEqual([
+      { moduleId: "calendar", name: "calendar.timeline", label: "Read the calendar timeline" },
+      { moduleId: "calendar", name: "calendar.respondToInvitation", label: "Answer a calendar invitation" },
+      { moduleId: "calendar", name: "calendar.placeTaskInEvent", label: "Put a task into an event" },
+      { moduleId: "calendar", name: "calendar.removeTaskFromEvent", label: "Take a task out of an event" },
+    ]);
   });
 
   it("publishes areaFilter for the seven area-filterable databases and omits it for the others (issue #1597)", async () => {

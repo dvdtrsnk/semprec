@@ -9,13 +9,20 @@ import * as itemsStore from "../chokePoint/itemsStore.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { ForbiddenError } from "../errors.js";
 import { seedSystem } from "../seed/seedSystem.js";
+import { TEN_DATABASE_MODULE_IDS } from "../seed/tenDatabaseKeys.js";
 import { runRatingFilterPresetsCutoverMigration } from "../seed/ratingFilterPresetsCutoverMigration.js";
 import { runSelectOptionColorsCutoverMigration } from "../seed/selectOptionColorsCutoverMigration.js";
 import { createUser } from "../auth/usersStore.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
 import { TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID } from "../transcription/transcriptionActions.js";
-import { createTestTenant, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import {
+  createInboxItemWithClient,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "../testSupport/testDb.js";
 
 let adminPool: Pool;
 let dataPool: Pool;
@@ -1554,5 +1561,392 @@ describe("rating filter presets tenant cutover (issue #1622)", () => {
     const configs = await ratingConfigs(zero);
     expect(Object.keys(configs)).toEqual(["books"]);
     expect(configs.books).toMatchObject({ filterPresets: expect.any(Array) });
+  });
+});
+
+describe("Inbox item types targetDatabase options tenant cutover (issue #1973)", () => {
+  let zero: string;
+  let b: string;
+
+  /** The select as a populated install stored it before the issue: the ten hardcoded databases, no `mcpServers`. */
+  const PRE_CUTOVER_KEYS = TEN_DATABASE_MODULE_IDS;
+
+  beforeAll(() => {
+    adminPool = getTestPool();
+    dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
+  });
+
+  beforeEach(async () => {
+    await resetDatabase(adminPool);
+    zero = getTenantZeroId();
+    b = await createTestTenant(adminPool);
+  });
+
+  afterAll(async () => {
+    await dataPool.end();
+    await adminPool.end();
+  });
+
+  async function readTargetConfig(tenantId: string): Promise<unknown> {
+    const { rows } = await adminPool.query<{ config: unknown }>(
+      `SELECT p.config FROM properties p JOIN databases d ON d.id = p.database_id
+        WHERE d.owner_module_id = 'inboxItemTypes' AND p.key = 'targetDatabase' AND p.tenant_id = $1`,
+      [tenantId],
+    );
+    expect(rows).toHaveLength(1);
+    return rows[0]?.config;
+  }
+
+  async function readTargetOptionKeys(tenantId: string): Promise<string[]> {
+    const config = z
+      .object({ options: z.array(z.object({ key: z.string() })) })
+      .parse(await readTargetConfig(tenantId));
+    return config.options.map((option) => option.key);
+  }
+
+  /** Seeds the tenant, then sets the select back to `config`, the shape of an install seeded before the issue. */
+  async function seedWithTargetConfig(tenantId: string, config: unknown): Promise<void> {
+    await runInTenant(tenantId, () => seedSystem(dataPool, createViewTypeRegistry()));
+    // Direct SQL is the fixture: the Inbox item types database is schema-locked and the seed now declares the option.
+    await adminPool.query(
+      `UPDATE properties SET config = $2::jsonb
+        WHERE key = 'targetDatabase' AND database_id IN
+          (SELECT id FROM databases WHERE owner_module_id = 'inboxItemTypes' AND tenant_id = $1)`,
+      [tenantId, JSON.stringify(config)],
+    );
+  }
+
+  const preCutoverConfig = { options: PRE_CUTOVER_KEYS.map((key) => ({ key })) };
+
+  it("declares the mcpServers option after the ten hardcoded databases in a fresh seed", async () => {
+    await runInTenant(zero, () => seedSystem(dataPool, createViewTypeRegistry()));
+
+    expect(await readTargetOptionKeys(zero)).toEqual([...TEN_DATABASE_MODULE_IDS, "mcpServers"]);
+  });
+
+  it("appends mcpServers to a populated tenant's options in every tenant and leaves the existing options as they were", async () => {
+    await seedWithTargetConfig(zero, preCutoverConfig);
+    // A tenant whose options carry extra data and sit in another order: nothing is reordered or removed.
+    const reordered = {
+      custom: "keep",
+      options: [{ key: "tasks", color: "blue" }, { key: "areas" }, { key: "journal" }],
+    };
+    await seedWithTargetConfig(b, reordered);
+
+    await runCutovers(dataPool);
+
+    expect(await readTargetOptionKeys(zero)).toEqual([...TEN_DATABASE_MODULE_IDS, "mcpServers"]);
+    expect(await readTargetConfig(b)).toEqual({
+      custom: "keep",
+      options: [{ key: "tasks", color: "blue" }, { key: "areas" }, { key: "journal" }, { key: "mcpServers" }],
+    });
+  });
+
+  it("changes nothing in a second run", async () => {
+    await seedWithTargetConfig(zero, preCutoverConfig);
+    await seedWithTargetConfig(b, preCutoverConfig);
+    await runCutovers(dataPool);
+    const before = await snapshot();
+    const configBefore = [await readTargetConfig(zero), await readTargetConfig(b)];
+
+    await runCutovers(dataPool);
+
+    expect(await snapshot()).toEqual(before);
+    expect([await readTargetConfig(zero), await readTargetConfig(b)]).toEqual(configBefore);
+  });
+
+  it("leaves a populated tenant with the same select config as a fresh seed", async () => {
+    await seedWithTargetConfig(b, preCutoverConfig);
+    await runInTenant(zero, () => seedSystem(dataPool, createViewTypeRegistry()));
+
+    await runCutovers(dataPool);
+
+    expect(await readTargetConfig(b)).toEqual(await readTargetConfig(zero));
+  });
+
+  it("does nothing in a tenant without an Inbox item types database", async () => {
+    await seedWithTargetConfig(b, preCutoverConfig);
+    await runInTenant(b, () =>
+      dataPool.query("UPDATE databases SET owner_module_id = NULL WHERE owner_module_id = 'inboxItemTypes'"),
+    );
+    const before = await adminPool.query(
+      "SELECT to_jsonb(p) AS row FROM properties p WHERE p.key = 'targetDatabase' AND p.tenant_id = $1",
+      [b],
+    );
+
+    await runCutovers(dataPool);
+
+    const after = await adminPool.query(
+      "SELECT to_jsonb(p) AS row FROM properties p WHERE p.key = 'targetDatabase' AND p.tenant_id = $1",
+      [b],
+    );
+    expect(after.rows).toEqual(before.rows);
+    expect(after.rows).toHaveLength(1);
+  });
+
+  it("fails and names the tenant when its Inbox item types database has no targetDatabase property", async () => {
+    await seedWithTargetConfig(b, preCutoverConfig);
+    await adminPool.query(
+      `DELETE FROM properties WHERE key = 'targetDatabase' AND database_id IN
+         (SELECT id FROM databases WHERE owner_module_id = 'inboxItemTypes' AND tenant_id = $1)`,
+      [b],
+    );
+
+    const error = await runCutovers(dataPool).then(
+      () => null,
+      (err: unknown) => err,
+    );
+
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).message).toContain(b);
+    expect((error as AggregateError).message).not.toContain(zero);
+  });
+
+  it.each([{ options: "invalid" }, { options: [{ key: 42 }] }, {}, null])(
+    "refuses malformed targetDatabase config %j and leaves it as it was",
+    async (config) => {
+      await seedWithTargetConfig(b, config);
+
+      await expect(runCutovers(dataPool)).rejects.toBeInstanceOf(AggregateError);
+
+      expect(await readTargetConfig(b)).toEqual(config);
+    },
+  );
+});
+
+describe("Inbox capture properties tenant cutover (issue gh-1964)", () => {
+  let zero: string;
+  let b: string;
+
+  interface InboxPropertyRow {
+    key: string;
+    name: string | null;
+    type: string;
+    owner: string;
+    owner_process: string | null;
+    config: unknown;
+  }
+
+  const CAPTURE_KEYS = ["captureChannel", "sourceApp", "addedAt"];
+
+  beforeAll(() => {
+    adminPool = getTestPool();
+    dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
+  });
+
+  beforeEach(async () => {
+    await resetDatabase(adminPool);
+    zero = getTenantZeroId();
+    b = await createTestTenant(adminPool);
+  });
+
+  afterAll(async () => {
+    await dataPool.end();
+    await adminPool.end();
+  });
+
+  async function inboxDatabaseId(tenantId: string): Promise<string> {
+    const { rows } = await adminPool.query<{ id: string }>(
+      "SELECT id FROM databases WHERE owner_module_id = 'inbox' AND tenant_id = $1",
+      [tenantId],
+    );
+    expect(rows).toHaveLength(1);
+    return rows[0]?.id ?? "";
+  }
+
+  /**
+   * The Inbox properties of a tenant, in key order, read through the runtime role. A relation's generated ids are
+   * replaced by the owner module of its target database, so two tenants built the same way compare equal.
+   */
+  async function inboxShape(tenantId: string): Promise<InboxPropertyRow[]> {
+    return runInTenant(tenantId, async () => {
+      const { rows } = await dataPool.query<InboxPropertyRow>(
+        `SELECT p.key, p.name, p.type, p.owner, p.owner_process,
+                CASE WHEN p.type = 'relation' THEN jsonb_build_object('target', target.owner_module_id)
+                     ELSE p.config END AS config
+           FROM properties p
+           JOIN databases d ON d.id = p.database_id
+           LEFT JOIN databases target ON target.id = (p.config ->> 'targetDatabaseId')::uuid
+          WHERE d.owner_module_id = 'inbox'
+          ORDER BY p.key`,
+      );
+      return rows;
+    });
+  }
+
+  /** Seeds the tenant, then removes the given properties, the shape a populated install had before issue gh-1964. */
+  async function seedPreCaptureShape(tenantId: string, keys: string[] = CAPTURE_KEYS): Promise<string> {
+    await runInTenant(tenantId, () => seedSystem(dataPool, createViewTypeRegistry()));
+    const databaseId = await inboxDatabaseId(tenantId);
+    // Direct SQL is the fixture: the Inbox database is schema-locked, so the public property writer refuses the delete.
+    await adminPool.query("DELETE FROM properties WHERE database_id = $1 AND key = ANY($2::text[])", [
+      databaseId,
+      keys,
+    ]);
+    return databaseId;
+  }
+
+  /** The rows a cutover may change for the Inbox database: its properties and its items, read as the owner. */
+  async function inboxSnapshot(databaseId: string): Promise<unknown[]> {
+    const { rows } = await adminPool.query<{ row: unknown }>(
+      `SELECT to_jsonb(t) AS row FROM properties t WHERE database_id = $1
+       UNION ALL
+       SELECT to_jsonb(t) AS row FROM items t WHERE database_id = $1
+       ORDER BY 1`,
+      [databaseId],
+    );
+    return rows.map((row) => row.row);
+  }
+
+  /** An Inbox item as an install of that time stored it: the three captured values and nothing else. */
+  async function insertExistingItem(tenantId: string, databaseId: string): Promise<string> {
+    return runInTenant(tenantId, async () => {
+      const item = await withTransaction(dataPool, (client) =>
+        itemsStore.insertItem(client, {
+          databaseId,
+          properties: { date: "2026-08-01", time: "08:00", text: "Existing note" },
+        }),
+      );
+      return item.id;
+    });
+  }
+
+  const CAPTURE_SHAPE: InboxPropertyRow[] = [
+    {
+      key: "addedAt",
+      name: "Added at",
+      type: "date",
+      owner: "system",
+      owner_process: "inbox",
+      config: { includeTime: true },
+    },
+    {
+      key: "captureChannel",
+      name: "Capture channel",
+      type: "select",
+      owner: "user",
+      owner_process: null,
+      config: { options: [{ key: "typed" }, { key: "voice" }, { key: "share" }] },
+    },
+    { key: "sourceApp", name: "Source app", type: "text", owner: "user", owner_process: null, config: {} },
+  ];
+
+  const captureRowsOf = (shape: InboxPropertyRow[]) => shape.filter((row) => CAPTURE_KEYS.includes(row.key));
+
+  it("declares the three properties in a fresh seed", async () => {
+    await runInTenant(zero, () => seedSystem(dataPool, createViewTypeRegistry()));
+
+    expect(captureRowsOf(await inboxShape(zero))).toEqual(CAPTURE_SHAPE);
+  });
+
+  it("adds the three properties to an existing Inbox database in every tenant, with the shape a fresh seed gives", async () => {
+    await seedPreCaptureShape(zero);
+    await seedPreCaptureShape(b);
+    const freshReference = await createTestTenant(adminPool);
+    await runInTenant(freshReference, () => seedSystem(dataPool, createViewTypeRegistry()));
+    for (const tenant of [zero, b]) expect(captureRowsOf(await inboxShape(tenant))).toEqual([]);
+
+    await runCutovers(dataPool);
+
+    for (const tenant of [zero, b]) {
+      expect(captureRowsOf(await inboxShape(tenant))).toEqual(CAPTURE_SHAPE);
+      expect(await inboxShape(tenant)).toEqual(await inboxShape(freshReference));
+    }
+  });
+
+  it("leaves the existing items empty of the three properties, and a second run changes nothing at all", async () => {
+    const databaseId = await seedPreCaptureShape(b);
+    const itemId = await insertExistingItem(b, databaseId);
+    const itemBefore = await adminPool.query("SELECT * FROM items WHERE id = $1", [itemId]);
+
+    await runCutovers(dataPool);
+    const afterFirst = await inboxSnapshot(databaseId);
+    await runCutovers(dataPool);
+
+    expect(await inboxSnapshot(databaseId)).toEqual(afterFirst);
+    const itemAfter = await adminPool.query("SELECT * FROM items WHERE id = $1", [itemId]);
+    expect(itemAfter.rows).toEqual(itemBefore.rows);
+    expect(itemAfter.rows[0]?.properties).toEqual({ date: "2026-08-01", time: "08:00", text: "Existing note" });
+  });
+
+  it("adds only the missing properties and leaves an existing one as it is", async () => {
+    const databaseId = await seedPreCaptureShape(b, ["sourceApp"]);
+    await adminPool.query(
+      "UPDATE properties SET name = 'Kept name' WHERE database_id = $1 AND key = 'captureChannel'",
+      [databaseId],
+    );
+
+    await runCutovers(dataPool);
+
+    const shape = captureRowsOf(await inboxShape(b));
+    expect(shape.map((row) => [row.key, row.name])).toEqual([
+      ["addedAt", "Added at"],
+      ["captureChannel", "Kept name"],
+      ["sourceApp", "Source app"],
+    ]);
+  });
+
+  it("does nothing in a tenant without an Inbox database", async () => {
+    await seedPreCaptureShape(b);
+    await runInTenant(b, () =>
+      dataPool.query("UPDATE databases SET owner_module_id = NULL WHERE owner_module_id = 'inbox'"),
+    );
+
+    await runCutovers(dataPool);
+
+    const { rows } = await adminPool.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM properties WHERE key = ANY($1::text[]) AND tenant_id = $2",
+      [CAPTURE_KEYS, b],
+    );
+    expect(rows[0]?.n).toBe(0);
+  });
+
+  it("lets the capture helper write addedAt on a cutover tenant, as the Inbox module", async () => {
+    const databaseId = await seedPreCaptureShape(b);
+    await runCutovers(dataPool);
+
+    const item = await runInTenant(b, () =>
+      withTransaction(dataPool, (client) =>
+        createInboxItemWithClient(client, {
+          inboxDatabaseId: databaseId,
+          date: "2026-08-28",
+          time: "09:30",
+          text: "After the cutover",
+          captureChannel: "share",
+          sourceApp: "Mail",
+        }),
+      ),
+    );
+
+    expect(item.properties).toMatchObject({ captureChannel: "share", sourceApp: "Mail" });
+    expect(typeof item.properties.addedAt).toBe("string");
+  });
+
+  it("refuses a generic item update of addedAt on a cutover tenant, and accepts one of the user-owned properties", async () => {
+    const databaseId = await seedPreCaptureShape(b);
+    const itemId = await insertExistingItem(b, databaseId);
+    await runCutovers(dataPool);
+    const chokePoint = createChokePoint(dataPool, undefined, createViewTypeRegistry());
+    const before = await inboxSnapshot(databaseId);
+
+    await runInTenant(b, async () => {
+      await expect(
+        chokePoint.updateItem({
+          databaseId,
+          itemId,
+          propertiesPatch: { addedAt: "2001-01-01T00:00:00.000Z" },
+        }),
+      ).rejects.toBeInstanceOf(ForbiddenError);
+    });
+    expect(await inboxSnapshot(databaseId)).toEqual(before);
+
+    const updated = await runInTenant(b, () =>
+      chokePoint.updateItem({
+        databaseId,
+        itemId,
+        propertiesPatch: { captureChannel: "voice", sourceApp: "Notes" },
+      }),
+    );
+    expect(updated.properties).toMatchObject({ captureChannel: "voice", sourceApp: "Notes" });
   });
 });

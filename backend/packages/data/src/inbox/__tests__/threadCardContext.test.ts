@@ -134,7 +134,7 @@ describe("the card context of an Inbox item thread (issue #1938)", () => {
         for (let index = 0; index < options.attachments; index += 1) {
           const uploaded = await ingestUploadedBlob(runtime, {
             mimeType: "application/octet-stream",
-            source: Readable.from([`attachment ${index}`]),
+            source: Readable.from([`%PDF-1.7 attachment ${index}`]),
             maxBytes: 128,
             storage,
           });

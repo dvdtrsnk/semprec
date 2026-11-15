@@ -11,6 +11,7 @@ import { withTransaction } from "../db/pool.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { ingestUploadedBlob } from "../blobs/fileUploadStore.js";
+import { findOrCreateBlob, recordDetectedBlobMimeType } from "../blobs/blobsStore.js";
 import { sweepUnreferencedBlobs } from "../blobs/unreferencedBlobSweep.js";
 import { getSystemSettingsDatabaseId, getSystemSettingsItemId, getSystemTimezone } from "../systemSettings.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
@@ -177,7 +178,21 @@ describe("Files creation from standalone blobs", () => {
   });
 
   it("leaves an unknown detected type unset and preserves an explicit type", async () => {
-    const uploaded = await upload(owner, "unknown bytes");
+    // `POST /api/blobs` no longer stores bytes of an unknown type; the blobs that hold such bytes (an earlier upload,
+    // a mail attachment) are written here through the blob store, with the classification an upload recorded.
+    const unknownBlob = await runInTenant(owner, () =>
+      withTransaction(runtime, async (client) => {
+        const blob = await findOrCreateBlob(client, {
+          mimeType: "application/octet-stream",
+          byteSize: 13,
+          storageKey: `${owner}/blobs/${randomUUID()}`,
+          contentHash: createHash("sha256").update("unknown bytes").digest("hex"),
+        });
+        await recordDetectedBlobMimeType(client, blob.id, "application/octet-stream");
+        return blob;
+      }),
+    );
+    const uploaded = { blob: unknownBlob };
     await runInTenant(owner, async () => {
       const api = createChokePoint(runtime);
       const files = await db("files");

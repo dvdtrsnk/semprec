@@ -93,7 +93,7 @@ describe("restricted MCP module tools", () => {
       createMcpRequestListener(pool, createGenericOperationGateway(pool, metadata), new Set(), collision),
     ).rejects.toThrow(/collides/);
   });
-  it("offers no tool that requires approval over MCP, whatever its approval value, and calls it unknown (issue #1791)", async () => {
+  it("offers the tools that require approval over MCP and defers a call to an approval request (issue gh-1957)", async () => {
     const gatedRegistry = new ModuleRegistry(() => new Set(["gatedTools"]));
     await gatedRegistry.loadModule(
       new URL(
@@ -141,12 +141,20 @@ describe("restricted MCP module tools", () => {
       const list = record((await rpc("tools/list")).result);
       if (!Array.isArray(list.tools)) throw new Error("Missing tools");
       const names = list.tools.map((entry: unknown) => record(entry).name);
-      // The tool that needs no approval is offered, so the absence of the others is not an empty list.
+      // The tool that needs no approval is offered, and so is each tool that requires one (issue gh-1957).
       expect(names).toContain("semprec.gated.free");
       for (const gated of ["semprec.gated.apply", "semprec.gated.noSnapshot", "semprec.gated.noneApproval"]) {
-        expect(names).not.toContain(gated);
-        expect(record((await rpc("tools/call", { name: gated, arguments: { value: "x" } })).error).code).toBe(-32601);
+        expect(names).toContain(gated);
+        // The call files a request and runs nothing: the answer is the approval-required error of the generic operations.
+        const answer = record((await rpc("tools/call", { name: gated, arguments: { value: "x" } })).error);
+        expect(answer.code).toBe(-32001);
+        expect(record(answer.data).approvalRequestId).toEqual(expect.any(String));
       }
+      // A tool whose `approval` is `always` without `requiresApproval` has no deferral and stays absent and unknown.
+      expect(names).not.toContain("semprec.gated.always");
+      expect(
+        record((await rpc("tools/call", { name: "semprec.gated.always", arguments: { value: "x" } })).error).code,
+      ).toBe(-32601);
     } finally {
       await new Promise<void>((resolve) => gatedServer.close(() => resolve()));
     }

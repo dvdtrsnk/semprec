@@ -7,8 +7,12 @@ import {
   NotFoundError,
   UnauthorizedError,
   ValidationError,
+  createModuleToolApprovalRequest,
   resolveModuleAgentToolsForRun,
+  resolveModuleAgentToolsForUser,
   setAgentRunMcpClientName,
+  type ResolvedHumanModuleAgentTool,
+  type ResolvedModuleAgentTool,
   withTransaction,
 } from "@semprec/data";
 import {
@@ -23,6 +27,7 @@ import type { ModuleRegistry } from "@semprec/module-registry";
 import type { GenericOperationGateway } from "@semprec/application";
 import { toPublicErrorBody } from "../adapter/errorContract.js";
 import { extractBearerToken, PayloadTooLargeError, readJsonBody, sendJson } from "../adapter/http.js";
+import type { CustomRouteDependencies } from "../adapter/customRouteMount.js";
 import { authenticateRequest } from "../authHandler.js";
 import { resolveRunCredentialCaller } from "./callerActor.js";
 import { logger } from "../logger.js";
@@ -40,6 +45,18 @@ const SERVER_VERSION = (() => {
 })();
 
 const MCP_TOOL_PREFIX = "semprec.";
+
+function isArgumentsObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The module tools a caller may list and call, by the kind of caller: the tools of a run credential's run, which can be
+ * approval-gated and are bound to the run, and the tools of a human session, which run as its user.
+ */
+type CallerModuleTools =
+  | { kind: "run"; runId: string; tools: ResolvedModuleAgentTool[] }
+  | { kind: "user"; tools: ResolvedHumanModuleAgentTool[] };
 
 function toMcpToolName(operation: GenericOperationName): string {
   return `${MCP_TOOL_PREFIX}${operation}`;
@@ -99,8 +116,19 @@ function readClientName(clientInfo: unknown): string | null {
  *     `runId`, so the approval gate stays a no-op for it, same as REST. The marker is an external AI client
  *     (issue #1998): the data layer refuses it every sensitive database, which a REST call of the same user
  *     still reads.
+ * Module tools (issue #1580, gh-1956) follow the same two ways. A run credential sees the tools of the modules its run's
+ * project holds the grants of and its own list names, among them those a module declares with `mcp`, whose capability
+ * is a module capability id the mint accepted into the list (`resolveModuleAgentToolsForRun`). A human session has no
+ * run and no project: it sees the tools declared with `mcp` of the active modules, and each runs as the session's user without an approval
+ * (`resolveModuleAgentToolsForUser`); `moduleToolDependencies` is what their handlers are built with.
  * Either way, an ungranted or unknown tool name resolve to the same JSON-RPC "method not found"
  * rather than a distinguishable error, per the issue's "never present-but-forbidden" requirement.
+ *
+ * A tool a run credential reaches that is declared with `requiresApproval` (the calendar write tools, issue gh-1957) does not
+ * run on `tools/call`: the call files the `moduleTool` approval request an agent session files and answers the
+ * approval-required error (-32001), and the handler runs once the owner approved the request. A human session's call of
+ * the same tool has no run to file a request for and runs as the user, like its mail send
+ * (docs/adr/2026-11-14-calendar-tools-over-mcp-are-gated-for-a-run-credential-and-run-as-the-user-for-a-session.md).
  *
  * `grantedCapabilities` is fixed per process (the schema core module's own registered
  * capabilities — see `schemaCoreModuleManifest.ts`); a restricted credential's own capability list
@@ -112,13 +140,17 @@ export async function createMcpRequestListener(
   gateway: GenericOperationGateway,
   grantedCapabilities: ReadonlySet<CapabilityId>,
   registry: ModuleRegistry,
+  moduleToolDependencies: CustomRouteDependencies = {},
 ) {
   const activeNames = await registry.getActiveAgentToolNames();
   const collision = activeNames.find((name) => (GENERIC_OPERATION_NAMES as readonly string[]).includes(name));
   if (collision) throw new Error(`Module tool collides with generic operation: ${collision}`);
-  async function resolveActor(
-    req: IncomingMessage,
-  ): Promise<{ actor: AuthenticatedActor; capabilities: ReadonlySet<CapabilityId>; tenantId: string }> {
+  async function resolveActor(req: IncomingMessage): Promise<{
+    actor: AuthenticatedActor;
+    capabilities: ReadonlySet<CapabilityId>;
+    moduleCapabilities: ReadonlySet<string>;
+    tenantId: string;
+  }> {
     const bearerToken = extractBearerToken(req);
     if (bearerToken === null) throw new UnauthorizedError();
 
@@ -129,8 +161,41 @@ export async function createMcpRequestListener(
     return {
       actor: { userId: identity.user.id, externalClient: true },
       capabilities: grantedCapabilities,
+      moduleCapabilities: new Set(),
       tenantId: identity.tenantId,
     };
+  }
+
+  /**
+   * The module tools the caller may list and call: those of its run's project that its credential's list also holds,
+   * approval-gated ones included (a call files their request), or of its session's user.
+   */
+  async function resolveModuleTools(
+    actor: AuthenticatedActor,
+    capabilities: ReadonlySet<CapabilityId>,
+    moduleCapabilities: ReadonlySet<string>,
+  ): Promise<CallerModuleTools> {
+    if (actor.runId && actor.agentProjectItemId) {
+      return {
+        kind: "run",
+        runId: actor.runId,
+        tools: await resolveModuleAgentToolsForRun(
+          pool,
+          registry,
+          actor.runId,
+          actor.agentProjectItemId,
+          new Set<string>([...capabilities, ...moduleCapabilities]),
+          { mcpExposure: true, includeApprovalGated: true },
+        ),
+      };
+    }
+    if (actor.externalClient === true) {
+      return {
+        kind: "user",
+        tools: await resolveModuleAgentToolsForUser(pool, registry, actor.userId, moduleToolDependencies),
+      };
+    }
+    return { kind: "user", tools: [] };
   }
 
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -141,7 +206,7 @@ export async function createMcpRequestListener(
 
     let rpcId: unknown;
     try {
-      const { actor, capabilities: effectiveCapabilities, tenantId } = await resolveActor(req);
+      const { actor, capabilities: effectiveCapabilities, moduleCapabilities, tenantId } = await resolveActor(req);
       const serve = async (): Promise<void> => {
         let body: unknown;
         try {
@@ -204,18 +269,13 @@ export async function createMcpRequestListener(
             name: toMcpToolName(operation),
             inputSchema: operationInputJsonSchema(operation),
           }));
-          if (actor.runId && actor.agentProjectItemId) {
-            const modules = await resolveModuleAgentToolsForRun(
-              pool,
-              registry,
-              actor.runId,
-              actor.agentProjectItemId,
-              effectiveCapabilities,
-            );
-            tools.push(
-              ...modules.map((tool) => ({ name: `${MCP_TOOL_PREFIX}${tool.name}`, inputSchema: tool.argumentSchema })),
-            );
-          }
+          const modules = await resolveModuleTools(actor, effectiveCapabilities, moduleCapabilities);
+          tools.push(
+            ...modules.tools.map((tool) => ({
+              name: `${MCP_TOOL_PREFIX}${tool.name}`,
+              inputSchema: tool.argumentSchema,
+            })),
+          );
           sendJson(res, 200, rpcResult(rpcId, { tools }));
           return;
         }
@@ -229,22 +289,34 @@ export async function createMcpRequestListener(
               const output = await gateway.invoke(operation, actor, effectiveCapabilities, params?.arguments ?? {});
               sendJson(res, 200, rpcResult(rpcId, { content: [{ type: "text", text: JSON.stringify(output) }] }));
             } else {
-              const modules =
-                actor.runId && actor.agentProjectItemId
-                  ? await resolveModuleAgentToolsForRun(
-                      pool,
-                      registry,
-                      actor.runId,
-                      actor.agentProjectItemId,
-                      effectiveCapabilities,
-                    )
-                  : [];
-              const tool = modules.find((entry) => `${MCP_TOOL_PREFIX}${entry.name}` === toolName);
+              const modules = await resolveModuleTools(actor, effectiveCapabilities, moduleCapabilities);
+              const tool = modules.tools.find((entry) => `${MCP_TOOL_PREFIX}${entry.name}` === toolName);
               if (!tool) {
                 sendJson(res, 200, rpcError(rpcId, -32601, `Unknown tool '${toolName ?? ""}'`));
                 return;
               }
-              const output = await tool.invoke(params?.arguments ?? {});
+              const args = params?.arguments ?? {};
+              // Only a run's tool can be gated: a session has no run to file the request for (issue gh-1957).
+              const gated = modules.kind === "run" ? modules.tools.find((entry) => entry === tool) : undefined;
+              if (modules.kind === "run" && gated?.requiresApproval) {
+                // The handler runs only after the owner approved the request, as in an agent session.
+                if (!gated.acceptsArguments(args) || !isArgumentsObject(args)) {
+                  throw new ValidationError("Invalid tool arguments.");
+                }
+                const request = await createModuleToolApprovalRequest(pool, {
+                  agentRunId: modules.runId,
+                  toolName: gated.name,
+                  riskClass: gated.riskClass,
+                  args,
+                  snapshotSha256: await gated.snapshotOf(args),
+                  toolCallId: null,
+                });
+                throw new ApprovalRequiredError(`Tool '${gated.name}' requires human approval before it can run.`, {
+                  approvalRequestId: request.id,
+                  link: `?page=approvals&id=${request.id}`,
+                });
+              }
+              const output = await tool.invoke(args);
               sendJson(
                 res,
                 200,

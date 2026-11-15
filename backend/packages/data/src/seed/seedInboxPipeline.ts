@@ -13,7 +13,8 @@ import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
 import { INBOX_ITEM_TYPES_MODULE_ID, INBOX_MODULE_ID, PROCESSING_PROPOSALS_MODULE_ID } from "./inboxPipelineKeys.js";
 import { THREADS_MODULE_ID } from "./emailModuleKeys.js";
 import { TEN_DATABASE_MODULE_IDS } from "./tenDatabaseKeys.js";
-import { PROCESSING_METHODS } from "../inbox/inboxTypesStore.js";
+import { INBOX_TYPE_MODULE_TARGET_DATABASES, PROCESSING_METHODS } from "../inbox/inboxTypesStore.js";
+import { CAPTURE_CHANNELS } from "../inbox/captureSource.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
 import { SEMPREC_TICK_ACTION_ID } from "../inbox/inboxTickAction.js";
 import { JOURNAL_INBOX_COMPUTED_KEY } from "../inbox/journalInboxCompute.js";
@@ -30,6 +31,7 @@ interface PropSpec {
   name: string;
   type: PropertyType;
   owner?: PropertyOwner;
+  ownerProcess?: string;
   config?: Record<string, unknown>;
 }
 
@@ -50,6 +52,7 @@ async function createProps(client: PoolClient, databaseId: string, specs: PropSp
       name: spec.name,
       type: spec.type,
       owner: spec.owner,
+      ownerProcess: spec.ownerProcess,
       config: spec.config,
     });
   }
@@ -115,6 +118,25 @@ export async function seedInboxPipelineInTransaction(
     { key: "date", name: "Date", type: "date", owner: "user" },
     { key: "time", name: "Time", type: "time", owner: "user" },
     { key: "text", name: "Text", type: "text", owner: "user", config: { format: "markdown" } },
+    // Issue gh-1964: how and from where the item was captured, and when the server accepted it. Declared here for fresh
+    // installs and added to populated tenants by inbox/inboxCapturePropertiesCutoverMigration.ts; keep the two lists
+    // identical. `addedAt` is written by the capture helper (`inbox/inboxStore.ts`), as the Inbox module.
+    {
+      key: "captureChannel",
+      name: "Capture channel",
+      type: "select",
+      owner: "user",
+      config: selectConfig([...CAPTURE_CHANNELS]),
+    },
+    { key: "sourceApp", name: "Source app", type: "text", owner: "user" },
+    {
+      key: "addedAt",
+      name: "Added at",
+      type: "date",
+      owner: "system",
+      ownerProcess: INBOX_MODULE_ID,
+      config: { includeTime: true },
+    },
   ]);
 
   await createProps(client, inboxItemTypes.id, [
@@ -145,7 +167,8 @@ export async function seedInboxPipelineInTransaction(
       name: "Target database",
       type: "select",
       owner: "user",
-      config: selectConfig([...TEN_DATABASE_MODULE_IDS]),
+      // The ten hardcoded databases, then the module targets (issue #1973), appended like the cutover appends them.
+      config: selectConfig([...TEN_DATABASE_MODULE_IDS, ...INBOX_TYPE_MODULE_TARGET_DATABASES]),
     },
   ]);
 

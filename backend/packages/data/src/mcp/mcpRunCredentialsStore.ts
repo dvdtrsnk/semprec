@@ -1,18 +1,18 @@
 import type { Pool, PoolClient } from "pg";
-import { CAPABILITY_IDS, type CapabilityId } from "@semprec/shared";
 import { requireSingleRow } from "../db/pool.js";
 
 export interface CreateMcpRunCredentialInput {
   agentRunId: string;
   tokenHash: string;
-  capabilities: readonly CapabilityId[];
+  /** Core capability ids and module capability ids; the mint action validates them, readers intersect them with what is granted. */
+  capabilities: readonly string[];
   expiresAt: Date;
 }
 
 export interface McpRunCredentialRow {
   id: string;
   agentRunId: string;
-  capabilities: CapabilityId[];
+  capabilities: string[];
   expiresAt: string;
 }
 
@@ -23,16 +23,11 @@ type McpRunCredentialDbRow = {
   expires_at: Date;
 };
 
-/** Drops any stored value outside the current `CAPABILITY_IDS` set rather than trusting the column's declared `text[]` shape. */
-function toCapabilityIds(values: string[]): CapabilityId[] {
-  return values.filter((value): value is CapabilityId => (CAPABILITY_IDS as readonly string[]).includes(value));
-}
-
 function mapRow(row: McpRunCredentialDbRow): McpRunCredentialRow {
   return {
     id: row.id,
     agentRunId: row.agent_run_id,
-    capabilities: toCapabilityIds(row.capabilities),
+    capabilities: row.capabilities,
     expiresAt: row.expires_at.toISOString(),
   };
 }
@@ -60,7 +55,8 @@ export interface ActiveMcpRunCredential {
   runId: string;
   agentProjectItemId: string;
   actorUserId: string;
-  capabilities: CapabilityId[];
+  /** What the mint action stored: core ids and module capability ids. A reader keeps the ones it knows and that are granted. */
+  capabilities: string[];
 }
 
 /**
@@ -96,7 +92,7 @@ export async function getActiveMcpRunCredentialByTokenHash(
     runId: row.run_id,
     agentProjectItemId: row.project_item_id,
     actorUserId: row.actor_user_id,
-    capabilities: toCapabilityIds(row.capabilities),
+    capabilities: row.capabilities,
   };
 }
 

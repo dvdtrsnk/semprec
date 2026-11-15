@@ -267,6 +267,11 @@ export interface CalendarTimelineContext {
   now: WallClock;
   /** The instant `today` and `now` are read from, to the millisecond. */
   at: Date;
+  /**
+   * Whether the sleep source may read. `false` for a caller that may not see the sensitive sleep databases (the
+   * `calendar.timeline` tool of a run without a grant on them and of an `/mcp` session): the source then reads nothing.
+   */
+  includeSleep: boolean;
 }
 
 /** One source of timeline entries: it returns the entries it has for the range of `context`. */

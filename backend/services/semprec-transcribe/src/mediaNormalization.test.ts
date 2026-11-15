@@ -9,16 +9,22 @@ import { LocalFsBlobStorageWriter, type BlobStorageWriter } from "@semprec/data"
 import {
   downloadToTempFile,
   normalizeAudio,
+  probeImage,
   probeMedia,
   probeNormalizedDuration,
+  MAX_IMAGE_PIXELS,
   MediaToolError,
   removeTempFile,
+  renderImageJpeg,
   renderPlaybackAudio,
 } from "./mediaNormalization.js";
 import {
   FIXTURE_CREATION_TIME,
   decodeSpeech,
+  generateHugeCanvasPng,
+  generateImageFixture,
   generateLateAudioVideoFixture,
+  generateM4aFixture,
   generateMp3Fixture,
   generateMp4Fixture,
   generateOggFixture,
@@ -322,5 +328,176 @@ describe("mediaNormalization", () => {
     const durationSeconds = await probeNormalizedDuration(blobStorage, outputStorageKey);
     expect(durationSeconds).toBeGreaterThan(2.9);
     expect(durationSeconds).toBeLessThan(3.5);
+  });
+  describe("images", () => {
+    /** The size of a rendered JPEG, read back with `ffprobe` from the file the storage wrote. */
+    async function renderedSize(storageKey: string): Promise<{ width: number; height: number }> {
+      return probeImage(join(tmpBlobDir, storageKey));
+    }
+
+    it("probes the size of a JPEG and of a PNG", async () => {
+      expect(
+        await probeImage(
+          await writeToTempFile(await generateImageFixture({ width: 300, height: 200, format: "jpeg" })),
+        ),
+      ).toEqual({ width: 300, height: 200 });
+      expect(
+        await probeImage(await writeToTempFile(await generateImageFixture({ width: 101, height: 61, format: "png" }))),
+      ).toEqual({ width: 101, height: 61 });
+    });
+
+    it("probes the size a picture is shown in when its orientation turns it a quarter", async () => {
+      const path = await writeToTempFile(
+        await generateImageFixture({ width: 300, height: 200, format: "jpeg", exifOrientation: 6 }),
+      );
+
+      expect(await probeImage(path)).toEqual({ width: 200, height: 300 });
+    });
+
+    it("rejects a file that is not an image, an audio file and an empty file with a MediaToolError", async () => {
+      const notAnImage = join(tmpdir(), `semprec-not-an-image-${randomUUID()}`);
+      await writeFile(notAnImage, "not an image");
+      tempPaths.push(notAnImage);
+
+      await expect(probeImage(notAnImage)).rejects.toBeInstanceOf(MediaToolError);
+      await expect(probeImage(await writeToTempFile())).rejects.toThrow(/no picture stream/);
+      await expect(probeImage(await writeToTempFile(Buffer.alloc(0)))).rejects.toBeInstanceOf(MediaToolError);
+    });
+
+    it("refuses a picture of more than the pixel cap, probing and rendering, without decoding it", async () => {
+      // 10,100 x 10,100 is 102 million pixels: over the cap, and a few hundred KB of zlib that ffmpeg can only read by
+      // allocating the whole frame. Without `-max_pixels` both calls succeed.
+      const side = Math.ceil(Math.sqrt(MAX_IMAGE_PIXELS)) + 100;
+      const path = await writeToTempFile(generateHugeCanvasPng(side, side));
+      const storageKey = `images/${randomUUID()}.jpg`;
+
+      await expect(probeImage(path)).rejects.toBeInstanceOf(MediaToolError);
+      await expect(renderImageJpeg(path, 128, blobStorage, storageKey)).rejects.toBeInstanceOf(MediaToolError);
+      await expect(readFile(join(tmpBlobDir, storageKey))).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    it("renders a large JPEG with its long side at the limit, keeping the aspect ratio", async () => {
+      const path = await writeToTempFile(await generateImageFixture({ width: 3000, height: 2000, format: "jpeg" }));
+      const storageKey = `images/${randomUUID()}.jpg`;
+
+      const result = await renderImageJpeg(path, 1568, blobStorage, storageKey);
+
+      expect(await renderedSize(storageKey)).toEqual({ width: 1568, height: 1045 });
+      expect(result.storageKey).toBe(storageKey);
+      expect(result.byteSize).toBe((await readFile(join(tmpBlobDir, storageKey))).byteLength);
+      expect(result.contentHash).toMatch(/^[0-9a-f]{64}$/);
+    });
+
+    it("renders the long side of a portrait picture too", async () => {
+      const path = await writeToTempFile(await generateImageFixture({ width: 2000, height: 3000, format: "jpeg" }));
+      const storageKey = `images/${randomUUID()}.jpg`;
+
+      await renderImageJpeg(path, 128, blobStorage, storageKey);
+
+      expect(await renderedSize(storageKey)).toEqual({ width: 85, height: 128 });
+    });
+
+    it("never enlarges a picture that is already within the limit", async () => {
+      const path = await writeToTempFile(await generateImageFixture({ width: 101, height: 61, format: "png" }));
+      const storageKey = `images/${randomUUID()}.jpg`;
+
+      await renderImageJpeg(path, 128, blobStorage, storageKey);
+
+      expect(await renderedSize(storageKey)).toEqual({ width: 101, height: 61 });
+    });
+
+    it("renders a picture upright when its orientation asks for a quarter turn", async () => {
+      const path = await writeToTempFile(
+        await generateImageFixture({ width: 300, height: 200, format: "jpeg", exifOrientation: 6 }),
+      );
+      const storageKey = `images/${randomUUID()}.jpg`;
+
+      await renderImageJpeg(path, 1568, blobStorage, storageKey);
+
+      expect(await renderedSize(storageKey)).toEqual({ width: 200, height: 300 });
+    });
+
+    it("leaves nothing in storage and reports ffmpeg's failure for a file it cannot decode", async () => {
+      const invalidPath = join(tmpdir(), `semprec-invalid-image-${randomUUID()}`);
+      await writeFile(invalidPath, "not an image");
+      tempPaths.push(invalidPath);
+      const storageKey = `images/${randomUUID()}.jpg`;
+
+      await expect(renderImageJpeg(invalidPath, 128, blobStorage, storageKey)).rejects.toThrow(
+        /ffmpeg exited with code/,
+      );
+      await expect(readFile(join(tmpBlobDir, storageKey))).rejects.toThrow();
+    });
+
+    it("deletes the image and reports the storage error when only the blob write fails", async () => {
+      const path = await writeToTempFile(await generateImageFixture({ width: 300, height: 200, format: "jpeg" }));
+      const storageError = new Error("storage flush failed");
+      const deleteBytes = vi.fn(async (_storageKey: string) => {});
+      const storageKey = `images/${randomUUID()}.jpg`;
+
+      await expect(
+        renderImageJpeg(path, 128, storageFailingAfterDrain(storageError, deleteBytes), storageKey),
+      ).rejects.toBe(storageError);
+      expect(deleteBytes).toHaveBeenCalledWith(storageKey);
+    });
+
+    /** A storage that drains ffmpeg's output, reports `byteSize` for it and reads `head` back for every key. */
+    function storageReporting(byteSize: number, head: Buffer, deleteBytes: (key: string) => Promise<void>) {
+      const storage: BlobStorageWriter = {
+        writeStream: async (_storageKey, source) => {
+          for await (const _chunk of source) {
+            // Dropped: only the reported size and the head read back matter here.
+          }
+          return { byteSize, contentHash: "0".repeat(64) };
+        },
+        delete: deleteBytes,
+        readStream: () => Readable.from([head]),
+      };
+      return storage;
+    }
+
+    it("deletes an output that is empty and reports it as a MediaToolError", async () => {
+      const path = await writeToTempFile(await generateImageFixture({ width: 300, height: 200, format: "jpeg" }));
+      const deleteBytes = vi.fn(async (_storageKey: string) => {});
+      const storageKey = `images/${randomUUID()}.jpg`;
+
+      await expect(
+        renderImageJpeg(path, 128, storageReporting(0, Buffer.alloc(0), deleteBytes), storageKey),
+      ).rejects.toThrow(/empty image/);
+      expect(deleteBytes).toHaveBeenCalledWith(storageKey);
+    });
+
+    it("deletes an output that does not begin with the JPEG signature and reports it as a MediaToolError", async () => {
+      const path = await writeToTempFile(await generateImageFixture({ width: 300, height: 200, format: "jpeg" }));
+      const deleteBytes = vi.fn(async (_storageKey: string) => {});
+      const storageKey = `images/${randomUUID()}.jpg`;
+
+      await expect(
+        renderImageJpeg(path, 128, storageReporting(10, Buffer.from("PNG"), deleteBytes), storageKey),
+      ).rejects.toThrow(/not a JPEG/);
+      expect(deleteBytes).toHaveBeenCalledWith(storageKey);
+    });
+
+    it("accepts an output that begins with the JPEG signature", async () => {
+      const path = await writeToTempFile(await generateImageFixture({ width: 300, height: 200, format: "jpeg" }));
+      const deleteBytes = vi.fn(async (_storageKey: string) => {});
+
+      const result = await renderImageJpeg(
+        path,
+        128,
+        storageReporting(10, Buffer.from([0xff, 0xd8, 0xff]), deleteBytes),
+        `images/${randomUUID()}.jpg`,
+      );
+
+      expect(result.byteSize).toBe(10);
+      expect(deleteBytes).not.toHaveBeenCalled();
+    });
+
+    it("probes an M4A fixture of an exact length", async () => {
+      const probe = await probeMedia(await writeToTempFile(await generateM4aFixture(120)));
+
+      expect(probe.durationSeconds).toBe(120);
+      expect(probe.creationTime).toBeNull();
+    });
   });
 });

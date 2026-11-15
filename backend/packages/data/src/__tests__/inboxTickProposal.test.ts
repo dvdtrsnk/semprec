@@ -1264,7 +1264,7 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       await runTick(pool, databaseIds, item.id, compute);
       if (field === "attachment") {
         const blob = await createBlob(pool, {
-          mimeType: "image/png",
+          mimeType: "application/pdf",
           byteSize: 1,
           storageKey: "recognition-attachment",
           contentHash: "a".repeat(64),
@@ -1647,11 +1647,14 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       );
     }
 
-    /** Creates a blob whose content hash is derived from `label` and attaches it to the Inbox item. */
+    /**
+     * Creates a blob whose content hash is derived from `label` and attaches it to the Inbox item. It is a PDF: a tick
+     * waits for an image whose metadata job has not run (issue gh-1970), and these tests are about the fingerprint.
+     */
     async function attachNewBlob(itemId: string, label: string) {
       const contentHash = createHash("sha256").update(label).digest("hex");
       const blob = await createBlob(pool, {
-        mimeType: "image/jpeg",
+        mimeType: "application/pdf",
         byteSize: 3,
         storageKey: `t/blobs/${label}`,
         contentHash,
@@ -1762,12 +1765,12 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       };
       await runTick(pool, databaseIds, item.id, compute);
       const first = await createBlob(pool, {
-        mimeType: "image/jpeg",
+        mimeType: "application/pdf",
         byteSize: 1,
         storageKey: `legacy/${randomUUID()}`,
       });
       const second = await createBlob(pool, {
-        mimeType: "image/jpeg",
+        mimeType: "application/pdf",
         byteSize: 1,
         storageKey: `legacy/${randomUUID()}`,
       });
@@ -4165,7 +4168,11 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
     async (mutation) => {
       for (const writerFirst of [true, false]) {
         const { item, type } = await createTypedItem(`Source ${mutation} ${writerFirst}`);
-        const blob = await createBlob(pool, { mimeType: "image/jpeg", byteSize: 3, storageKey: `t/${randomUUID()}` });
+        const blob = await createBlob(pool, {
+          mimeType: "application/pdf",
+          byteSize: 3,
+          storageKey: `t/${randomUUID()}`,
+        });
         let attachmentId: string | undefined;
         let insertedAttachmentId: string | undefined;
         if (mutation === "remove attachment") {
@@ -4188,8 +4195,8 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
         if (!property) throw new Error("Missing Inbox type property");
         const runtime = await createRuntimeRolePool(pool, "semprec_data");
         // Since issue #1718 a type edge write queues the day's recompute under the key the tick's read phase
-        // enqueues too, so a tick that starts after such a writer waits for it there, before it calls the model.
-        const typeWriterFirst = writerFirst && mutation === "change type";
+        // enqueues too, and since issue gh-1969 so do adding and removing an attachment, so a tick that starts
+        // after any of these writers waits for it there, before it calls the model.
         const modelTypeIds: Array<string | null> = [];
         let postModel = false;
         let tickPid: number | undefined;
@@ -4242,7 +4249,7 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
                   }
                   return async (...args: unknown[]) => {
                     const sql = typeof args[0] === "string" ? args[0] : "";
-                    if (typeWriterFirst && tickPid === undefined && sql.includes("graphile_worker.add_job")) {
+                    if (writerFirst && tickPid === undefined && sql.includes("graphile_worker.add_job")) {
                       tickPid = (await connection.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]
                         ?.pid;
                       tickReady();
@@ -4366,13 +4373,9 @@ describe("semprec.tick brackets computeProposal outside any transaction (issue #
             const card = await boundedBarrier(
               owned.run(() => runInTenant(getTenantZeroId(), () => findProposalForItem(runtime, proposalsId, item.id))),
             );
-            if (typeWriterFirst) {
-              // The tick waited in its read phase, so it asked the model about the committed type and stored the answer.
-              expect(modelTypeIds).toEqual([alternate.id]);
-              expect(card?.properties.status).toBe("proposed");
-            } else {
-              expect(card).toBeNull();
-            }
+            // The tick waited in its read phase, so it asked the model about the committed type and stored the answer.
+            expect(modelTypeIds).toEqual([mutation === "change type" ? alternate.id : type.id]);
+            expect(card?.properties.status).toBe("proposed");
           } else {
             releaseTick();
             await tick;

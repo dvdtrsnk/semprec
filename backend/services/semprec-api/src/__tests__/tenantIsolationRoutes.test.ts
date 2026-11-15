@@ -406,10 +406,11 @@ async function tenantCount(): Promise<number> {
 
 async function send(caller: Caller | null, request: Request): Promise<Answer> {
   const headers: Record<string, string> = { ...(caller?.headers ?? {}), ...(request.headers ?? {}) };
-  let body: string | undefined;
+  let body: string | Buffer | undefined;
   if (request.body !== undefined) {
     headers["Content-Type"] ??= "application/json";
-    body = typeof request.body === "string" ? request.body : JSON.stringify(request.body);
+    body =
+      typeof request.body === "string" || Buffer.isBuffer(request.body) ? request.body : JSON.stringify(request.body);
   }
   const res = await fetch(`${baseUrl}${request.path}`, { method: request.method, headers, body });
   const responseHeaders: Record<string, string> = {};
@@ -417,6 +418,11 @@ async function send(caller: Caller | null, request: Request): Promise<Answer> {
     if (!IGNORED_HEADERS.has(name)) responseHeaders[name] = value;
   });
   return { status: res.status, text: await res.text(), headers: responseHeaders };
+}
+
+/** The bytes of a PNG signature followed by `text`: `POST /api/blobs` stores only bytes whose type it recognises. */
+function pngBytesOf(text: string): Buffer {
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from(text)]);
 }
 
 /** Expects a 2xx and returns the body text — for fixture writes made through the real routes. */
@@ -3443,6 +3449,53 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     expect(await readCard(foreign)).toBe(foreignBefore);
     await Promise.all([settle(b, own), settle(a, foreign)]);
   },
+  // A and B each get a project and a `proposed` card inside this case. B's options of A's card answer like a random id, and
+  // each tenant's options of its own card hold its own project and never the other's, so the refusal is not a route that
+  // refuses everything and the list is not another tenant's.
+  "list proposal options": async () => {
+    const seed = (tenant: TenantFixture, name: string) =>
+      inTenantTransaction(tenant.tenantId, async (client) => {
+        const cards = await getDatabaseByModuleId(client, "processingProposals");
+        const projects = await getDatabaseByModuleId(client, "projects");
+        if (!cards || !projects) throw new Error(`no inbox pipeline in tenant ${tenant.tenantId}`);
+        const project = await createItemWithClient(client, { databaseId: projects.id, properties: { name } });
+        const card = await createItemWithClient(
+          client,
+          { databaseId: cards.id, properties: { kind: "inbox", status: "proposed", proposal: null } },
+          { allowedSystemKeys: ["kind", "status", "proposal"] },
+        );
+        return { cardId: card.id, projectId: project.id };
+      });
+    // A rejected card is no open card, so the "inbox cards" case, which counts each tenant's open cards, never sees these.
+    const settle = (tenant: TenantFixture, cardId: string) =>
+      inTenantTransaction(tenant.tenantId, async (client) => {
+        const cards = await getDatabaseByModuleId(client, "processingProposals");
+        if (!cards) throw new Error(`no proposal database in tenant ${tenant.tenantId}`);
+        await updateItemWithClient(
+          client,
+          { databaseId: cards.id, itemId: cardId, propertiesPatch: { status: "rejected" } },
+          { allowedSystemKeys: ["status"] },
+        );
+      });
+    const [own, foreign] = [await seed(b, "Options project of B"), await seed(a, "Options project of A")];
+    const optionsPath = (id: string) => `/api/proposals/${id}/options?field=project`;
+
+    const answer = await expectForeignLikeRandom(b.member, [foreign.cardId], ([id]) => ({
+      method: "GET",
+      path: `/api/proposals/${id}/options?field=project`,
+    }));
+    expect(answer.status).toBe(404);
+
+    const ownAnswer = await send(b.member, { method: "GET", path: optionsPath(own.cardId) });
+    expect(ownAnswer.status, ownAnswer.text).toBe(200);
+    expect(ownAnswer.text).toContain(own.projectId);
+    expectNoneOf(ownAnswer.text, [foreign.projectId, foreign.cardId], "B's options");
+    const foreignOwn = await send(a.member, { method: "GET", path: optionsPath(foreign.cardId) });
+    expect(foreignOwn.status, foreignOwn.text).toBe(200);
+    expect(foreignOwn.text).toContain(foreign.projectId);
+    expectNoneOf(foreignOwn.text, [own.projectId, own.cardId], "A's options");
+    await Promise.all([settle(b, own.cardId), settle(a, foreign.cardId)]);
+  },
   "task recurrence set": async () => {
     const [own, foreign] = [await datedTask(b), await datedTask(a)];
     const request = (id: string) => ({
@@ -4210,7 +4263,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       const upload = await sendOk(tenant.member, {
         method: "POST",
         path: "/api/blobs",
-        body: `retry probe cover ${randomUUID()}`,
+        body: pngBytesOf(`retry probe cover ${randomUUID()}`),
         headers: { "Content-Type": "image/png" },
       });
       const blobId = readString(upload, "blobId");
@@ -4419,6 +4472,112 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     });
     expect(changed.status).toBe(200);
     expect(await edgeCount(b, own.itemId, own.typeId)).toBe(1);
+  },
+  // A and B each get an active Inbox item type inside this case, so the shared rows of the two tenants stay as they are. B's
+  // capture with A's type answers like one with a random type id and writes no item in either tenant; B's capture with its
+  // own type then succeeds and holds its item and the `type` edge, so the refusal is not a route that refuses everything.
+  "capture inbox item": async () => {
+    const marker = "Isolation capture route probe";
+    const seedType = (tenant: TenantFixture) =>
+      inTenantTransaction(tenant.tenantId, async (client) => {
+        const types = await getDatabaseByModuleId(client, "inboxItemTypes");
+        if (!types) throw new Error(`no inbox types in tenant ${tenant.tenantId}`);
+        const type = await createItemWithClient(client, {
+          databaseId: types.id,
+          properties: {
+            name: "Isolation capture type",
+            emoji: "☑️",
+            status: "active",
+            processingMethod: "pageContent",
+          },
+        });
+        return type.id;
+      });
+    const captured = (tenant: TenantFixture, text = marker) =>
+      inTenantTransaction(tenant.tenantId, async (client) => {
+        const { rows } = await client.query<{ id: string; type_edges: number }>(
+          `SELECT i.id, (SELECT count(*)::int FROM item_relations r WHERE r.item_a = i.id OR r.item_b = i.id) AS type_edges
+             FROM items i JOIN databases d ON d.id = i.database_id
+            WHERE d.owner_module_id = 'inbox' AND i.properties->>'text' = $1`,
+          [text],
+        );
+        return rows;
+      });
+    const attachmentBlobIds = (tenant: TenantFixture, text: string) =>
+      inTenantTransaction(tenant.tenantId, async (client) => {
+        const { rows } = await client.query<{ blob_id: string }>(
+          `SELECT a.blob_id FROM inbox_attachments a JOIN items i ON i.id = a.inbox_item_id
+            WHERE i.properties->>'text' = $1 ORDER BY a.position`,
+          [text],
+        );
+        return rows.map((row) => row.blob_id);
+      });
+    const [ownType, foreignType] = [await seedType(b), await seedType(a)];
+    const body = (typeId: string) => ({
+      text: marker,
+      date: "2026-08-28",
+      time: "09:00",
+      captureChannel: "typed",
+      typeId,
+    });
+
+    await leavesAUnchanged(async () => {
+      const answer = await expectForeignLikeRandom(b.member, [foreignType], ([typeId]) => ({
+        method: "POST",
+        path: "/api/inbox/items",
+        body: body(typeId ?? ""),
+      }));
+      expect(answer.status).toBe(400);
+    });
+    expect(await captured(a)).toEqual([]);
+    expect(await captured(b)).toEqual([]);
+
+    const own = await send(b.member, { method: "POST", path: "/api/inbox/items", body: body(ownType) });
+    expect(own.status, own.text).toBe(201);
+    const [item, ...rest] = await captured(b);
+    expect(rest).toEqual([]);
+    expect(own.text).toContain(item?.id);
+    // The `type` edge and the `journalDay` edge of the item.
+    expect(item?.type_edges).toBe(2);
+    expect(await captured(a)).toEqual([]);
+
+    // Attachments (issue gh-1963): B naming A's blob answers like a random blob id and creates no item and no attachment
+    // in either tenant; B's own uploaded blob then attaches, so the refusal is not a route that refuses every attachment.
+    const attachmentText = "Isolation capture attachment probe";
+    const withAttachment = (blobId: string) => ({
+      text: attachmentText,
+      date: "2026-08-28",
+      time: "09:00",
+      captureChannel: "typed",
+      attachments: [{ blobId, source: "files" }],
+    });
+    await leavesAUnchanged(async () => {
+      const answer = await expectForeignLikeRandom(b.member, [a.blobId], ([blobId]) => ({
+        method: "POST",
+        path: "/api/inbox/items",
+        body: withAttachment(blobId ?? ""),
+      }));
+      expect(answer.status).toBe(400);
+      expect(JSON.parse(answer.text)).toMatchObject({
+        error: { code: "validation_failed", details: { field: "attachments" } },
+      });
+    });
+    expect(await captured(a, attachmentText)).toEqual([]);
+    expect(await captured(b, attachmentText)).toEqual([]);
+    const ownBlob = readString(
+      await sendOk(b.member, {
+        method: "POST",
+        path: "/api/blobs",
+        body: pngBytesOf(`capture attachment ${randomUUID()}`),
+        headers: { "Content-Type": "image/png" },
+      }),
+      "blobId",
+    );
+    const attached = await send(b.member, { method: "POST", path: "/api/inbox/items", body: withAttachment(ownBlob) });
+    expect(attached.status, attached.text).toBe(201);
+    expect(await attachmentBlobIds(b, attachmentText)).toEqual([ownBlob]);
+    expect(await captured(a, attachmentText)).toEqual([]);
+    expect(await attachmentBlobIds(a, attachmentText)).toEqual([]);
   },
   // A gets three cards and one pending tick approval, B one card and one approval, on top of whatever the shared rows
   // and earlier cases left; each count rises by its own tenant's rows only, so neither sees the other's.
@@ -5830,6 +5989,15 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         body: { requiresApproval: false, riskClass: "read" },
       }));
     }),
+  // A's server stays unsynced: the sync would record `syncStatus: "error"` on it, and `leavesAUnchanged` reads the item.
+  "mcp server sync": () =>
+    leavesAUnchanged(async () => {
+      const answer = await expectForeignLikeRandom(b.member, [a.mcpServerItemId], ([id]) => ({
+        method: "POST",
+        path: `/api/mcp-servers/${id}/sync`,
+      }));
+      expect(answer.status).toBe(404);
+    }),
 
   // --- tenant: databases ---------------------------------------------------------------------
   "list databases": async () => {
@@ -6269,6 +6437,106 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       [b.targetItemId],
     );
   },
+  // A and B each get an Inbox item and a card that creates a company and a person, confirmed through the real route, inside
+  // this case. B's origin read of A's confirmed item answers like a random id and like B's own item made by hand, so the 404
+  // has one body whatever its cause; B's read of its own confirmed item succeeds and names the card, the Inbox item and the
+  // person of B's own confirm and nothing of A's, so the refusal is not a route that refuses everything.
+  "item origin": async () => {
+    interface ConfirmedCapture {
+      cardId: string;
+      inboxItemId: string;
+      companyId: string;
+      personId: string;
+    }
+    const seedConfirmed = async (tenant: TenantFixture, text: string): Promise<ConfirmedCapture> => {
+      const seeded = await inTenantTransaction(tenant.tenantId, async (client) => {
+        const cards = await getDatabaseByModuleId(client, "processingProposals");
+        const inbox = await getDatabaseByModuleId(client, "inbox");
+        const companies = await getDatabaseByModuleId(client, "companies");
+        if (!cards || !inbox || !companies) throw new Error(`no inbox pipeline in tenant ${tenant.tenantId}`);
+        const source = await createItemWithClient(client, {
+          databaseId: inbox.id,
+          properties: { date: "2026-08-28", time: "09:00", text },
+        });
+        const envelope = {
+          entityKind: "database",
+          target: companies.id,
+          properties: { name: `${text} company` },
+          operations: [
+            {
+              ref: "company",
+              op: "create",
+              databaseKey: "companies",
+              role: "primary",
+              properties: { name: `${text} company` },
+            },
+            {
+              ref: "person",
+              op: "create",
+              databaseKey: "people",
+              role: "secondary",
+              properties: { name: `${text} person` },
+              relations: { companies: [{ ref: "company" }] },
+            },
+          ],
+        };
+        const card = await createItemWithClient(
+          client,
+          { databaseId: cards.id, properties: { kind: "inbox", status: "proposed", proposal: envelope } },
+          { allowedSystemKeys: ["kind", "status", "proposal"] },
+        );
+        const property = (await listPropertiesByDatabase(client, cards.id)).find(({ key }) => key === "sourceInbox");
+        if (!property) throw new Error(`no 'sourceInbox' property in tenant ${tenant.tenantId}`);
+        await createRelationWithClient(
+          client,
+          { relationPropertyId: property.id, callerItemId: card.id, targetItemId: source.id },
+          { ownerProcess: "processingProposals" },
+        );
+        return { cardId: card.id, inboxItemId: source.id };
+      });
+      await sendOk(tenant.member, { method: "POST", path: `/api/proposals/${seeded.cardId}/confirm`, body: {} });
+      const created = await inTenantTransaction(tenant.tenantId, async (client) => {
+        const { rows } = await client.query<{ item_id: string; module: string }>(
+          `SELECT o.item_id, d.owner_module_id AS module
+             FROM item_origins o JOIN items i ON i.id = o.item_id JOIN databases d ON d.id = i.database_id
+            WHERE o.proposal_id = $1`,
+          [seeded.cardId],
+        );
+        return rows;
+      });
+      const companyId = created.find((row) => row.module === "companies")?.item_id;
+      const personId = created.find((row) => row.module === "people")?.item_id;
+      if (!companyId || !personId)
+        throw new Error(`the confirm wrote no company and person in tenant ${tenant.tenantId}`);
+      return { ...seeded, companyId, personId };
+    };
+    const originPath = (id: string) => `/api/items/${id}/origin`;
+    const [own, foreign] = [await seedConfirmed(b, "Origin probe of B"), await seedConfirmed(a, "Origin probe of A")];
+
+    const refused = await expectForeignLikeRandom(b.member, [foreign.companyId], ([id]) => ({
+      method: "GET",
+      path: `/api/items/${id}/origin`,
+    }));
+    expect(refused.status).toBe(404);
+    expect(refused.text).toContain('"not_found"');
+    // B's own item made by hand has no origin row, and its answer is the foreign one to the byte.
+    const byHand = await send(b.member, { method: "GET", path: originPath(b.itemId) });
+    expect(byHand.status).toBe(404);
+    expect(byHand.text).toBe(refused.text);
+
+    const answer = await expectExcludesA(
+      b.member,
+      { method: "GET", path: originPath(own.companyId) },
+      [own.cardId, own.inboxItemId, own.personId],
+      [foreign.cardId, foreign.inboxItemId, foreign.companyId, foreign.personId],
+    );
+    expect(answer.text).toContain("Origin probe of B person");
+    expect(answer.text).not.toContain("Origin probe of A");
+    // A reads its own, so the route is not one that refuses a tenant only because of who B is.
+    const foreignOwn = await send(a.member, { method: "GET", path: originPath(foreign.companyId) });
+    expect(foreignOwn.status, foreignOwn.text).toBe(200);
+    expect(foreignOwn.text).toContain(foreign.cardId);
+  },
 
   // --- tenant: files, exports, account deletion ----------------------------------------------
   "ensure page": async () => {
@@ -6538,7 +6806,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     leavesAUnchanged(async () => {
       // B uploading bytes A already stored must never be handed A's blob. The status is not
       // compared: an earlier case may already have stored the same bytes in B.
-      const upload = (content: string): Request => ({
+      const upload = (content: string | Buffer): Request => ({
         method: "POST",
         path: "/api/blobs",
         body: content,
@@ -6546,7 +6814,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       });
       const foreign = await send(b.member, upload(a.fileContent));
       expectNoneOf(foreign.text, a.ids, "blob upload of A's bytes");
-      const random = await expectExcludesA(b.member, upload(`image bytes of ${randomUUID()}`));
+      const random = await expectExcludesA(b.member, upload(pngBytesOf(`image bytes of ${randomUUID()}`)));
       expect(random.status).toBe(201);
       expect(foreign.text).not.toContain(a.blobId);
     }),
@@ -7099,6 +7367,14 @@ function ownerProbes(): OwnerProbe[] {
       build: call("PATCH", ([id]) => `/api/mcp-tool-registrations/${id}`, { requiresApproval: true }),
       status: 200,
       contains: ['"requiresApproval":true'],
+    },
+    {
+      label: "mcp server sync",
+      ids: [a.mcpServerItemId],
+      build: call("POST", ([id]) => `/api/mcp-servers/${id}/sync`),
+      // The fixture server has no connectionConfig, so A's own sync reaches the connection factory and is refused there.
+      status: 502,
+      contains: ['"reason":"invalid_config"'],
     },
     {
       label: "rename database",

@@ -45,6 +45,8 @@ export const ITEM_ERROR_CODES = [
   "regenerate_not_latest",
   "regenerate_after_writes",
   "regenerate_after_compaction",
+  "unsupported_media_type",
+  "unsupported_attachment_type",
 ] as const;
 
 export type ItemErrorCode = (typeof ITEM_ERROR_CODES)[number];
@@ -94,6 +96,8 @@ export const ITEM_ERROR_STATUS_BY_CODE: Readonly<Record<ItemErrorCode, number>> 
   regenerate_not_latest: 409,
   regenerate_after_writes: 409,
   regenerate_after_compaction: 409,
+  unsupported_media_type: 415,
+  unsupported_attachment_type: 415,
 };
 
 function isItemErrorCode(code: string): code is ItemErrorCode {

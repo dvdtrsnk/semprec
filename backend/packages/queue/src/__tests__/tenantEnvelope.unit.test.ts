@@ -45,6 +45,7 @@ const SYSTEM_TASKS = [
   "blobsUnreferencedSweep",
   "peopleLastContactSweep",
   "pageOrphanSweep",
+  "calendarSubscriptionSweep",
 ];
 
 interface FakeHelperOptions {

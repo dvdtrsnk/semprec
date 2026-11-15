@@ -43,6 +43,10 @@ const HOST_EVENTS_KEY = "hostEvents";
 /** The Tasks module's own process identity: both sides of the relation are system-owned with this owner process. */
 const TASKS_RELATION_CONTEXT: SystemRelationWriteContext = { ownerProcess: TASKS_MODULE_ID };
 
+/**
+ * The writer of a request. The put and remove handlers take another one as their second argument, which only code that
+ * composes it server-side passes: the calendar agent tools (`calendar/calendarAgentTools.ts`), never an HTTP request.
+ */
 const USER_WRITER: WriterIdentity = { writerKind: "user" };
 
 /** The Tasks properties `DELETE /api/tasks/:id/host-events` may set while it removes the task from its events. */
@@ -145,7 +149,8 @@ function parseReschedule(body: unknown): Record<string, unknown> {
  * `PUT /api/tasks/:id/host-events/:eventId` (issue #1764): puts a task into an event. In one transaction it locks the
  * task and writes the `Tasks.hostEvents` edge as the Tasks process with the metadata `{ addedAt }` (`nextAddedAt`). An
  * edge that already exists gets the new `addedAt`, which makes that event the last of the task's host events. The
- * request body is not read.
+ * request body is not read. The edge is written as `writer`: the user for the route, the agent of a run for the calendar
+ * tool.
  *
  * An occurrence of a recurring series, the series' current instance or another stored occurrence, is put into the
  * event like any other task (issue #2012). The handler writes the edge of that item; it neither reads nor writes
@@ -157,7 +162,10 @@ function parseReschedule(body: unknown): Record<string, unknown> {
  * event trashed after the request does.
  */
 export function createTaskHostEventPutRouteHandler(pool: Pool) {
-  return async (ctx: Context): Promise<{ status: number; body: TaskHostEventsBody }> => {
+  return async (
+    ctx: Context,
+    writer: WriterIdentity = USER_WRITER,
+  ): Promise<{ status: number; body: TaskHostEventsBody }> => {
     const id = uuidParam(ctx, "id");
     const eventId = uuidParam(ctx, "eventId");
     const userId = ctx.identity.user.id;
@@ -176,7 +184,7 @@ export function createTaskHostEventPutRouteHandler(pool: Pool) {
           metadata: { addedAt },
         },
         TASKS_RELATION_CONTEXT,
-        USER_WRITER,
+        writer,
         userId,
       );
       return { status: 200, body: await hostEventsBody(client, relation, taskId) };
@@ -188,10 +196,13 @@ export function createTaskHostEventPutRouteHandler(pool: Pool) {
  * `DELETE /api/tasks/:id/host-events/:eventId` (issue #1764): takes a task out of one event. In one transaction it
  * locks the task and deletes that edge as the Tasks process; the task's other host event edges stay. A task that does
  * not sit in the event, whatever the event id names, answers 200 with the current list. A task that is missing, in the
- * trash or another tenant's is not found alike.
+ * trash or another tenant's is not found alike. The edge is deleted as `writer`, as in the put handler.
  */
 export function createTaskHostEventRemoveRouteHandler(pool: Pool) {
-  return async (ctx: Context): Promise<{ status: number; body: TaskHostEventsBody }> => {
+  return async (
+    ctx: Context,
+    writer: WriterIdentity = USER_WRITER,
+  ): Promise<{ status: number; body: TaskHostEventsBody }> => {
     const id = uuidParam(ctx, "id");
     const eventId = uuidParam(ctx, "eventId");
     const userId = ctx.identity.user.id;
@@ -202,7 +213,7 @@ export function createTaskHostEventRemoveRouteHandler(pool: Pool) {
         client,
         { relationPropertyId: relation.propertyId, callerItemId: taskId, targetItemId: eventId },
         TASKS_RELATION_CONTEXT,
-        USER_WRITER,
+        writer,
         userId,
       );
       return { status: 200, body: await hostEventsBody(client, relation, taskId) };

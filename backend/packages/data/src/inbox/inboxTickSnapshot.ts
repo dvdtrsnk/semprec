@@ -11,7 +11,7 @@ import {
   buildProposalSteps,
   type ProposalComputationOperation,
 } from "./proposalOperations.js";
-type ComputedProposalEntityKind = Exclude<ProposalEntityKind, "relation">;
+type ComputedProposalEntityKind = Exclude<ProposalEntityKind, "relation" | "transcription">;
 export interface ProposalComputationInput {
   recognition?: boolean;
   activeTypes?: RecognitionType[];

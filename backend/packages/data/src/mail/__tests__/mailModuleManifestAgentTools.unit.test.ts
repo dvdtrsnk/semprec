@@ -3,9 +3,13 @@ import { z } from "zod";
 import { loadFullModuleRegistry } from "../../manifest/fullModuleRegistry.js";
 import {
   createMailDraftCreateTool,
+  createMailDraftCreateUserTool,
   createMailDraftSendTool,
+  createMailDraftSendUserTool,
   createMailDraftUpdateTool,
+  createMailDraftUpdateUserTool,
   createMailThreadGetTool,
+  createMailThreadGetUserTool,
   createMailThreadProposeTaskTool,
   mailDraftCreateArgsSchema,
   mailDraftSendArgsSchema,
@@ -80,6 +84,22 @@ describe("the agent tools of the mail module manifest (issues gh-1927, gh-1949, 
       z.toJSONSchema(mailThreadProposeTaskArgsSchema),
     ]);
     expect(definitions.every((tool) => tool.argumentSchema.additionalProperties === false)).toBe(true);
+  });
+
+  it("declares the four tools of issue gh-1956 for MCP with the handler a human session runs, and mail.thread.proposeTask for none (issue gh-1956)", async () => {
+    const registry = await loadFullModuleRegistry();
+
+    const definitions = (
+      await registry.getAgentToolDefinitions(new Set(["mail.read", "mail.draft", "mail.send", "mail.taskProposal"]))
+    ).filter((tool) => tool.moduleId === "mailSync");
+
+    expect(definitions.map((tool) => [tool.name, tool.capability, tool.mcp?.humanHandler])).toEqual([
+      ["mail.thread.get", "mail.read", createMailThreadGetUserTool],
+      ["mail.draft.create", "mail.draft", createMailDraftCreateUserTool],
+      ["mail.draft.update", "mail.draft", createMailDraftUpdateUserTool],
+      ["mail.draft.send", "mail.send", createMailDraftSendUserTool],
+      ["mail.thread.proposeTask", "mail.taskProposal", undefined],
+    ]);
   });
 
   it("tells the model to suggest a task with mail.thread.proposeTask and not to create thread tasks itself, and takes no due date", () => {

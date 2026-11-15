@@ -73,7 +73,11 @@ export interface ModuleAgentToolProjection {
 export interface ModuleAgentToolDefinition {
   moduleId: string;
   name: string;
+  /** The declared capability; absent for a tool that needs none. */
+  capability?: string;
   handler: unknown;
+  /** Set for a tool declared with `mcp` (issue gh-1956): the resolved `humanHandlerExport`, untyped like `handler`. */
+  mcp?: { humanHandler: unknown };
   argumentSchema: Record<string, unknown>;
   parseArguments: (value: unknown) => { success: true; data: unknown } | { success: false };
   /** `true` for a tool declared with `requiresApproval`; such a tool is returned only on request. */
@@ -301,6 +305,13 @@ export class ModuleRegistry {
       if (!(schema instanceof z.ZodType))
         throw new Error(`Module at "${path}" agent tool "${tool.name}" has invalid argument schema`);
       z.toJSONSchema(schema);
+      if (tool.mcp !== undefined)
+        this.requireFunctionExport(
+          imported,
+          tool.mcp.humanHandlerExport,
+          path,
+          `agent tool "${tool.name}" human handler`,
+        );
     }
     for (const task of manifest.taskNames ?? []) {
       this.requireExport(imported, task.payloadSchemaExport, path, `task "${task.name}"`);
@@ -729,11 +740,16 @@ export class ModuleRegistry {
           const schema = exports[tool.argumentSchemaExport];
           const handler = exports[tool.handlerExport];
           const snapshot = tool.snapshotExport === undefined ? undefined : exports[tool.snapshotExport];
+          const humanHandler = tool.mcp === undefined ? undefined : exports[tool.mcp.humanHandlerExport];
           if (!(schema instanceof z.ZodType) || typeof handler !== "function")
             throw new Error(`Invalid agent tool exports for ${tool.name}`);
+          if (tool.mcp !== undefined && typeof humanHandler !== "function")
+            throw new Error(`Invalid agent tool human handler for ${tool.name}`);
           return {
             moduleId: manifest.id,
             name: tool.name,
+            ...(tool.capability === undefined ? {} : { capability: tool.capability }),
+            ...(tool.mcp === undefined ? {} : { mcp: { humanHandler } }),
             handler,
             argumentSchema: z.toJSONSchema(schema),
             parseArguments: (value: unknown) => {

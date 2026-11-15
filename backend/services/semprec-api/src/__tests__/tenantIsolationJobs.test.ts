@@ -1,5 +1,6 @@
 import { createECDH, randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -28,6 +29,7 @@ import {
   type AiGatewayCompletionInput,
 } from "@semprec/shared";
 import {
+  CALENDAR_MODULE_ID,
   DEFAULT_COMPACTION_THRESHOLD,
   JOURNAL_MODULE_ID,
   LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID,
@@ -63,12 +65,14 @@ import {
   removeMailbox,
   resolveMailModuleIds,
   recordHeartbeatFailure,
+  registerCalendarFeedConsumer,
   requestTenantExport,
   resolveTaskAffinitySets,
   revokeAllPushSubscriptionsForUser,
   sendSempMessage,
   setEventInvitationDelivery,
   setInvalidationHook,
+  setInvitationReplyDelivery,
   setThreadProjectTriageRuntime,
   setThreadTaskPeopleDelivery,
   startSempMessageTurn,
@@ -97,6 +101,7 @@ import {
   upsertMailMessageMeta,
   writePageTextBlocks,
 } from "@semprec/data/testSupport";
+import { allowLoopbackOutboundForTests } from "@semprec/data/testSupport/mcpContractServers";
 import { createApiActionRegistry } from "../actionRegistryComposition.js";
 import { createMailSyncAdapters } from "../mailSyncAdapters.js";
 import { runTranscriptionFixture } from "./transcriptionHttpFixture.js";
@@ -499,6 +504,43 @@ async function pushRegistrationRevoked(tenant: Tenant): Promise<boolean> {
   );
   if (found.length !== 1) throw new Error("expected a loopback push registration");
   return found[0]?.revoked === true;
+}
+
+/** What the calendar feed case set up: a local feed server, the loopback allowance and the consumer, torn down after the test. */
+interface FeedFixture {
+  server: http.Server;
+  port: number;
+  restorePolicy: () => void;
+  consumed: string[];
+}
+
+let feedFixture: FeedFixture | null = null;
+
+async function ensureFeedFixture(): Promise<FeedFixture> {
+  if (feedFixture) return feedFixture;
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "text/calendar", etag: '"v1"' });
+    res.end("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (typeof address !== "object" || address === null) throw new Error("The feed server has no port");
+  const consumed: string[] = [];
+  registerCalendarFeedConsumer(async (_client, feed) => {
+    consumed.push(feed.calendarItemId);
+  });
+  feedFixture = { server, port: address.port, restorePolicy: allowLoopbackOutboundForTests(), consumed };
+  return feedFixture;
+}
+
+async function stopFeedFixture(): Promise<void> {
+  const fixture = feedFixture;
+  feedFixture = null;
+  if (!fixture) return;
+  registerCalendarFeedConsumer(null);
+  fixture.restorePolicy();
+  fixture.server.closeAllConnections();
+  await new Promise<void>((resolve) => fixture.server.close(() => resolve()));
 }
 
 async function requireModuleDatabaseId(tenant: Tenant, moduleId: string): Promise<string> {
@@ -1012,6 +1054,88 @@ async function invitationSentAt(tenant: Tenant, eventId: string, personId: strin
   if (found.length !== 1) throw new Error("expected exactly one edge between the Event and the person");
   return found[0]?.sent_at ?? null;
 }
+
+/** The queue name of the calendar module's invitation reply task (`calendarModuleManifest.ts`, issue gh-1953). */
+const CALENDAR_SEND_INVITATION_REPLY_TASK = "calendarSendInvitationReply";
+
+/** The invitation keys the calendar module writes, as the ingest of an iMIP message and the respond route write them. */
+const ANSWERED_INVITATION_KEYS = [
+  "title",
+  "startsAt",
+  "endsAt",
+  "allDay",
+  "organizerEmail",
+  "status",
+  "kind",
+  "uid",
+  "sequence",
+  "respondedAt",
+] as const;
+
+interface SeededInvitationReply {
+  invitationId: string;
+  mailboxId: string;
+  organizerEmail: string;
+  mailboxAddress: string;
+  respondedAt: string;
+}
+
+/**
+ * A mailbox of `tenant` with an address of its own and an invitation the user accepted, linked to that mailbox, as the
+ * ingest and the respond route leave them. The job under test is enqueued by the case, not by an answer.
+ */
+async function seedAnsweredInvitation(tenant: Tenant): Promise<SeededInvitationReply> {
+  const mailboxesId = await requireModuleDatabaseId(tenant, "mailboxes");
+  const invitationsId = await requireModuleDatabaseId(tenant, "invitations");
+  const organizerEmail = `organizer-${randomUUID()}@example.test`;
+  const mailboxAddress = `mailbox-${randomUUID()}@example.test`;
+  const respondedAt = new Date().toISOString();
+  const mailboxProperty = (await inTenant(tenant, () => chokePoint.listProperties(invitationsId))).find(
+    (property) => property.key === "mailbox",
+  );
+  if (!mailboxProperty) throw new Error("expected Invitations.mailbox to be seeded");
+  const ids = await inTenant(tenant, () =>
+    withTransaction(pool, async (client) => {
+      const mailbox = await createItemWithClient(
+        client,
+        {
+          databaseId: mailboxesId,
+          properties: { name: `Mailbox ${randomUUID()}`, provider: "generic", addresses: mailboxAddress },
+        },
+        { allowedSystemKeys: ["addresses"] },
+      );
+      const invitation = await createItemWithClient(
+        client,
+        {
+          databaseId: invitationsId,
+          properties: {
+            title: "Isolation invitation",
+            startsAt: "2099-01-15T09:00:00.000Z",
+            endsAt: "2099-01-15T10:00:00.000Z",
+            allDay: false,
+            organizerEmail,
+            status: "accepted",
+            kind: "invite",
+            uid: `${randomUUID()}@example.test`,
+            sequence: 0,
+            respondedAt,
+          },
+        },
+        { allowedSystemKeys: ANSWERED_INVITATION_KEYS, systemOwnerProcess: CALENDAR_MODULE_ID },
+      );
+      await createRelationWithClient(
+        client,
+        { relationPropertyId: mailboxProperty.id, callerItemId: invitation.id, targetItemId: mailbox.id },
+        { ownerProcess: CALENDAR_MODULE_ID },
+      );
+      return { invitationId: invitation.id, mailboxId: mailbox.id };
+    }),
+  );
+  return { ...ids, organizerEmail, mailboxAddress, respondedAt };
+}
+
+/** The mailbox address and organizer of each reply case seeded, by invitation id. */
+const seededReplies = new Map<string, SeededInvitationReply>();
 
 /** The queue name of the mail module's thread project task (`mailModuleManifest.ts`, issue gh-1872). */
 const MAIL_TRIAGE_THREAD_PROJECT_TASK = "mailTriageThreadProject";
@@ -1721,6 +1845,27 @@ const cases: Record<string, TaskCase> = {
       expect(sleepResyncSends()).toEqual([{ deviceToken: tokens[0], data: { kind: "remindersResync" } }]);
     },
   },
+  [CORE_TASK_NAMES.MCP_SERVER_SYNC]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      const databaseId = await requireModuleDatabaseId(tenant, "mcpServers");
+      // The server has no connection config, so its sync stops at the connection factory without a network request
+      // and records `syncStatus: error`; the job accepts that, so the run neither fails nor retries.
+      const server = await inTenant(tenant, () =>
+        withTransaction(pool, (client) =>
+          createItemWithClient(client, { databaseId, properties: { name: "Isolation server", active: true } }),
+        ),
+      );
+      return { mcpServerItemId: server.id, actingUserId: tenant.userId };
+    },
+    async expectDone(tenant, payload) {
+      expect(
+        await rows(tenant, "SELECT properties ->> 'syncStatus' AS sync_status FROM items WHERE id = $1", [
+          requirePayloadString(payload, "mcpServerItemId"),
+        ]),
+      ).toEqual([{ sync_status: "error" }]);
+    },
+  },
   [MAIL_SYNC_THREAD_TASK_PEOPLE_TASK]: {
     tenancy: "tenant",
     async seed(tenant) {
@@ -2068,6 +2213,44 @@ const cases: Record<string, TaskCase> = {
       });
     },
   },
+  [CORE_TASK_NAMES.CALENDAR_SUBSCRIPTION_SWEEP]: {
+    tenancy: "system",
+    touchesTenantTables: true,
+    async seed(tenant) {
+      const feed = await ensureFeedFixture();
+      const databaseId = await requireModuleDatabaseId(tenant, "calendars");
+      const calendarId = await inTenant(tenant, async () => {
+        // `kind` is written by the calendar module, as the subscribe flow will write it.
+        const created = await withTransaction(pool, (client) =>
+          createItemWithClient(
+            client,
+            {
+              databaseId,
+              properties: {
+                name: "Feed",
+                color: "#8E8E93",
+                kind: "subscription",
+                subscriptionUrl: "https://feed.example.test/a.ics",
+              },
+            },
+            { allowedSystemKeys: ["kind"], systemOwnerProcess: CALENDAR_MODULE_ID },
+          ),
+        );
+        return created.id;
+      });
+      // Raw SQL as the superuser: the write rule refuses an `http` address with a port, which a local server is.
+      await adminPool.query(
+        "UPDATE items SET properties = jsonb_set(properties, '{subscriptionUrl}', to_jsonb($2::text)) WHERE id = $1",
+        [calendarId, `http://127.0.0.1:${feed.port}/${calendarId}.ics`],
+      );
+      return marked([calendarId], async () => {
+        expect(feed.consumed).toContain(calendarId);
+        expect(await rows(tenant, "SELECT calendar_item_id, etag, last_status FROM calendar_feed_state", [])).toEqual([
+          { calendar_item_id: calendarId, etag: '"v1"', last_status: 200 },
+        ]);
+      });
+    },
+  },
   [CORE_TASK_NAMES.PAGE_ORPHAN_SWEEP]: {
     tenancy: "system",
     touchesTenantTables: true,
@@ -2290,6 +2473,30 @@ const cases: Record<string, TaskCase> = {
       invitationSends.length = 0;
     },
   },
+  [CALENDAR_SEND_INVITATION_REPLY_TASK]: {
+    tenancy: "tenant",
+    async seed(tenant) {
+      invitationSends.length = 0;
+      const seeded = await seedAnsweredInvitation(tenant);
+      seededReplies.set(seeded.invitationId, seeded);
+      return { invitationId: seeded.invitationId, response: "accepted", respondedAt: seeded.respondedAt };
+    },
+    async expectDone(tenant, payload) {
+      const seeded = seededReplies.get(requirePayloadString(payload, "invitationId"));
+      if (!seeded) throw new Error("expected the reply case to have seeded the invitation");
+      // One REPLY left, from the mailbox of the job's own tenant, to the organizer, in that tenant's scope.
+      expect(invitationSends).toEqual([
+        {
+          tenantId: tenant.tenantId,
+          mailboxId: seeded.mailboxId,
+          method: "REPLY",
+          from: seeded.mailboxAddress,
+          recipients: [seeded.organizerEmail],
+        },
+      ]);
+      invitationSends.length = 0;
+    },
+  },
   [MAIL_TRIAGE_THREAD_PROJECT_TASK]: {
     tenancy: "tenant",
     async seed(tenant) {
@@ -2409,6 +2616,8 @@ describe("background task isolation across two tenants: api runtime (issue #1056
     );
     // The calendar's invitation task reads its pool and transports from the binding `createApiQueueRuntime` sets.
     setEventInvitationDelivery({ pool, transports: invitationTransports });
+    // The calendar's invitation reply task reads its pool and transports from the same kind of binding.
+    setInvitationReplyDelivery({ pool, transports: invitationTransports });
     // The mail module's thread project task reads its pool and gateway from the binding `createApiQueueRuntime` sets.
     setThreadProjectTriageRuntime({ pool, gateway: triageGateway });
     // The mail module's thread task people task reads its pool from the same kind of binding.
@@ -2421,13 +2630,15 @@ describe("background task isolation across two tenants: api runtime (issue #1056
     tenantB = await buildTenant(await createTestTenant(adminPool));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     restoreVapidConfiguration();
     restoreApnsConfiguration();
+    await stopFeedFixture();
   });
 
   afterAll(async () => {
     setEventInvitationDelivery(null);
+    setInvitationReplyDelivery(null);
     setThreadProjectTriageRuntime(null);
     setThreadTaskPeopleDelivery(null);
     await pool?.end();
@@ -2630,6 +2841,14 @@ describe("background task isolation across two tenants: api runtime (issue #1056
         }
         if (name === CALENDAR_SEND_EVENT_INVITATION_TASK) {
           // The Event and the mailbox are A's: B's job reads neither, so it sends no message, for A's ids or random ones.
+          expect(invitationSends).toEqual([]);
+          expect(foreign).toEqual({
+            outcome: { attempts: null, lastError: null },
+            effects: { rowCountDeltas: {}, changedTables: [], notificationKinds: [], queuedJobs: [] },
+          });
+        }
+        if (name === CALENDAR_SEND_INVITATION_REPLY_TASK) {
+          // The invitation and the mailbox are A's: B's job finds no such invitation, so it sends no message, for A's id or a random one.
           expect(invitationSends).toEqual([]);
           expect(foreign).toEqual({
             outcome: { attempts: null, lastError: null },

@@ -287,7 +287,7 @@ export async function seedTenDatabasesInTransaction(
         event: "#FF3B30",
       }),
     },
-    { key: "date", name: "Date", type: "date", owner: "user", config: { includeTime: true } },
+    { key: "date", name: "Date", type: "date", owner: "user" },
     // Calendar time model (wall-clock values in the tenant time zone); no `timeFrom` means all-day.
     { key: "endDate", name: "End date", type: "date", owner: "user" },
     { key: "timeFrom", name: "Time from", type: "time", owner: "user" },

@@ -31,9 +31,11 @@ import { getOrCreateJournalItem } from "../../journal/journalStore.js";
 import { createInboxTypeWithClient, type CreateInboxTypeInput } from "../inboxTypesStore.js";
 import { createSemprecTickAction, type ComputeSemprecProposalFn, type ProposalStep } from "../inboxTickAction.js";
 import {
+  createCaptureInboxItemRouteHandler,
   createConfirmProposalRouteHandler,
   createInboxCardsRouteHandler,
   createInboxTypesRouteHandler,
+  createProposalOptionsRouteHandler,
   createRecomputeProposalRouteHandler,
   createRejectProposalRouteHandler,
   createReopenProposalRouteHandler,
@@ -54,10 +56,12 @@ import {
   reviseProposalWithClient,
 } from "../proposalActions.js";
 import { proposeSpeakerMappings } from "../../transcription/transcriptSpeakerSuggestion.js";
-import { ConflictError, NotFoundError, ValidationError } from "../../errors.js";
+import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../../errors.js";
 import { createAgentRun } from "../../agentRuns/agentRunsStore.js";
 import { createPendingApprovalRequest } from "../../mcp/approvalRequestsStore.js";
 import { SYSTEM_DATABASES_EDITOR_SCHEMAS } from "../../seed/systemDatabasesEditorSchemas.js";
+import { manifest as inboxManifest } from "../inboxModuleManifest.js";
+import { PROPOSAL_OPTION_FIELDS } from "../proposalOptions.js";
 import type { ItemRow } from "../../types.js";
 
 let pool: Pool;
@@ -869,40 +873,72 @@ describe("inbox custom route handlers (issue #239)", () => {
       expect(await countTasks()).toBe(before);
     });
 
-    it("does not report an MCP sync enqueue for a server confirm", async () => {
-      const proposalId = await createDatabaseProposal("Server");
-      await withTransaction(pool, async (client) => {
-        const servers = await getDatabaseByModuleId(client, "mcpServers");
-        if (!servers) throw new Error("MCP servers database missing");
-        await updateItemWithClient(
-          client,
-          {
-            databaseId: proposalsId,
-            itemId: proposalId,
-            propertiesPatch: {
-              proposal: {
-                entityKind: "database",
-                target: servers.id,
-                properties: {
-                  name: "Server",
-                  active: false,
-                  connectionConfig: { transport: "http", url: "https://mcp.example.com/mcp" },
+    describe("an MCP server confirm (issue gh-1976)", () => {
+      /** A card for a new MCP server, so confirming it creates the server item. */
+      async function createServerCard(): Promise<string> {
+        const proposalId = await createDatabaseProposal("Server");
+        await withTransaction(pool, async (client) => {
+          const servers = await getDatabaseByModuleId(client, "mcpServers");
+          if (!servers) throw new Error("MCP servers database missing");
+          await updateItemWithClient(
+            client,
+            {
+              databaseId: proposalsId,
+              itemId: proposalId,
+              propertiesPatch: {
+                proposal: {
+                  entityKind: "database",
+                  target: servers.id,
+                  properties: {
+                    name: "Server",
+                    active: false,
+                    connectionConfig: { transport: "http", url: "https://mcp.example.com/mcp" },
+                  },
                 },
               },
             },
-          },
-          { allowedSystemKeys: ["proposal"] },
+            { allowedSystemKeys: ["proposal"] },
+          );
+        });
+        return proposalId;
+      }
+      /** The pending `mcpServerSync` jobs: keys and the business payload (the public `jobs` view has no payload column; graphile-worker 0.17.3 keeps the envelope in `_private_jobs`). */
+      async function queuedSyncs() {
+        const { rows } = await pool.query<{ key: string | null; payload: { payload: Record<string, unknown> } }>(
+          `SELECT j.key, j.payload FROM graphile_worker._private_jobs j
+             JOIN graphile_worker._private_tasks t ON t.id = j.task_id
+            WHERE t.identifier = 'mcpServerSync' ORDER BY j.key`,
         );
+        return rows.map((row) => ({ key: row.key, payload: row.payload.payload }));
+      }
+
+      it("queues the tool sync as the authenticated user and reports it on the result of the server", async () => {
+        const proposalId = await createServerCard();
+        const userId = randomUUID();
+
+        const response = await createConfirmProposalRouteHandler(pool)({
+          params: { id: proposalId },
+          body: {},
+          identity: { user: { id: userId } },
+        });
+
+        if (!("item" in response)) throw new Error("Missing item result");
+        const serverId = z.string().parse(response.item.properties.resultItemId);
+        expect(response.results).toEqual([expect.objectContaining({ itemId: serverId, followUp: "mcpSyncQueued" })]);
+        expect(await queuedSyncs()).toEqual([
+          { key: `mcp-server-sync-${serverId}`, payload: { mcpServerItemId: serverId, actingUserId: userId } },
+        ]);
       });
-      const queued = () =>
-        pool.query<{ task_identifier: string }>(
-          "SELECT task_identifier FROM graphile_worker.jobs WHERE task_identifier LIKE 'mcp%Sync%' ORDER BY task_identifier",
-        );
-      const before = await queued();
-      const response = await createConfirmProposalRouteHandler(pool)({ params: { id: proposalId }, body: {} });
-      if (!("item" in response)) throw new Error("Missing item result");
-      expect(response.results).toEqual([expect.objectContaining({ databaseKey: null, followUp: null })]);
-      expect((await queued()).rows).toEqual(before.rows);
+
+      it("queues nothing and reports no follow-up when the request carries no identity", async () => {
+        const proposalId = await createServerCard();
+
+        const response = await createConfirmProposalRouteHandler(pool)({ params: { id: proposalId }, body: {} });
+
+        if (!("item" in response)) throw new Error("Missing item result");
+        expect(response.results).toEqual([expect.objectContaining({ followUp: null })]);
+        expect(await queuedSyncs()).toEqual([]);
+      });
     });
 
     it("records Event and Journal calendar days in their confirmation results", async () => {
@@ -4122,6 +4158,462 @@ describe("inbox custom route handlers (issue #239)", () => {
       expect(error).toBeInstanceOf(ValidationError);
       expect(await readCard(proposalId)).toEqual(before);
       expect((await pool.query("SELECT key, revision FROM graphile_worker.jobs ORDER BY id")).rows).toEqual(jobsBefore);
+    });
+  });
+
+  describe("createProposalOptionsRouteHandler (issue gh-1959)", () => {
+    const optionsContext = (id: string, query: string, locale = "en") => ({
+      params: { id },
+      body: null,
+      identity: { user: { id: randomUUID(), locale } },
+      req: { headers: {}, url: `/api/proposals/${id}/options${query}` },
+    });
+    const failureOf = (promise: Promise<unknown>): Promise<unknown> =>
+      promise.then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+    it("answers the options of the field in the caller's locale, a thin mapping onto listProposalOptions", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+      const project = await withTransaction(pool, async (client) => {
+        const projects = await getDatabaseByModuleId(client, "projects");
+        return createItemWithClient(client, { databaseId: projects!.id, properties: { name: "Garden" } });
+      });
+
+      const english = await createProposalOptionsRouteHandler(pool)(optionsContext(proposalId, "?field=project"));
+      const czech = await createProposalOptionsRouteHandler(pool)(optionsContext(proposalId, "?field=project", "cs"));
+
+      expect(english.status).toBe(200);
+      const parse = (result: typeof english) =>
+        z
+          .object({ options: z.array(z.object({ id: z.string().nullable(), label: z.string() })) })
+          .parse("body" in result ? result.body : null).options;
+      expect(parse(english)).toContainEqual({ id: project.id, label: "Garden" });
+      expect(parse(english).at(-1)).toEqual({ id: null, label: "No project" });
+      expect(parse(czech).at(-1)).toEqual({ id: null, label: "Bez projektu" });
+    });
+
+    it("lists a done project only with includeDone=true", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+      const done = await withTransaction(pool, async (client) => {
+        const projects = await getDatabaseByModuleId(client, "projects");
+        return createItemWithClient(client, {
+          databaseId: projects!.id,
+          properties: { name: "Done one", status: "done" },
+        });
+      });
+      const idsOf = async (query: string): Promise<Array<string | null>> => {
+        const result = await createProposalOptionsRouteHandler(pool)(optionsContext(proposalId, query));
+        const body = z
+          .object({ options: z.array(z.object({ id: z.string().nullable() })) })
+          .parse("body" in result ? result.body : null);
+        return body.options.map((option) => option.id);
+      };
+
+      expect(await idsOf("?field=project")).not.toContain(done.id);
+      expect(await idsOf("?field=project&includeDone=true")).toContain(done.id);
+    });
+
+    it.each([
+      ["", "no field"],
+      ["?field=tasks", "a field outside the set"],
+      ["?field=", "an empty field"],
+      ["?field=Project", "a field in another case"],
+    ])("is a ValidationError on field for %s (%s)", async (query) => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+
+      const error = await failureOf(createProposalOptionsRouteHandler(pool)(optionsContext(proposalId, query)));
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).details).toMatchObject({ field: "field" });
+    });
+
+    it("accepts every field of the closed set", async () => {
+      const proposalId = await createDatabaseProposal("Buy milk");
+      for (const field of PROPOSAL_OPTION_FIELDS) {
+        const result = await createProposalOptionsRouteHandler(pool)(optionsContext(proposalId, `?field=${field}`));
+        expect(result.status, field).toBe(200);
+      }
+    });
+
+    it.each(["?field=project&includeDone=false", "?field=project&includeDone=", "?field=project&includeDone=1"])(
+      "is a ValidationError on includeDone for %s",
+      async (query) => {
+        const proposalId = await createDatabaseProposal("Buy milk");
+
+        const error = await failureOf(createProposalOptionsRouteHandler(pool)(optionsContext(proposalId, query)));
+
+        expect(error).toBeInstanceOf(ValidationError);
+        expect((error as ValidationError).details).toMatchObject({ field: "includeDone" });
+      },
+    );
+
+    it("is a ValidationError on id for a path parameter that is not a UUID, and a NotFoundError for an unknown card", async () => {
+      const notUuid = await failureOf(
+        createProposalOptionsRouteHandler(pool)(optionsContext("nope", "?field=project")),
+      );
+      const unknown = await failureOf(
+        createProposalOptionsRouteHandler(pool)(optionsContext(randomUUID(), "?field=project")),
+      );
+
+      expect(notUuid).toBeInstanceOf(ValidationError);
+      expect((notUuid as ValidationError).details).toMatchObject({ field: "id" });
+      expect(unknown).toBeInstanceOf(NotFoundError);
+    });
+
+    it("is declared by the Inbox manifest as a single-consumer read, and every optionsSource of the editor schemas is a field it answers", () => {
+      const route = inboxManifest.customRoutes?.find((candidate) => candidate.path === "/api/proposals/:id/options");
+      expect(route).toMatchObject({
+        method: "GET",
+        handlerExport: "createProposalOptionsRouteHandler",
+        justification: "single-consumer-read",
+      });
+      const schemas = [
+        ...Object.values(SYSTEM_DATABASES_EDITOR_SCHEMAS),
+        ...Object.values(inboxManifest.editorSchemas ?? {}),
+      ];
+      const sources = schemas.flatMap((schema) =>
+        schema.groups.flatMap((group) =>
+          group.fields.flatMap((field) => (field.optionsSource ? [field.optionsSource] : [])),
+        ),
+      );
+      expect(sources.length).toBeGreaterThan(0);
+      expect(sources.filter((source) => !(PROPOSAL_OPTION_FIELDS as readonly string[]).includes(source))).toEqual([]);
+    });
+  });
+
+  describe("createCaptureInboxItemRouteHandler (issue gh-1961)", () => {
+    const captureContext = (body: unknown, headers: Record<string, string> = {}) => ({
+      params: {},
+      body,
+      req: { headers },
+    });
+    const validBody = { text: "Call the dentist", date: "2026-08-28", time: "09:30", captureChannel: "typed" } as const;
+    const capture = (body: unknown, headers?: Record<string, string>) =>
+      createCaptureInboxItemRouteHandler(pool)(captureContext(body, headers));
+    const failureOf = (promise: Promise<unknown>): Promise<unknown> =>
+      promise.then(
+        () => null,
+        (error: unknown) => error,
+      );
+    const itemOf = (result: Awaited<ReturnType<typeof capture>>): ItemRow => {
+      if (!("item" in result)) throw new Error("The route answered no item");
+      return result.item;
+    };
+    const createType = (status: "active" | "archived" = "active") =>
+      withTransaction(pool, (client) =>
+        createInboxTypeWithClient(client, {
+          inboxItemTypesDatabaseId: typesId,
+          name: "Note",
+          emoji: "📝",
+          processingMethod: "pageContent",
+          status,
+        }),
+      );
+    const inboxItemCount = async (): Promise<number> =>
+      Number(
+        (await pool.query<{ n: string }>("SELECT count(*) AS n FROM items WHERE database_id = $1", [inboxId])).rows[0]!
+          .n,
+      );
+    /** The items an Inbox item points to, by the key of the relation property it is held under. */
+    const targetsOf = (itemId: string): Promise<Record<string, ItemRow[]>> =>
+      withTransaction(pool, async (client) => {
+        const grouped: Record<string, ItemRow[]> = {};
+        for (const edge of await relationsStore.listAllRelationsForItem(client, itemId)) {
+          const definition = await relationsStore.getRelationDefinition(client, edge.relationDefinitionId);
+          const sideOfItem = edge.itemA === itemId ? definition?.propertyIdA : definition?.propertyIdB;
+          const property = sideOfItem ? await propertiesStore.getProperty(client, sideOfItem) : null;
+          const [target] = await itemsStore.getItemsByIds(client, [relationsStore.otherSide(edge, itemId)]);
+          if (property && target) (grouped[property.key] ??= []).push(target);
+        }
+        return grouped;
+      });
+
+    it("creates the item with its journalDay edge and its type edge and answers 201 with the item", async () => {
+      const type = await createType();
+
+      const result = await capture({ ...validBody, typeId: type.id });
+
+      expect(result.status).toBe(201);
+      const item = itemOf(result);
+      expect(item.databaseId).toBe(inboxId);
+      expect(item.properties).toMatchObject(validBody);
+      const targets = await targetsOf(item.id);
+      expect(targets.type?.map((target) => target.id)).toEqual([type.id]);
+      expect(targets.journalDay).toHaveLength(1);
+      expect(targets.journalDay?.[0]?.properties).toMatchObject({ type: "day", period: "2026-08-28" });
+      expect(await inboxItemCount()).toBe(1);
+    });
+
+    it("stores the channel and the source app of a share, and an addedAt that is the server's receive time, not the sent date and time", async () => {
+      const before = Date.now();
+      const item = itemOf(
+        await capture({
+          ...validBody,
+          date: "2020-01-02",
+          time: "03:04",
+          captureChannel: "share",
+          sourceApp: "Mail",
+        }),
+      );
+      const after = Date.now();
+
+      expect(item.properties).toMatchObject({
+        date: "2020-01-02",
+        time: "03:04",
+        captureChannel: "share",
+        sourceApp: "Mail",
+      });
+      const addedAt = z.string().parse(item.properties.addedAt);
+      expect(new Date(addedAt).toISOString()).toBe(addedAt);
+      expect(new Date(addedAt).getTime()).toBeGreaterThanOrEqual(before);
+      expect(new Date(addedAt).getTime()).toBeLessThanOrEqual(after);
+      expect(addedAt.startsWith("2020-01-02")).toBe(false);
+    });
+
+    it.each(["typed", "voice", "share"] as const)("stores the channel %s", async (captureChannel) => {
+      const item = itemOf(await capture({ ...validBody, captureChannel }));
+
+      expect(item.properties.captureChannel).toBe(captureChannel);
+      expect(item.properties).not.toHaveProperty("sourceApp");
+    });
+
+    it("trims the source app, keeps one of exactly 80 characters, and does not store a blank one", async () => {
+      const trimmed = itemOf(await capture({ ...validBody, sourceApp: "  Mail \n" }));
+      const longest = itemOf(await capture({ ...validBody, sourceApp: ` ${"a".repeat(80)} ` }));
+      const blank = itemOf(await capture({ ...validBody, sourceApp: "   " }));
+
+      expect(trimmed.properties.sourceApp).toBe("Mail");
+      expect(longest.properties.sourceApp).toBe("a".repeat(80));
+      expect(blank.properties).not.toHaveProperty("sourceApp");
+      expect(blank.properties.captureChannel).toBe("typed");
+    });
+
+    it("keeps the first capture's channel, source app and addedAt for a replayed Idempotency-Key", async () => {
+      const headers = { "idempotency-key": "capture-key-source" };
+      const first = itemOf(await capture({ ...validBody, captureChannel: "share", sourceApp: "Mail" }, headers));
+
+      const replay = itemOf(await capture({ ...validBody, captureChannel: "voice", sourceApp: "Notes" }, headers));
+
+      expect(replay).toEqual(first);
+      expect(replay.properties).toMatchObject({ captureChannel: "share", sourceApp: "Mail" });
+      expect(await inboxItemCount()).toBe(1);
+    });
+
+    it("leaves addedAt empty on the generic create and refuses to let a user write it on create or update", async () => {
+      const generic = await withTransaction(pool, (client) =>
+        createItemWithClient(client, {
+          databaseId: inboxId,
+          properties: { date: "2026-08-28", time: "09:30", text: "Generic" },
+        }),
+      );
+      expect(generic.properties).not.toHaveProperty("addedAt");
+      const captured = itemOf(await capture(validBody));
+      const forged = "2001-01-01T00:00:00.000Z";
+
+      for (const write of [
+        (client: PoolClient) =>
+          createItemWithClient(client, {
+            databaseId: inboxId,
+            properties: { date: "2026-08-28", time: "09:30", text: "Forged", addedAt: forged },
+          }),
+        (client: PoolClient) =>
+          updateItemWithClient(client, {
+            databaseId: inboxId,
+            itemId: captured.id,
+            propertiesPatch: { addedAt: forged },
+          }),
+        (client: PoolClient) =>
+          updateItemWithClient(client, {
+            databaseId: inboxId,
+            itemId: generic.id,
+            propertiesPatch: { addedAt: forged },
+          }),
+      ]) {
+        const error = await failureOf(withTransaction(pool, write));
+        expect(error).toBeInstanceOf(ForbiddenError);
+        expect((error as ForbiddenError).details).toMatchObject({ field: "addedAt" });
+      }
+
+      const { rows } = await pool.query<{ addedAt: string | null }>(
+        "SELECT properties->>'addedAt' AS \"addedAt\" FROM items WHERE id = $1",
+        [captured.id],
+      );
+      expect(rows[0]?.addedAt).toBe(captured.properties.addedAt);
+      expect(await inboxItemCount()).toBe(2);
+    });
+
+    it("lets a user change the channel and the source app of an item through the generic update", async () => {
+      const captured = itemOf(await capture({ ...validBody, sourceApp: "Mail" }));
+
+      const updated = await withTransaction(pool, (client) =>
+        updateItemWithClient(client, {
+          databaseId: inboxId,
+          itemId: captured.id,
+          propertiesPatch: { captureChannel: "voice", sourceApp: "Notes" },
+        }),
+      );
+
+      expect(updated.properties).toMatchObject({
+        captureChannel: "voice",
+        sourceApp: "Notes",
+        addedAt: captured.properties.addedAt,
+      });
+    });
+
+    it("creates an untyped item when typeId is omitted", async () => {
+      const item = itemOf(await capture(validBody));
+
+      const targets = await targetsOf(item.id);
+      expect(targets.type).toBeUndefined();
+      expect(targets.journalDay).toHaveLength(1);
+    });
+
+    it.each([
+      ["no text", { date: "2026-08-28", time: "09:30", captureChannel: "typed" }, "text"],
+      ["an empty text", { ...validBody, text: "" }, "text"],
+      ["a blank text", { ...validBody, text: "  \n\t " }, "text"],
+      ["a text that is not a string", { ...validBody, text: 7 }, "text"],
+      ["a text with a NUL character", { ...validBody, text: "a\u0000b" }, "text"],
+      ["no date", { text: "Call", time: "09:30", captureChannel: "typed" }, "date"],
+      ["a date that is not a string", { ...validBody, date: 20260828 }, "date"],
+      ["a date that is not a calendar date", { ...validBody, date: "2026-02-30" }, "date"],
+      ["no time", { text: "Call", date: "2026-08-28", captureChannel: "typed" }, "time"],
+      ["a time that is not a string", { ...validBody, time: 930 }, "time"],
+      ["the time abc", { ...validBody, time: "abc" }, "time"],
+      ["a typeId that is not a UUID", { ...validBody, typeId: "not-an-id" }, "typeId"],
+      ["a typeId of null", { ...validBody, typeId: null }, "typeId"],
+      ["an unknown key", { ...validBody, channel: "share" }, "channel"],
+      ["no captureChannel", { text: "Call", date: "2026-08-28", time: "09:30" }, "captureChannel"],
+      ["a captureChannel that is not an option", { ...validBody, captureChannel: "email" }, "captureChannel"],
+      ["a captureChannel in another case", { ...validBody, captureChannel: "Typed" }, "captureChannel"],
+      ["an empty captureChannel", { ...validBody, captureChannel: "" }, "captureChannel"],
+      ["a captureChannel that is not a string", { ...validBody, captureChannel: 7 }, "captureChannel"],
+      ["a captureChannel of null", { ...validBody, captureChannel: null }, "captureChannel"],
+      ["a sourceApp that is not a string", { ...validBody, sourceApp: 7 }, "sourceApp"],
+      ["a sourceApp of null", { ...validBody, sourceApp: null }, "sourceApp"],
+      ["a sourceApp with a NUL character", { ...validBody, sourceApp: "Ma\u0000il" }, "sourceApp"],
+      ["a sourceApp of 81 characters", { ...validBody, sourceApp: "a".repeat(81) }, "sourceApp"],
+      ["a sourceApp of 81 characters after trimming", { ...validBody, sourceApp: ` ${"a".repeat(81)} ` }, "sourceApp"],
+    ])("is a ValidationError on the field for %s, and writes nothing", async (_name, body, field) => {
+      const error = await failureOf(capture(body));
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).details).toMatchObject({ field });
+      expect(await inboxItemCount()).toBe(0);
+    });
+
+    it.each([
+      ["null", null],
+      ["an array", []],
+      ["a string", "text"],
+    ])("is a ValidationError for a body that is %s", async (_name, body) => {
+      expect(await failureOf(capture(body))).toBeInstanceOf(ValidationError);
+      expect(await inboxItemCount()).toBe(0);
+    });
+
+    it("refuses an archived, a trashed and an unknown type on typeId, before anything is written", async () => {
+      const archived = await createType("archived");
+      const trashed = await createType();
+      await withTransaction(pool, (client) =>
+        itemDeleteWithClient(client, typesId, trashed.id, { queueAffinity: createActionQueueAffinity() }),
+      );
+
+      for (const typeId of [archived.id, trashed.id, randomUUID()]) {
+        const error = await failureOf(capture({ ...validBody, typeId }));
+        expect(error, typeId).toBeInstanceOf(ValidationError);
+        expect((error as ValidationError).details, typeId).toMatchObject({ field: "typeId" });
+      }
+      expect(await inboxItemCount()).toBe(0);
+      const { rows } = await pool.query<{ n: string }>(
+        "SELECT count(*) AS n FROM items WHERE database_id = (SELECT id FROM databases WHERE owner_module_id = 'journal')",
+      );
+      expect(Number(rows[0]!.n)).toBe(0);
+    });
+
+    it("refuses the id of an Inbox item as a typeId", async () => {
+      const first = itemOf(await capture(validBody));
+
+      const error = await failureOf(capture({ ...validBody, typeId: first.id }));
+
+      expect((error as ValidationError).details).toMatchObject({ field: "typeId" });
+      expect(await inboxItemCount()).toBe(1);
+    });
+
+    it("answers the same Idempotency-Key with the first item: one item, one type edge, one journalDay edge", async () => {
+      const type = await createType();
+      const headers = { "idempotency-key": "capture-key-1" };
+
+      const first = itemOf(await capture({ ...validBody, typeId: type.id }, headers));
+      const second = await capture({ ...validBody, typeId: type.id }, headers);
+
+      expect(second.status).toBe(201);
+      expect(itemOf(second)).toEqual(first);
+      expect(await inboxItemCount()).toBe(1);
+      const targets = await targetsOf(first.id);
+      expect(targets.type).toHaveLength(1);
+      expect(targets.journalDay).toHaveLength(1);
+    });
+
+    it("answers a replay with the first item even when its type has been archived since, and checks no type", async () => {
+      const type = await createType();
+      const headers = { "idempotency-key": "capture-key-2" };
+      const first = itemOf(await capture({ ...validBody, typeId: type.id }, headers));
+      await withTransaction(pool, (client) =>
+        updateItemWithClient(client, { databaseId: typesId, itemId: type.id, propertiesPatch: { status: "archived" } }),
+      );
+
+      const second = itemOf(await capture({ ...validBody, typeId: type.id }, headers));
+
+      expect(second.id).toBe(first.id);
+      expect((await targetsOf(first.id)).type).toHaveLength(1);
+    });
+
+    it("creates a new item for a key whose item is in the Trash, and a new item for another key", async () => {
+      const headers = { "idempotency-key": "capture-key-3" };
+      const first = itemOf(await capture(validBody, headers));
+      await withTransaction(pool, (client) =>
+        itemDeleteWithClient(client, inboxId, first.id, { queueAffinity: createActionQueueAffinity() }),
+      );
+
+      const again = itemOf(await capture(validBody, headers));
+      const other = itemOf(await capture(validBody, { "idempotency-key": "capture-key-4" }));
+
+      expect(again.id).not.toBe(first.id);
+      expect(other.id).not.toBe(again.id);
+      expect(await inboxItemCount()).toBe(3);
+    });
+
+    it("is a ValidationError on the Idempotency-Key header for a key that is too long, and writes nothing", async () => {
+      const error = await failureOf(capture(validBody, { "idempotency-key": "k".repeat(300) }));
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).details).toMatchObject({ field: "Idempotency-Key" });
+      expect(await inboxItemCount()).toBe(0);
+    });
+
+    it("creates one item without a key each time", async () => {
+      await capture(validBody);
+      await capture(validBody);
+
+      expect(await inboxItemCount()).toBe(2);
+    });
+
+    it("writes no type edge when the helper replays a reserved key, whatever type the replay names", async () => {
+      const type = await createType();
+      const otherType = await createType();
+      const input = { inboxDatabaseId: inboxId, ...validBody, idempotencyKey: "helper-key" };
+
+      const first = await withTransaction(pool, (client) =>
+        createInboxItemWithClient(client, { ...input, type: type.id }),
+      );
+      const replay = await withTransaction(pool, (client) =>
+        createInboxItemWithClient(client, { ...input, type: otherType.id }),
+      );
+
+      expect(replay.id).toBe(first.id);
+      expect((await targetsOf(first.id)).type?.map((target) => target.id)).toEqual([type.id]);
     });
   });
 
