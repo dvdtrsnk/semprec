@@ -33,4 +33,8 @@ extension SharedScreenModelFactory: ScreenModelFactory {
     public func makeLogin() -> any LoginScreenModel {
         SharedLoginScreenModel(sdk.loginViewModel())
     }
+
+    public func makeSleep(night: String?, startOnNight: Bool) -> any SleepScreenModel {
+        SharedSleepScreenModel(sdk.sleepViewModel(night: night, startOnNight: startOnNight))
+    }
 }

@@ -10,4 +10,6 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
     func makeSettings() -> any SettingsScreenModel
     func makeSession() -> any SessionScreenModel
     func makeLogin() -> any LoginScreenModel
+    /// The sleep sheet for the evening `night` (`YYYY-MM-DD`, or nil); `startOnNight` opens it on that night.
+    func makeSleep(night: String?, startOnNight: Bool) -> any SleepScreenModel
 }

@@ -52,6 +52,7 @@ let project = Project(
                 .project(target: "AuthFeature", path: "../../Modules/Features/Auth"),
                 .project(target: "HomeFeature", path: "../../Modules/Features/Home"),
                 .project(target: "SettingsFeature", path: "../../Modules/Features/Settings"),
+                .project(target: "SleepFeature", path: "../../Modules/Features/Sleep"),
                 .external(name: "NavigatorUI"),
             ],
             settings: .settings(
