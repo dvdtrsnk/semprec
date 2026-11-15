@@ -5,6 +5,7 @@ import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { requireAffectedRows, withTransaction, type Queryable } from "../db/pool.js";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 import { runModuleDataMigrations } from "../migrationJob/moduleDataMigration.js";
+import { seedDefaultInboxItemTypes } from "../inbox/defaultInboxTypes.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { logger } from "./logger.js";
 
@@ -30,8 +31,9 @@ export async function assertRowSecurityActive(queryable: Queryable): Promise<voi
 
 /**
  * Creates one tenant's system databases and activates the tenant: seeds the system databases,
- * runs every module's data migrations, then moves a `provisioning` tenant to `active`. A
- * `suspended` tenant is seeded and stays suspended; a `deleting` or unknown tenant rejects.
+ * runs every module's data migrations, seeds the default Inbox item types (issue gh-1977), then moves a
+ * `provisioning` tenant to `active`. A `suspended` tenant is seeded and stays suspended; a `deleting` or unknown
+ * tenant rejects.
  * Everything runs inside the tenant's scope, and the pool must connect as a role RLS applies to.
  *
  * Resolves `"created"` exactly when this call wrote the structural seed, so of two concurrent
@@ -42,6 +44,11 @@ export async function provisionTenant(pool: Pool, tenantId: string): Promise<"cr
     await assertRowSecurityActive(pool);
     const seeded = await seedSystem(pool, createViewTypeRegistry(), createComputedKeyRegistry());
     await runModuleDataMigrations(pool, await loadFullModuleRegistry());
+    // After the system seed and the module data migrations: the defaults target databases the seed creates. The step
+    // creates only the defaults the tenant's marker does not list, so a provisioning that is repeated adds none.
+    await withTransaction(pool, async (client) => {
+      await seedDefaultInboxItemTypes(client);
+    });
     await withTransaction(pool, async (client) => {
       const { rows } = await client.query<{ status: string }>("SELECT status FROM tenants WHERE id = $1 FOR UPDATE", [
         tenantId,

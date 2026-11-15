@@ -37,6 +37,7 @@ import {
   loadFullModuleRegistry,
   matchTranscriptToEvent,
   provisionTenant,
+  recordInboxAttachmentMetadata,
   resolveTaskAffinitySets,
   TRANSCRIPTION_OWNER_PROCESS,
   transcriptionSourceLink,
@@ -52,6 +53,7 @@ import {
   resetDatabase,
 } from "@semprec/data/testSupport";
 import { createInboxAttachmentMetadataTask } from "../inboxAttachmentMetadata.js";
+import { createInboxVoiceNoteTranscribeTask } from "../inboxVoiceNoteTranscribe.js";
 import { createTranscriptCardRecomputeTask } from "../transcriptCardRecompute.js";
 import { createTranscriptSpeakerSuggestionTask } from "../transcriptSpeakerSuggestionTask.js";
 import { createTranscriptionCreateTask, createTranscriptionTask } from "../transcriptionTask.js";
@@ -466,7 +468,51 @@ async function seedInboxPhotoAttachment(tenant: Tenant): Promise<Payload> {
   });
 }
 
+/**
+ * An Inbox item of `tenant` with one 40-second voice note attached, its metadata recorded as the metadata job leaves it,
+ * so the transcription job has a voice note to read. The bytes are placeholders: the fake gateway ignores them.
+ */
+async function seedInboxVoiceNote(tenant: Tenant): Promise<Payload> {
+  const bytes = Buffer.from("voice note bytes");
+  return runInTenant(tenant.tenantId, async () => {
+    const inbox = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "inbox"));
+    if (!inbox) throw new Error("Inbox database was not seeded");
+    const storageKey = `${tenant.tenantId}/blobs/${randomUUID()}`;
+    await blobStorage.writeStream(storageKey, Readable.from(bytes));
+    return withTransaction(pool, async (client) => {
+      const blob = await createBlob(client, { mimeType: "audio/mp4", byteSize: bytes.byteLength, storageKey });
+      const item = await createItemWithClient(client, {
+        databaseId: inbox.id,
+        properties: { date: "2026-11-02", time: "10:15", text: "" },
+      });
+      const [attachmentId] = await insertInboxAttachments(client, item.id, [{ blobId: blob.id, source: "files" }]);
+      if (attachmentId === undefined) throw new Error("No attachment was inserted");
+      await recordInboxAttachmentMetadata(client, {
+        attachmentId,
+        metadata: { durationSeconds: 40, audioKind: "voiceNote", pages: null },
+        thumbnail: null,
+        reduced: null,
+      });
+      return { inboxItemId: item.id };
+    });
+  });
+}
+
 const cases: Record<string, TaskCase> = {
+  [CORE_TASK_NAMES.INBOX_VOICE_NOTE_TRANSCRIBE]: {
+    tenancy: "tenant",
+    seed: seedInboxVoiceNote,
+    async expectDone(tenant, payload) {
+      const items = await runInTenant(tenant.tenantId, async () => {
+        const { rows } = await pool.query<{ transcribed: string | null; text: string | null }>(
+          "SELECT properties ->> 'transcribedText' AS transcribed, properties ->> 'text' AS text FROM items WHERE id = $1",
+          [requirePayloadString(payload, "inboxItemId")],
+        );
+        return rows;
+      });
+      expect(items).toEqual([{ transcribed: "Hello. Hi there.", text: "" }]);
+    },
+  },
   [CORE_TASK_NAMES.INBOX_ATTACHMENT_METADATA]: {
     tenancy: "tenant",
     seed: seedInboxPhotoAttachment,
@@ -605,6 +651,10 @@ describe("background task isolation across two tenants: transcribe runtime (issu
       [CORE_TASK_NAMES.INBOX_ATTACHMENT_METADATA]: registerTask(
         CORE_TASK_NAMES.INBOX_ATTACHMENT_METADATA,
         createInboxAttachmentMetadataTask(pool, blobStorage),
+      ),
+      [CORE_TASK_NAMES.INBOX_VOICE_NOTE_TRANSCRIBE]: registerTask(
+        CORE_TASK_NAMES.INBOX_VOICE_NOTE_TRANSCRIBE,
+        createInboxVoiceNoteTranscribeTask(pool, blobStorage, new FakeAudioGateway()),
       ),
     };
     assertTaskListMatchesAffinity(taskList, (await resolveTaskAffinitySets(moduleRegistry)).transcribe, "transcribe");

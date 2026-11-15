@@ -21,7 +21,10 @@ import {
   inTenantZero,
   resetDatabase,
 } from "../../testSupport/testDb.js";
-import { createMarkdownPageContentProposal } from "../../testSupport/pageProposalFixtures.js";
+import {
+  createJournalEntryProposal,
+  createMarkdownPageContentProposal,
+} from "../../testSupport/pageProposalFixtures.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../../transcription/transcriptionJob.js";
 import { createTranscriptEventCard, matchTranscriptToEvent } from "../../transcription/transcriptEventMatch.js";
 import { createInboxItemWithClient } from "../inboxStore.js";
@@ -866,6 +869,22 @@ describe("listInboxCards (issue #1807)", () => {
 
       expect(cardOf(await listCards(adminPool, ownerId, "cs"), card.id)).toMatchObject({
         cardKind: "journal",
+        targets: [{ databaseKey: "journal", label: "Deník" }],
+      });
+    });
+  });
+
+  describe("the card of a journalEntry envelope (issue gh-1982)", () => {
+    it("derives the journal kind and labels the Journal database as its target", async () => {
+      const card = await createJournalEntryProposal(adminPool, { inboxId, typesId, proposalsId }, { markdown: "Ran" });
+
+      const listed = cardOf(await listCards(adminPool, ownerId, "cs"), card.id);
+
+      expect(listed).toMatchObject({
+        cardKind: "journal",
+        baseKind: "journal",
+        status: "proposed",
+        envelope: { entityKind: "journalEntry", target: await databaseIdFor("journal") },
         targets: [{ databaseKey: "journal", label: "Deník" }],
       });
     });

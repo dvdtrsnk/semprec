@@ -1,22 +1,51 @@
 import type { PoolClient } from "pg";
 import { z } from "zod";
 import { currentTenantScope } from "@semprec/shared";
+import { listUnreadableDatabaseIds } from "../agentGrants/agentDatabaseAccess.js";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
-import { getRelationDefinitionByPropertyId } from "../chokePoint/relationsStore.js";
+import {
+  getRelationDefinitionByPropertyId,
+  listLiveRelationTargets,
+  listRelationsForItems,
+  otherSide,
+} from "../chokePoint/relationsStore.js";
 
 const MODULES = ["projects", "areas", "people", "companies", "events"] as const;
 const ACTIVE_PROJECT_STATUSES = ["inProgress", "longTerm"];
-type WorkspaceModule = (typeof MODULES)[number];
+
+/** The longest text the context carries for one value: a name, a status, a relationship, a registration number. */
+const MAX_VALUE_LENGTH = 100;
 
 export interface ProposalWorkspaceEntry {
   id: string;
   name: string;
 }
-export interface ProposalWorkspaceGroup {
-  moduleId: WorkspaceModule;
-  databaseId: string;
-  items: ProposalWorkspaceEntry[];
+export interface ProposalWorkspaceProject extends ProposalWorkspaceEntry {
+  status: string;
+  /** The Areas item the project belongs to; absent when it has none or the Areas database is closed to the project. */
+  areaId?: string;
 }
+export interface ProposalWorkspacePerson extends ProposalWorkspaceEntry {
+  relationship?: string;
+}
+export interface ProposalWorkspaceCompany extends ProposalWorkspaceEntry {
+  /** The company's `ico` property. */
+  registrationNumber?: string;
+}
+export interface ProposalWorkspaceEvent extends ProposalWorkspaceEntry {
+  type?: string;
+  date: string;
+}
+/**
+ * One kind of the context, with the id of its database. A kind whose database the reading project may not read
+ * (a sensitive database without a grant) is absent altogether, not present as an empty group.
+ */
+export type ProposalWorkspaceGroup =
+  | { moduleId: "projects"; databaseId: string; items: ProposalWorkspaceProject[] }
+  | { moduleId: "areas"; databaseId: string; items: ProposalWorkspaceEntry[] }
+  | { moduleId: "people"; databaseId: string; items: ProposalWorkspacePerson[] }
+  | { moduleId: "companies"; databaseId: string; items: ProposalWorkspaceCompany[] }
+  | { moduleId: "events"; databaseId: string; items: ProposalWorkspaceEvent[] };
 
 export interface ProposalRelationCatalogEntry {
   key: string;
@@ -57,7 +86,16 @@ export async function readProposalRelationCatalog(
 }
 
 const databaseRow = z.object({ id: z.uuid(), owner_module_id: z.enum(MODULES) });
-const itemRow = z.object({ id: z.uuid(), name: z.string() });
+const optionalText = z.string().nullable();
+const itemRow = z.object({
+  id: z.uuid(),
+  name: z.string(),
+  status: optionalText,
+  relationship: optionalText,
+  registration_number: optionalText,
+  type: optionalText,
+  date: optionalText,
+});
 
 function workspaceDateWindow(captureDate: unknown): [string | null, string | null] {
   const parsedDate = z.iso.date().safeParse(captureDate);
@@ -93,14 +131,74 @@ export async function isWorkspaceUpdateEligible(
   return z.object({ eligible: z.boolean().nullable() }).parse(result.rows[0]).eligible === true;
 }
 
-/** Reads only the fixed, bounded built-in workspace context under the active tenant transaction. */
+/** `properties->'key'` when it is a JSON string, cut at `MAX_VALUE_LENGTH` characters; `key` is a constant of this module. */
+function textValueSql(key: string, length: number = MAX_VALUE_LENGTH): string {
+  return `CASE WHEN jsonb_typeof(properties->'${key}') = 'string' THEN left(properties->>'${key}', ${length}) END`;
+}
+
+const ITEM_COLUMNS_SQL = `id, left(properties->>'name', ${MAX_VALUE_LENGTH}) AS name,
+  ${textValueSql("status")} AS status,
+  ${textValueSql("relationship")} AS relationship,
+  ${textValueSql("ico")} AS registration_number,
+  ${textValueSql("type")} AS type,
+  ${textValueSql("date", 10)} AS date`;
+
+/** The area of each of `projectIds`, for the areas that are live and in a database the reader may read. */
+async function readProjectAreaIds(
+  client: PoolClient,
+  projectsDatabaseId: string,
+  projectIds: readonly string[],
+  unreadable: ReadonlySet<string>,
+): Promise<Map<string, string>> {
+  const areaIds = new Map<string, string>();
+  const areaProperty = (await listPropertiesByDatabase(client, projectsDatabaseId)).find(
+    (property) => property.key === "area" && property.type === "relation",
+  );
+  const definition = areaProperty ? await getRelationDefinitionByPropertyId(client, areaProperty.id) : null;
+  if (!definition) return areaIds;
+  const projects = new Set(projectIds);
+  const edgeAreas = (await listRelationsForItems(client, definition.id, [...projectIds]))
+    .map((edge) => {
+      const projectId = projects.has(edge.itemA) ? edge.itemA : edge.itemB;
+      return { projectId, areaId: otherSide(edge, projectId) };
+    })
+    .sort((a, b) => (a.areaId < b.areaId ? -1 : a.areaId > b.areaId ? 1 : 0));
+  const readable = new Set(
+    (await listLiveRelationTargets(client, [...new Set(edgeAreas.map((edge) => edge.areaId))]))
+      .filter((target) => !unreadable.has(target.databaseId))
+      .map((target) => target.id),
+  );
+  for (const { projectId, areaId } of edgeAreas) {
+    if (readable.has(areaId) && !areaIds.has(projectId)) areaIds.set(projectId, areaId);
+  }
+  return areaIds;
+}
+
+export interface ReadProposalWorkspaceContextInput {
+  /** The Projects item the context is read for; a database it may not read contributes nothing (issue #1810). */
+  projectItemId: string;
+  /** The capture date of the Inbox item; an invalid one leaves the Events list empty. */
+  captureDate: unknown;
+  /** At most this many entries per kind; a positive integer. */
+  limitPerKind: number;
+}
+
+/**
+ * Reads only the fixed, bounded built-in workspace context under the active tenant transaction, as the project
+ * `projectItemId` (issue gh-1987): a database that project may not read (`listUnreadableDatabaseIds`, the decision of
+ * the per-database agent grants, issue #1810) contributes no group, so a sensitive database without a grant leaves
+ * nothing behind, not even an empty list. The read writes nothing.
+ */
 export async function readProposalWorkspaceContext(
   client: PoolClient,
-  captureDate: unknown,
+  { projectItemId, captureDate, limitPerKind }: ReadProposalWorkspaceContextInput,
 ): Promise<ProposalWorkspaceGroup[]> {
   const scope = currentTenantScope();
   if (scope?.kind !== "tenant") throw new Error("Proposal workspace context requires tenant scope");
+  if (!Number.isInteger(limitPerKind) || limitPerKind < 1)
+    throw new RangeError("The workspace context limit per kind must be a positive integer");
   const [firstDate, lastDate] = workspaceDateWindow(captureDate);
+  const unreadable = await listUnreadableDatabaseIds(client, projectItemId);
   const databases = await client.query<Record<string, unknown>>(
     `SELECT id, owner_module_id FROM databases
      WHERE tenant_id = $1 AND system AND archived_at IS NULL AND owner_module_id = ANY($2::text[])
@@ -110,24 +208,87 @@ export async function readProposalWorkspaceContext(
   const result: ProposalWorkspaceGroup[] = [];
   for (const raw of databases.rows) {
     const database = databaseRow.parse(raw);
+    if (unreadable.has(database.id)) continue;
     const rows = await client.query<Record<string, unknown>>(
-      `SELECT id, left(properties->>'name', 100) AS name FROM items
+      `SELECT ${ITEM_COLUMNS_SQL} FROM items
        WHERE tenant_id = $1 AND database_id = $2 AND deleted_at IS NULL
          AND jsonb_typeof(properties->'name') = 'string'
          AND ${eligibilitySql(3, 4, 5, 6)}
        ORDER BY CASE WHEN $3 = 'events' THEN properties->>'date' END ASC NULLS LAST,
                 CASE WHEN $3 <> 'events' THEN updated_at END DESC NULLS LAST, id ASC
-       LIMIT 20`,
-      [scope.tenantId, database.id, database.owner_module_id, ACTIVE_PROJECT_STATUSES, firstDate, lastDate],
+       LIMIT $7`,
+      [
+        scope.tenantId,
+        database.id,
+        database.owner_module_id,
+        ACTIVE_PROJECT_STATUSES,
+        firstDate,
+        lastDate,
+        limitPerKind,
+      ],
     );
-    result.push({
-      moduleId: database.owner_module_id,
-      databaseId: database.id,
-      items: rows.rows.map((rawItem) => {
-        const item = itemRow.parse(rawItem);
-        return { id: item.id, name: item.name.slice(0, 100) };
-      }),
-    });
+    const items = rows.rows.map((rawItem) => itemRow.parse(rawItem));
+    const entry = (item: z.infer<typeof itemRow>): ProposalWorkspaceEntry => ({ id: item.id, name: item.name });
+    // The eligibility predicate admits only a project with an active status and an event with a date.
+    const required = (value: string | null): string => {
+      if (value === null)
+        throw new Error("A workspace item passed the eligibility predicate without its required value");
+      return value;
+    };
+    switch (database.owner_module_id) {
+      case "projects": {
+        const areaIds = await readProjectAreaIds(
+          client,
+          database.id,
+          items.map((item) => item.id),
+          unreadable,
+        );
+        result.push({
+          moduleId: "projects",
+          databaseId: database.id,
+          items: items.map((item) => ({
+            ...entry(item),
+            status: required(item.status),
+            ...(areaIds.has(item.id) ? { areaId: areaIds.get(item.id) } : {}),
+          })),
+        });
+        break;
+      }
+      case "areas":
+        result.push({ moduleId: "areas", databaseId: database.id, items: items.map(entry) });
+        break;
+      case "people":
+        result.push({
+          moduleId: "people",
+          databaseId: database.id,
+          items: items.map((item) => ({
+            ...entry(item),
+            ...(item.relationship === null ? {} : { relationship: item.relationship }),
+          })),
+        });
+        break;
+      case "companies":
+        result.push({
+          moduleId: "companies",
+          databaseId: database.id,
+          items: items.map((item) => ({
+            ...entry(item),
+            ...(item.registration_number === null ? {} : { registrationNumber: item.registration_number }),
+          })),
+        });
+        break;
+      case "events":
+        result.push({
+          moduleId: "events",
+          databaseId: database.id,
+          items: items.map((item) => ({
+            ...entry(item),
+            ...(item.type === null ? {} : { type: item.type }),
+            date: required(item.date),
+          })),
+        });
+        break;
+    }
   }
   return result;
 }

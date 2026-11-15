@@ -231,7 +231,7 @@ describe("createTranscribeQueueRuntime", () => {
     expect(started).toEqual([
       { tasks: ["transcriptionJob"], concurrency: 1 },
       { tasks: ["transcriptionCreate"], concurrency: 1 },
-      { tasks: ["transcriptCardRecompute", "transcriptSpeakerSuggestion"], concurrency: 1 },
+      { tasks: ["transcriptCardRecompute", "transcriptSpeakerSuggestion", "inboxVoiceNoteTranscribe"], concurrency: 1 },
       { tasks: ["inboxAttachmentMetadata"], concurrency: 1 },
     ]);
   });

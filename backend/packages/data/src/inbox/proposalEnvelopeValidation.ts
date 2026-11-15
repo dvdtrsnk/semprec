@@ -301,3 +301,21 @@ export function assertUpdateStepShape(
     }
   }
 }
+
+/**
+ * Refuses a `pageSections` list on an envelope that cannot carry one (issue gh-1974): only a single-step `database`
+ * envelope creates an item whose page the sections are written to. A multi-step envelope names several created items,
+ * and every other kind writes to an existing page or to no item at all. Each refusal is a `ValidationError` on
+ * `pageSections`. The shape of the sections themselves is the envelope schema's.
+ */
+export function assertValidEnvelopePageSections(envelope: ProposalEnvelope): void {
+  if (envelope.pageSections === undefined) return;
+  if (envelope.entityKind !== "database") {
+    throw new ValidationError("Proposal page sections are only valid for entityKind 'database'", {
+      field: "pageSections",
+    });
+  }
+  if (envelope.operations !== undefined) {
+    throw new ValidationError("A proposal with steps has no page sections", { field: "pageSections" });
+  }
+}

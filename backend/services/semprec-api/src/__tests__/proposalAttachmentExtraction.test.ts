@@ -40,6 +40,7 @@ import {
   type InboxAttachmentMetadata,
   type ItemRow,
 } from "@semprec/data";
+import type { AresClient } from "../aresClient.js";
 import { createProposalComputation } from "../proposalComputation.js";
 import { resolveAttachmentDocuments } from "../proposalAttachmentExtraction.js";
 
@@ -125,6 +126,13 @@ function stubGateway(extraction: (callNumber: number) => unknown): StubGateway {
 }
 
 const bytesOf = (label: string) => Buffer.from(`\xff\xd8\xff reduced copy ${label}`, "latin1");
+
+/** A register that knows no company; no photo of these tests leads to a Companies proposal. */
+const knowsNoCompany: AresClient = {
+  async lookupCompanyByIco() {
+    return null;
+  },
+};
 
 describe("the proposal computation reads the photos of an Inbox item (issue gh-1970)", () => {
   let semprecProjectId: string;
@@ -223,7 +231,10 @@ describe("the proposal computation reads the photos of an Inbox item (issue gh-1
   });
 
   async function runTick(gateway: AiGatewayClientPort, itemId: string): Promise<void> {
-    const handler = createSemprecTickAction(pool, createProposalComputation({ pool, gateway, openBlob }));
+    const handler = createSemprecTickAction(
+      pool,
+      createProposalComputation({ pool, gateway, openBlob, aresClient: knowsNoCompany }),
+    );
     await inTenantZero(() => handler(config, { heartbeatId: "hb", projectItemId: semprecProjectId, itemId }));
   }
 
@@ -292,7 +303,7 @@ describe("the proposal computation reads the photos of an Inbox item (issue gh-1
     const { itemId, typeId } = await createTaskItem("Faktura za obklady");
     await attach(itemId, photo("invoice"));
     const gateway = stubGateway(() => INVOICE_ANSWER);
-    const compute = createProposalComputation({ pool, gateway, openBlob });
+    const compute = createProposalComputation({ pool, gateway, openBlob, aresClient: knowsNoCompany });
     const item = await inTenantZero(() =>
       withTransaction(pool, (client) => getItemById(client, config.inboxDatabaseId, itemId)),
     );

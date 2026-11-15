@@ -15,6 +15,7 @@ import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 import { generateSchemaProjection } from "../manifest/schemaProjection.js";
 import { seedAccountSystemProjectGuidance } from "../projectAgentGuidance/seedSystemProjectAgentGuidance.js";
 import { runRecipesModuleCutoverMigration } from "../recipes/recipesModuleCutoverMigration.js";
+import { runRecipesSourceUrlCutoverMigration } from "../recipes/recipesSourceUrlCutoverMigration.js";
 import { RECIPES_MODULE_ID } from "../seed/recipesModuleKeys.js";
 import { lockTenantSeedInTransaction, seedSystem } from "../seed/seedSystem.js";
 import { SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS } from "../seed/systemProjectAgentGuidance.js";
@@ -80,6 +81,8 @@ const EXPECTED_SHAPE = {
       },
     },
     { key: "servings", name: null, type: "number", owner: "user", ownerProcess: null, locked: false, config: {} },
+    // Issue gh-1974.
+    { key: "sourceUrl", name: null, type: "url", owner: "user", ownerProcess: null, locked: false, config: {} },
   ],
   views: [
     {
@@ -302,7 +305,7 @@ describe("Recipes system module (issue #1707)", () => {
   });
 
   it(
-    "gives a newly provisioned tenant the recipes database with exactly the six properties, the gallery default view and its system project",
+    "gives a newly provisioned tenant the recipes database with exactly the seven properties, the gallery default view and its system project",
     async () => {
       const tenantId = await createTestTenant(adminPool, { status: "provisioning" });
 
@@ -323,7 +326,7 @@ describe("Recipes system module (issue #1707)", () => {
       await revertToOldShape(suspended);
       const freshBefore = await recipesRows(fresh);
       expect(freshBefore.databases).toHaveLength(1);
-      expect(freshBefore.properties).toHaveLength(6);
+      expect(freshBefore.properties).toHaveLength(7);
       expect(freshBefore.views).toHaveLength(1);
       expect(freshBefore.projects).toHaveLength(1);
 
@@ -353,6 +356,7 @@ describe("Recipes system module (issue #1707)", () => {
         servings: "Porce",
         favorite: "Oblíbené",
         photo: "Fotka",
+        sourceUrl: "Zdroj",
       });
     },
     SEEDING_TEST_TIMEOUT_MS,
@@ -366,7 +370,7 @@ describe("Recipes system module (issue #1707)", () => {
       await runCutovers();
       const delivered = await recipesRows(tenantId);
       expect(delivered.databases).toHaveLength(1);
-      expect(delivered.properties).toHaveLength(6);
+      expect(delivered.properties).toHaveLength(7);
       expect(delivered.views).toHaveLength(1);
       expect(delivered.projects).toHaveLength(1);
 
@@ -555,5 +559,111 @@ describe("Recipes system module (issue #1707)", () => {
       },
       SEEDING_TEST_TIMEOUT_MS,
     );
+  });
+});
+
+describe("Recipes sourceUrl tenant cutover (issue gh-1974)", () => {
+  beforeAll(async () => {
+    adminPool = getTestPool();
+    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    const role = await dataPool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
+      "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+    );
+    expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
+  });
+
+  beforeEach(async () => {
+    await resetDatabase(adminPool);
+  });
+
+  afterAll(async () => {
+    await dataPool?.end();
+    await adminPool?.end();
+  });
+
+  /** The properties of the recipes database of `tenantId`, with their row versions, on the admin pool. */
+  async function propertyRows(tenantId: string) {
+    return (
+      await adminPool.query<{ version: string; key: string; row: unknown }>(
+        `SELECT p.xmin::text AS version, p.key, to_jsonb(p) - 'id' - 'created_at' AS row
+           FROM properties p JOIN databases d ON d.id = p.database_id
+          WHERE d.tenant_id = $1 AND d.owner_module_id = $2 ORDER BY p.key`,
+        [tenantId, RECIPES_MODULE_ID],
+      )
+    ).rows;
+  }
+
+  /**
+   * Removes the `sourceUrl` property of `tenantId`: the state of a tenant whose Recipes module was seeded before issue
+   * gh-1974. Raw SQL on the admin pool, because the schema is locked and no public path deletes a property of it.
+   */
+  async function removeSourceUrl(tenantId: string): Promise<void> {
+    const removed = await adminPool.query(
+      `DELETE FROM properties p USING databases d
+        WHERE d.id = p.database_id AND d.tenant_id = $1 AND d.owner_module_id = $2 AND p.key = 'sourceUrl'`,
+      [tenantId, RECIPES_MODULE_ID],
+    );
+    expect(removed.rowCount).toBe(1);
+  }
+
+  it(
+    "gives a tenant whose recipes database predates the property the definition a fresh seed declares, through the registered runner, and leaves its other rows and the tenant that has it alone",
+    async () => {
+      const behind = await seededTenant();
+      const fresh = await seededTenant();
+      await removeSourceUrl(behind);
+      const freshBefore = await propertyRows(fresh);
+      const behindBefore = (await propertyRows(behind)).filter((row) => row.key !== "sourceUrl");
+      expect(behindBefore).toHaveLength(6);
+
+      await runCutovers();
+
+      const delivered = await propertyRows(behind);
+      expect(delivered.map((row) => row.key)).toEqual([
+        "category",
+        "favorite",
+        "name",
+        "photo",
+        "prepMinutes",
+        "servings",
+        "sourceUrl",
+      ]);
+      const stripTenant = (rows: typeof delivered) =>
+        rows.map(({ key, row }) => ({
+          key,
+          row: { ...(row as Record<string, unknown>), database_id: null, tenant_id: null },
+        }));
+      expect(stripTenant(delivered.filter((row) => row.key === "sourceUrl"))).toEqual(
+        stripTenant(freshBefore.filter((row) => row.key === "sourceUrl")),
+      );
+      // The properties the tenant had keep their rows unwritten, and so does the tenant that already had everything.
+      expect(delivered.filter((row) => row.key !== "sourceUrl")).toEqual(behindBefore);
+      expect(await propertyRows(fresh)).toEqual(freshBefore);
+    },
+    SEEDING_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "writes nothing when it runs again, through the runner and on its own",
+    async () => {
+      const tenantId = await seededTenant();
+      await removeSourceUrl(tenantId);
+      await runCutovers();
+      const delivered = await propertyRows(tenantId);
+
+      await runCutovers();
+      await runInTenant(tenantId, () => runRecipesSourceUrlCutoverMigration(dataPool));
+
+      expect(await propertyRows(tenantId)).toEqual(delivered);
+    },
+    SEEDING_TEST_TIMEOUT_MS,
+  );
+
+  it("skips a tenant that has no recipes database", async () => {
+    const bare = await createTestTenant(adminPool);
+
+    await expect(runInTenant(bare, () => runRecipesSourceUrlCutoverMigration(dataPool))).resolves.toBeUndefined();
+
+    expect(await propertyRows(bare)).toEqual([]);
   });
 });

@@ -12,5 +12,6 @@
   "property.recipes.prepMinutes.preset.60": "Up to an hour",
   "property.recipes.servings.name": "Servings",
   "property.recipes.favorite.name": "Favorite",
-  "property.recipes.photo.name": "Photo"
+  "property.recipes.photo.name": "Photo",
+  "property.recipes.sourceUrl.name": "Source"
 }

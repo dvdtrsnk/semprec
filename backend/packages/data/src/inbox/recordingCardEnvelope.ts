@@ -22,13 +22,16 @@ export const RECORDING_PROPERTY_KEYS: readonly string[] = [
   "numSpeakersMin",
   "eventId",
   "projectId",
+  "noEvent",
 ];
 
 /**
  * A recording card's envelope `properties`: a non-empty `name`, and the optional parameters of the recording. A
  * parameter the user cleared is `null`, which means the same as an absent one. `language` is an ISO 639-1 code,
  * `numSpeakersExact` an integer from 1 and `numSpeakersMin` an integer from 2, both at most `MAX_RECORDING_SPEAKERS`
- * (the width of the columns that store them), and at most one of the two holds a value. The recording time and the duration are not properties: they come from the attachment's metadata, so a
+ * (the width of the columns that store them), and at most one of the two holds a value. `noEvent` is the user's explicit
+ * choice that the recording belongs to no Event (issue gh-1986): `true` is the choice, `false`, `null` and an absent
+ * property mean that nothing was chosen, and `true` next to an `eventId` is refused. The recording time and the duration are not properties: they come from the attachment's metadata, so a
  * client-supplied `recordedAt` or `durationSeconds` is an unknown key.
  */
 const recordingPropertiesSchema = z
@@ -42,10 +45,15 @@ const recordingPropertiesSchema = z
     numSpeakersMin: z.number().int().min(2).max(MAX_RECORDING_SPEAKERS).nullish(),
     eventId: z.uuid().nullish(),
     projectId: z.uuid().nullish(),
+    noEvent: z.boolean().nullish(),
   })
   .refine((value) => value.numSpeakersExact == null || value.numSpeakersMin == null, {
     message: "at most one of numSpeakersExact and numSpeakersMin may be set",
     path: ["numSpeakersMin"],
+  })
+  .refine((value) => value.noEvent !== true || value.eventId == null, {
+    message: "must not be true together with an eventId",
+    path: ["noEvent"],
   });
 
 /** The validated parameters of a recording card, each optional one `null` when it is not set. */
@@ -56,6 +64,8 @@ export interface RecordingCardProperties {
   numSpeakersMin: number | null;
   eventId: string | null;
   projectId: string | null;
+  /** True only when the user chose that the recording belongs to no Event; false for everything else. */
+  noEvent: boolean;
 }
 
 /**
@@ -80,6 +90,7 @@ export function parseRecordingCardProperties(properties: Record<string, unknown>
     numSpeakersMin: value.numSpeakersMin ?? null,
     eventId: value.eventId ?? null,
     projectId: value.projectId ?? null,
+    noEvent: value.noEvent === true,
   };
 }
 

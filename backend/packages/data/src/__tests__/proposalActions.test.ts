@@ -1,6 +1,8 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createUser } from "../auth/usersStore.js";
-import { readPageMarkdown } from "../docs/pageMarkdown.js";
+import { insertPageMarkdown, readPageMarkdown } from "../docs/pageMarkdown.js";
+import { getDocByItemId } from "../docs/docsStore.js";
+import { ensureJournalPeriodDoc } from "../journal/journalStore.js";
 import { z } from "zod";
 import { readPageBlocks, writeBlock, type BlockInput } from "@semprec/block-model";
 import "../domainWriteHooks.js";
@@ -11,7 +13,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Pool, PoolClient } from "pg";
 import { getSystemSettingsDatabaseId, getSystemSettingsItemId, getSystemTimezone } from "../systemSettings.js";
-import { createRuntimeRolePool, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTenantZeroId,
+  getTestPool,
+  resetDatabase,
+} from "../testSupport/testDb.js";
 import { runInTenant } from "@semprec/shared";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
@@ -41,11 +49,13 @@ import {
   assertValidProposalEnvelope,
   createSemprecTickAction,
   parseStoredProposalEnvelope,
+  storedEnvelopeStillValid,
   type ComputeSemprecProposalFn,
   type ProposalEnvelope,
 } from "../inbox/inboxTickAction.js";
 import {
   confirmProposalWithClient,
+  readConfirmationResults,
   recomputeProposalWithClient,
   rejectProposalWithClient,
   resetProposalOverridesWithClient,
@@ -66,6 +76,7 @@ import { createDocStore, type DocStore } from "../docs/docStore.js";
 import { loadDoc, loadDocWithClient, mutateDoc } from "../docs/docPersistence.js";
 import { createSubpageWithClient } from "../docs/pageOperations.js";
 import { proposalBlockId } from "../inbox/proposalPageContent.js";
+import { confirmJournalEntry } from "../inbox/journalEntryConfirm.js";
 import { listPageChanges } from "../docs/pageChanges.js";
 import { matchTranscriptToEvent } from "../transcription/transcriptEventMatch.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
@@ -1920,6 +1931,38 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     expect((error as ValidationError).details).toEqual({ field: "project", code: "targetDeleted" });
     const card = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, proposal.id));
     expect(card!.properties.proposal).toEqual(revised.properties.proposal);
+  });
+
+  it("revise refuses a relation the project derives and leaves the card as it was, and accepts it without a project (issue gh-1991)", async () => {
+    const proposal = await createDatabaseProposal("Buy milk");
+    const eventsId = await databaseIdFor("events");
+    const itemIn = async (moduleId: string, name: string): Promise<string> =>
+      withTransaction(
+        pool,
+        async (client) =>
+          (await createItemWithClient(client, { databaseId: await databaseIdFor(moduleId), properties: { name } })).id,
+      );
+    const project = await itemIn("projects", "Home");
+    const company = await itemIn("companies", "Acme");
+    const revise = (relations: Record<string, string[]>) =>
+      withTransaction(pool, (client) =>
+        reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposal.id, {
+          message: "make it an event",
+          entityKind: "database",
+          target: eventsId,
+          properties: { name: "Meeting" },
+          relations,
+        }),
+      );
+
+    const accepted = await revise({ company: [company] });
+    const error: unknown = await revise({ project: [project], company: [company] }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error).toMatchObject({ status: 400, details: { field: "company", code: "derivedRelation" } });
+    const card = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, proposal.id));
+    expect(card?.properties.proposal).toEqual(accepted.properties.proposal);
+    expect(card?.properties.proposal).toMatchObject({ relations: { company: [company] } });
   });
 
   describe("relations on confirm (issue #1476)", () => {
@@ -6574,6 +6617,52 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
           expect(await edgeExists(z.string().parse(confirmed.properties.resultItemId), project)).toBe(true);
         });
 
+        describe("a relation the project derives (issue gh-1991)", () => {
+          const eventWith = async (relations: Record<string, string[]>): Promise<string> =>
+            storeCard({
+              entityKind: "database",
+              target: await databaseIdFor("events"),
+              properties: { name: "Meeting" },
+              relations,
+            });
+          const derived = (field: string) => ({ status: 400, details: { field, code: "derivedRelation" } });
+
+          it("refuses a company typed into an Event card that has a project, and writes nothing", async () => {
+            const project = await itemIn("projects", { name: "Invoices" });
+            const company = await itemIn("companies", { name: "Acme" });
+            const card = await eventWith({ project: [project] });
+
+            const error = await expectRefusedUnchanged(card, () =>
+              editParts(card, { relations: { primary: { company: [company] } } }),
+            );
+
+            expect(error).toBeInstanceOf(ValidationError);
+            expect(error).toMatchObject(derived("company"));
+          });
+
+          it("refuses a project typed into an Event card that has a company, and writes nothing", async () => {
+            const project = await itemIn("projects", { name: "Invoices" });
+            const company = await itemIn("companies", { name: "Acme" });
+            const card = await eventWith({ company: [company] });
+
+            const error = await expectRefusedUnchanged(card, () =>
+              editParts(card, { relations: { primary: { project: [project] } } }),
+            );
+
+            expect(error).toBeInstanceOf(ValidationError);
+            expect(error).toMatchObject(derived("company"));
+          });
+
+          it("accepts a company typed into an Event card that has no project", async () => {
+            const company = await itemIn("companies", { name: "Acme" });
+            const card = await eventWith({});
+
+            const edited = await editParts(card, { relations: { primary: { company: [company] } } });
+
+            expect(edited.properties.proposal).toMatchObject({ relations: { company: [company] } });
+          });
+        });
+
         it("replaces the whole list, so a target the user removed is not written", async () => {
           const kept = await itemIn("projects", { name: "Kept" });
           const removed = await itemIn("projects", { name: "Removed" });
@@ -8355,6 +8444,833 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       expect(origins.rows).toEqual([{ capture_channel: "inbox" }]);
       const edges = await pool.query("SELECT 1 FROM item_relations WHERE item_a = $1 OR item_b = $1", [taskId]);
       expect(edges.rowCount).toBe(0);
+    });
+  });
+
+  describe("journal entry proposals (issues gh-1975 and gh-1981)", () => {
+    const config = () => ({ processingProposalsDatabaseId: proposalsId });
+    const PAGE_LINK = "[Sub page](semprec://page/00000000-0000-4000-8000-000000000001)";
+    let journalId: string;
+    let areasId: string;
+    let projectsId: string;
+
+    beforeEach(async () => {
+      journalId = await databaseIdFor("journal");
+      areasId = await databaseIdFor("areas");
+      projectsId = await databaseIdFor("projects");
+    });
+
+    async function createLiveItem(databaseId: string, name: string): Promise<ItemRow> {
+      return withTransaction(pool, (client) => createItemWithClient(client, { databaseId, properties: { name } }));
+    }
+
+    async function trash(databaseId: string, itemId: string): Promise<void> {
+      await withTransaction(pool, (client) =>
+        itemDeleteWithClient(client, databaseId, itemId, { queueAffinity: createActionQueueAffinity() }),
+      );
+    }
+
+    async function archive(databaseId: string, itemId: string): Promise<void> {
+      await runInTenant(getTenantZeroId(), () =>
+        withTransaction(pool, (client) =>
+          updateItemWithClient(client, { databaseId, itemId, propertiesPatch: { status: "archived" } }),
+        ),
+      );
+    }
+
+    function entry(properties: Record<string, unknown> = {}, target = journalId): ProposalEnvelope {
+      return {
+        entityKind: "journalEntry",
+        target,
+        properties: { date: "2026-10-16", markdown: "Went for a run.", ...properties },
+      };
+    }
+
+    function entryWithout(key: "date" | "markdown"): ProposalEnvelope {
+      const { [key]: _removed, ...rest } = entry().properties;
+      return { ...entry(), properties: rest };
+    }
+
+    /** The tick's check of a computed envelope before it stores it. */
+    function tickWrite(envelope: ProposalEnvelope) {
+      return withTransaction(pool, (client) => assertValidProposalEnvelope(client, envelope));
+    }
+
+    function revise(cardId: string, envelope: ProposalEnvelope) {
+      return withTransaction(pool, (client) =>
+        reviseProposalWithClient(client, config(), cardId, {
+          entityKind: envelope.entityKind,
+          target: envelope.target,
+          properties: envelope.properties,
+          ...(envelope.relations === undefined ? {} : { relations: envelope.relations }),
+        }),
+      );
+    }
+
+    async function readCard(id: string): Promise<ItemRow> {
+      const card = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, id));
+      if (!card) throw new Error(`Card ${id} not found`);
+      return card;
+    }
+
+    /** A transcript card as the match step emits it (no Event in the window, so a create-Event proposal). */
+    async function createTranscriptCard(): Promise<string> {
+      const transcriptsId = await databaseIdFor("transcripts");
+      const transcript = await withTransaction(pool, (client) =>
+        createItemWithClient(
+          client,
+          { databaseId: transcriptsId, properties: { name: "Meeting", date: "2024-03-01T12:00:00.000Z" } },
+          { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+        ),
+      );
+      await withTransaction(pool, (client) =>
+        matchTranscriptToEvent(client, { transcriptId: transcript.id, durationSeconds: 3600 }),
+      );
+      const { rows } = await pool.query<{ id: string }>(
+        "SELECT id FROM items WHERE database_id = $1 AND properties->>'kind' = 'transcript'",
+        [proposalsId],
+      );
+      if (rows.length !== 1 || !rows[0]) throw new Error(`Expected one transcript card, found ${rows.length}`);
+      return rows[0].id;
+    }
+
+    /** Counts of what a confirm of a Journal entry could write, for asserting that nothing was. */
+    async function writtenState() {
+      const count = async (sql: string, params: unknown[] = []) =>
+        (await pool.query<{ n: number }>(sql, params)).rows[0]?.n;
+      return {
+        journalItems: await count("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [journalId]),
+        docs: await count("SELECT count(*)::int AS n FROM docs"),
+        docUpdates: await count("SELECT count(*)::int AS n FROM doc_updates"),
+        edges: await count("SELECT count(*)::int AS n FROM item_relations"),
+      };
+    }
+
+    describe("validation of the envelope, when the tick writes it and when revise supplies it", () => {
+      const INVALID: ReadonlyArray<
+        readonly [label: string, build: () => ProposalEnvelope | Promise<ProposalEnvelope>, field: string]
+      > = [
+        ["no markdown", () => entryWithout("markdown"), "markdown"],
+        ["an empty markdown", () => entry({ markdown: "" }), "markdown"],
+        ["a blank markdown", () => entry({ markdown: " \n  " }), "markdown"],
+        ["a markdown that is not a string", () => entry({ markdown: 5 }), "markdown"],
+        ["a page block", () => entry({ markdown: `A line\n\n${PAGE_LINK}` }), "markdown"],
+        ["no date", () => entryWithout("date"), "date"],
+        ["a date that is not a string", () => entry({ date: 20261016 }), "date"],
+        ["a date that is not a calendar day", () => entry({ date: "2026-02-30" }), "date"],
+        ["a date in another format", () => entry({ date: "16.10.2026" }), "date"],
+        ["a date with a time", () => entry({ date: "2026-10-16T08:00:00Z" }), "date"],
+        ["an unknown property", () => entry({ mood: "good" }), "mood"],
+        ["an areaId that is not an id", () => entry({ areaId: "area" }), "areaId"],
+        ["a projectId that is not an id", () => entry({ projectId: "project" }), "projectId"],
+        ["an areaId that names no item", () => entry({ areaId: randomUUID() }), "areaId"],
+        ["a projectId that names no item", () => entry({ projectId: randomUUID() }), "projectId"],
+        [
+          "an areaId that is a Projects item",
+          async () => entry({ areaId: (await createLiveItem(projectsId, "Website")).id }),
+          "areaId",
+        ],
+        [
+          "a projectId that is an Areas item",
+          async () => entry({ projectId: (await createLiveItem(areasId, "Health")).id }),
+          "projectId",
+        ],
+        [
+          "an areaId that is in the Trash",
+          async () => {
+            const area = await createLiveItem(areasId, "Old area");
+            await trash(areasId, area.id);
+            return entry({ areaId: area.id });
+          },
+          "areaId",
+        ],
+        [
+          "a projectId that is in the Trash",
+          async () => {
+            const project = await createLiveItem(projectsId, "Old project");
+            await trash(projectsId, project.id);
+            return entry({ projectId: project.id });
+          },
+          "projectId",
+        ],
+        [
+          "a projectId that is archived, which the day's edge could not point at",
+          async () => {
+            const project = await createLiveItem(projectsId, "Shelved project");
+            await archive(projectsId, project.id);
+            return entry({ projectId: project.id });
+          },
+          "projectId",
+        ],
+        ["a target that is another database", () => entry({}, tasksId), "target"],
+        ["a target that is not an id", () => entry({}, "journal"), "target"],
+      ];
+
+      it.each(INVALID)("refuses %s when the tick writes it", async (_label, build, field) => {
+        const envelope = await build();
+
+        const error: unknown = await tickWrite(envelope).catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(ValidationError);
+        expect(error).toMatchObject({ status: 400, details: { field } });
+      });
+
+      it.each(INVALID)(
+        "refuses %s when revise supplies it, and leaves the card as it was",
+        async (_label, build, field) => {
+          const card = await createDatabaseProposal("Buy milk");
+          const before = await readCard(card.id);
+          const envelope = await build();
+
+          const error: unknown = await revise(card.id, envelope).catch((e: unknown) => e);
+
+          expect(error).toBeInstanceOf(ValidationError);
+          expect(error).toMatchObject({ status: 400, details: { field } });
+          expect(await readCard(card.id)).toEqual(before);
+        },
+      );
+
+      it("refuses steps and relations, which a journal entry has none of", async () => {
+        const card = await createDatabaseProposal("Buy milk");
+        const step = { ref: "primary", op: "create" as const, role: "primary" as const, databaseKey: "journal" };
+
+        await expect(tickWrite({ ...entry(), operations: [step] })).rejects.toMatchObject({
+          status: 400,
+          details: { field: "operations" },
+        });
+        await expect(tickWrite({ ...entry(), relations: { areas: [] } })).rejects.toMatchObject({
+          status: 400,
+          details: { field: "relations" },
+        });
+        await expect(revise(card.id, { ...entry(), relations: { areas: [] } })).rejects.toMatchObject({
+          status: 400,
+          details: { field: "relations" },
+        });
+      });
+
+      it("accepts an envelope with a date and a Markdown body only", async () => {
+        const card = await createDatabaseProposal("Buy milk");
+
+        expect(await tickWrite(entry())).toBeNull();
+        const revised = await revise(card.id, entry());
+
+        expect(revised.properties.status).toBe("proposed");
+        expect(revised.properties.proposal).toEqual(entry());
+        expect(revised.properties.aiProposal).toEqual(entry());
+      });
+
+      it("accepts an area alone and a project alone, each checked on its own", async () => {
+        const area = await createLiveItem(areasId, "Health");
+        const project = await createLiveItem(projectsId, "Website");
+
+        for (const properties of [{ areaId: area.id }, { projectId: project.id }]) {
+          const card = await createDatabaseProposal("Buy milk");
+          expect(await tickWrite(entry(properties))).toBeNull();
+          const revised = await revise(card.id, entry(properties));
+          expect(revised.properties.proposal).toEqual(entry(properties));
+        }
+      });
+
+      describe("an area together with a project (issue gh-1991)", () => {
+        const DERIVED = { status: 400, details: { field: "area", code: "derivedRelation" } };
+
+        async function both(): Promise<ProposalEnvelope> {
+          const area = await createLiveItem(areasId, "Health");
+          const project = await createLiveItem(projectsId, "Website");
+          return entry({ areaId: area.id, projectId: project.id });
+        }
+
+        it("is refused on area when the tick writes it", async () => {
+          const error: unknown = await tickWrite(await both()).catch((e: unknown) => e);
+
+          expect(error).toBeInstanceOf(ValidationError);
+          expect(error).toMatchObject(DERIVED);
+        });
+
+        it("is refused on area when revise supplies it, and leaves the card as it was", async () => {
+          const card = await createDatabaseProposal("Buy milk");
+          const before = await readCard(card.id);
+
+          const error: unknown = await revise(card.id, await both()).catch((e: unknown) => e);
+
+          expect(error).toBeInstanceOf(ValidationError);
+          expect(error).toMatchObject(DERIVED);
+          expect(await readCard(card.id)).toEqual(before);
+        });
+
+        it("is refused at confirm for a card that already holds it, and nothing is written", async () => {
+          const card = await createDatabaseProposal("Buy milk");
+          // A pair stored before the rule existed is a state revise can no longer produce, so it is stored without its checks.
+          await setStoredProperty(card.id, "proposal", await both());
+          const before = await writtenState();
+
+          const error: unknown = await withTransaction(pool, (client) =>
+            confirmProposalWithClient(client, config(), card.id),
+          ).catch((e: unknown) => e);
+
+          expect(error).toBeInstanceOf(ValidationError);
+          expect(error).toMatchObject(DERIVED);
+          expect(await writtenState()).toEqual(before);
+          expect((await readCard(card.id)).properties.status).toBe("proposed");
+        });
+      });
+
+      it("accepts a markdown with several blocks", async () => {
+        const markdown = "# Evening\n\n- ran 5 km\n- called the bank\n\nA closing thought.";
+
+        expect(await tickWrite(entry({ markdown }))).toBeNull();
+      });
+
+      it("revise replaces a stored journal entry, a changed date and markdown included", async () => {
+        const card = await createDatabaseProposal("Buy milk");
+        await revise(card.id, entry());
+
+        const revised = await revise(card.id, entry({ date: "2026-10-17", markdown: "A different day." }));
+
+        expect(revised.properties.proposal).toEqual(entry({ date: "2026-10-17", markdown: "A different day." }));
+        const stored = await readCard(card.id);
+        expect(stored.properties.proposal).toEqual(entry({ date: "2026-10-17", markdown: "A different day." }));
+        expect(stored.properties.aiProposal).toEqual(stored.properties.proposal);
+      });
+
+      it("revise of a stored journal entry without a date is refused and the stored envelope stays", async () => {
+        const card = await createDatabaseProposal("Buy milk");
+        await revise(card.id, entry());
+        const before = await readCard(card.id);
+
+        const error: unknown = await revise(card.id, entryWithout("date")).catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(ValidationError);
+        expect(error).toMatchObject({ status: 400, details: { field: "date" } });
+        expect(await readCard(card.id)).toEqual(before);
+        expect(before.properties.proposal).toEqual(entry());
+      });
+
+      it("the stored card still validates for the tick's recheck, and stops validating once its project is deleted", async () => {
+        const project = await createLiveItem(projectsId, "Website");
+        const card = await createDatabaseProposal("Buy milk");
+        const revised = await revise(card.id, entry({ projectId: project.id }));
+        const stillValid = () => withTransaction(pool, (client) => storedEnvelopeStillValid(client, revised));
+        expect(await stillValid()).toBe(true);
+
+        await trash(projectsId, project.id);
+
+        expect(await stillValid()).toBe(false);
+      });
+    });
+
+    describe("on a transcript card", () => {
+      it("refuses a journal entry with a ValidationError on entityKind and leaves the card as it was", async () => {
+        const cardId = await createTranscriptCard();
+        const before = await readCard(cardId);
+
+        const error: unknown = await revise(cardId, entry()).catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(ValidationError);
+        expect(error).toMatchObject({ status: 400, details: { field: "entityKind" } });
+        expect(await readCard(cardId)).toEqual(before);
+      });
+    });
+
+    describe("confirming a journal entry (issue gh-1981)", () => {
+      const DAY = "2026-10-16";
+
+      /** The id of the Journal item of `day`, or `null` when the day has no item. */
+      async function dayItemId(day: string): Promise<string | null> {
+        const { rows } = await pool.query<{ id: string }>(
+          "SELECT id FROM items WHERE database_id = $1 AND properties->>'type' = 'day' AND properties->>'period' = $2",
+          [journalId, day],
+        );
+        return rows[0]?.id ?? null;
+      }
+
+      /** How many live Journal items stand for `day`. */
+      async function dayCount(day: string): Promise<number> {
+        const { rows } = await pool.query<{ n: number }>(
+          "SELECT count(*)::int AS n FROM items WHERE database_id = $1 AND properties->>'type' = 'day' AND properties->>'period' = $2 AND deleted_at IS NULL",
+          [journalId, day],
+        );
+        return rows[0]?.n ?? 0;
+      }
+
+      /** The ids of the real blocks of an item's page, in page order. */
+      async function pageBlockIds(itemId: string): Promise<string[]> {
+        return withTransaction(pool, async (client) => {
+          const row = await getDocByItemId(client, itemId);
+          if (!row) return [];
+          const doc = await loadDocWithClient(client, row.id);
+          try {
+            return readPageBlocks(doc).flatMap((block) => (block.synthetic || block.id === null ? [] : [block.id]));
+          } finally {
+            doc.destroy();
+          }
+        });
+      }
+
+      /** The relation property keys through which `itemId` has an edge, each with the item on the other side. */
+      async function edgesOf(itemId: string): Promise<Array<{ key: string; other: string }>> {
+        const { rows } = await pool.query<{ key: string; other: string }>(
+          `SELECT p.key, CASE WHEN r.item_a = $1 THEN r.item_b ELSE r.item_a END AS other
+             FROM item_relations r
+             JOIN relation_definitions d ON d.id = r.relation_definition_id
+             JOIN properties p ON p.id = d.property_id_a OR p.id = d.property_id_b
+            WHERE (r.item_a = $1 OR r.item_b = $1) AND p.database_id = $2`,
+          [itemId, journalId],
+        );
+        return rows;
+      }
+
+      /** A `proposed` card that holds `envelope`, written by revise as a person would write it. */
+      async function journalCard(envelope: ProposalEnvelope = entry()): Promise<ItemRow> {
+        const card = await createDatabaseProposal("Buy milk");
+        await revise(card.id, envelope);
+        return readCard(card.id);
+      }
+
+      function confirm(cardId: string) {
+        return withTransaction(pool, (client) => confirmProposalWithClient(client, config(), cardId));
+      }
+
+      /** The day with blocks written by an agent, as an earlier entry of the day would leave it. */
+      async function dayWithBlocks(day: string, markdown: string): Promise<{ itemId: string; blockIds: string[] }> {
+        const itemId = await withTransaction(pool, async (client) => {
+          const ensured = await ensureJournalPeriodDoc(client, "day", day);
+          await insertPageMarkdown(client, ensured.itemId, { placement: "end", markdown, origin: "ai_agent" });
+          return ensured.itemId;
+        });
+        return { itemId, blockIds: await pageBlockIds(itemId) };
+      }
+
+      it("creates the day, its page and the entry for a date that has no day yet, and confirms the card", async () => {
+        const card = await journalCard(entry({ markdown: "Went for a run.\n\nFelt good." }));
+        expect(await dayItemId(DAY)).toBeNull();
+
+        const confirmed = await confirm(card.id);
+
+        expect(confirmed.properties.status).toBe("confirmed");
+        const itemId = await dayItemId(DAY);
+        if (itemId === null) throw new Error("The day was not created");
+        expect(confirmed.properties.resultItemId).toBe(itemId);
+        expect(confirmed.properties.resultLabel).toBe(DAY);
+        const page = await withTransaction(pool, (client) => readPageMarkdown(client, itemId));
+        expect(page.markdown).toBe("Went for a run.\n\nFelt good.");
+        expect(await pageBlockIds(itemId)).toEqual([proposalBlockId(card.id, 0), proposalBlockId(card.id, 1)]);
+      });
+
+      it("appends the entry after the blocks the day already has and keeps their order", async () => {
+        const existing = await dayWithBlocks(DAY, "Morning.\n\nNoon.");
+        expect(existing.blockIds).toHaveLength(2);
+        const card = await journalCard(entry({ markdown: "Evening." }));
+
+        const confirmed = await confirm(card.id);
+
+        expect(confirmed.properties.resultItemId).toBe(existing.itemId);
+        expect(await pageBlockIds(existing.itemId)).toEqual([...existing.blockIds, proposalBlockId(card.id, 0)]);
+        const page = await withTransaction(pool, (client) => readPageMarkdown(client, existing.itemId));
+        expect(page.markdown).toBe("Morning.\n\nNoon.\n\nEvening.");
+        expect(await dayCount(DAY)).toBe(1);
+      });
+
+      it("authors the entry's document updates as the user, not as the assistant", async () => {
+        const existing = await dayWithBlocks(DAY, "Morning.");
+        const card = await journalCard(entry({ markdown: "Evening." }));
+
+        await confirm(card.id);
+
+        expect(await docUpdateAuthors(existing.itemId)).toEqual(["ai_agent", "user"]);
+      });
+
+      it("authors the updates of a day it creates as the user", async () => {
+        const card = await journalCard();
+
+        await confirm(card.id);
+
+        expect(await docUpdateAuthors((await dayItemId(DAY)) ?? "")).toEqual(["user"]);
+      });
+
+      it("persists the inserted block ids exactly in the primary result, without the blocks the day already had", async () => {
+        const existing = await dayWithBlocks(DAY, "Morning.");
+        const card = await journalCard(entry({ markdown: "Evening.\n\n- ran\n- read" }));
+
+        const confirmed = await confirm(card.id);
+
+        const inserted = [0, 1, 2].map((index) => proposalBlockId(card.id, index));
+        expect(resultBlockIds(confirmed)).toEqual(inserted);
+        expect(await pageBlockIds(existing.itemId)).toEqual([...existing.blockIds, ...inserted]);
+        const stored = await readCard(card.id);
+        expect(resultBlockIds(stored)).toEqual(inserted);
+        expect(readConfirmationResults(stored.properties)).toEqual([
+          expect.objectContaining({
+            ref: "primary",
+            role: "primary",
+            itemId: existing.itemId,
+            databaseKey: "journal",
+            date: DAY,
+            followUp: null,
+            linkLabels: [],
+          }),
+        ]);
+      });
+
+      it("writes no origin note on the day", async () => {
+        const card = await journalCard();
+
+        await confirm(card.id);
+
+        const page = await withTransaction(pool, async (client) =>
+          readPageMarkdown(client, (await dayItemId(DAY)) ?? ""),
+        );
+        expect(page.markdown).toBe("Went for a run.");
+      });
+
+      it("returns the stored result for a card that is already confirmed and writes nothing", async () => {
+        const card = await journalCard(entry({ markdown: "One.\n\nTwo." }));
+        const first = await confirm(card.id);
+        const itemId = (await dayItemId(DAY)) ?? "";
+        const before = await writtenState();
+        const updatesBefore = await docUpdateAuthors(itemId);
+
+        const second = await confirm(card.id);
+
+        expect(second.properties.status).toBe("confirmed");
+        expect(second.properties.resultItemId).toBe(first.properties.resultItemId);
+        expect(second.properties.resultLabel).toBe(first.properties.resultLabel);
+        expect(second.properties.results).toEqual(first.properties.results);
+        expect(second.updatedAt).toBe(first.updatedAt);
+        expect(await writtenState()).toEqual(before);
+        expect(await docUpdateAuthors(itemId)).toEqual(updatesBefore);
+        expect(await pageBlockIds(itemId)).toHaveLength(2);
+      });
+
+      it("refuses to write the entry of a proposal a second time, so its blocks cannot be added twice", async () => {
+        const card = await journalCard(entry({ markdown: "One.\n\nTwo." }));
+        const confirmed = await confirm(card.id);
+        const itemId = (await dayItemId(DAY)) ?? "";
+        const before = await writtenState();
+
+        // The write itself, past the card's confirmed status, which is what makes a replayed confirm a no-op.
+        const error: unknown = await withTransaction(pool, (client) =>
+          confirmJournalEntry(client, card.id, entry(), { writerKind: "user" }, undefined),
+        ).catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(ConflictError);
+        expect(await pageBlockIds(itemId)).toEqual(resultBlockIds(confirmed));
+        expect(await writtenState()).toEqual(before);
+      });
+
+      it("adds the entry once when two confirms of the same card run at the same time", async () => {
+        const card = await journalCard(entry({ markdown: "One.\n\nTwo." }));
+
+        const [first, second] = await Promise.all([confirm(card.id), confirm(card.id)]);
+
+        expect(first.properties.resultItemId).toBe(second.properties.resultItemId);
+        expect(first.properties.results).toEqual(second.properties.results);
+        const itemId = (await dayItemId(DAY)) ?? "";
+        expect(await pageBlockIds(itemId)).toEqual([proposalBlockId(card.id, 0), proposalBlockId(card.id, 1)]);
+        expect(await dayCount(DAY)).toBe(1);
+        expect(await docUpdateAuthors(itemId)).toEqual(["user"]);
+      });
+
+      describe("relations of the day", () => {
+        it("gives the day a project edge and no area edge of its own when the entry names a project", async () => {
+          const project = await createLiveItem(projectsId, "Website");
+          const card = await journalCard(entry({ projectId: project.id }));
+
+          await confirm(card.id);
+
+          expect(await edgesOf((await dayItemId(DAY)) ?? "")).toEqual([{ key: "project", other: project.id }]);
+        });
+
+        it("gives the day an area edge when the entry names only an area", async () => {
+          const area = await createLiveItem(areasId, "Health");
+          const card = await journalCard(entry({ areaId: area.id }));
+
+          await confirm(card.id);
+
+          expect(await edgesOf((await dayItemId(DAY)) ?? "")).toEqual([{ key: "area", other: area.id }]);
+        });
+
+        it("writes no edge when the entry names neither", async () => {
+          const card = await journalCard();
+
+          await confirm(card.id);
+
+          expect(await edgesOf((await dayItemId(DAY)) ?? "")).toEqual([]);
+        });
+
+        it("records the edge in the history entry of the confirmation, as inserted or as found", async () => {
+          const project = await createLiveItem(projectsId, "Website");
+          const first = await journalCard(entry({ projectId: project.id, markdown: "First." }));
+          const second = await journalCard(entry({ projectId: project.id, markdown: "Second." }));
+          const written = async (cardId: string) => {
+            const history = z
+              .array(z.object({ writtenRelations: z.array(z.unknown()).optional() }))
+              .parse((await readCard(cardId)).properties.history);
+            return history.at(-1)?.writtenRelations;
+          };
+
+          await confirm(first.id);
+          await confirm(second.id);
+
+          const itemId = (await dayItemId(DAY)) ?? "";
+          expect(await written(first.id)).toEqual([
+            expect.objectContaining({ callerItemId: itemId, targetItemId: project.id, previousMetadata: null }),
+          ]);
+          // The second entry found the day's edge, so the undo of it must leave the edge.
+          expect(await written(second.id)).toEqual([
+            expect.objectContaining({ callerItemId: itemId, targetItemId: project.id, previousMetadata: {} }),
+          ]);
+        });
+
+        it("does not duplicate an edge the day already has, from an earlier entry or a replayed confirm", async () => {
+          const project = await createLiveItem(projectsId, "Website");
+          const first = await journalCard(entry({ projectId: project.id, markdown: "First." }));
+          await confirm(first.id);
+          const second = await journalCard(entry({ projectId: project.id, markdown: "Second." }));
+
+          await confirm(second.id);
+          await confirm(second.id);
+
+          const itemId = (await dayItemId(DAY)) ?? "";
+          expect(await edgesOf(itemId)).toEqual([{ key: "project", other: project.id }]);
+          expect(await pageBlockIds(itemId)).toEqual([proposalBlockId(first.id, 0), proposalBlockId(second.id, 0)]);
+        });
+      });
+
+      describe("when something it needs is gone, the answer is 409 and nothing is written", () => {
+        it.each([
+          ["a project in the Trash", "projectId"],
+          ["an area in the Trash", "areaId"],
+        ] as const)("%s", async (_label, field) => {
+          const gone = await createLiveItem(field === "projectId" ? projectsId : areasId, "Gone");
+          const card = await journalCard(entry({ [field]: gone.id }));
+          await trash(gone.databaseId, gone.id);
+          const before = await readCard(card.id);
+          const written = await writtenState();
+
+          const error: unknown = await confirm(card.id).catch((e: unknown) => e);
+
+          expect(error).toBeInstanceOf(ConflictError);
+          expect(error).toMatchObject({ status: 409, details: { field } });
+          expect(await readCard(card.id)).toEqual(before);
+          expect(await writtenState()).toEqual(written);
+          expect(await dayItemId(DAY)).toBeNull();
+        });
+
+        it("a project archived since the card was computed, which the edge write would refuse with a 400", async () => {
+          const project = await createLiveItem(projectsId, "Website");
+          const card = await journalCard(entry({ projectId: project.id }));
+          await archive(projectsId, project.id);
+          const before = await readCard(card.id);
+          const written = await writtenState();
+
+          const error: unknown = await confirm(card.id).catch((e: unknown) => e);
+
+          expect(error).toBeInstanceOf(ConflictError);
+          expect(error).toMatchObject({ status: 409, details: { field: "projectId" } });
+          expect(await readCard(card.id)).toEqual(before);
+          expect(await writtenState()).toEqual(written);
+          expect(await dayItemId(DAY)).toBeNull();
+        });
+
+        it("a Journal database that is no longer the card's target", async () => {
+          const card = await journalCard();
+          // A stale target is a state only an older card can be in, so it is stored without the checks of revise.
+          await setStoredProperty(card.id, "proposal", { ...entry(), target: tasksId });
+          const written = await writtenState();
+
+          const error: unknown = await confirm(card.id).catch((e: unknown) => e);
+
+          expect(error).toBeInstanceOf(ConflictError);
+          expect(error).toMatchObject({ status: 409, details: { field: "target" } });
+          expect((await readCard(card.id)).properties.status).toBe("proposed");
+          expect(await writtenState()).toEqual(written);
+        });
+      });
+
+      describe("when a step of the confirm fails, the card stays proposed and no part of the entry remains", () => {
+        /** Runs `run` while a trigger raises on the writes of `table` that `condition` selects; the trigger is removed after. */
+        async function withFailingWrite(
+          table: "items" | "item_relations",
+          condition: "TRUE" | "NEW.properties ->> 'status' = 'confirmed'",
+          run: () => Promise<void>,
+        ) {
+          // The names, the table and the condition are constants of this test, never values from outside.
+          await pool.query(
+            `CREATE FUNCTION test_fail_journal_confirm() RETURNS trigger LANGUAGE plpgsql AS $$
+             BEGIN
+               IF ${condition} THEN RAISE EXCEPTION 'test journal confirm failure'; END IF;
+               RETURN NEW;
+             END $$`,
+          );
+          await pool.query(
+            `CREATE TRIGGER test_fail_journal_confirm BEFORE ${table === "items" ? "UPDATE" : "INSERT"} ON ${table}
+               FOR EACH ROW EXECUTE FUNCTION test_fail_journal_confirm()`,
+          );
+          try {
+            await run();
+          } finally {
+            await pool.query(`DROP TRIGGER test_fail_journal_confirm ON ${table}`);
+            await pool.query("DROP FUNCTION test_fail_journal_confirm()");
+          }
+        }
+
+        it.each([
+          ["its edge write", "item_relations", "TRUE"],
+          ["the write of the card's confirmed status", "items", "NEW.properties ->> 'status' = 'confirmed'"],
+        ] as const)("fails at %s", async (_label, table, condition) => {
+          const project = await createLiveItem(projectsId, "Website");
+          const existing = await dayWithBlocks(DAY, "Morning.");
+          const card = await journalCard(entry({ projectId: project.id, markdown: "Evening." }));
+          const before = await readCard(card.id);
+          const written = await writtenState();
+
+          await withFailingWrite(table, condition, async () => {
+            await expect(confirm(card.id)).rejects.toThrow(/test journal confirm failure/);
+          });
+
+          expect(await readCard(card.id)).toEqual(before);
+          expect(await writtenState()).toEqual(written);
+          expect(await pageBlockIds(existing.itemId)).toEqual(existing.blockIds);
+          expect(await edgesOf(existing.itemId)).toEqual([]);
+        });
+
+        it("fails after creating a day that did not exist, and leaves no day", async () => {
+          const card = await journalCard();
+          const before = await readCard(card.id);
+          const written = await writtenState();
+
+          await withFailingWrite("items", "NEW.properties ->> 'status' = 'confirmed'", async () => {
+            await expect(confirm(card.id)).rejects.toThrow(/test journal confirm failure/);
+          });
+
+          expect(await readCard(card.id)).toEqual(before);
+          expect(await dayItemId(DAY)).toBeNull();
+          expect(await writtenState()).toEqual(written);
+        });
+      });
+
+      describe("through the runtime role", () => {
+        let runtime: Pool | undefined;
+
+        afterEach(async () => {
+          await runtime?.end();
+          runtime = undefined;
+        });
+
+        it("confirms in the tenant's own scope, and answers another tenant's project as a project that does not exist", async () => {
+          const own = getTenantZeroId();
+          const ownCard = await journalCard(entry({ markdown: "Own entry." }));
+          const foreignCard = await journalCard(entry({ markdown: "Foreign reference." }));
+          const randomCard = await journalCard(entry({ markdown: "Random reference." }));
+          const pools = await createRuntimeRolePool(pool, "semprec_data");
+          runtime = pools;
+          const other = await createTestTenant(pool);
+          await runInTenant(other, () => seedSystem(pools, createViewTypeRegistry()));
+          const foreignProject = await runInTenant(other, () =>
+            withTransaction(pools, async (client) => {
+              const database = await databasesStore.getDatabaseByModuleId(client, "projects");
+              if (!database) throw new Error("Projects was not seeded");
+              return createItemWithClient(client, { databaseId: database.id, properties: { name: "Foreign project" } });
+            }),
+          );
+          // A stale reference is a state only an older card can be in, so it is stored without the checks of revise.
+          for (const [card, projectId] of [
+            [foreignCard, foreignProject.id],
+            [randomCard, randomUUID()],
+          ] as const) {
+            await setStoredProperty(card.id, "proposal", entry({ projectId, markdown: "Stale." }));
+          }
+          const confirmAs = (cardId: string) =>
+            runInTenant(own, () =>
+              withTransaction(pools, (client) => confirmProposalWithClient(client, config(), cardId)),
+            );
+
+          const foreignError: unknown = await confirmAs(foreignCard.id).catch((e: unknown) => e);
+          const randomError: unknown = await confirmAs(randomCard.id).catch((e: unknown) => e);
+          const confirmed = await confirmAs(ownCard.id);
+
+          expect(foreignError).toBeInstanceOf(ConflictError);
+          expect(randomError).toBeInstanceOf(ConflictError);
+          const shape = (error: unknown) => {
+            if (!(error instanceof ConflictError)) throw new Error("Expected a ConflictError");
+            return {
+              status: error.status,
+              code: error.code,
+              field: z.object({ field: z.string() }).parse(error.details).field,
+            };
+          };
+          expect(shape(foreignError)).toEqual(shape(randomError));
+          expect(shape(foreignError).field).toBe("projectId");
+          expect(confirmed.properties.status).toBe("confirmed");
+          // Only the tenant's own entry was written: one day, one entry, and no edge to the foreign project.
+          expect(await dayCount(DAY)).toBe(1);
+          const itemId = (await dayItemId(DAY)) ?? "";
+          expect(await edgesOf(itemId)).toEqual([]);
+          expect(await pageBlockIds(itemId)).toEqual([proposalBlockId(ownCard.id, 0)]);
+        });
+      });
+    });
+
+    describe("tenant isolation, through the runtime role", () => {
+      let runtime: Pool | undefined;
+
+      afterEach(async () => {
+        await runtime?.end();
+        runtime = undefined;
+      });
+
+      it("answers another tenant's area, project and Journal database exactly as a random id", async () => {
+        const pools = await createRuntimeRolePool(pool, "semprec_data");
+        runtime = pools;
+        const own = getTenantZeroId();
+        const other = await createTestTenant(pool);
+        await runInTenant(other, () => seedSystem(pools, createViewTypeRegistry()));
+        const scoped = <T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> =>
+          runInTenant(tenantId, () => withTransaction(pools, fn));
+        const moduleDatabaseId = (tenantId: string, moduleId: string) =>
+          scoped(tenantId, async (client) => {
+            const database = await databasesStore.getDatabaseByModuleId(client, moduleId);
+            if (!database) throw new Error(`Database '${moduleId}' was not seeded`);
+            return database.id;
+          });
+        const createIn = (tenantId: string, moduleId: string, name: string) =>
+          scoped(tenantId, async (client) =>
+            createItemWithClient(client, {
+              databaseId: await moduleDatabaseId(tenantId, moduleId),
+              properties: { name },
+            }),
+          );
+        const foreignArea = await createIn(other, "areas", "Foreign area");
+        const foreignProject = await createIn(other, "projects", "Foreign project");
+        const ownArea = await createIn(own, "areas", "Own area");
+        const ownJournalId = await moduleDatabaseId(own, "journal");
+        const foreignJournalId = await moduleDatabaseId(other, "journal");
+        const check = (envelope: ProposalEnvelope) =>
+          scoped(own, (client) => assertValidProposalEnvelope(client, envelope)).catch((e: unknown) => e);
+        const shape = (error: unknown) => {
+          if (!(error instanceof ValidationError)) throw new Error("Expected a ValidationError");
+          return {
+            status: error.status,
+            code: error.code,
+            field: z.object({ field: z.string() }).parse(error.details).field,
+          };
+        };
+
+        const foreignAreaError = await check(entry({ areaId: foreignArea.id }, ownJournalId));
+        const foreignProjectError = await check(entry({ projectId: foreignProject.id }, ownJournalId));
+        const foreignTargetError = await check(entry({}, foreignJournalId));
+        const randomAreaError = await check(entry({ areaId: randomUUID() }, ownJournalId));
+        const randomProjectError = await check(entry({ projectId: randomUUID() }, ownJournalId));
+        const randomTargetError = await check(entry({}, randomUUID()));
+
+        expect(shape(foreignAreaError)).toEqual(shape(randomAreaError));
+        expect(shape(foreignProjectError)).toEqual(shape(randomProjectError));
+        expect(shape(foreignTargetError)).toEqual(shape(randomTargetError));
+        expect(shape(foreignAreaError).field).toBe("areaId");
+        // The same envelope with the tenant's own area is accepted, so the refusals above are about the tenant.
+        expect(await check(entry({ areaId: ownArea.id }, ownJournalId))).toBeNull();
+      });
     });
   });
 

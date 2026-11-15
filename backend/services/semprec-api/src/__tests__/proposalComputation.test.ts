@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync, execFileSync, type ChildProcess } from "node:child_process";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
@@ -42,8 +42,15 @@ import {
   LocalFsBlobStorageWriter,
   getDatabaseByModuleId,
   createDocStore,
+  getSystemSettingsDatabaseId,
+  getSystemSettingsItemId,
+  setAgentDatabaseGrantForProjectSettings,
+  TRANSCRIPTION_OWNER_PROCESS,
+  updateItemWithClient,
 } from "@semprec/data";
+import { AresLookupError, createAresHttpClient, type AresClient, type AresCompany } from "../aresClient.js";
 import { createProposalComputation } from "../proposalComputation.js";
+import { readProposalContext, REQUEST_BUDGET_BYTES } from "../proposalContext.js";
 import { createDispatcher } from "../app.js";
 
 const observedLogs = vi.hoisted(() => ({
@@ -88,6 +95,13 @@ vi.mock("@semprec/shared", async (importOriginal) => {
 });
 
 let pool: Pool;
+
+/** A register that knows no company, for the tests that never reach a Companies proposal. */
+const knowsNoCompany: AresClient = {
+  async lookupCompanyByIco() {
+    return null;
+  },
+};
 
 /** These items carry no attachment, so no blob is ever opened. */
 const noBlobBytes = async (): Promise<null> => null;
@@ -180,7 +194,11 @@ describe("createProposalComputation (issue #1434)", () => {
     }
   });
 
-  async function createTaskItem(text: string, targetDatabase = "tasks"): Promise<string> {
+  async function createTaskItem(
+    text: string,
+    targetDatabase = "tasks",
+    itemProperties: Record<string, unknown> = {},
+  ): Promise<string> {
     const chokePoint = createChokePoint(pool);
     const type = await chokePoint.createItem({
       databaseId: config.inboxItemTypesDatabaseId,
@@ -188,7 +206,7 @@ describe("createProposalComputation (issue #1434)", () => {
     });
     const item = await chokePoint.createItem({
       databaseId: config.inboxDatabaseId,
-      properties: { text, date: "2026-08-28", time: "09:00" },
+      properties: { text, date: "2026-08-28", time: "09:00", ...itemProperties },
     });
     const typeProperty = await pool.query<{ id: string }>(
       "SELECT id FROM properties WHERE database_id = $1 AND key = 'type'",
@@ -202,10 +220,15 @@ describe("createProposalComputation (issue #1434)", () => {
     return item.id;
   }
 
-  async function runTick(tickPool: Pool, gateway: AiGatewayClientPort, itemId: string): Promise<void> {
+  async function runTick(
+    tickPool: Pool,
+    gateway: AiGatewayClientPort,
+    itemId: string,
+    aresClient: AresClient = knowsNoCompany,
+  ): Promise<void> {
     const handler = createSemprecTickAction(
       tickPool,
-      createProposalComputation({ pool: tickPool, gateway, openBlob: noBlobBytes }),
+      createProposalComputation({ pool: tickPool, gateway, openBlob: noBlobBytes, aresClient }),
     );
     await inTenantZero(() => handler(config, { heartbeatId: "hb", projectItemId: semprecProjectId, itemId }));
   }
@@ -218,7 +241,12 @@ describe("createProposalComputation (issue #1434)", () => {
     return rows.map((row) => row.properties);
   }
 
-  async function confirmByHttp(cardId: string): Promise<{ status: number; body: unknown }> {
+  /** One request to the API as a freshly created user of tenant zero, through the real dispatcher. */
+  async function requestByHttp(
+    method: string,
+    path: string,
+    body?: unknown,
+  ): Promise<{ status: number; body: unknown }> {
     const email = `${randomUUID()}@example.test`;
     await createUser(pool, { tenantId: getTenantZeroId(), email, passwordHash: await hashPassword("test-password") });
     const session = await login(pool, { email, password: "test-password", platform: "ios", ip: "127.0.0.1" });
@@ -235,14 +263,22 @@ describe("createProposalComputation (issue #1434)", () => {
     try {
       const address = server.address();
       if (!address || typeof address === "string") throw new Error("Missing server address");
-      const response = await fetch(`http://127.0.0.1:${address.port}/api/proposals/${cardId}/confirm`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${session.token}` },
+      const response = await fetch(`http://127.0.0.1:${address.port}${path}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${session.token}`,
+          ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
       return { status: response.status, body: await response.json() };
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  }
+
+  function confirmByHttp(cardId: string): Promise<{ status: number; body: unknown }> {
+    return requestByHttp("POST", `/api/proposals/${cardId}/confirm`);
   }
 
   it("composes actual structured gateway, tick placement and invalid-output clarification", async () => {
@@ -389,7 +425,12 @@ describe("createProposalComputation (issue #1434)", () => {
         const client = createHttpAiGatewayClient({ port: ready.port, token: "batch32-inbox-test-token" });
         const tick = createSemprecTickAction(
           runtime,
-          createProposalComputation({ pool: runtime, gateway: client, openBlob: noBlobBytes }),
+          createProposalComputation({
+            pool: runtime,
+            gateway: client,
+            openBlob: noBlobBytes,
+            aresClient: knowsNoCompany,
+          }),
         );
         const modes = [
           "v2",
@@ -744,7 +785,7 @@ describe("createProposalComputation (issue #1434)", () => {
       await runInTenant(tenantA, async () => {
         const tick = createSemprecTickAction(
           runtime,
-          createProposalComputation({ pool: runtime, gateway, openBlob: noBlobBytes }),
+          createProposalComputation({ pool: runtime, gateway, openBlob: noBlobBytes, aresClient: knowsNoCompany }),
         );
         await tick(local.ids, { heartbeatId: "test", projectItemId: local.project.id, itemId: local.item.id });
         const cards = await createChokePoint(runtime).listItems(local.ids.processingProposalsDatabaseId);
@@ -832,7 +873,7 @@ describe("createProposalComputation (issue #1434)", () => {
         { targetDatabaseKey: "invalid", confidence: 1 },
       ],
     });
-    const compute = createProposalComputation({ pool, gateway, openBlob: noBlobBytes });
+    const compute = createProposalComputation({ pool, gateway, openBlob: noBlobBytes, aresClient: knowsNoCompany });
     const result = await inTenantZero(() =>
       compute({
         sourceItem: item,
@@ -952,6 +993,7 @@ describe("createProposalComputation (issue #1434)", () => {
       pool: recordingPool(pool, statements),
       gateway,
       openBlob: noBlobBytes,
+      aresClient: knowsNoCompany,
     });
     const item = await withTransaction(pool, (client) => getItemById(client, config.inboxDatabaseId, itemId));
     const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'tasks'");
@@ -970,6 +1012,247 @@ describe("createProposalComputation (issue #1434)", () => {
     expect(statements.length).toBeGreaterThan(0);
     expect(statements.filter((sql) => /\b(insert|update|delete|truncate|alter|drop|create)\b/i.test(sql))).toEqual([]);
     expect(gateway.openTransactionsDuringCall).toEqual([0]);
+  });
+
+  describe("journal method (issue gh-1982)", () => {
+    const PAGE_LINK = "[Sub page](semprec://page/00000000-0000-4000-8000-000000000001)";
+
+    async function createJournalItem(text: string, date = "2026-10-16"): Promise<string> {
+      const chokePoint = createChokePoint(pool);
+      const type = await chokePoint.createItem({
+        databaseId: config.inboxItemTypesDatabaseId,
+        properties: { name: "Note", emoji: "N", processingMethod: "journal" },
+      });
+      const item = await chokePoint.createItem({
+        databaseId: config.inboxDatabaseId,
+        properties: { text, date, time: "09:00" },
+      });
+      const typeProperty = await pool.query<{ id: string }>(
+        "SELECT id FROM properties WHERE database_id = $1 AND key = 'type'",
+        [config.inboxDatabaseId],
+      );
+      await chokePoint.createRelation({
+        relationPropertyId: typeProperty.rows[0]!.id,
+        callerItemId: item.id,
+        targetItemId: type.id,
+      });
+      return item.id;
+    }
+
+    async function liveItem(moduleId: string, properties: Record<string, unknown>): Promise<string> {
+      const databaseId = await databaseIdFor(moduleId);
+      return (await inTenantZero(() => createChokePoint(pool).createItem({ databaseId, properties }))).id;
+    }
+
+    it("asks for the entry only: the journal instruction and schema, not the database or page ones", async () => {
+      const itemId = await createJournalItem("Went for a run");
+      const gateway = stubGateway({ markdown: "Went for a run.", reason: "A diary note.", confidence: 0.8 });
+
+      await runTick(pool, gateway, itemId);
+
+      const call = gateway.calls[0]!;
+      expect(call.operation).toBe("inbox_proposal");
+      expect(call.system).toContain("For a journal-method type, write one entry");
+      expect(call.system).not.toContain("For a database-method type");
+      expect(call.system).not.toContain("For a pageContent-method type");
+      expect(z.string().parse(call.messages[0]!.content)).toContain("Entity kind: journalEntry");
+      expect(call.responseSchema).toMatchObject({
+        required: ["markdown"],
+        additionalProperties: false,
+        properties: { date: {}, markdown: {}, areaId: {}, projectId: {} },
+      });
+      expect(
+        Object.keys(z.object({ properties: z.record(z.string(), z.unknown()) }).parse(call.responseSchema).properties),
+      ).not.toContain("target");
+    });
+
+    it("stores the entry on the Journal database, on the item's date, with the model's reason", async () => {
+      const itemId = await createJournalItem("Went for a run", "2026-10-12");
+
+      await runTick(pool, stubGateway({ markdown: "Went for a run.", reason: "A diary note." }), itemId);
+
+      expect(await proposalCards()).toEqual([
+        expect.objectContaining({
+          status: "proposed",
+          reason: "A diary note.",
+          proposal: {
+            entityKind: "journalEntry",
+            target: await databaseIdFor("journal"),
+            properties: { date: "2026-10-12", markdown: "Went for a run." },
+          },
+        }),
+      ]);
+    });
+
+    it("lists the projects and areas of the workspace to the model and keeps listed ones, the project only when both are given", async () => {
+      const areaId = await liveItem("areas", { name: "Health" });
+      const projectId = await liveItem("projects", { name: "Marathon", status: "inProgress" });
+      const itemId = await createJournalItem("Went for a run");
+      const gateway = stubGateway({ markdown: "Went for a run.", areaId, projectId });
+
+      await runTick(pool, gateway, itemId);
+
+      const message = JSON.stringify(gateway.calls[0]?.messages);
+      expect(message).toContain(areaId);
+      expect(message).toContain(projectId);
+      expect((await proposalCards())[0]).toMatchObject({
+        status: "proposed",
+        proposal: { properties: { date: "2026-10-16", markdown: "Went for a run.", projectId } },
+      });
+      expect(JSON.stringify((await proposalCards())[0])).not.toContain(areaId);
+    });
+
+    it("keeps a listed area when no project is given", async () => {
+      const areaId = await liveItem("areas", { name: "Health" });
+      const itemId = await createJournalItem("Went for a run");
+
+      await runTick(pool, stubGateway({ markdown: "Went for a run.", areaId }), itemId);
+
+      expect((await proposalCards())[0]).toMatchObject({
+        status: "proposed",
+        proposal: { properties: { markdown: "Went for a run.", areaId } },
+      });
+    });
+
+    it("drops an area and a project the context did not list, and logs a count without the ids", async () => {
+      const archivedProject = await liveItem("projects", { name: "Done long ago", status: "archived" });
+      const unknownArea = randomUUID();
+      const itemId = await createJournalItem("Went for a run");
+      observedLogs.chunks.length = 0;
+
+      await runTick(
+        pool,
+        stubGateway({ markdown: "Went for a run.", areaId: unknownArea, projectId: archivedProject }),
+        itemId,
+      );
+
+      const card = (await proposalCards())[0];
+      expect(card).toMatchObject({ status: "proposed", proposal: { properties: { markdown: "Went for a run." } } });
+      expect(JSON.stringify(card)).not.toContain(unknownArea);
+      expect(JSON.stringify(card)).not.toContain(archivedProject);
+      const output = observedLogs.chunks.join("");
+      expect(output).toContain("Dropped journal entry references");
+      expect(output).not.toContain(unknownArea);
+      expect(output).not.toContain(archivedProject);
+    });
+
+    it("ignores a target or a properties key the model adds: the target is the Journal database", async () => {
+      const itemId = await createJournalItem("Went for a run");
+
+      await runTick(
+        pool,
+        stubGateway({ markdown: "Went for a run.", target: randomUUID(), properties: { markdown: "Other." } }),
+        itemId,
+      );
+
+      expect((await proposalCards())[0]).toMatchObject({
+        status: "proposed",
+        proposal: { target: await databaseIdFor("journal"), properties: { markdown: "Went for a run." } },
+      });
+    });
+
+    it("writes no card and fails the tick when the answer has no markdown or a mistyped field", async () => {
+      const itemId = await createJournalItem("Went for a run");
+
+      await expect(runTick(pool, stubGateway({ date: "2026-10-16" }), itemId)).rejects.toThrow();
+      await expect(runTick(pool, stubGateway({ markdown: 5 }), itemId)).rejects.toThrow();
+      await expect(runTick(pool, stubGateway({ markdown: "Run.", confidence: 3 }), itemId)).rejects.toThrow();
+      await expect(runTick(pool, stubGateway("plain text"), itemId)).rejects.toThrow();
+
+      expect(await proposalCards()).toHaveLength(0);
+    });
+
+    it("clarifies an answer whose markdown holds a page block instead of storing it", async () => {
+      const itemId = await createJournalItem("Went for a run");
+
+      await runTick(pool, stubGateway({ markdown: `A line\n\n${PAGE_LINK}` }), itemId);
+
+      expect((await proposalCards())[0]).toMatchObject({ status: "needsClarification", proposal: null });
+    });
+
+    it("never discloses or proposes an area or project of another tenant", async () => {
+      const tenantA = await createTestTenant(pool);
+      const tenantB = await createTestTenant(pool);
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      try {
+        const setup = (tenant: string, name: string) =>
+          runInTenant(tenant, async () => {
+            await seedSystem(runtime);
+            const idFor = async (moduleId: string) => {
+              const rows = await runtime.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [
+                moduleId,
+              ]);
+              if (!rows.rows[0]) throw new Error(`Missing ${moduleId}`);
+              return rows.rows[0].id;
+            };
+            const cp = createChokePoint(runtime);
+            const area = await cp.createItem({
+              databaseId: await idFor("areas"),
+              properties: { name: `${name} area` },
+            });
+            const project = await cp.createItem({
+              databaseId: await idFor("projects"),
+              properties: { name: `${name} project`, status: "inProgress" },
+            });
+            const ids = {
+              inboxDatabaseId: await idFor("inbox"),
+              inboxItemTypesDatabaseId: await idFor("inboxItemTypes"),
+              processingProposalsDatabaseId: await idFor("processingProposals"),
+            };
+            const type = await cp.createItem({
+              databaseId: ids.inboxItemTypesDatabaseId,
+              properties: { name: "Note", emoji: "N", processingMethod: "journal" },
+            });
+            const item = await cp.createItem({
+              databaseId: ids.inboxDatabaseId,
+              properties: { text: "Went for a run", date: "2026-10-16", time: "09:00" },
+            });
+            const typeProperty = (await cp.listProperties(ids.inboxDatabaseId)).find(
+              (property) => property.key === "type",
+            );
+            if (!typeProperty) throw new Error("Missing Inbox type relation");
+            await cp.createRelation({
+              relationPropertyId: typeProperty.id,
+              callerItemId: item.id,
+              targetItemId: type.id,
+            });
+            return { area, project, ids, item, journalId: await idFor("journal") };
+          });
+        const local = await setup(tenantA, "Local");
+        const foreign = await setup(tenantB, "Foreign");
+        const gateway = stubGateway({
+          markdown: "Went for a run.",
+          areaId: foreign.area.id,
+          projectId: local.project.id,
+        });
+
+        await runInTenant(tenantA, async () => {
+          const tick = createSemprecTickAction(
+            runtime,
+            createProposalComputation({ pool: runtime, gateway, openBlob: noBlobBytes, aresClient: knowsNoCompany }),
+          );
+          await tick(local.ids, { heartbeatId: "test", projectItemId: local.project.id, itemId: local.item.id });
+          const cards = await createChokePoint(runtime).listItems(local.ids.processingProposalsDatabaseId);
+          expect(cards.items).toHaveLength(1);
+          expect(cards.items[0]?.properties).toMatchObject({
+            status: "proposed",
+            proposal: {
+              entityKind: "journalEntry",
+              target: local.journalId,
+              properties: { markdown: "Went for a run.", projectId: local.project.id },
+            },
+          });
+          expect(JSON.stringify(cards.items[0]?.properties.proposal)).not.toContain(foreign.area.id);
+        });
+        const sent = JSON.stringify(gateway.calls[0]?.messages);
+        expect(sent).toContain(local.area.id);
+        expect(sent).not.toContain(foreign.area.id);
+        expect(sent).not.toContain(foreign.project.id);
+        expect(sent).not.toContain("Foreign");
+      } finally {
+        await runtime.end();
+      }
+    });
   });
 
   describe("multi-step operations (issue #1492)", () => {
@@ -1235,7 +1518,8 @@ describe("createProposalComputation (issue #1434)", () => {
       expect(request).toContain(oldArea.id);
       expect(request).toContain("Old");
       expect(request.split(project.id)).toHaveLength(2);
-      expect(request.split(oldArea.id)).toHaveLength(2);
+      // Twice since issue gh-1987: the area's own entry of the workspace context and the `areaId` of the project's entry.
+      expect(request.split(oldArea.id)).toHaveLength(3);
       expect(userMessage).not.toContain('"before"');
       expect(userMessage).not.toContain(JSON.stringify([oldArea.id]));
       const card = (await cp.listItems(config.processingProposalsDatabaseId)).items[0];
@@ -1561,6 +1845,7 @@ describe("createProposalComputation (issue #1434)", () => {
         pool: recordingPool(pool, statements),
         gateway,
         openBlob: noBlobBytes,
+        aresClient: knowsNoCompany,
       });
       const item = await withTransaction(pool, (client) => getItemById(client, config.inboxDatabaseId, itemId));
 
@@ -1581,6 +1866,710 @@ describe("createProposalComputation (issue #1434)", () => {
       expect(statements.filter((sql) => /\b(insert|update|delete|truncate|alter|drop|create)\b/i.test(sql))).toEqual(
         [],
       );
+    });
+  });
+  describe("capture facts, workspace context and recompute state (issue gh-1987)", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    const workspaceSchema = z.array(
+      z.object({
+        moduleId: z.string(),
+        databaseId: z.string(),
+        items: z.array(z.object({ id: z.string(), name: z.string() }).passthrough()),
+      }),
+    );
+
+    function userMessage(gateway: StubGateway, index = 0): string {
+      return z.string().parse(gateway.calls[index]?.messages[0]?.content);
+    }
+
+    /** The JSON after the label of the line `<label> (JSON): ` of the user message. */
+    function jsonLine(message: string, label: string): unknown {
+      const prefix = `${label} (JSON): `;
+      const line = message.split("\n").find((candidate) => candidate.startsWith(prefix));
+      if (line === undefined) throw new Error(`The request has no '${label}' line`);
+      return JSON.parse(line.slice(prefix.length));
+    }
+
+    const factsSchema = z.object({
+      captureDate: z.string().optional(),
+      captureTime: z.string().optional(),
+      captureChannel: z.string().optional(),
+      timezone: z.string(),
+      today: z.string(),
+    });
+
+    function workspaceOf(gateway: StubGateway, index = 0) {
+      return workspaceSchema.parse(jsonLine(userMessage(gateway, index), "Workspace context"));
+    }
+
+    function listed(gateway: StubGateway, moduleId: string, index = 0): string[] {
+      return (
+        workspaceOf(gateway, index)
+          .find((group) => group.moduleId === moduleId)
+          ?.items.map((item) => item.id) ?? []
+      );
+    }
+
+    /** Fakes the clock only, so the connection and job timers of the tick keep running. */
+    function setClock(iso: string): void {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date(iso));
+    }
+
+    it("passes the capture date, time, channel, the tenant timezone and today, and stores what the model returns", async () => {
+      // 23:30 UTC on 16 October is 01:30 on 17 October in Prague.
+      setClock("2026-10-16T23:30:00Z");
+      const itemId = await createTaskItem("Call the dentist tomorrow at 9", "events", {
+        date: "2026-10-16",
+        time: "08:12",
+        captureChannel: "voice",
+      });
+      const gateway = stubGateway({
+        properties: { name: "Dentist", date: "2026-10-17", timeFrom: "09:00" },
+        reason: "Appointment.",
+        confidence: 0.8,
+      });
+
+      await runTick(pool, gateway, itemId);
+
+      expect(factsSchema.parse(jsonLine(userMessage(gateway), "Capture facts"))).toEqual({
+        captureDate: "2026-10-16",
+        captureTime: "08:12",
+        captureChannel: "voice",
+        timezone: "Europe/Prague",
+        today: "2026-10-17",
+      });
+      expect(userMessage(gateway)).toMatch(/<<<INBOX_ITEM_TEXT\nCall the dentist tomorrow at 9\nINBOX_ITEM_TEXT>>>/);
+      const system = gateway.calls[0]?.system ?? "";
+      expect(system).toContain("Resolve every relative date and time");
+      expect(system).toContain("YYYY-MM-DD");
+      expect(system).toContain("HH:mm");
+      expect(system).toContain("Write rewritten Markdown only inside text properties");
+      expect(system).not.toContain("previous state of this card");
+      expect(userMessage(gateway)).not.toContain("Previous card state");
+      const cards = await proposalCards();
+      expect(cards).toHaveLength(1);
+      expect(cards[0]).toMatchObject({
+        status: "proposed",
+        proposal: { entityKind: "database", properties: { name: "Dentist", date: "2026-10-17", timeFrom: "09:00" } },
+      });
+    });
+
+    it("leaves a capture fact out when the item holds none, and reads today in the timezone the tenant settings name", async () => {
+      setClock("2026-10-16T23:30:00Z");
+      const settings = await withTransaction(pool, async (client) => ({
+        databaseId: await getSystemSettingsDatabaseId(client),
+        itemId: await getSystemSettingsItemId(client),
+      }));
+      await inTenantZero(() =>
+        createChokePoint(pool).updateItem({ ...settings, propertiesPatch: { timezone: "America/Los_Angeles" } }),
+      );
+      const itemId = await createTaskItem("Buy milk");
+      const gateway = stubGateway({ properties: { name: "Buy milk" } });
+
+      await runTick(pool, gateway, itemId);
+
+      // No `captureChannel` was set on the item, so the fact is absent, not null.
+      expect(factsSchema.parse(jsonLine(userMessage(gateway), "Capture facts"))).toEqual({
+        captureDate: "2026-08-28",
+        captureTime: "09:00",
+        timezone: "America/Los_Angeles",
+        today: "2026-10-16",
+      });
+    });
+
+    async function createProjects(count: number, properties: (n: number) => Record<string, unknown>) {
+      const databaseId = await databaseIdFor("projects");
+      return inTenantZero(() =>
+        withTransaction(pool, async (client) => {
+          const ids: string[] = [];
+          for (let n = 0; n < count; n++)
+            ids.push((await createItemWithClient(client, { databaseId, properties: properties(n) })).id);
+          return ids;
+        }),
+      );
+    }
+
+    it("lists at most 20 projects of a tenant that has 500 and sends a body under 1 MiB", async () => {
+      const created = await createProjects(500, (n) => ({
+        name: `Project ${String(n).padStart(3, "0")} ${"p".repeat(150)}`,
+        status: "inProgress",
+      }));
+      const itemId = await createTaskItem("Plan the week");
+      const gateway = stubGateway({ properties: { name: "Plan the week" } });
+
+      await runTick(pool, gateway, itemId);
+
+      const projects = workspaceOf(gateway).find((group) => group.moduleId === "projects")?.items ?? [];
+      expect(projects).toHaveLength(20);
+      expect(projects.every((project) => created.includes(project.id) || project.id === semprecProjectId)).toBe(true);
+      expect(projects.every((project) => project.name.length <= 100)).toBe(true);
+      expect(Buffer.byteLength(JSON.stringify(gateway.calls[0]))).toBeLessThan(1024 * 1024);
+    });
+
+    it("leaves out trashed items, projects that are done or archived and events outside the window", async () => {
+      const cp = createChokePoint(pool);
+      const projectsId = await databaseIdFor("projects");
+      const companiesId = await databaseIdFor("companies");
+      const eventsId = await databaseIdFor("events");
+      const active = await inTenantZero(() =>
+        cp.createItem({ databaseId: projectsId, properties: { name: "Active", status: "inProgress" } }),
+      );
+      const done = await inTenantZero(() =>
+        cp.createItem({ databaseId: projectsId, properties: { name: "Done", status: "done" } }),
+      );
+      const archived = await inTenantZero(() =>
+        cp.createItem({ databaseId: projectsId, properties: { name: "Archived", status: "archived" } }),
+      );
+      const trashed = await inTenantZero(() =>
+        cp.createItem({ databaseId: projectsId, properties: { name: "Trashed", status: "inProgress" } }),
+      );
+      await inTenantZero(() => cp.softDeleteItem(projectsId, trashed.id));
+      const trashedCompany = await inTenantZero(() =>
+        cp.createItem({ databaseId: companiesId, properties: { name: "Trashed Ltd" } }),
+      );
+      await inTenantZero(() => cp.softDeleteItem(companiesId, trashedCompany.id));
+      const company = await inTenantZero(() =>
+        cp.createItem({ databaseId: companiesId, properties: { name: "Live Ltd", ico: "27419363" } }),
+      );
+      const near = await inTenantZero(() =>
+        cp.createItem({ databaseId: eventsId, properties: { name: "Near", type: "meeting", date: "2026-08-30" } }),
+      );
+      const far = await inTenantZero(() =>
+        cp.createItem({ databaseId: eventsId, properties: { name: "Far", date: "2026-12-30" } }),
+      );
+      const itemId = await createTaskItem("Plan");
+      const gateway = stubGateway({ properties: { name: "Plan" } });
+
+      await runTick(pool, gateway, itemId);
+
+      const projects = listed(gateway, "projects");
+      expect(projects).toContain(active.id);
+      for (const id of [done.id, archived.id, trashed.id]) expect(projects).not.toContain(id);
+      expect(listed(gateway, "companies")).toEqual([company.id]);
+      expect(listed(gateway, "events")).toEqual([near.id]);
+      expect(JSON.stringify(workspaceOf(gateway))).not.toContain(far.id);
+      expect(workspaceOf(gateway).find((group) => group.moduleId === "companies")?.items).toEqual([
+        { id: company.id, name: "Live Ltd", registrationNumber: "27419363" },
+      ]);
+    });
+
+    it("sends no record of a sensitive database without a grant for the Semprec project and sends it with one", async () => {
+      const cp = createChokePoint(pool);
+      const companiesId = await databaseIdFor("companies");
+      const healthId = await databaseIdFor("healthRecords");
+      const company = await inTenantZero(() =>
+        cp.createItem({ databaseId: companiesId, properties: { name: "Clinic s.r.o." } }),
+      );
+      const health = await inTenantZero(() =>
+        cp.createItem({ databaseId: healthId, properties: { name: "SECRET_HEALTH_RECORD" } }),
+      );
+      // No API marks a built-in database sensitive (the cutover does it for the Health and sleep databases only), and
+      // Health is not one of the five kinds of the context, so the test marks Companies.
+      await pool.query("UPDATE databases SET sensitive = true WHERE id = $1", [companiesId]);
+
+      const withoutGrant = stubGateway({ properties: { name: "Plan" } });
+      await runTick(pool, withoutGrant, await createTaskItem("Plan"));
+      const closed = JSON.stringify(withoutGrant.calls[0]);
+      expect(closed).not.toContain(company.id);
+      expect(closed).not.toContain("Clinic s.r.o.");
+      expect(closed).not.toContain(health.id);
+      expect(closed).not.toContain("SECRET_HEALTH_RECORD");
+      expect(workspaceOf(withoutGrant).map((group) => group.moduleId)).not.toContain("companies");
+
+      await inTenantZero(() =>
+        withTransaction(pool, (client) =>
+          setAgentDatabaseGrantForProjectSettings(client, {
+            projectItemId: semprecProjectId,
+            databaseId: companiesId,
+            access: "read",
+          }),
+        ),
+      );
+      const withGrant = stubGateway({ properties: { name: "Plan again" } });
+      await runTick(pool, withGrant, await createTaskItem("Plan again"));
+      expect(listed(withGrant, "companies")).toEqual([company.id]);
+      // Health stays out: it is not one of the five kinds, a grant for its database does not add it.
+      expect(JSON.stringify(withGrant.calls[0])).not.toContain(health.id);
+    });
+
+    it("carries the previous proposal, its history and the keys the person edited when the card is recomputed", async () => {
+      const itemId = await createTaskItem("Buy milk");
+      const first = stubGateway({ properties: { name: "Buy milk" } });
+      await runTick(pool, first, itemId);
+      expect(userMessage(first)).not.toContain("Previous card state");
+      const card = (await proposalCards())[0];
+      const { rows } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [
+        config.processingProposalsDatabaseId,
+      ]);
+      const cardId = rows[0]?.id;
+      expect(card?.status).toBe("proposed");
+      if (!cardId) throw new Error("Missing proposal card");
+      const edited = await requestByHttp("PATCH", `/api/proposals/${cardId}/values`, {
+        set: { primary: { name: "My own title" } },
+      });
+      expect(edited.status).toBe(200);
+      await inTenantZero(() =>
+        createChokePoint(pool).updateItem({
+          databaseId: config.inboxDatabaseId,
+          itemId,
+          propertiesPatch: { text: "Buy milk and eggs" },
+        }),
+      );
+
+      const second = stubGateway({ properties: { name: "Buy milk and eggs" } });
+      await runTick(pool, second, itemId);
+
+      const previous = z
+        .object({
+          aiProposal: z.object({ entityKind: z.string(), properties: z.record(z.string(), z.unknown()) }),
+          history: z.array(z.object({ author: z.string(), message: z.string() }).passthrough()).min(1),
+          userEditedKeys: z.array(z.string()),
+        })
+        .parse(jsonLine(userMessage(second), "Previous card state"));
+      expect(previous.aiProposal).toMatchObject({ entityKind: "database", properties: { name: "Buy milk" } });
+      expect(previous.userEditedKeys).toEqual(["primary.name"]);
+      const system = second.calls[0]?.system ?? "";
+      expect(system).toContain("previous state of this card");
+      expect(system).toContain("Never overwrite a key listed in userEditedKeys");
+    });
+
+    it("uses transcribedText as the text of an item that has no text of its own, and prefers the person's text", async () => {
+      const voiceItemId = await createTaskItem("", "tasks");
+      const typedItemId = await createTaskItem("Typed words", "tasks");
+      for (const id of [voiceItemId, typedItemId])
+        await withTransaction(pool, (client) =>
+          // The transcribe process's own write: `recordInboxTranscribedText` needs real voice-note attachments.
+          updateItemWithClient(
+            client,
+            { databaseId: config.inboxDatabaseId, itemId: id, propertiesPatch: { transcribedText: "Spoken words" } },
+            { allowedSystemKeys: ["transcribedText"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+          ),
+        );
+
+      const voice = stubGateway({ properties: { name: "Voice" } });
+      await runTick(pool, voice, voiceItemId);
+      expect(userMessage(voice)).toMatch(/<<<INBOX_ITEM_TEXT\nSpoken words\nINBOX_ITEM_TEXT>>>/);
+
+      const typed = stubGateway({ properties: { name: "Typed" } });
+      await runTick(pool, typed, typedItemId);
+      expect(userMessage(typed)).toMatch(/<<<INBOX_ITEM_TEXT\nTyped words\nINBOX_ITEM_TEXT>>>/);
+      expect(userMessage(typed)).not.toContain("Spoken words");
+    });
+
+    describe("request budget", () => {
+      async function seedWorkspace(): Promise<void> {
+        const cp = createChokePoint(pool);
+        const create = async (moduleId: string, names: string[], extra: Record<string, unknown> = {}) => {
+          const databaseId = await databaseIdFor(moduleId);
+          for (const name of names)
+            await inTenantZero(() => cp.createItem({ databaseId, properties: { name, ...extra } }));
+        };
+        await create("projects", ["P1", "P2", "P3"], { status: "inProgress" });
+        await create("areas", ["A1", "A2"]);
+        await create("people", ["Eva", "Jan", "Petr"]);
+        await create("companies", ["C1", "C2", "C3", "C4"]);
+        await create("events", ["E1", "E2", "E3"], { date: "2026-08-29" });
+      }
+
+      async function contextWithText(textLength: number) {
+        const itemId = await createTaskItem("seed");
+        const item = await withTransaction(pool, (client) => getItemById(client, config.inboxDatabaseId, itemId));
+        if (!item) throw new Error("Missing Inbox item");
+        const sourceItem = { ...item, properties: { ...item.properties, text: "t".repeat(textLength) } };
+        return inTenantZero(() =>
+          readProposalContext(pool, {
+            sourceItem,
+            type: null,
+            entityKind: "database",
+            locale: "cs",
+            projectItemId: semprecProjectId,
+          }),
+        );
+      }
+
+      const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+      const counts = (context: Awaited<ReturnType<typeof contextWithText>>) =>
+        Object.fromEntries(context.workspace.map((group) => [group.moduleId, group.items.length]));
+
+      it("drops entries kind by kind, last entry first, until the context fits and cuts nothing when it fits", async () => {
+        await seedWorkspace();
+        const small = await contextWithText(10);
+        const full = counts(small);
+        // The areas include the seeded Unplanned area.
+        expect(full).toEqual({ projects: 3, areas: 3, people: 3, companies: 4, events: 3 });
+        expect(bytes(small)).toBeLessThan(REQUEST_BUDGET_BYTES);
+
+        // The text length at which the context is 10 bytes over the budget once every event is gone, so one company goes too.
+        const withoutEvents = small.workspace.map((group) =>
+          group.moduleId === "events" ? { ...group, items: [] } : group,
+        );
+        const restBytes = bytes({ ...small, workspace: [] }) - bytes([]);
+        const smallTextLength = 10;
+        const textLength = smallTextLength + REQUEST_BUDGET_BYTES + 10 - restBytes - bytes(withoutEvents);
+        const squeezed = await contextWithText(textLength);
+
+        expect(counts(squeezed)).toEqual({ ...full, events: 0, companies: 3 });
+        expect(squeezed.workspace.find((group) => group.moduleId === "companies")?.items).toEqual(
+          small.workspace.find((group) => group.moduleId === "companies")?.items.slice(0, 3),
+        );
+        expect(squeezed.text).toHaveLength(textLength);
+        expect(bytes(squeezed)).toBeLessThanOrEqual(REQUEST_BUDGET_BYTES);
+      });
+
+      // The context is then over the budget but, at 901 KiB, under the gateway's 1 MiB body limit, so the request is
+      // still accepted: the gateway refuses only a body over that limit.
+      it("drops every entry and still sends the whole text when the text alone is over the budget", async () => {
+        await seedWorkspace();
+        const huge = await contextWithText(REQUEST_BUDGET_BYTES + 1024);
+        expect(huge.workspace.every((group) => group.items.length === 0)).toBe(true);
+        expect(huge.text).toHaveLength(REQUEST_BUDGET_BYTES + 1024);
+      });
+    });
+  });
+  describe("registered company name from ARES (issue gh-1989)", () => {
+    interface StubAres extends AresClient {
+      calls: string[];
+      openTransactionsDuringCall: number[];
+    }
+
+    function stubAres(answer: (ico: string) => Promise<AresCompany | null>): StubAres {
+      const stub: StubAres = {
+        calls: [],
+        openTransactionsDuringCall: [],
+        async lookupCompanyByIco(ico) {
+          stub.calls.push(ico);
+          stub.openTransactionsDuringCall.push(await openTransactionCount());
+          return answer(ico);
+        },
+      };
+      return stub;
+    }
+
+    const registered = (ico: string): Promise<AresCompany> => Promise.resolve({ ico, name: "BRAINZ s.r.o." });
+
+    async function onlyCard(): Promise<Record<string, unknown>> {
+      const cards = await proposalCards();
+      expect(cards).toHaveLength(1);
+      return cards[0]!;
+    }
+
+    it.each([
+      ["a plain number", "27419363", "27419363"],
+      ["a number with spaces around and inside", " 274 19 363 ", "27419363"],
+      ["a number shorter than eight digits", "12345", "00012345"],
+    ])("stores the registered name and the eight-digit number for %s", async (_label, written, normalized) => {
+      const ares = stubAres(registered);
+      const gateway = stubGateway({ properties: { name: "Brainz", ico: written } });
+
+      await runTick(pool, gateway, await createTaskItem("Brainz, IČO 27419363", "companies"), ares);
+
+      expect(ares.calls).toEqual([normalized]);
+      expect((await onlyCard()).proposal).toMatchObject({
+        entityKind: "database",
+        properties: { name: "BRAINZ s.r.o.", ico: normalized },
+      });
+    });
+
+    it("looks the company up with no database transaction open", async () => {
+      const ares = stubAres(registered);
+
+      await runTick(
+        pool,
+        stubGateway({ properties: { name: "Brainz", ico: "27419363" } }),
+        await createTaskItem("Brainz", "companies"),
+        ares,
+      );
+
+      expect(ares.calls).toHaveLength(1);
+      expect(ares.openTransactionsDuringCall).toEqual([0]);
+    });
+
+    it("keeps the computed values and writes the proposal when ARES does not know the number", async () => {
+      const ares = stubAres(async () => null);
+      observedLogs.chunks.length = 0;
+
+      await runTick(
+        pool,
+        stubGateway({ properties: { name: "Brainz", ico: "27419363" } }),
+        await createTaskItem("Brainz", "companies"),
+        ares,
+      );
+
+      expect(ares.calls).toEqual(["27419363"]);
+      expect(await onlyCard()).toMatchObject({
+        status: "proposed",
+        proposal: { properties: { name: "Brainz", ico: "27419363" } },
+      });
+      expect(observedLogs.chunks.join("")).toContain("ARES does not know the company number");
+    });
+
+    it.each([
+      ["a timeout", new AresLookupError("timeout"), "timeout"],
+      ["an unreachable host", new AresLookupError("network"), "network"],
+      ["an error status", new AresLookupError("status", { status: 503 }), "status"],
+      ["an oversized answer", new AresLookupError("tooLarge"), "tooLarge"],
+      ["a malformed answer", new AresLookupError("malformed"), "malformed"],
+      ["an error of an unknown kind", new Error("boom"), "unexpected"],
+    ])(
+      "keeps the computed values, writes the proposal and logs only the reason after %s",
+      async (_label, failure, reason) => {
+        const ares = stubAres(async () => {
+          throw failure;
+        });
+        observedLogs.chunks.length = 0;
+
+        await runTick(
+          pool,
+          stubGateway({ properties: { name: "Brainz", ico: "27419363" } }),
+          await createTaskItem("Brainz secret note", "companies"),
+          ares,
+        );
+
+        expect(await onlyCard()).toMatchObject({
+          status: "proposed",
+          proposal: { properties: { name: "Brainz", ico: "27419363" } },
+        });
+        const output = observedLogs.chunks.join("");
+        const record = output
+          .split("\n")
+          .filter(Boolean)
+          .map((line) =>
+            z.object({ msg: z.string(), reason: z.string().optional() }).passthrough().safeParse(JSON.parse(line)),
+          )
+          .find(
+            (parsed) =>
+              parsed.success && parsed.data.msg === "The ARES lookup failed, the computed company values stay",
+          );
+        expect(record?.success && record.data.reason).toBe(reason);
+        expect(output).not.toContain("27419363");
+        expect(output).not.toContain("secret note");
+      },
+    );
+
+    describe("through the HTTP client", () => {
+      const aresBody = JSON.stringify({
+        ico: "27419363",
+        obchodniJmeno: "BRAINZ s.r.o.",
+        sidlo: { nazevObce: "Praha" },
+      });
+
+      async function tickWithFetch(fetchStub: typeof fetch): Promise<Record<string, unknown>> {
+        await runTick(
+          pool,
+          stubGateway({ properties: { name: "Brainz", ico: "27419363" } }),
+          await createTaskItem("Brainz", "companies"),
+          createAresHttpClient({ fetch: fetchStub }),
+        );
+        return onlyCard();
+      }
+
+      it("stores the registered name of an answer that parses", async () => {
+        const card = await tickWithFetch(async () => new Response(aresBody, { status: 200 }));
+        expect(card.proposal).toMatchObject({ properties: { name: "BRAINZ s.r.o.", ico: "27419363" } });
+      });
+
+      it.each([
+        ["a 404", () => new Response("{}", { status: 404 })],
+        ["a 500", () => new Response("down", { status: 500 })],
+        ["a body that is not JSON", () => new Response("<html>", { status: 200 })],
+        ["a body without the registered name", () => new Response('{"ico":"27419363"}', { status: 200 })],
+      ])("writes the computed values after %s", async (_label, respond) => {
+        const card = await tickWithFetch(async () => respond());
+        expect(card).toMatchObject({
+          status: "proposed",
+          proposal: { properties: { name: "Brainz", ico: "27419363" } },
+        });
+      });
+
+      it("writes the computed values when ARES answers too slowly", async () => {
+        const card = await tickWithFetch(
+          (_url, init) =>
+            new Promise<Response>((_resolve, reject) => {
+              init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), {
+                once: true,
+              });
+            }),
+        );
+        expect(card).toMatchObject({
+          status: "proposed",
+          proposal: { properties: { name: "Brainz", ico: "27419363" } },
+        });
+      }, 15_000);
+    });
+
+    it("never calls ARES for a target that is not Companies, whatever the model computed", async () => {
+      const ares = stubAres(registered);
+
+      await runTick(
+        pool,
+        stubGateway({ properties: { name: "Buy milk", ico: "27419363" } }),
+        await createTaskItem("Buy milk", "tasks"),
+        ares,
+      );
+
+      expect(ares.calls).toEqual([]);
+    });
+
+    it.each([
+      ["no ico", { name: "Brainz" }],
+      ["an empty ico", { name: "Brainz", ico: "" }],
+      ["an ico with letters", { name: "Brainz", ico: "ABC12345" }],
+      ["an ico of nine digits", { name: "Brainz", ico: "123456789" }],
+      ["an ico that is a number", { name: "Brainz", ico: 27419363 }],
+    ])("does not call ARES for a proposal with %s and keeps what the model computed", async (_label, properties) => {
+      const ares = stubAres(registered);
+
+      await runTick(pool, stubGateway({ properties }), await createTaskItem("Brainz", "companies"), ares);
+
+      expect(ares.calls).toEqual([]);
+      expect((await onlyCard()).proposal).toMatchObject({ entityKind: "database", properties });
+    });
+
+    it("gives the primary operation of a multi-step answer the registered name too, and leaves the other operations alone", async () => {
+      const ares = stubAres(registered);
+      const primary = {
+        op: "create",
+        database: "companies",
+        alias: "a",
+        properties: { name: "Brainz", ico: "27419363" },
+      };
+      const secondary = {
+        op: "create",
+        database: "companies",
+        alias: "b",
+        properties: { name: "Other", ico: "45274649" },
+      };
+      const person = {
+        op: "create",
+        database: "people",
+        properties: { name: "Eva" },
+        relations: { companies: [{ alias: "a" }] },
+      };
+      const gateway = stubGateway({
+        properties: { name: "Brainz", ico: "27419363" },
+        operations: [person, primary, secondary],
+      });
+
+      await runTick(pool, gateway, await createTaskItem("Eva works at Brainz", "companies"), ares);
+
+      expect(ares.calls).toEqual(["27419363"]);
+      const card = await onlyCard();
+      expect(card.status).toBe("proposed");
+      const proposal = z
+        .object({
+          properties: z.unknown(),
+          operations: z.array(z.object({ ref: z.string(), role: z.string(), properties: z.unknown() })),
+        })
+        .parse(card.proposal);
+      expect(proposal.properties).toEqual({ name: "BRAINZ s.r.o.", ico: "27419363" });
+      expect(proposal.operations.map((step) => [step.ref, step.role, step.properties])).toEqual([
+        ["op1", "secondary", { name: "Eva" }],
+        ["a", "primary", { name: "BRAINZ s.r.o.", ico: "27419363" }],
+        ["b", "secondary", { name: "Other", ico: "45274649" }],
+      ]);
+    });
+
+    describe("a multi-step answer is verified on the primary operation that is stored", () => {
+      const person = { op: "create", database: "people", properties: { name: "Eva" } };
+      const storedSteps = async () => {
+        const card = await onlyCard();
+        expect(card.status).toBe("proposed");
+        return z
+          .object({
+            properties: z.unknown(),
+            operations: z.array(z.object({ ref: z.string(), role: z.string(), properties: z.unknown() })),
+          })
+          .parse(card.proposal);
+      };
+
+      it.each([
+        ["omit the ico", { name: "Brainz" }],
+        ["carry another number", { name: "Brainz", ico: "45274649" }],
+      ])("looks up the number of the primary operation when the top-level properties %s", async (_label, topLevel) => {
+        const ares = stubAres(registered);
+        const primary = { op: "create", database: "companies", properties: { name: "Brainz", ico: "27419363" } };
+        const gateway = stubGateway({ properties: topLevel, operations: [primary, person] });
+
+        await runTick(pool, gateway, await createTaskItem("Eva works at Brainz", "companies"), ares);
+
+        expect(ares.calls).toEqual(["27419363"]);
+        const proposal = await storedSteps();
+        expect(proposal.operations.map((step) => [step.ref, step.role, step.properties])).toEqual([
+          ["op1", "primary", { name: "BRAINZ s.r.o.", ico: "27419363" }],
+          ["op2", "secondary", { name: "Eva" }],
+        ]);
+        expect(proposal.properties).toEqual({ name: "BRAINZ s.r.o.", ico: "27419363" });
+      });
+
+      it("does not look up a number that only the top-level properties carry", async () => {
+        const ares = stubAres(registered);
+        const primary = { op: "create", database: "companies", properties: { name: "Brainz" } };
+        const gateway = stubGateway({ properties: { name: "Brainz", ico: "27419363" }, operations: [primary, person] });
+
+        await runTick(pool, gateway, await createTaskItem("Eva works at Brainz", "companies"), ares);
+
+        expect(ares.calls).toEqual([]);
+        const proposal = await storedSteps();
+        expect(proposal.operations[0]?.properties).toEqual({ name: "Brainz" });
+      });
+    });
+
+    describe("a target chosen by recognition", () => {
+      async function computeUntyped(
+        gateway: ReturnType<typeof stubGateway>,
+        ares: AresClient,
+      ): Promise<Awaited<ReturnType<ReturnType<typeof createProposalComputation>>>> {
+        const itemId = (
+          await createChokePoint(pool).createItem({
+            databaseId: config.inboxDatabaseId,
+            properties: { text: "Brainz, IČO 27419363", date: "2026-08-28", time: "09:00" },
+          })
+        ).id;
+        const item = await withTransaction(pool, (client) => getItemById(client, config.inboxDatabaseId, itemId));
+        if (!item) throw new Error("Missing Inbox item");
+        const compute = createProposalComputation({ pool, gateway, openBlob: noBlobBytes, aresClient: ares });
+        return inTenantZero(() =>
+          compute({
+            sourceItem: item,
+            type: null,
+            entityKind: "database",
+            recognition: true,
+            activeTypes: [],
+            locale: "en",
+            projectItemId: semprecProjectId,
+          }),
+        );
+      }
+
+      it("verifies a company when the best candidate targets Companies", async () => {
+        const ares = stubAres(registered);
+        const gateway = stubGateway({
+          properties: { name: "Brainz", ico: "27419363" },
+          candidates: [{ targetDatabaseKey: "companies", confidence: 0.9 }],
+        });
+
+        const result = await computeUntyped(gateway, ares);
+
+        expect(ares.calls).toEqual(["27419363"]);
+        expect(result.properties).toEqual({ name: "BRAINZ s.r.o.", ico: "27419363" });
+      });
+
+      it("does not call ARES when the best candidate targets Tasks, whatever number the model computed", async () => {
+        const ares = stubAres(registered);
+        const gateway = stubGateway({
+          properties: { name: "Brainz", ico: "27419363" },
+          candidates: [{ targetDatabaseKey: "tasks", confidence: 0.9 }],
+        });
+
+        const result = await computeUntyped(gateway, ares);
+
+        expect(ares.calls).toEqual([]);
+        expect(result.properties).toEqual({ name: "Brainz", ico: "27419363" });
+      });
     });
   });
 });

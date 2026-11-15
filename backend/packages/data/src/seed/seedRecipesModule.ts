@@ -7,7 +7,7 @@ import type { ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { requireAffectedRows } from "../db/pool.js";
 import { RECIPES_DATABASE_DESCRIPTOR } from "../recipes/recipesModuleManifest.js";
 import type { PropertyOwner, PropertyType } from "../types.js";
-import { RECIPES_MODULE_ID } from "./recipesModuleKeys.js";
+import { RECIPES_MODULE_ID, RECIPE_SOURCE_URL_KEY } from "./recipesModuleKeys.js";
 import { SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS } from "./systemProjectAgentGuidance.js";
 
 interface PropSpec {
@@ -17,7 +17,11 @@ interface PropSpec {
   config?: Record<string, unknown>;
 }
 
-/** The six properties of a recipe; the labels of each, of the options and of the presets are in `recipes/i18n`. */
+/**
+ * The seven properties of a recipe; the labels of each, of the options and of the presets are in `recipes/i18n`.
+ * `sourceUrl` (issue gh-1974) is the page a recipe was taken from; `recipes/recipeSourceUrlHook.ts` checks each value
+ * written and `recipes/recipesSourceUrlCutoverMigration.ts` gives it to a tenant seeded before it.
+ */
 const RECIPE_PROPERTIES: readonly PropSpec[] = [
   { key: "name", type: "title", owner: "user" },
   {
@@ -48,6 +52,7 @@ const RECIPE_PROPERTIES: readonly PropSpec[] = [
   { key: "favorite", type: "checkbox", owner: "user" },
   // { blobId } over the shared `blobs` table; `recipes/recipePhotoHook.ts` checks each written value.
   { key: "photo", type: "image", owner: "user" },
+  { key: RECIPE_SOURCE_URL_KEY, type: "url", owner: "user" },
 ];
 
 export interface RecipesModuleResult {
@@ -57,7 +62,7 @@ export interface RecipesModuleResult {
 
 /**
  * Seeds the Recipes module (issue #1707) into the caller's open transaction: the system project item "Recipes"
- * in the Projects database, the `recipes` system database it owns, the six properties of `RECIPE_PROPERTIES`,
+ * in the Projects database, the `recipes` system database it owns, the seven properties of `RECIPE_PROPERTIES`,
  * and the default `gallery` view (two columns, 4:3 tiles, the photo as the tile image). The schema is locked
  * once the view exists. Resolves with the id of the project item it created.
  *

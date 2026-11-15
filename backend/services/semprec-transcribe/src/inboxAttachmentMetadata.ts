@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import {
   audioKindForDuration,
+  enqueueInboxVoiceNoteTranscribe,
+  getInboxAttachment,
   INBOX_ATTACHMENT_UNREADABLE,
   inboxAttachmentMetadataPayloadSchema,
   readInboxAttachmentForMetadata,
@@ -142,13 +144,22 @@ async function recordFacts(
   const progress: { recorded: RecordedInboxAttachmentMetadata | null } = { recorded: null };
   try {
     return await withTransaction(pool, async (client) => {
-      progress.recorded = await recordInboxAttachmentMetadata(client, {
+      const recorded = await recordInboxAttachmentMetadata(client, {
         attachmentId,
         metadata: facts.metadata,
         thumbnail: facts.thumbnail && toDerivedImage(facts.thumbnail),
         reduced: facts.reduced && toDerivedImage(facts.reduced),
       });
-      return progress.recorded;
+      if (recorded.recorded && facts.metadata.audioKind === "voiceNote") {
+        // The item's id is read after the write, in the same transaction, so the job exists exactly when the metadata
+        // does. A failure here rolls the write back, and `progress` is still unset, so the finally removes the images.
+        const attachment = await getInboxAttachment(client, attachmentId);
+        // The row was written a moment ago in this transaction; only a broken invariant can lack it.
+        if (!attachment) throw new Error(`Inbox attachment ${attachmentId} is gone after its metadata was recorded`);
+        await enqueueInboxVoiceNoteTranscribe(client, attachment.inboxItemId);
+      }
+      progress.recorded = recorded;
+      return recorded;
     });
   } finally {
     const stored = [facts.thumbnail, facts.reduced].flatMap((image) => (image === null ? [] : [image.storageKey]));
@@ -167,6 +178,8 @@ async function recordFacts(
  *   A picture of more than `MAX_IMAGE_PIXELS` is one: the tools refuse to decode it (`-max_pixels`).
  * - The slow work (the download, `ffprobe`, `ffmpeg`) runs outside any transaction. One transaction then writes the
  *   facts and announces the update of the source Inbox item to its heartbeats (`recordInboxAttachmentMetadata`).
+ *   For a voice note (`audioKind` `voiceNote`) the same transaction queues the transcription of the item's voice notes
+ *   (`enqueueInboxVoiceNoteTranscribe`, issue gh-1980), so that job exists exactly when the metadata does.
  * - An attachment that is gone, one of another tenant (the job runs in the tenant of its envelope, where it is as
  *   good as gone) and one that already has `metadata` are skipped without reading the file, so a rerun changes nothing.
  *   A run that loses a race to another run records nothing and removes the images it wrote.

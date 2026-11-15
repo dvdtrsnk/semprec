@@ -118,6 +118,14 @@ async function removeMcpServersDatabase(): Promise<void> {
   if (rows.length !== 1) throw new Error("Expected exactly one MCP servers database");
 }
 
+/** The same for the Recipes database (issue gh-1974), the second module target. */
+async function removeRecipesDatabase(): Promise<void> {
+  const { rows } = await pool.query<{ id: string }>(
+    "UPDATE databases SET owner_module_id = NULL WHERE owner_module_id = 'recipes' RETURNING id",
+  );
+  if (rows.length !== 1) throw new Error("Expected exactly one Recipes database");
+}
+
 /** Each refusal is a 400 `validation_failed` that names the failing field, as the Acceptance criteria state. */
 function refusalFor(field: "processingMethod" | "targetDatabase") {
   return { status: 400, code: "validation_failed", details: { field } };
@@ -150,6 +158,12 @@ const INVALID_CREATES: ReadonlyArray<
   [
     "a 'pageContent' type with a target",
     { processingMethod: "pageContent", targetDatabase: "tasks" },
+    "targetDatabase",
+  ],
+  ["a 'journal' type with a target", { processingMethod: "journal", targetDatabase: "tasks" }, "targetDatabase"],
+  [
+    "a 'journal' type that also names the Journal database",
+    { processingMethod: "journal", targetDatabase: "journal" },
     "targetDatabase",
   ],
   ["a target without a processing method", { targetDatabase: "tasks" }, "targetDatabase"],
@@ -210,11 +224,42 @@ describe("Inbox item type write hook: processingMethod and targetDatabase are ch
         expect(await countTypes()).toBe(0);
       });
 
+      it("accepts a 'database' type targeting recipes when the tenant has the Recipes database (issue gh-1974)", async () => {
+        const type = await createType(source, { processingMethod: "database", targetDatabase: "recipes" });
+        expect(type.properties).toMatchObject({ processingMethod: "database", targetDatabase: "recipes" });
+      });
+
+      it("refuses a 'database' type targeting recipes when the tenant has no Recipes database and leaves no row (issue gh-1974)", async () => {
+        await removeRecipesDatabase();
+
+        await expect(
+          createType(source, { processingMethod: "database", targetDatabase: "recipes" }),
+        ).rejects.toMatchObject(refusalFor("targetDatabase"));
+        expect(await countTypes()).toBe(0);
+      });
+
       it("accepts a type that targets another database when the tenant has no MCP servers database", async () => {
         await removeMcpServersDatabase();
 
         const type = await createType(source, { processingMethod: "database", targetDatabase: "tasks" });
         expect(type.properties).toMatchObject({ processingMethod: "database", targetDatabase: "tasks" });
+      });
+
+      it("accepts a 'journal' type with no target (issue gh-1975)", async () => {
+        const entry = await createType(source, { processingMethod: "journal" });
+        expect(entry.properties.processingMethod).toBe("journal");
+        expect(entry.properties.targetDatabase).toBeUndefined();
+      });
+
+      it("refuses a 'database' type targeting journal with a message that names the 'journal' method (issue gh-1975)", async () => {
+        const error: unknown = await createType(source, {
+          processingMethod: "database",
+          targetDatabase: "journal",
+        }).catch((e: unknown) => e);
+
+        expect(error).toMatchObject(refusalFor("targetDatabase"));
+        expect((error as Error).message).toContain("processingMethod 'journal'");
+        expect(await countTypes()).toBe(0);
       });
 
       it("accepts a 'pageContent' type with no target", async () => {
@@ -279,6 +324,21 @@ describe("Inbox item type write hook: processingMethod and targetDatabase are ch
         expect(stored?.properties).toMatchObject({ processingMethod: "database", targetDatabase: "tasks" });
       });
 
+      it("accepts a patch that switches the target to recipes when the tenant has the Recipes database (issue gh-1974)", async () => {
+        const updated = await patchType(source, itemId, { targetDatabase: "recipes" });
+        expect(updated.properties).toMatchObject({ processingMethod: "database", targetDatabase: "recipes" });
+      });
+
+      it("refuses a patch that switches the target to recipes when the tenant has no Recipes database and keeps the stored pair (issue gh-1974)", async () => {
+        await removeRecipesDatabase();
+
+        await expect(patchType(source, itemId, { targetDatabase: "recipes" })).rejects.toMatchObject(
+          refusalFor("targetDatabase"),
+        );
+        const stored = await chokePoint.getItem(typesId, itemId);
+        expect(stored?.properties).toMatchObject({ processingMethod: "database", targetDatabase: "tasks" });
+      });
+
       it("accepts a rename of a type stored with mcpServers after the tenant lost the MCP servers database", async () => {
         await patchType(source, itemId, { targetDatabase: "mcpServers" });
         await removeMcpServersDatabase();
@@ -294,6 +354,41 @@ describe("Inbox item type write hook: processingMethod and targetDatabase are ch
         await expect(
           patchType(source, itemId, { processingMethod: "database", targetDatabase: "mcpServers" }),
         ).rejects.toMatchObject(refusalFor("targetDatabase"));
+      });
+
+      it("refuses a patch that turns a 'database' type into a 'journal' type while its target stays set (issue gh-1975)", async () => {
+        await expect(patchType(source, itemId, { processingMethod: "journal" })).rejects.toMatchObject(
+          refusalFor("targetDatabase"),
+        );
+        const stored = await chokePoint.getItem(typesId, itemId);
+        expect(stored?.properties).toMatchObject({ processingMethod: "database", targetDatabase: "tasks" });
+      });
+
+      it("accepts a patch that switches to 'journal' and clears the target in the same write (issue gh-1975)", async () => {
+        const updated = await patchType(source, itemId, { processingMethod: "journal", targetDatabase: null });
+        expect(updated.properties).toMatchObject({ processingMethod: "journal", targetDatabase: null });
+      });
+
+      it("refuses a patch that gives a 'journal' type a target (issue gh-1975)", async () => {
+        const journalType = await createType(source, { processingMethod: "journal" });
+
+        await expect(patchType(source, journalType.id, { targetDatabase: "tasks" })).rejects.toMatchObject(
+          refusalFor("targetDatabase"),
+        );
+        const stored = await chokePoint.getItem(typesId, journalType.id);
+        expect(stored?.properties.targetDatabase).toBeUndefined();
+      });
+
+      it("refuses a patch that switches a 'journal' type to 'database' targeting journal, naming the 'journal' method (issue gh-1975)", async () => {
+        const journalType = await createType(source, { processingMethod: "journal" });
+
+        const error: unknown = await patchType(source, journalType.id, {
+          processingMethod: "database",
+          targetDatabase: "journal",
+        }).catch((e: unknown) => e);
+
+        expect(error).toMatchObject(refusalFor("targetDatabase"));
+        expect((error as Error).message).toContain("processingMethod 'journal'");
       });
 
       it("accepts a patch that switches to 'pageContent' and clears the target in the same write", async () => {

@@ -443,6 +443,94 @@ describe("the inboxAttachmentMetadata job (issue gh-1965)", () => {
     });
   });
 
+  describe("the transcription of voice notes it queues (issue gh-1980)", () => {
+    const failVoiceNoteJobInsert = `
+      CREATE FUNCTION fail_voice_note_job_insert() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        RAISE EXCEPTION 'injected failure of the voice note job insert';
+      END $$`;
+
+    afterEach(async () => {
+      await adminPool.query("DROP TRIGGER IF EXISTS fail_voice_note_job_insert ON graphile_worker._private_jobs");
+      await adminPool.query("DROP FUNCTION IF EXISTS fail_voice_note_job_insert()");
+    });
+
+    it("queues one job for the Inbox item of a 40-second voice note, under the item's key", async () => {
+      const note = await attach(tenantA, await generateM4aFixture(40));
+
+      await runQueue();
+
+      expect(await voiceNoteJobs()).toEqual({
+        keys: [`inbox-voice-note:${note.inboxItemId}`],
+        envelopes: [{ tenantId: tenantA, inboxItemId: note.inboxItemId }],
+      });
+    });
+
+    it("queues one job for an item with two voice notes: the second replaces the first", async () => {
+      const first = await attach(tenantA, await generateM4aFixture(30));
+      await attach(tenantA, await generateM4aFixture(50), { itemId: first.inboxItemId });
+
+      await runQueue();
+
+      expect(await voiceNoteJobs()).toEqual({
+        keys: [`inbox-voice-note:${first.inboxItemId}`],
+        envelopes: [{ tenantId: tenantA, inboxItemId: first.inboxItemId }],
+      });
+    });
+
+    it.each([
+      { seconds: INBOX_RECORDING_MIN_SECONDS - 1, queued: true },
+      { seconds: INBOX_RECORDING_MIN_SECONDS, queued: false },
+      { seconds: INBOX_RECORDING_MIN_SECONDS + 1, queued: false },
+    ])("queues a job for a $seconds-second attachment: $queued", async ({ seconds, queued }) => {
+      const note = await attach(tenantA, await generateM4aFixture(seconds));
+
+      await runQueue();
+
+      expect((await voiceNoteJobs()).keys).toEqual(queued ? [`inbox-voice-note:${note.inboxItemId}`] : []);
+    });
+
+    it("queues nothing for a photo, a PDF and an audio file that cannot be read", async () => {
+      await attach(tenantA, await generateImageFixture({ width: 300, height: 200, format: "jpeg" }));
+      await attach(tenantA, Buffer.from("%PDF-1.7 a scanned receipt"));
+      await attachDeclared(tenantA, "audio/mp4", Buffer.from("not an audio file at all"));
+
+      await runQueue();
+
+      expect(await voiceNoteJobs()).toEqual({ keys: [], envelopes: [] });
+    });
+
+    it("queues nothing again when the job runs again for an attachment that already has its metadata", async () => {
+      const note = await attach(tenantA, await generateM4aFixture(40));
+      await runQueue();
+      await adminPool.query("SELECT graphile_worker.remove_job($1)", [`inbox-voice-note:${note.inboxItemId}`]);
+      await runInTenant(tenantA, () =>
+        withTransaction(runtimePool, (client) => enqueueForeignJob(client, note.attachmentId)),
+      );
+
+      await runQueue();
+
+      expect(await voiceNoteJobs()).toEqual({ keys: [], envelopes: [] });
+    });
+
+    it("rolls the metadata back with the job that cannot be queued, and leaves the attachment for a retry", async () => {
+      const note = await attach(tenantA, await generateM4aFixture(40));
+      await adminPool.query(failVoiceNoteJobInsert);
+      await adminPool.query(
+        `CREATE TRIGGER fail_voice_note_job_insert BEFORE INSERT ON graphile_worker._private_jobs
+           FOR EACH ROW WHEN (NEW.key LIKE 'inbox-voice-note:%') EXECUTE FUNCTION fail_voice_note_job_insert()`,
+      );
+      const task = createInboxAttachmentMetadataTask(runtimePool, storage);
+
+      await expect(runInTenant(tenantA, () => task({ attachmentId: note.attachmentId }))).rejects.toThrow(
+        /injected failure of the voice note job insert/,
+      );
+
+      expect((await readAttachment(tenantA, note.attachmentId)).metadata).toBeNull();
+      expect(await voiceNoteJobs()).toEqual({ keys: [], envelopes: [] });
+    });
+  });
+
   describe("files with nothing to read", () => {
     it("records only a null page count for a PDF, without reading the file", async () => {
       const pdf = await attach(tenantA, Buffer.from("%PDF-1.7 a scanned receipt"));
@@ -695,6 +783,31 @@ describe("the inboxAttachmentMetadata job (issue gh-1965)", () => {
     });
   });
 });
+
+const voiceNoteJobSchema = z.object({ inboxItemId: z.string() });
+
+/**
+ * The queued transcription jobs of voice notes: their keys (public jobs view) and the tenant and payload of their
+ * envelopes. The view has no payload, so the envelopes come from the queue's test support.
+ */
+async function voiceNoteJobs(): Promise<{
+  keys: string[];
+  envelopes: Array<{ tenantId: string | null; inboxItemId: string }>;
+}> {
+  const { rows } = await adminPool.query<{ key: string }>(
+    "SELECT key FROM graphile_worker.jobs WHERE task_identifier = $1 ORDER BY key",
+    [CORE_TASK_NAMES.INBOX_VOICE_NOTE_TRANSCRIBE],
+  );
+  const raw = await readJobPayloadsByIdentifier(adminPool, CORE_TASK_NAMES.INBOX_VOICE_NOTE_TRANSCRIBE);
+  const envelopes = raw
+    .map((entry) => jobEnvelopeSchema.parse(entry))
+    .map((envelope) => ({
+      tenantId: envelope.tenantId,
+      inboxItemId: voiceNoteJobSchema.parse(envelope.payload).inboxItemId,
+    }))
+    .sort((a, b) => a.inboxItemId.localeCompare(b.inboxItemId));
+  return { keys: rows.map((row) => row.key), envelopes };
+}
 
 /** A job of the running tenant that names an attachment of another tenant, under a key of its own so it replaces no job. */
 function enqueueForeignJob(client: Parameters<typeof enqueueJob>[0], attachmentId: string): Promise<void> {

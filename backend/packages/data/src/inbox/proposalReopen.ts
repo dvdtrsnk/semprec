@@ -5,6 +5,7 @@ import { publishInboxCardChange } from "./inboxCardsRealtime.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { appendHistoryEntry, invalidReasonSchema } from "./inboxTickAction.js";
 import { enqueueJournalInboxRecomputeForProposal } from "./journalInboxCompute.js";
+import { adoptCreatedNewOptions } from "./proposalNewOptions.js";
 import { lockLiveProposal, type ProposalActionConfig } from "./proposalActions.js";
 import { assertProposalVersion, incompatibleStatusError } from "./proposalPreconditions.js";
 import { envelopeAllowsRestore } from "./proposalReferenceInvalidation.js";
@@ -59,7 +60,9 @@ async function holdsLiveSourceDeletion(client: PoolClient, proposal: ItemRow): P
  * - A `confirmed` card has the writes of its confirmation reversed first (`undoConfirmedProposalWithClient`, following
  *   `docs/adr/2026-10-25-undoing-a-confirmed-proposal-reverses-its-recorded-writes.md`), in this transaction. It then
  *   becomes `proposed` with the envelope it was confirmed with, and its `resultItemId`, `resultLabel` and `results` are
- *   cleared. The Files item that received a moved Inbox attachment cannot be reversed and is returned in `keptItems`.
+ *   cleared. The options the confirmation created stay in the schema, so a stored `newOptions` entry that an option now
+ *   has by its label is replaced by that option's key (`adoptCreatedNewOptions`, issue gh-1994) in the `proposal`, the
+ *   `aiProposal` and the `userOverrides`, and the card can be confirmed again. The Files item that received a moved Inbox attachment cannot be reversed and is returned in `keptItems`.
  *   An item changed since the confirmation is a 409 `version_conflict` that names it, and nothing is written.
  * - Any other status (`computing`, `computeFailed`, `needsClarification`, `invalid`) is a 400 `validation_failed` on
  *   field `status` with `details.currentStatus`.
@@ -88,15 +91,24 @@ export async function reopenProposalWithClient(
   let updated: ItemRow;
   if (status === "confirmed") {
     keptItems = await undoConfirmedProposalWithClient(client, proposal, actingUserId);
+    // The undo leaves the options the confirmation created (issue gh-1994): the card uses them by key from now on.
+    const adopted = await adoptCreatedNewOptions(client, proposal.properties);
     updated = await updateItemWithClient(
       client,
       {
         databaseId: config.processingProposalsDatabaseId,
         itemId: proposal.id,
-        propertiesPatch: { status: "proposed", resultItemId: null, resultLabel: null, results: null, history },
+        propertiesPatch: {
+          status: "proposed",
+          resultItemId: null,
+          resultLabel: null,
+          results: null,
+          history,
+          ...adopted,
+        },
       },
       {
-        allowedSystemKeys: ["status", "resultItemId", "resultLabel", "results", "history"],
+        allowedSystemKeys: ["status", "resultItemId", "resultLabel", "results", "history", ...Object.keys(adopted)],
         writer: { writerKind: "user" },
         actingUserId,
       },

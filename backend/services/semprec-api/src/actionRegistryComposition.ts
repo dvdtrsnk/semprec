@@ -40,6 +40,7 @@ import {
   createAgentGuidanceDriftActionForApi,
   createAiGatewayClientForApi,
 } from "./projectAgentGuidanceComposition.js";
+import { createAresHttpClient } from "./aresClient.js";
 import { createProposalComputation } from "./proposalComputation.js";
 
 /**
@@ -98,6 +99,8 @@ export function createApiActionRegistry(pool: Pool, moduleRegistry: ModuleRegist
         gateway,
         openBlob: (storageKey) =>
           openBlobFromRoots({ primary: filesStorage, alternate: mailAttachmentStorage, storageKey }),
+        aresClient: createAresHttpClient(),
+        recipe: { photoStorage: filesStorage },
       }),
     ),
   );

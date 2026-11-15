@@ -1,6 +1,6 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "@semprec/data/testSupport";
+import { getTestPool, inTenantZero, resetDatabase } from "@semprec/data/testSupport";
 import {
   CORE_AGENT_RUN_ACTION_ID,
   DRIFT_CHECK_ACTION_ID,
@@ -15,7 +15,9 @@ import {
   loadFullModuleRegistry,
   seedSystem,
 } from "@semprec/data";
+import { z } from "zod";
 import { createApiActionRegistry } from "../actionRegistryComposition.js";
+import { ARES_BASE_URL } from "../aresClient.js";
 
 let pool: Pool;
 const originalToken = process.env.AI_GATEWAY_INTERNAL_TOKEN;
@@ -29,6 +31,10 @@ describe("createApiActionRegistry (issue #641)", () => {
   beforeEach(async () => {
     process.env.AI_GATEWAY_INTERNAL_TOKEN = "test-internal-token";
     await resetDatabase(pool);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   afterAll(async () => {
@@ -95,6 +101,77 @@ describe("createApiActionRegistry (issue #641)", () => {
       [heartbeatId],
     );
     expect(after[0]!.last_error).toBeNull();
+  });
+
+  it("fires semprec.tick with the ARES client: a Companies proposal carries the registered name (issue gh-1989)", async () => {
+    await seedSystem(pool);
+    const heartbeat = await pool.query<{ id: string; project_item_id: string; action_config: unknown }>(
+      "SELECT id, project_item_id, action_config FROM project_heartbeats WHERE action_id = $1 LIMIT 1",
+      [SEMPREC_TICK_ACTION_ID],
+    );
+    const row = heartbeat.rows[0];
+    if (!row) throw new Error("The seeded Inbox heartbeat is missing");
+    const config = z
+      .object({ inboxDatabaseId: z.string(), inboxItemTypesDatabaseId: z.string() })
+      .passthrough()
+      .parse(row.action_config);
+    const chokePoint = createChokePoint(pool);
+    const type = await inTenantZero(() =>
+      chokePoint.createItem({
+        databaseId: config.inboxItemTypesDatabaseId,
+        properties: { name: "Company", emoji: "C", processingMethod: "database", targetDatabase: "companies" },
+      }),
+    );
+    const item = await inTenantZero(() =>
+      chokePoint.createItem({
+        databaseId: config.inboxDatabaseId,
+        properties: { text: "Brainz, IČO 27419363", date: "2026-10-16", time: "08:12" },
+      }),
+    );
+    const typeProperty = await pool.query<{ id: string }>(
+      "SELECT id FROM properties WHERE database_id = $1 AND key = 'type'",
+      [config.inboxDatabaseId],
+    );
+    await inTenantZero(() =>
+      chokePoint.createRelation({
+        relationPropertyId: typeProperty.rows[0]!.id,
+        callerItemId: item.id,
+        targetItemId: type.id,
+      }),
+    );
+    const requested: string[] = [];
+    vi.stubGlobal("fetch", async (input: string | URL | Request): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      requested.push(url);
+      if (url.endsWith("/internal/complete"))
+        return Response.json({
+          content: { properties: { name: "Brainz", ico: "27419363" } },
+          usage: { inputTokens: 1, outputTokens: 1 },
+        });
+      if (url.startsWith(ARES_BASE_URL)) return Response.json({ ico: "27419363", obchodniJmeno: "BRAINZ s.r.o." });
+      throw new Error("An unexpected request");
+    });
+
+    const registry = createApiActionRegistry(pool, await loadFullModuleRegistry());
+    const tick = registry.get(SEMPREC_TICK_ACTION_ID);
+    if (!tick) throw new Error("semprec.tick is missing");
+    await inTenantZero(() =>
+      tick(row.action_config as Record<string, unknown>, {
+        heartbeatId: row.id,
+        projectItemId: row.project_item_id,
+        itemId: item.id,
+      }),
+    );
+
+    expect(requested.filter((url) => url.startsWith(ARES_BASE_URL))).toEqual([
+      `${ARES_BASE_URL}/ekonomicke-subjekty/27419363`,
+    ]);
+    const cards = await pool.query<{ properties: { status: string; proposal: { properties: unknown } } }>(
+      "SELECT properties FROM items WHERE properties ? 'proposal'",
+    );
+    expect(cards.rows).toHaveLength(1);
+    expect(cards.rows[0]?.properties.status).toBe("proposed");
+    expect(cards.rows[0]?.properties.proposal.properties).toEqual({ name: "BRAINZ s.r.o.", ico: "27419363" });
   });
 
   it("refuses to compose without AI_GATEWAY_INTERNAL_TOKEN, naming the variable", async () => {

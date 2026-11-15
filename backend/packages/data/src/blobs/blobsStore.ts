@@ -4,6 +4,14 @@ import { requireManagedTransaction, requireSingleRow } from "../db/pool.js";
 import type { PoolClient } from "pg";
 import type { BlobRow } from "../types.js";
 import { ValidationError } from "../errors.js";
+import { PROCESSING_PROPOSALS_MODULE_ID } from "../seed/inboxPipelineKeys.js";
+
+/**
+ * The `status` values of a Processing proposal that is closed: a `confirmed` card's item holds the blob reference from
+ * then on and a `rejected` card writes nothing. The same two values as `LOCKED_PROPOSAL_STATUSES` in
+ * `inbox/inboxTypesStore.ts`, which this module does not import (a test keeps the two equal).
+ */
+export const CLOSED_PROPOSAL_STATUSES: readonly string[] = ["confirmed", "rejected"];
 
 /** The raw `blobs` row shape this module reads back from Postgres. */
 type BlobDbRow = {
@@ -175,7 +183,9 @@ export async function findOrCreateBlob(client: Queryable, input: CreateBlobInput
  * Deletes blob `id` only when nothing references it any more — no item visible to the caller (live
  * or trashed, in any of its databases, archived ones included) whose `properties.file.blobId` or
  * `properties.<key>.blobId` of any `image` property names it, no mail attachment and no
- * `inbox_attachments` row that names it as its blob, its preview or its reduced copy — because `findOrCreateBlob`'s content-hash dedup shares one blob between
+ * `inbox_attachments` row that names it as its blob, its preview or its reduced copy, and no open Processing proposal
+ * whose `proposal` or `aiProposal` envelope names its id (a recipe card's `photo`, issue gh-1974; see
+ * [[2026-11-15-an-open-proposal-keeps-the-blobs-its-envelope-names]]) — because `findOrCreateBlob`'s content-hash dedup shares one blob between
  * identical uploads. Used by the trash purge (issue #675) in its own transaction, after the
  * referencing item is gone. Returns the
  * deleted row's `storage_key` so the caller can remove the bytes after the commit, or null when the
@@ -217,8 +227,21 @@ export async function deleteBlobIfUnreferenced(client: Queryable, id: string): P
          WHERE tenant_id = app_tenant_default() AND (blob_id = $1 OR thumbnail_blob_id = $1 OR reduced_blob_id = $1)
        )
        AND NOT EXISTS (SELECT 1 FROM semp_message_speech WHERE tenant_id = app_tenant_default() AND blob_id = $1)
+       AND NOT EXISTS (
+         SELECT 1 FROM items card
+         JOIN databases proposals ON proposals.id = card.database_id
+         WHERE card.tenant_id = app_tenant_default() AND proposals.tenant_id = app_tenant_default()
+           AND proposals.owner_module_id = $4
+           AND card.database_id = ANY($3::uuid[])
+           AND coalesce(card.properties ->> 'status', '') <> ALL($5::text[])
+           AND strpos(
+             lower(coalesce(card.properties -> 'proposal', 'null'::jsonb)::text
+               || ' ' || coalesce(card.properties -> 'aiProposal', 'null'::jsonb)::text),
+             lower($2::text)
+           ) > 0
+       )
      RETURNING storage_key`,
-    [id, id, await visibleDatabaseIds(client)],
+    [id, id, await visibleDatabaseIds(client), PROCESSING_PROPOSALS_MODULE_ID, CLOSED_PROPOSAL_STATUSES],
   );
   if (result.rowCount === 0) return null;
   if (result.rowCount !== 1) throw new Error("Unexpected unreferenced blob deletion count");

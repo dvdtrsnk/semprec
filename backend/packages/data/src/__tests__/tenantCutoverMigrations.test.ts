@@ -5,6 +5,7 @@ import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createPool, withTransaction } from "../db/pool.js";
 import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
+import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { ForbiddenError } from "../errors.js";
@@ -1568,7 +1569,7 @@ describe("Inbox item types targetDatabase options tenant cutover (issue #1973)",
   let zero: string;
   let b: string;
 
-  /** The select as a populated install stored it before the issue: the ten hardcoded databases, no `mcpServers`. */
+  /** The select as a populated install stored it before the issue: the ten hardcoded databases, no module target. */
   const PRE_CUTOVER_KEYS = TEN_DATABASE_MODULE_IDS;
 
   beforeAll(() => {
@@ -1618,13 +1619,13 @@ describe("Inbox item types targetDatabase options tenant cutover (issue #1973)",
 
   const preCutoverConfig = { options: PRE_CUTOVER_KEYS.map((key) => ({ key })) };
 
-  it("declares the mcpServers option after the ten hardcoded databases in a fresh seed", async () => {
+  it("declares the mcpServers option and then the recipes option (issue gh-1974) after the ten hardcoded databases in a fresh seed", async () => {
     await runInTenant(zero, () => seedSystem(dataPool, createViewTypeRegistry()));
 
-    expect(await readTargetOptionKeys(zero)).toEqual([...TEN_DATABASE_MODULE_IDS, "mcpServers"]);
+    expect(await readTargetOptionKeys(zero)).toEqual([...TEN_DATABASE_MODULE_IDS, "mcpServers", "recipes"]);
   });
 
-  it("appends mcpServers to a populated tenant's options in every tenant and leaves the existing options as they were", async () => {
+  it("appends mcpServers and recipes to a populated tenant's options in every tenant and leaves the existing options as they were", async () => {
     await seedWithTargetConfig(zero, preCutoverConfig);
     // A tenant whose options carry extra data and sit in another order: nothing is reordered or removed.
     const reordered = {
@@ -1635,10 +1636,16 @@ describe("Inbox item types targetDatabase options tenant cutover (issue #1973)",
 
     await runCutovers(dataPool);
 
-    expect(await readTargetOptionKeys(zero)).toEqual([...TEN_DATABASE_MODULE_IDS, "mcpServers"]);
+    expect(await readTargetOptionKeys(zero)).toEqual([...TEN_DATABASE_MODULE_IDS, "mcpServers", "recipes"]);
     expect(await readTargetConfig(b)).toEqual({
       custom: "keep",
-      options: [{ key: "tasks", color: "blue" }, { key: "areas" }, { key: "journal" }, { key: "mcpServers" }],
+      options: [
+        { key: "tasks", color: "blue" },
+        { key: "areas" },
+        { key: "journal" },
+        { key: "mcpServers" },
+        { key: "recipes" },
+      ],
     });
   });
 
@@ -1948,5 +1955,459 @@ describe("Inbox capture properties tenant cutover (issue gh-1964)", () => {
       }),
     );
     expect(updated.properties).toMatchObject({ captureChannel: "voice", sourceApp: "Notes" });
+  });
+});
+
+describe("Inbox item types journal processing method tenant cutover (issue gh-1975)", () => {
+  let zero: string;
+  let b: string;
+
+  const JOURNAL_OPTION_KEYS = ["pageContent", "database", "journal"];
+  /** The select as a populated install stored it before the issue: no `journal` method. */
+  const preCutoverConfig = { options: [{ key: "pageContent" }, { key: "database" }] };
+
+  beforeAll(() => {
+    adminPool = getTestPool();
+    dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
+  });
+
+  beforeEach(async () => {
+    await resetDatabase(adminPool);
+    zero = getTenantZeroId();
+    b = await createTestTenant(adminPool);
+  });
+
+  afterAll(async () => {
+    await dataPool.end();
+    await adminPool.end();
+  });
+
+  async function readMethodConfig(tenantId: string): Promise<unknown> {
+    const { rows } = await adminPool.query<{ config: unknown }>(
+      `SELECT p.config FROM properties p JOIN databases d ON d.id = p.database_id
+        WHERE d.owner_module_id = 'inboxItemTypes' AND p.key = 'processingMethod' AND p.tenant_id = $1`,
+      [tenantId],
+    );
+    expect(rows).toHaveLength(1);
+    return rows[0]?.config;
+  }
+
+  async function readMethodOptionKeys(tenantId: string): Promise<string[]> {
+    const config = z
+      .object({ options: z.array(z.object({ key: z.string() })) })
+      .parse(await readMethodConfig(tenantId));
+    return config.options.map((option) => option.key);
+  }
+
+  /** Seeds the tenant, then sets the `processingMethod` select back to `config`, the shape of an install seeded before the issue. */
+  async function seedWithMethodConfig(tenantId: string, config: unknown): Promise<void> {
+    await runInTenant(tenantId, () => seedSystem(dataPool, createViewTypeRegistry()));
+    // Direct SQL is the fixture: the Inbox item types database is schema-locked and the seed now declares the option.
+    await adminPool.query(
+      `UPDATE properties SET config = $2::jsonb
+        WHERE key = 'processingMethod' AND database_id IN
+          (SELECT id FROM databases WHERE owner_module_id = 'inboxItemTypes' AND tenant_id = $1)`,
+      [tenantId, JSON.stringify(config)],
+    );
+  }
+
+  /**
+   * An Inbox item type of the tenant with the given method and target. The type is created through the choke point as a
+   * valid `pageContent` type; a stored `database` + `journal` pairing is a state the type-write rules now refuse, so the
+   * pair is set with direct SQL, which is the shape a populated install holds.
+   */
+  async function insertType(
+    tenantId: string,
+    name: string,
+    pair: { processingMethod: string; targetDatabase?: string },
+    options: { trashed?: boolean } = {},
+  ): Promise<string> {
+    const typesDatabase = await runInTenant(tenantId, () =>
+      withTransaction(dataPool, (client) => getDatabaseByModuleId(client, "inboxItemTypes")),
+    );
+    if (!typesDatabase) throw new Error("Inbox item types database was not seeded");
+    const created = await runInTenant(tenantId, () =>
+      withTransaction(dataPool, (client) =>
+        createItemWithClient(client, {
+          databaseId: typesDatabase.id,
+          properties: { name, emoji: "T", processingMethod: "pageContent" },
+        }),
+      ),
+    );
+    await adminPool.query(
+      `UPDATE items SET properties = properties - 'targetDatabase' || $2::jsonb, deleted_at = $3
+        WHERE id = $1`,
+      [created.id, JSON.stringify(pair), options.trashed ? new Date() : null],
+    );
+    return created.id;
+  }
+
+  async function readType(typeId: string): Promise<{ properties: Record<string, unknown>; updatedAt: string }> {
+    const { rows } = await adminPool.query<{ properties: Record<string, unknown>; updated_at: Date }>(
+      "SELECT properties, updated_at FROM items WHERE id = $1",
+      [typeId],
+    );
+    const row = rows[0];
+    if (!row) throw new Error(`Type ${typeId} not found`);
+    return { properties: row.properties, updatedAt: row.updated_at.toISOString() };
+  }
+
+  it("declares the journal option after the other methods in a fresh seed", async () => {
+    await runInTenant(zero, () => seedSystem(dataPool, createViewTypeRegistry()));
+
+    expect(await readMethodOptionKeys(zero)).toEqual(JOURNAL_OPTION_KEYS);
+  });
+
+  it("appends journal to the select of every populated tenant and leaves the existing options as they were", async () => {
+    await seedWithMethodConfig(zero, preCutoverConfig);
+    // A tenant whose options carry extra data and sit in another order: nothing is reordered or removed.
+    const reordered = { custom: "keep", options: [{ key: "database", color: "blue" }, { key: "pageContent" }] };
+    await seedWithMethodConfig(b, reordered);
+
+    await runCutovers(dataPool);
+
+    expect(await readMethodOptionKeys(zero)).toEqual(JOURNAL_OPTION_KEYS);
+    expect(await readMethodConfig(b)).toEqual({
+      custom: "keep",
+      options: [{ key: "database", color: "blue" }, { key: "pageContent" }, { key: "journal" }],
+    });
+  });
+
+  it("leaves a populated tenant with the same select config as a fresh seed", async () => {
+    await seedWithMethodConfig(b, preCutoverConfig);
+    await runInTenant(zero, () => seedSystem(dataPool, createViewTypeRegistry()));
+
+    await runCutovers(dataPool);
+
+    expect(await readMethodConfig(b)).toEqual(await readMethodConfig(zero));
+  });
+
+  it("converts a database type that targets the Journal database to the journal method without a target", async () => {
+    await seedWithMethodConfig(zero, preCutoverConfig);
+    await seedWithMethodConfig(b, preCutoverConfig);
+    const stale = await insertType(zero, "Entry", { processingMethod: "database", targetDatabase: "journal" });
+    const staleOfB = await insertType(b, "Entry B", { processingMethod: "database", targetDatabase: "journal" });
+    const updatedAtBefore = (await readType(stale)).updatedAt;
+
+    await runCutovers(dataPool);
+
+    for (const typeId of [stale, staleOfB]) {
+      const { properties } = await readType(typeId);
+      expect(properties.processingMethod).toBe("journal");
+      // The choke point clears a key with a JSON null, which the type-write rules read as unset.
+      expect(Object.hasOwn(properties, "targetDatabase")).toBe(true);
+      expect(properties.targetDatabase).toBeNull();
+    }
+    expect((await readType(stale)).properties).toMatchObject({ name: "Entry", emoji: "T" });
+    expect((await readType(stale)).updatedAt).not.toBe(updatedAtBefore);
+  });
+
+  it("converts a trashed type too, so a restore does not bring the refused pairing back", async () => {
+    await seedWithMethodConfig(zero, preCutoverConfig);
+    await seedWithMethodConfig(b, preCutoverConfig);
+    const trashed = await insertType(
+      zero,
+      "Old entry",
+      { processingMethod: "database", targetDatabase: "journal" },
+      { trashed: true },
+    );
+    const live = await insertType(b, "Entry", { processingMethod: "database", targetDatabase: "journal" });
+
+    await runCutovers(dataPool);
+
+    const { properties } = await readType(trashed);
+    expect(properties.processingMethod).toBe("journal");
+    // The same stored shape as a live type converted through the choke point: the key holds a JSON null.
+    expect(Object.hasOwn(properties, "targetDatabase")).toBe(true);
+    expect(properties.targetDatabase).toBeNull();
+    expect(Object.keys(properties).sort()).toEqual(Object.keys((await readType(live)).properties).sort());
+    const { rows } = await adminPool.query<{ trashed: boolean }>(
+      "SELECT deleted_at IS NOT NULL AS trashed FROM items WHERE id = $1",
+      [trashed],
+    );
+    expect(rows).toEqual([{ trashed: true }]);
+  });
+
+  it("leaves every other type as it was", async () => {
+    await seedWithMethodConfig(zero, preCutoverConfig);
+    const tasks = await insertType(zero, "Task", { processingMethod: "database", targetDatabase: "tasks" });
+    const page = await insertType(zero, "Thought", { processingMethod: "pageContent" });
+    const trashedTasks = await insertType(
+      zero,
+      "Old task",
+      { processingMethod: "database", targetDatabase: "tasks" },
+      { trashed: true },
+    );
+    const before = await Promise.all([tasks, page, trashedTasks].map(readType));
+
+    await runCutovers(dataPool);
+
+    expect(await Promise.all([tasks, page, trashedTasks].map(readType))).toEqual(before);
+  });
+
+  it("changes nothing in a second run", async () => {
+    await seedWithMethodConfig(zero, preCutoverConfig);
+    await insertType(zero, "Entry", { processingMethod: "database", targetDatabase: "journal" });
+    await insertType(zero, "Old entry", { processingMethod: "database", targetDatabase: "journal" }, { trashed: true });
+    await runCutovers(dataPool);
+    const items = await adminPool.query("SELECT to_jsonb(i) AS row FROM items i ORDER BY id");
+    const configBefore = await readMethodConfig(zero);
+    const before = await snapshot();
+
+    await runCutovers(dataPool);
+
+    expect((await adminPool.query("SELECT to_jsonb(i) AS row FROM items i ORDER BY id")).rows).toEqual(items.rows);
+    expect(await readMethodConfig(zero)).toEqual(configBefore);
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it("does nothing in a tenant without an Inbox item types database", async () => {
+    await seedWithMethodConfig(b, preCutoverConfig);
+    await runInTenant(b, () =>
+      dataPool.query("UPDATE databases SET owner_module_id = NULL WHERE owner_module_id = 'inboxItemTypes'"),
+    );
+    const read = () =>
+      adminPool.query(
+        "SELECT to_jsonb(p) AS row FROM properties p WHERE p.key = 'processingMethod' AND p.tenant_id = $1",
+        [b],
+      );
+    const before = await read();
+
+    await runCutovers(dataPool);
+
+    const after = await read();
+    expect(after.rows).toEqual(before.rows);
+    expect(after.rows).toHaveLength(1);
+  });
+
+  it("fails and names the tenant when its Inbox item types database has no processingMethod property", async () => {
+    await seedWithMethodConfig(b, preCutoverConfig);
+    await adminPool.query(
+      `DELETE FROM properties WHERE key = 'processingMethod' AND database_id IN
+         (SELECT id FROM databases WHERE owner_module_id = 'inboxItemTypes' AND tenant_id = $1)`,
+      [b],
+    );
+
+    const error = await runCutovers(dataPool).then(
+      () => null,
+      (err: unknown) => err,
+    );
+
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).message).toContain(b);
+    expect((error as AggregateError).message).not.toContain(zero);
+  });
+
+  it.each([{ options: "invalid" }, { options: [{ key: 42 }] }, {}, null])(
+    "refuses malformed processingMethod config %j and leaves it as it was",
+    async (config) => {
+      await seedWithMethodConfig(b, config);
+
+      await expect(runCutovers(dataPool)).rejects.toBeInstanceOf(AggregateError);
+
+      expect(await readMethodConfig(b)).toEqual(config);
+    },
+  );
+});
+
+describe("default Inbox item types tenant cutover (issue gh-1977)", () => {
+  let zero: string;
+  let b: string;
+
+  const MARKER_KEY = "seededDefaultInboxTypes";
+  const ALL_KEYS = ["idea", "task", "event", "thought", "mood", "note", "contact"];
+
+  const propertyRowSchema = z.object({
+    key: z.string(),
+    name: z.string().nullable(),
+    type: z.string(),
+    config: z.unknown(),
+    locked: z.boolean(),
+    owner: z.string(),
+    owner_process: z.string().nullable(),
+  });
+  const typeRowSchema = z.object({ id: z.string(), deleted_at: z.date().nullable(), properties: z.unknown() });
+
+  beforeAll(() => {
+    adminPool = getTestPool();
+    dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
+  });
+
+  beforeEach(async () => {
+    await resetDatabase(adminPool);
+    zero = getTenantZeroId();
+    b = await createTestTenant(adminPool);
+  });
+
+  afterAll(async () => {
+    await dataPool.end();
+    await adminPool.end();
+  });
+
+  async function readMarkerProperty(tenantId: string): Promise<z.infer<typeof propertyRowSchema> | null> {
+    const { rows } = await adminPool.query<Record<string, unknown>>(
+      `SELECT p.key, p.name, p.type, p.config, p.locked, p.owner, p.owner_process
+         FROM properties p JOIN databases d ON d.id = p.database_id
+        WHERE d.owner_module_id = 'systemSettings' AND p.key = $2 AND p.tenant_id = $1`,
+      [tenantId, MARKER_KEY],
+    );
+    return rows[0] ? propertyRowSchema.parse(rows[0]) : null;
+  }
+
+  async function readSettings(tenantId: string): Promise<{ marker: unknown; updatedAt: string }> {
+    const { rows } = await adminPool.query<{ properties: Record<string, unknown>; updated_at: Date }>(
+      `SELECT i.properties, i.updated_at FROM items i JOIN databases d ON d.id = i.database_id
+        WHERE d.owner_module_id = 'systemSettings' AND i.tenant_id = $1`,
+      [tenantId],
+    );
+    const row = rows[0];
+    if (!row) throw new Error("System settings row missing");
+    return { marker: row.properties[MARKER_KEY], updatedAt: row.updated_at.toISOString() };
+  }
+
+  async function readTypes(tenantId: string): Promise<Array<z.infer<typeof typeRowSchema>>> {
+    const { rows } = await adminPool.query<Record<string, unknown>>(
+      `SELECT i.id, i.deleted_at, i.properties FROM items i JOIN databases d ON d.id = i.database_id
+        WHERE d.owner_module_id = 'inboxItemTypes' AND i.tenant_id = $1 ORDER BY i.id`,
+      [tenantId],
+    );
+    return rows.map((row) => typeRowSchema.parse(row));
+  }
+
+  /** Seeds the tenant, then reverts its System settings to the shape of an install seeded before the issue. */
+  async function seedOldShape(tenantId: string): Promise<void> {
+    await runInTenant(tenantId, () => seedSystem(dataPool, createViewTypeRegistry()));
+    // Direct SQL is the fixture: the System settings database is schema-locked and the seed now declares the property.
+    await adminPool.query("DELETE FROM properties WHERE key = $2 AND tenant_id = $1", [tenantId, MARKER_KEY]);
+    await adminPool.query(
+      `UPDATE items SET properties = properties - $2
+        WHERE tenant_id = $1 AND database_id IN (SELECT id FROM databases WHERE owner_module_id = 'systemSettings')`,
+      [tenantId, MARKER_KEY],
+    );
+  }
+
+  it("declares the marker as a system-owned json property of the Inbox module with an empty list in a fresh seed", async () => {
+    await runInTenant(zero, () => seedSystem(dataPool, createViewTypeRegistry()));
+
+    expect(await readMarkerProperty(zero)).toEqual({
+      key: MARKER_KEY,
+      name: "Seeded default Inbox types",
+      type: "json",
+      config: {},
+      locked: false,
+      owner: "system",
+      owner_process: "inbox",
+    });
+    expect((await readSettings(zero)).marker).toEqual([]);
+    expect(await readTypes(zero)).toEqual([]);
+  });
+
+  it("refuses a write of the marker by a caller that is not the Inbox module", async () => {
+    await runInTenant(zero, () => seedSystem(dataPool, createViewTypeRegistry()));
+    const before = await readSettings(zero);
+
+    await expect(
+      runInTenant(zero, () =>
+        withTransaction(dataPool, async (client) => {
+          const settings = await getDatabaseByModuleId(client, "systemSettings");
+          const item = settings && (await itemsStore.getAllItemsInDatabase(client, settings.id))[0];
+          if (!settings || !item) throw new Error("System settings row missing");
+          await updateItemWithClient(client, {
+            databaseId: settings.id,
+            itemId: item.id,
+            propertiesPatch: { [MARKER_KEY]: ["idea"] },
+          });
+        }),
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+
+    expect(await readSettings(zero)).toEqual(before);
+  });
+
+  it("adds the marker to a populated tenant, creates the seven defaults in every tenant and records the keys", async () => {
+    await seedOldShape(zero);
+    await seedOldShape(b);
+    expect(await readMarkerProperty(zero)).toBeNull();
+
+    await runCutovers(dataPool);
+
+    for (const tenant of [zero, b]) {
+      expect((await readSettings(tenant)).marker).toEqual(ALL_KEYS);
+      const types = await readTypes(tenant);
+      expect(types).toHaveLength(7);
+      expect(types.every((row) => row.deleted_at === null)).toBe(true);
+    }
+    expect(new Set([...(await readTypes(zero)), ...(await readTypes(b))].map((row) => row.id)).size).toBe(14);
+  });
+
+  it("leaves a populated tenant with the same marker property as a fresh seed", async () => {
+    await seedOldShape(b);
+    await runInTenant(zero, () => seedSystem(dataPool, createViewTypeRegistry()));
+
+    await runCutovers(dataPool);
+
+    expect(await readMarkerProperty(b)).toEqual(await readMarkerProperty(zero));
+  });
+
+  it("changes nothing in a second run", async () => {
+    await seedOldShape(zero);
+    await runCutovers(dataPool);
+    const items = await adminPool.query("SELECT to_jsonb(i) AS row FROM items i ORDER BY id");
+    const before = await snapshot();
+
+    await runCutovers(dataPool);
+
+    expect((await adminPool.query("SELECT to_jsonb(i) AS row FROM items i ORDER BY id")).rows).toEqual(items.rows);
+    expect(await snapshot()).toEqual(before);
+    expect(await readTypes(zero)).toHaveLength(7);
+  });
+
+  it("does not restore a deleted type or change a renamed one in a later run", async () => {
+    await seedOldShape(zero);
+    await runCutovers(dataPool);
+    const types = await readTypes(zero);
+    const nameOf = (row: z.infer<typeof typeRowSchema>) => z.object({ name: z.string() }).parse(row.properties).name;
+    const deleted = types.find((row) => nameOf(row) === "Nápad");
+    const renamed = types.find((row) => nameOf(row) === "Úkol");
+    if (!deleted || !renamed) throw new Error("Default types missing");
+    // Fixtures: a type is trashed and renamed directly; the cutover reads only the marker, so the path of the write is irrelevant.
+    await adminPool.query("UPDATE items SET deleted_at = now() WHERE id = $1", [deleted.id]);
+    await adminPool.query('UPDATE items SET properties = properties || \'{"name": "Moje úkoly"}\' WHERE id = $1', [
+      renamed.id,
+    ]);
+    const before = await readTypes(zero);
+
+    await runCutovers(dataPool);
+
+    expect(await readTypes(zero)).toEqual(before);
+    expect((await readSettings(zero)).marker).toEqual(ALL_KEYS);
+  });
+
+  it("creates the types of a tenant that was seeded with the marker but never ran the cutover once", async () => {
+    await runInTenant(zero, () => seedSystem(dataPool, createViewTypeRegistry()));
+    expect(await readTypes(zero)).toEqual([]);
+
+    await runCutovers(dataPool);
+
+    expect(await readTypes(zero)).toHaveLength(7);
+    expect((await readSettings(zero)).marker).toEqual(ALL_KEYS);
+  });
+
+  it("does nothing in a tenant without a System settings database", async () => {
+    await seedOldShape(zero);
+    const before = await adminPool.query<Record<string, unknown>>(
+      "SELECT (SELECT count(*)::int FROM items WHERE tenant_id = $1) AS items, (SELECT count(*)::int FROM properties WHERE tenant_id = $1) AS properties",
+      [b],
+    );
+    expect(before.rows).toEqual([{ items: 0, properties: 0 }]);
+
+    await runCutovers(dataPool);
+
+    const after = await adminPool.query<Record<string, unknown>>(
+      "SELECT (SELECT count(*)::int FROM items WHERE tenant_id = $1) AS items, (SELECT count(*)::int FROM properties WHERE tenant_id = $1) AS properties",
+      [b],
+    );
+    expect(after.rows).toEqual([{ items: 0, properties: 0 }]);
+    expect(await readTypes(zero)).toHaveLength(7);
   });
 });

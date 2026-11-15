@@ -129,7 +129,7 @@ describe("0081_remove_settings_budget_properties migration", () => {
     await provisionTenant(dataPool, tenant);
 
     const state = await readSettingsState(tenant);
-    expect(state.propertyKeys).toEqual(["name", "selfPerson", "timezone"]);
+    expect(state.propertyKeys).toEqual(["name", "seededDefaultInboxTypes", "selfPerson", "timezone"]);
     expect(state.itemProperties).not.toHaveProperty("dailyBudgetUsd");
     expect(state.itemProperties).not.toHaveProperty("monthlyBudgetUsd");
   });
@@ -143,7 +143,14 @@ describe("0081_remove_settings_budget_properties migration", () => {
     await applyLegacyBudgetShape(tenantB, { timezone: "America/New_York", dailyBudgetUsd: 12, monthlyBudgetUsd: 300 });
     const legacyA = await readSettingsState(tenantA);
     const legacyB = await readSettingsState(tenantB);
-    expect(legacyA.propertyKeys).toEqual(["dailyBudgetUsd", "monthlyBudgetUsd", "name", "selfPerson", "timezone"]);
+    expect(legacyA.propertyKeys).toEqual([
+      "dailyBudgetUsd",
+      "monthlyBudgetUsd",
+      "name",
+      "seededDefaultInboxTypes",
+      "selfPerson",
+      "timezone",
+    ]);
     expect(legacyB.itemProperties).toMatchObject({ dailyBudgetUsd: 12, monthlyBudgetUsd: 300 });
 
     await adminPool.query(MIGRATION_SQL);
@@ -153,7 +160,7 @@ describe("0081_remove_settings_budget_properties migration", () => {
       [tenantB, legacyB, "America/New_York"],
     ] as const) {
       const after = await readSettingsState(tenant);
-      expect(after.propertyKeys).toEqual(["name", "selfPerson", "timezone"]);
+      expect(after.propertyKeys).toEqual(["name", "seededDefaultInboxTypes", "selfPerson", "timezone"]);
       expect(after.itemProperties).not.toHaveProperty("dailyBudgetUsd");
       expect(after.itemProperties).not.toHaveProperty("monthlyBudgetUsd");
       const { dailyBudgetUsd: _daily, monthlyBudgetUsd: _monthly, ...rest } = legacy.itemProperties;
@@ -172,13 +179,13 @@ describe("0081_remove_settings_budget_properties migration", () => {
     const legacy = await readSettingsState(tenant);
     const untouchedBefore = await readSettingsState(untouched);
     // Only the item-keys EXISTS branch can select this database.
-    expect(legacy.propertyKeys).toEqual(["name", "selfPerson", "timezone"]);
+    expect(legacy.propertyKeys).toEqual(["name", "seededDefaultInboxTypes", "selfPerson", "timezone"]);
     expect(legacy.itemProperties).toMatchObject({ dailyBudgetUsd: 7, monthlyBudgetUsd: 90 });
 
     await adminPool.query(MIGRATION_SQL);
 
     const after = await readSettingsState(tenant);
-    expect(after.propertyKeys).toEqual(["name", "selfPerson", "timezone"]);
+    expect(after.propertyKeys).toEqual(["name", "seededDefaultInboxTypes", "selfPerson", "timezone"]);
     const { dailyBudgetUsd: _daily, monthlyBudgetUsd: _monthly, ...rest } = legacy.itemProperties;
     expect(after.itemProperties).toEqual(rest);
     expect(after.itemProperties).toMatchObject({ name: "Semp", timezone: "Europe/Prague" });
@@ -196,14 +203,21 @@ describe("0081_remove_settings_budget_properties migration", () => {
     const legacy = await readSettingsState(tenant);
     const untouchedBefore = await readSettingsState(untouched);
     // Only the property-rows EXISTS branch can select this database.
-    expect(legacy.propertyKeys).toEqual(["dailyBudgetUsd", "monthlyBudgetUsd", "name", "selfPerson", "timezone"]);
+    expect(legacy.propertyKeys).toEqual([
+      "dailyBudgetUsd",
+      "monthlyBudgetUsd",
+      "name",
+      "seededDefaultInboxTypes",
+      "selfPerson",
+      "timezone",
+    ]);
     expect(legacy.itemProperties).not.toHaveProperty("dailyBudgetUsd");
     expect(legacy.itemProperties).not.toHaveProperty("monthlyBudgetUsd");
 
     await adminPool.query(MIGRATION_SQL);
 
     const after = await readSettingsState(tenant);
-    expect(after.propertyKeys).toEqual(["name", "selfPerson", "timezone"]);
+    expect(after.propertyKeys).toEqual(["name", "seededDefaultInboxTypes", "selfPerson", "timezone"]);
     expect(after.itemProperties).toEqual(legacy.itemProperties);
     expect(after.itemXmin).toBe(legacy.itemXmin);
     expect(after.schemaLocked).toBe(true);

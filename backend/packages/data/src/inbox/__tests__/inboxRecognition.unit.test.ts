@@ -50,6 +50,28 @@ describe("Inbox recognition", () => {
       targetDatabaseKey: "mcpServers",
     });
   });
+  it("keeps a type that targets recipes, accepts recipes as a direct target and offers the type (issue gh-1974)", () => {
+    const recipe: RecognitionType = { ...catalog[0]!, id: "recipe", targetDatabaseKey: "recipes" };
+    const types = [...catalog, recipe];
+    expect(validRecognitionTypes(types).map((type) => type.id)).toEqual(["task", "thought", "recipe"]);
+    expect(
+      filterRecognitionCandidates(
+        [
+          { typeId: "recipe", confidence: 0.8 },
+          { targetDatabaseKey: "recipes", confidence: 0.9 },
+        ],
+        types,
+      ),
+    ).toEqual([
+      { targetDatabaseKey: "recipes", confidence: 0.9 },
+      { typeId: "recipe", confidence: 0.8 },
+    ]);
+    expect(clarificationTypes([{ typeId: "recipe", confidence: 0.8 }], types)[0]).toEqual({
+      typeId: "recipe",
+      label: "Task",
+      targetDatabaseKey: "recipes",
+    });
+  });
   it("pads distinct type candidates without including direct targets", () => {
     expect(
       clarificationTypes(

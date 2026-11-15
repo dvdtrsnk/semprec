@@ -15,6 +15,7 @@ import {
   type InboxTypeTargetDatabase,
 } from "./inboxTypeTargets.js";
 import { NotFoundError, ValidationError } from "../errors.js";
+import { JOURNAL_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import type { ItemRow } from "../types.js";
 
 export interface InboxTypeSummary {
@@ -27,11 +28,19 @@ export interface InboxTypeSummary {
   targetDatabaseKey: string | null;
 }
 
-/** An Inbox item type's processing method (issue #102) — replaces the mock's hardcoded label-text comparison. */
-export const PROCESSING_METHODS = ["pageContent", "database"] as const;
+/**
+ * An Inbox item type's processing method (issue #102) — replaces the mock's hardcoded label-text comparison.
+ * `journal` (issue gh-1975) proposes an entry on a Journal day, which usually does not exist yet, so it has no target
+ * database and no target page.
+ */
+export const PROCESSING_METHODS = ["pageContent", "database", "journal"] as const;
 export type ProcessingMethod = (typeof PROCESSING_METHODS)[number];
 
 export { INBOX_TYPE_MODULE_TARGET_DATABASES, INBOX_TYPE_TARGET_DATABASES, type InboxTypeTargetDatabase };
+
+function isProcessingMethod(value: unknown): value is ProcessingMethod {
+  return (PROCESSING_METHODS as readonly unknown[]).includes(value);
+}
 
 /**
  * Cross-field validation for `processingMethod`/`targetDatabase` — the schema engine has no
@@ -56,12 +65,20 @@ export function assertValidProcessingConfig(resolvedMethod: unknown, resolvedTar
     }
     return;
   }
-  if (!(PROCESSING_METHODS as readonly unknown[]).includes(resolvedMethod)) {
+  if (!isProcessingMethod(resolvedMethod)) {
     throw new ValidationError(`'processingMethod' must be one of ${PROCESSING_METHODS.join(", ")}`, {
       field: "processingMethod",
     });
   }
   if (resolvedMethod === "database") {
+    // A `database` type that names the Journal database was accepted before the `journal` method existed and then
+    // proposed an empty Journal record (issue gh-1975), so the refusal names the method that replaces it.
+    if (resolvedTarget === JOURNAL_MODULE_ID) {
+      throw new ValidationError(
+        "processingMethod 'database' cannot target the Journal database; use processingMethod 'journal' instead",
+        { field: "targetDatabase" },
+      );
+    }
     if (
       typeof resolvedTarget !== "string" ||
       !(INBOX_TYPE_TARGET_DATABASES as readonly string[]).includes(resolvedTarget)
@@ -74,7 +91,7 @@ export function assertValidProcessingConfig(resolvedMethod: unknown, resolvedTar
       );
     }
   } else if (resolvedTarget !== undefined && resolvedTarget !== null) {
-    throw new ValidationError("processingMethod 'pageContent' must not set 'targetDatabase'", {
+    throw new ValidationError(`processingMethod '${resolvedMethod}' must not set 'targetDatabase'`, {
       field: "targetDatabase",
     });
   }

@@ -59,6 +59,7 @@ describe("Recipes module manifest (issue #1707)", () => {
         "property.recipes.prepMinutes.preset.30",
         "property.recipes.prepMinutes.preset.60",
         "property.recipes.servings.name",
+        "property.recipes.sourceUrl.name",
         "property.recipes.favorite.name",
         "property.recipes.photo.name",
       ].sort(),

@@ -19,6 +19,8 @@ import { createHeartbeat } from "../scheduler/schedulerStore.js";
 import { SEMPREC_TICK_ACTION_ID } from "../inbox/inboxTickAction.js";
 import { JOURNAL_INBOX_COMPUTED_KEY } from "../inbox/journalInboxCompute.js";
 import { registerJournalInboxViewType } from "../views/journalInboxViewType.js";
+import { INBOX_TRANSCRIBED_TEXT_KEY } from "../inbox/inboxVoiceNote.js";
+import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
 
 // Issue #145: every shipped catalog option `s` becomes `{ key: s }` — see seedTenDatabases.ts's
 // copy of this helper for the full rationale.
@@ -137,6 +139,16 @@ export async function seedInboxPipelineInTransaction(
       ownerProcess: INBOX_MODULE_ID,
       config: { includeTime: true },
     },
+    // Issue gh-1980: the transcript of the item's short voice notes, written by the transcribe process and never by
+    // the person, whose own text stays in `text`. Declared here for fresh installs and added to populated tenants by
+    // seed/inboxTranscribedTextCutoverMigration.ts; keep the two identical.
+    {
+      key: INBOX_TRANSCRIBED_TEXT_KEY,
+      name: "Transcribed text",
+      type: "text",
+      owner: "system",
+      ownerProcess: TRANSCRIPTION_OWNER_PROCESS,
+    },
   ]);
 
   await createProps(client, inboxItemTypes.id, [
@@ -146,9 +158,12 @@ export async function seedInboxPipelineInTransaction(
     // while existing Inbox items keep pointing at it validly.
     { key: "status", name: "Status", type: "select", owner: "user", config: selectConfig(["active", "archived"]) },
     // Replaces the mock's hardcoded label-text comparison (issue #100). Cross-field
-    // validation ("database" requires targetDatabase, "pageContent" rejects it) is
+    // validation ("database" requires targetDatabase, "pageContent" and "journal" reject it) is
     // enforced in inbox/inboxTypesStore.ts, not here — same reason inboxCreateHook.ts enforces
     // date/time itself: the schema engine has no generic cross-field validation concept.
+    // The `journal` option (issue gh-1975) is added to populated tenants by
+    // inbox/inboxJournalMethodCutoverMigration.ts. The seed reads the options from PROCESSING_METHODS; the cutover
+    // appends the 'journal' key itself.
     {
       key: "processingMethod",
       name: "Processing method",

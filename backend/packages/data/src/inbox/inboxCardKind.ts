@@ -15,9 +15,9 @@ import { transcriptCardRole } from "./proposalActions.js";
 
 /**
  * The canonical kind of an Inbox card, derived on read and stored nowhere. The whole union is
- * declared up front; `journal` (#1975), `mcp` (#1973) and the primary
- * step of a multi-step proposal (#1492) are produced by those issues, not by this function yet.
- * `recording` is the card of a `transcription` envelope (#1978).
+ * declared up front; `mcp` (#1973) and the primary step of a multi-step proposal (#1492) are produced by those
+ * issues, not by this function yet. `journal` is the card of a `journalEntry` envelope (#1982) or of page content on
+ * a Journal day, and `recording` the card of a `transcription` envelope (#1978).
  */
 export type InboxCardKind =
   | "task"
@@ -110,6 +110,9 @@ function deriveFromEnvelope(
       const kind = input.ownerModuleId === JOURNAL_MODULE_ID ? "journal" : "page";
       return { cardKind: kind, baseKind: kind };
     }
+    // The target of a `journalEntry` envelope is the Journal database itself, never a page, so no owner decides it.
+    case "journalEntry":
+      return { cardKind: "journal", baseKind: "journal" };
     case "transcription":
       return { cardKind: "recording", baseKind: "recording" };
     default:

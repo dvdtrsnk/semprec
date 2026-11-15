@@ -84,7 +84,9 @@ function classifyResults(envelope: ProposalEnvelope, results: ConfirmationResult
       return { result, role: roles[step.op], step };
     }
     if (envelope.entityKind === "database") return { result, role: "created", step: null };
-    if (envelope.entityKind === "pageContent") return { result, role: "pageContent", step: null };
+    // A journal entry is page content inserted into its day: the undo removes the blocks it inserted (issue gh-1981).
+    if (envelope.entityKind === "pageContent" || envelope.entityKind === "journalEntry")
+      return { result, role: "pageContent", step: null };
     return { result, role: "edgesOnly", step: null };
   });
   return classified;
@@ -273,6 +275,10 @@ async function cancelFollowUps(
  *   card that `settleSpeakerCardWithClient` closed after a manual speaker assignment, which recorded none, stay as the
  *   user made them (`docs/adr/2026-11-12-a-manual-speaker-assignment-settles-the-key-card-in-the-confirm-lock-order.md`),
  *   and so do the edges of a card confirmed before the confirm recorded them.
+ * - A confirmed `journalEntry` card is reversed as a page insert into its day: the blocks it inserted are removed, the
+ *   day's `project` or `area` edge is deleted when the confirmation inserted it (it is in `writtenRelations`), and the
+ *   Journal day stays, empty if the confirmation created it, because days are created lazily and an empty one is what
+ *   every day without an entry is (`docs/adr/2026-11-14-undoing-a-journal-entry-confirmation-leaves-its-day.md`).
  * - The limits of the reversal are in
  *   `docs/adr/2026-11-14-the-undo-of-a-confirmation-reverses-only-the-edges-it-recorded.md`: the Events item of a synthetic
  *   occurrence that a `relation` confirm materialized stays, and so does the Trash release of an earlier trashed Event edge

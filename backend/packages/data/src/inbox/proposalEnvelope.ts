@@ -9,9 +9,12 @@ import { z } from "zod";
  * Event-link shape only through a human `revise`; its speaker-mapping shape (issue #185) is
  * proposed by the transcription pipeline. `'transcription'` (issue gh-1978) proposes transcribing the audio attachment
  * `target` of the card's source Inbox item with the recording parameters in `properties`; the Inbox tick produces it
- * from the attachment without a model call (`recordingCardProducer.ts`).
+ * from the attachment without a model call (`recordingCardProducer.ts`). `'journalEntry'` (issue gh-1975) proposes an
+ * entry on the Journal day `properties.date`: `target` is the Journal database, `properties` are `{ date, markdown,
+ * areaId?, projectId? }` (`journalEntryEnvelope.ts`); the Inbox tick produces it for the `journal` processing method, with the
+ * server supplying `target` (issue gh-1982).
  */
-export type ProposalEntityKind = "pageContent" | "database" | "relation" | "transcription";
+export type ProposalEntityKind = "pageContent" | "database" | "relation" | "transcription" | "journalEntry";
 
 /** The entity kinds the Inbox tick's model computation produces, one per `processingMethod`. */
 export type ComputedProposalEntityKind = Exclude<ProposalEntityKind, "relation" | "transcription">;
@@ -71,8 +74,52 @@ export const pageContentV2Schema = z
 
 export type PageContentV2 = z.infer<typeof pageContentV2Schema>;
 
+/** The longest heading, in characters, a proposed page section has (the page heading limit of a proposal's `heading`). */
+export const MAX_PAGE_SECTION_HEADING_CHARS = 200;
+/** The most items a proposed page section lists, and the longest item in characters. */
+export const MAX_PAGE_SECTION_ITEMS = 100;
+export const MAX_PAGE_SECTION_ITEM_CHARS = 500;
+/** The most sections one envelope proposes. */
+export const MAX_PAGE_SECTIONS = 4;
+
+/**
+ * One section of the page a created item gets when its card is confirmed (issue gh-1974): a heading block followed by
+ * one `blockType` block per item, `bullet` for a bulleted list and `number` for a numbered one. Plain text, never
+ * Markdown: a line of a recipe that reads like Markdown is written as the text it is.
+ */
+export const proposalPageSectionSchema = z.strictObject({
+  heading: z
+    .string()
+    .trim()
+    .min(1)
+    .max(MAX_PAGE_SECTION_HEADING_CHARS)
+    .regex(/^[^\r\n\u2028\u2029]*$/),
+  blockType: z.enum(["bullet", "number"]),
+  items: z.array(z.string().min(1).max(MAX_PAGE_SECTION_ITEM_CHARS)).min(1).max(MAX_PAGE_SECTION_ITEMS),
+});
+
+export type ProposalPageSection = z.infer<typeof proposalPageSectionSchema>;
+
+/** The most new select options one envelope proposes (issue gh-1994). */
+export const MAX_PROPOSAL_NEW_OPTIONS = 3;
+
+/**
+ * One select option an envelope proposes to create when its card is confirmed (issue gh-1994): the `select` or
+ * `multi_select` property of the target database it joins, the label the option shows and an optional color. Only the
+ * shape is the schema's: the length of the label, the color and every other rule are checked by
+ * `assertValidEnvelopeNewOptions`, so that a stored envelope that breaks one still parses and is refused with a
+ * message instead of reading back as malformed.
+ */
+export const proposalNewOptionSchema = z.strictObject({
+  propertyKey: z.string().min(1),
+  label: z.string(),
+  color: z.string().optional(),
+});
+
+export type ProposalNewOption = z.infer<typeof proposalNewOptionSchema>;
+
 export const proposalEnvelopeSchema = z.object({
-  entityKind: z.enum(["pageContent", "database", "relation", "transcription"]),
+  entityKind: z.enum(["pageContent", "database", "relation", "transcription", "journalEntry"]),
   target: z.string().min(1),
   properties: z.record(z.string(), z.unknown()),
   /**
@@ -85,6 +132,18 @@ export const proposalEnvelopeSchema = z.object({
    * `target` and `properties` mirror the primary step. Absent for a single-step envelope.
    */
   operations: z.array(proposalStepSchema).optional(),
+  /**
+   * `'database'` envelopes without `operations` only: the sections of the page the created item gets on confirm,
+   * written after the item and authored by the confirming user (`proposalPageSections.ts`). Absent when the item gets
+   * no page content.
+   */
+  pageSections: z.array(proposalPageSectionSchema).min(1).max(MAX_PAGE_SECTIONS).optional(),
+  /**
+   * `'database'` envelopes without `operations` only: the select options the confirm creates before it creates the
+   * item (issue gh-1994, `proposalNewOptions.ts`). A value in `properties` names one by its label as
+   * `{ newOption: "<label>" }` in the place of an option key. Absent when the proposal creates no option.
+   */
+  newOptions: z.array(proposalNewOptionSchema).optional(),
 });
 
 export type ProposalEnvelope = z.infer<typeof proposalEnvelopeSchema>;

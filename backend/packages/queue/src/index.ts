@@ -127,6 +127,9 @@ export const CORE_TASK_NAMES = {
   // Issue gh-1965: computes the size, preview and reduced copy of one Inbox photo, or the length and kind of one Inbox
   // audio note, with `ffprobe`/`ffmpeg` in `semprec-transcribe`, under the job key `inbox-attachment-metadata:<attachmentId>`.
   INBOX_ATTACHMENT_METADATA: "inboxAttachmentMetadata",
+  // Issue gh-1980: transcribes the short voice notes of one Inbox item into its system-owned `transcribedText`, in
+  // `semprec-transcribe`, under the job key `inbox-voice-note:<inboxItemId>`. The metadata job enqueues it.
+  INBOX_VOICE_NOTE_TRANSCRIBE: "inboxVoiceNoteTranscribe",
   VALUE_LINKS_PROPAGATE: "valueLinksPropagate",
   // Issue #643: the hourly sweep that closes every MCP-triggered run whose run-credential expired.
   MCP_RUN_CREDENTIAL_EXPIRY_SWEEP: "mcpRunCredentialExpirySweep",
@@ -219,6 +222,7 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.TRANSCRIPT_CARD_RECOMPUTE]: "transcribe",
   [CORE_TASK_NAMES.TRANSCRIPT_SPEAKER_SUGGESTION]: "transcribe",
   [CORE_TASK_NAMES.INBOX_ATTACHMENT_METADATA]: "transcribe",
+  [CORE_TASK_NAMES.INBOX_VOICE_NOTE_TRANSCRIBE]: "transcribe",
   [CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE]: "api",
   [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: "api",
   [CORE_TASK_NAMES.MCP_SERVER_SYNC]: "api",
@@ -300,6 +304,7 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.TRANSCRIPT_CARD_RECOMPUTE]: "tenant",
   [CORE_TASK_NAMES.TRANSCRIPT_SPEAKER_SUGGESTION]: "tenant",
   [CORE_TASK_NAMES.INBOX_ATTACHMENT_METADATA]: "tenant",
+  [CORE_TASK_NAMES.INBOX_VOICE_NOTE_TRANSCRIBE]: "tenant",
   [CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE]: "tenant",
   [CORE_TASK_NAMES.MCP_RUN_CREDENTIAL_EXPIRY_SWEEP]: "system",
   [CORE_TASK_NAMES.MCP_SERVER_SYNC]: "tenant",

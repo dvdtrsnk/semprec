@@ -57,6 +57,48 @@ export async function readRecordingRequest(client: PoolClient, fileItemId: strin
   };
 }
 
+/**
+ * The value of `recording_requests.event_decision` that records the user's explicit choice that a recording belongs to no
+ * Event (issue gh-1986). The column is `NOT NULL DEFAULT 'none'` (migration 0137): the default means the user did not
+ * decide, and any value other than this one leaves the match step as it is.
+ */
+export const RECORDING_EVENT_DECISION_NO_EVENT = "noEvent";
+
+/**
+ * Stores the user's explicit decision on the recording request of the Files item `fileItemId`, in the caller's
+ * transaction. The request must exist: `recordRecordingIntake` writes or finds it first, and holds the Files item's
+ * row lock by then. Nothing clears a stored decision.
+ */
+export async function setRecordingEventDecision(
+  client: PoolClient,
+  fileItemId: string,
+  decision: typeof RECORDING_EVENT_DECISION_NO_EVENT,
+): Promise<void> {
+  requireManagedTransaction(client);
+  const result = await client.query(
+    "UPDATE recording_requests SET event_decision = $2 WHERE tenant_id = app_tenant_default() AND file_item_id = $1",
+    [fileItemId, decision],
+  );
+  requireAffectedRows(result, "recording event decision");
+}
+
+/**
+ * The explicit decision stored on the recording request of the Files item `fileItemId`: `noEvent` when that is the stored
+ * value, `null` for any other value (the default `'none'` included) and when the request does not exist. Writes nothing.
+ */
+export async function readRecordingEventDecision(
+  client: PoolClient,
+  fileItemId: string,
+): Promise<typeof RECORDING_EVENT_DECISION_NO_EVENT | null> {
+  const result = await client.query<{ event_decision: string }>(
+    "SELECT event_decision FROM recording_requests WHERE tenant_id = app_tenant_default() AND file_item_id = $1",
+    [fileItemId],
+  );
+  return result.rows[0]?.event_decision === RECORDING_EVENT_DECISION_NO_EVENT
+    ? RECORDING_EVENT_DECISION_NO_EVENT
+    : null;
+}
+
 function recordingBusy() {
   return new ChokePointError(409, "recording_busy", "Recording is busy");
 }
