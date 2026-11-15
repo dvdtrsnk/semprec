@@ -265,6 +265,15 @@ export interface RelationEdgeChangedHookContext {
 export type RelationEdgeChangedHook = (context: RelationEdgeChangedHookContext) => Promise<void>;
 
 /**
+ * A hook that runs once for an edge a user or an agent wrote, right after the edge row was inserted or
+ * deleted and before the write locks any value link row (the approval check of an agent write and the link
+ * break). It takes the locks that must come before those rows and writes nothing. Its context is that of the
+ * edge-changed hooks, which run later in the same write; `op` is `create` or `delete`.
+ * See `docs/adr/2026-11-15-a-user-edge-write-on-a-link-rules-via-relation-locks-the-rules-target-item-before-ending-value-links.md`.
+ */
+export type RelationEdgeBeforeLinkBreakHook = (context: RelationEdgeChangedHookContext) => Promise<void>;
+
+/**
  * Context of a pre-write transform: the properties a create or update is about to store. A transform runs
  * before the row is written, so it sees the locked current row in `stored` on update and `null` on create.
  */
@@ -308,6 +317,7 @@ const itemPurgeHooks = new Set<ItemPurgeHook>();
 const relationEdgeWriteHooks = new Set<RelationEdgeWriteHook>();
 const relationEdgeDeleteHooks = new Set<RelationEdgeDeleteHook>();
 const relationEdgeChangedHooks = new Set<RelationEdgeChangedHook>();
+const relationEdgeBeforeLinkBreakHooks = new Set<RelationEdgeBeforeLinkBreakHook>();
 const activeChangedEdges = new WeakMap<PoolClient, Set<string>>();
 /** Keyed by owning module id; each module's transforms keep their registration order. */
 const itemPreWriteTransforms = new Map<string, ItemPreWriteTransform[]>();
@@ -542,6 +552,11 @@ export function registerRelationEdgeChangedHook(hook: RelationEdgeChangedHook): 
   relationEdgeChangedHooks.add(hook);
 }
 
+/** Registering the same function twice is a no-op. See `runRelationEdgeBeforeLinkBreakHooks` for when it runs. */
+export function registerRelationEdgeBeforeLinkBreakHook(hook: RelationEdgeBeforeLinkBreakHook): void {
+  relationEdgeBeforeLinkBreakHooks.add(hook);
+}
+
 /**
  * Attaches a pre-write transform to one owning module. The caller runs it only for a database whose
  * `ownerModuleId` is `moduleId`. Registering the same `(moduleId, transform)` twice is a no-op.
@@ -642,6 +657,16 @@ export async function runRelationEdgeDeleteHooks(context: RelationEdgeDeleteHook
   }
 }
 
+/**
+ * Awaits every registered before-link-break hook sequentially, in registration order, inside the caller's
+ * transaction. `createRelationWithClient`, `createRelationIfAbsentWithClient` and `deleteRelationWithClient`
+ * call it for a user or agent write, right after the edge row was inserted or deleted and before the approval
+ * check of an agent write and the link break lock a value link row. A hook that throws ends the write.
+ */
+export async function runRelationEdgeBeforeLinkBreakHooks(context: RelationEdgeChangedHookContext): Promise<void> {
+  for (const hook of relationEdgeBeforeLinkBreakHooks) await hook(context);
+}
+
 export async function runRelationEdgeChangedHooks(context: RelationEdgeChangedHookContext): Promise<void> {
   const key = JSON.stringify([context.relationDefinitionId, context.itemA, context.itemB]);
   const active = activeChangedEdges.get(context.client) ?? new Set<string>();
@@ -735,6 +760,7 @@ export function clearHooksForTests(): void {
   relationEdgeWriteHooks.clear();
   relationEdgeDeleteHooks.clear();
   relationEdgeChangedHooks.clear();
+  relationEdgeBeforeLinkBreakHooks.clear();
   itemReadProjections.clear();
   itemPreWriteTransforms.clear();
   itemUpdatePreLockHooks.clear();

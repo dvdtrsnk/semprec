@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
 import { createTestProjectItem, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
-import { createRuntimeRolePool, createTestTenant } from "../../testSupport/tenantFixtures.js";
+import { createRuntimeRolePool, createTestTenant, getTenantZeroId } from "../../testSupport/tenantFixtures.js";
 import { createViewTypeRegistry } from "../viewTypeRegistry.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { withTransaction } from "../../db/pool.js";
@@ -138,12 +138,16 @@ describe("assertRelationTargetLinkableWithClient (issue #1426)", () => {
   it("reports a one-to-many target on the single-valued side, but not on the many side", async () => {
     const project = await createItem("projects", { name: "P" });
     const task = await createItem("tasks", { name: "T" });
-    await withTransaction(pool, async (client) =>
-      createRelationWithClient(client, {
-        relationPropertyId: await propertyId("tasks", "project"),
-        callerItemId: task,
-        targetItemId: project,
-      }),
+    // Tasks.project is the source of the fileProjectsFromTasks link rule (issue #1702), whose propagation is queued
+    // in the writer's tenant, so the write runs in the tenant scope every production write has.
+    await runInTenant(getTenantZeroId(), async () =>
+      withTransaction(pool, async (client) =>
+        createRelationWithClient(client, {
+          relationPropertyId: await propertyId("tasks", "project"),
+          callerItemId: task,
+          targetItemId: project,
+        }),
+      ),
     );
 
     // Projects.tasks is side A: the proposed project would be linked to a task that already has a project.

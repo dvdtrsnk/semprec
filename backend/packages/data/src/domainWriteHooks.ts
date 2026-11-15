@@ -41,6 +41,7 @@ import {
   registerItemPurgePreLockHook,
   registerRelationEdgeWriteHook,
   registerRelationEdgeDeleteHook,
+  registerRelationEdgeBeforeLinkBreakHook,
   registerRelationEdgeChangedHook,
   registerAutomationBatchReader,
   registerItemRestoreHook,
@@ -52,7 +53,8 @@ import {
 } from "./chokePoint/hooks.js";
 import { readAutomationForItems } from "./library/itemAutomationStore.js";
 import { linkRuleItemCreateHook, linkRuleItemHook, linkRuleItemRestoreHook } from "./valueLinks/linkRuleItemHook.js";
-import { linkRuleEdgeHook } from "./valueLinks/linkRuleEdgeHook.js";
+import { linkRuleEdgeHook, linkRuleEdgeLockHook } from "./valueLinks/linkRuleEdgeHook.js";
+import { eventAttachmentLinkReleaseEdgeChangedHook } from "./blobs/eventAttachmentLinkRelease.js";
 import { valueLinkSourceDeleteHook } from "./valueLinks/valueLinkSourceDeleteHook.js";
 import { mcpServerItemCreateHook, mcpServerItemUpdateHook } from "./mcp/mcpServerWriteHook.js";
 import { recipePhotoWriteHook } from "./recipes/recipePhotoHook.js";
@@ -314,7 +316,12 @@ registerItemUpdateHook(linkRuleItemHook);
 // an update of its `web`.
 registerItemCreateHook(linkRuleItemCreateHook);
 registerItemRestoreHook(linkRuleItemRestoreHook);
+// Issue #1756: removing a `Files.events` edge ends the file's company link. Registered immediately before
+// `linkRuleEdgeHook`, because it reads the file's `projects` link, which the engine's hook deletes.
+registerRelationEdgeChangedHook(eventAttachmentLinkReleaseEdgeChangedHook);
 registerRelationEdgeChangedHook(linkRuleEdgeHook);
+// Takes the item row `linkRuleEdgeHook` locks, for a user or agent edge write, before the write ends a value link.
+registerRelationEdgeBeforeLinkBreakHook(linkRuleEdgeLockHook);
 registerItemDeleteHook(valueLinkSourceDeleteHook);
 // Issue gh-1869: every change of a thread's company or project, the link engine's included, publishes the thread's
 // `mailThread` invalidation. Registered after `linkRuleEdgeHook`, which queues the evaluation of the rules that

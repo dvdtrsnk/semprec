@@ -41,7 +41,12 @@ import {
   type RelationEdgeContext,
   type SystemRelationWriteContext,
 } from "./relationEdgeContext.js";
-import { runRelationEdgeChangedHooks, runRelationEdgeDeleteHooks, runRelationEdgeWriteHooks } from "./hooks.js";
+import {
+  runRelationEdgeBeforeLinkBreakHooks,
+  runRelationEdgeChangedHooks,
+  runRelationEdgeDeleteHooks,
+  runRelationEdgeWriteHooks,
+} from "./hooks.js";
 import { SYSTEM_WRITER, type WriterIdentity } from "./writerKind.js";
 import { assertWriterDatabaseAccess } from "../agentGrants/agentDatabaseAccess.js";
 
@@ -229,6 +234,31 @@ async function runRelationMutation<T>(
   );
 }
 
+/**
+ * Runs the before-link-break hooks for an edge a user or an agent just inserted or deleted. Called right after the
+ * edge row was written, before anything in the write locks a value link row (the approval check of an agent write
+ * and `breakValueLinksForRelationEdge`). A `system` writer never ends a link, so it runs none.
+ */
+async function runBeforeLinkBreakHooks(
+  client: PoolClient,
+  op: "create" | "delete",
+  edgeContext: RelationEdgeContext,
+  edge: RelationEdge,
+  writer: WriterIdentity,
+): Promise<void> {
+  if (writer.writerKind === "system") return;
+  await runRelationEdgeBeforeLinkBreakHooks({
+    client,
+    op,
+    relationDefinitionId: edge.relationDefinitionId,
+    propertyId: edgeContext.property.id,
+    itemA: edge.itemA,
+    itemB: edge.itemB,
+    metadata: edge.metadata,
+    writer,
+  });
+}
+
 /** Stands in for the caller of an edge whose item is only proposed and has no id yet; the nil UUID matches no item. */
 const PROPOSED_CALLER_ITEM_ID = "00000000-0000-0000-0000-000000000000";
 
@@ -382,6 +412,7 @@ export async function createRelationWithClient(
       metadata: input.metadata,
     });
     if (inserted) {
+      await runBeforeLinkBreakHooks(client, "create", edgeContext, edge, writer);
       // An agent under a run asks for approval before the edge ends a link (issue #1758); a replacement
       // made by `setRelationWithClient` has decided that already.
       if (!options.linkApprovalDecided) {
@@ -449,6 +480,7 @@ export async function createRelationIfAbsentWithClient(
       if (!existing) throw new ConflictError("Relation changed while confirming", { field: edgeContext.property.key });
       return { edge: existing, inserted: false };
     }
+    await runBeforeLinkBreakHooks(client, "create", edgeContext, inserted, writer);
     await breakValueLinksForRelationEdge(client, {
       reldef: edgeContext.reldef,
       itemA,
@@ -810,6 +842,7 @@ export async function deleteRelationWithClient(
   return runRelationMutation(client, edgeContext, context, input, false, hooks, async () => {
     const edge = await relationsStore.deleteItemRelation(client, edgeContext.reldef.id, itemA, itemB);
     if (edge) {
+      await runBeforeLinkBreakHooks(client, "delete", edgeContext, edge, writer);
       await breakValueLinksForRelationEdge(client, {
         reldef: edgeContext.reldef,
         itemA,

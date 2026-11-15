@@ -29,6 +29,7 @@ import { runMigrations } from "../db/migrate.js";
 import { ConflictError, NotFoundError, ProposalLockedError, ValidationError } from "../errors.js";
 import { randomUUID } from "node:crypto";
 import { createItemWithClient, prepareUserItemPatch, updateItemWithClient } from "../chokePoint/itemWrites.js";
+import { reopenProposalWithClient } from "../inbox/proposalReopen.js";
 import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import {
   setInboxCardsInvalidationHook,
@@ -1986,9 +1987,13 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         async (client) => (await createItemWithClient(client, { databaseId: projectsId, properties: { name } })).id,
       );
     }
+    // In a tenant scope, as a request is: the write of a Tasks.project edge queues value-link propagation (issue
+    // #1702), which needs the scope.
     const confirm = (proposalId: string) =>
-      withTransaction(pool, (client) =>
-        confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposalId),
+      runInTenant(getTenantZeroId(), () =>
+        withTransaction(pool, (client) =>
+          confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposalId),
+        ),
       );
     const countTasks = async () => {
       const result = await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
@@ -2033,29 +2038,33 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         try {
           const failure = new Error("rollback single-envelope confirmation");
           await expect(
-            withTransaction(pool, async (client) => {
-              await confirmProposalWithClient(
-                client,
-                { processingProposalsDatabaseId: proposalsId },
-                proposal.id,
-                undefined,
-                actorId,
-              );
-              expect(events).toEqual([]);
-              throw failure;
-            }),
+            runInTenant(getTenantZeroId(), () =>
+              withTransaction(pool, async (client) => {
+                await confirmProposalWithClient(
+                  client,
+                  { processingProposalsDatabaseId: proposalsId },
+                  proposal.id,
+                  undefined,
+                  actorId,
+                );
+                expect(events).toEqual([]);
+                throw failure;
+              }),
+            ),
           ).rejects.toBe(failure);
           expect(events).toEqual([]);
           expect((await withTransaction(pool, (client) => listValueLinksByItemIds(client, [project])))[0]?.state).toBe(
             "on",
           );
-          const result = await withTransaction(pool, (client) =>
-            confirmProposalWithClient(
-              client,
-              { processingProposalsDatabaseId: proposalsId },
-              proposal.id,
-              undefined,
-              actorId,
+          const result = await runInTenant(getTenantZeroId(), () =>
+            withTransaction(pool, (client) =>
+              confirmProposalWithClient(
+                client,
+                { processingProposalsDatabaseId: proposalsId },
+                proposal.id,
+                undefined,
+                actorId,
+              ),
             ),
           );
           expect(events.filter((event) => event.scope === "item" && event.itemId === project)).toEqual([
@@ -2240,17 +2249,19 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       try {
         const failure = new Error("rollback multi-step creation");
         await expect(
-          withTransaction(pool, async (client) => {
-            await confirmProposalWithClient(
-              client,
-              { processingProposalsDatabaseId: proposalsId },
-              card,
-              undefined,
-              actorId,
-            );
-            expect(events).toEqual([]);
-            throw failure;
-          }),
+          runInTenant(getTenantZeroId(), () =>
+            withTransaction(pool, async (client) => {
+              await confirmProposalWithClient(
+                client,
+                { processingProposalsDatabaseId: proposalsId },
+                card,
+                undefined,
+                actorId,
+              );
+              expect(events).toEqual([]);
+              throw failure;
+            }),
+          ),
         ).rejects.toBe(failure);
         expect(events).toEqual([]);
         expect(await countItems("tasks")).toBe(0);
@@ -2350,6 +2361,76 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       expect(confirmed.properties.resultItemId).toBe(project);
       expect(await edgeExists(project, oldArea)).toBe(false);
       expect(await edgeExists(project, newArea)).toBe(true);
+    });
+
+    describe("a primary update that changes nothing, for an existing record (issue gh-1992)", () => {
+      const reopen = (cardId: string) =>
+        runInTenant(getTenantZeroId(), () =>
+          withTransaction(pool, (client) =>
+            reopenProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId, {}),
+          ),
+        );
+      const itemRow = async (itemId: string) =>
+        (await withTransaction(pool, (client) => itemsStore.getItemsByIds(client, [itemId])))[0];
+
+      /** A card whose only step is the update the tick stores for a company that already exists. */
+      async function cardForExistingCompany(companyId: string): Promise<string> {
+        return cardWithSteps("companies", [
+          {
+            ref: "company",
+            op: "update",
+            itemId: companyId,
+            role: "primary",
+            before: { properties: {}, relations: {} },
+            after: { properties: {}, relations: {} },
+          },
+        ]);
+      }
+
+      it("creates no item, writes nothing to the existing one and answers it as the result", async () => {
+        const companyId = await createIn("companies", { name: "Bakery", ico: "07654321" });
+        const before = await itemRow(companyId);
+        const card = await cardForExistingCompany(companyId);
+
+        const confirmed = await confirm(card);
+
+        expect(confirmed.properties).toMatchObject({ status: "confirmed", resultItemId: companyId });
+        expect(await countItems("companies")).toBe(1);
+        const after = await itemRow(companyId);
+        expect(after?.properties).toEqual(before?.properties);
+        expect(after?.updatedAt).toBe(before?.updatedAt);
+      });
+
+      it("is undone without touching the existing item while it is unchanged", async () => {
+        const companyId = await createIn("companies", { name: "Bakery", ico: "07654321" });
+        const card = await cardForExistingCompany(companyId);
+        await confirm(card);
+
+        const reopened = await reopen(card);
+
+        expect(reopened.item.properties.status).toBe("proposed");
+        expect((await itemRow(companyId))?.properties).toMatchObject({ name: "Bakery", ico: "07654321" });
+        expect(await countItems("companies")).toBe(1);
+      });
+
+      it("refuses the undo with 409 version_conflict once the existing item changed after the confirm", async () => {
+        const companyId = await createIn("companies", { name: "Bakery", ico: "07654321" });
+        const card = await cardForExistingCompany(companyId);
+        await confirm(card);
+        const companiesId = await databaseIdFor("companies");
+        await withTransaction(pool, (client) =>
+          updateItemWithClient(client, {
+            databaseId: companiesId,
+            itemId: companyId,
+            propertiesPatch: { name: "Bakery & Cafe" },
+          }),
+        );
+
+        await expect(reopen(card)).rejects.toMatchObject({ status: 409, code: "version_conflict" });
+
+        expect(await cardStatus(card)).toBe("confirmed");
+        expect((await itemRow(companyId))?.properties).toMatchObject({ name: "Bakery & Cafe" });
+      });
     });
 
     it("guards an unchanged declared relation and rolls back an earlier create when it is stale", async () => {
@@ -6412,8 +6493,12 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       });
     });
     describe("relation lists and step switches (issue #1920)", () => {
+      // In a tenant scope, as a request is: a confirm that writes a Tasks.project edge queues value-link propagation
+      // (issue #1702), which needs the scope.
       const confirmCard = (cardId: string): Promise<ItemRow> =>
-        withTransaction(pool, (client) => confirmProposalWithClient(client, config(), cardId));
+        runInTenant(getTenantZeroId(), () =>
+          withTransaction(pool, (client) => confirmProposalWithClient(client, config(), cardId)),
+        );
       const countIn = async (moduleId: string): Promise<number> =>
         Number(
           (

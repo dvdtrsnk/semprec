@@ -92,8 +92,9 @@ export interface ProposalComputationResult {
   newOptions?: ProposalNewOption[];
   invalidProposal?: "workspaceReference" | "unrepresentableOperations";
   /**
-   * Present only when the answer has more than one operation (at most `MAX_PROPOSAL_OPERATIONS`); then
-   * `buildProposalEnvelope` stores a multi-step envelope. A single operation is returned as `properties`.
+   * Present only when the answer has more than one operation (at most `MAX_PROPOSAL_OPERATIONS`) or an operation
+   * marked `primary` (issue gh-1992); then `buildProposalEnvelope` stores a multi-step envelope. A single unmarked
+   * operation is returned as `properties`.
    */
   operations?: ProposalComputationOperation[];
   /** The model's localized explanation, stored on the card after trimming and capping at 500 characters. */
@@ -201,7 +202,8 @@ export function buildProposalEnvelope(snapshot: TickSnapshot, result: ProposalCo
     if (!snapshot.targetDatabaseId)
       throw new Error(`Snapshot for Inbox item ${snapshot.item.id} (entityKind 'database') has no targetDatabaseId`);
     const operations = result.operations?.slice(0, MAX_PROPOSAL_OPERATIONS);
-    if (operations && operations.length > 1) {
+    // A marked operation (issue gh-1992) is a multi-step answer even alone: its primary step stands for the record.
+    if (operations && (operations.length > 1 || operations.some((operation) => operation.primary === true))) {
       const steps = buildProposalSteps(operations, snapshot.targetModuleId);
       const primary = steps.find((step) => step.role === "primary")!;
       return {

@@ -15,6 +15,13 @@ export interface ProposalComputationOperation {
   alias?: string;
   properties?: Record<string, unknown>;
   relations?: Record<string, Array<string | { alias: string }>>;
+  /**
+   * Set only by the duplicate step of the computation (issue gh-1992), on the `update` that stands for the proposal's
+   * own record when an existing company or person was found: `buildProposalSteps` then makes this operation the
+   * primary step. It is never read from the model's answer, whose schema has no such key, and it is not copied into
+   * the stored step.
+   */
+  primary?: true;
 }
 
 /** At most this many operations of one answer are kept; the rest are dropped from the end. */
@@ -41,19 +48,23 @@ export async function listWritableProposalTargets(client: PoolClient): Promise<W
 }
 
 /**
- * The steps of a multi-step envelope: refs are the aliases (or `op<n>`), the primary is the first
- * `create` into the type's target database (else the first operation, which validation then rejects
- * as not mirroring the top level). Only shapes are built here; validation is `assertValidProposalEnvelope`'s.
+ * The steps of a multi-step envelope: refs are the aliases (or `op<n>`), the primary is the operation marked
+ * `primary`, else the first `create` into the type's target database (else the first operation, which validation
+ * then rejects as not mirroring the top level). Only shapes are built here; validation is `assertValidProposalEnvelope`'s.
  */
 export function buildProposalSteps(
   operations: ProposalComputationOperation[],
   targetModuleId: string | undefined,
 ): ProposalStep[] {
   const refs = operations.map((operation, index) => operation.alias ?? `op${index + 1}`);
-  const primaryIndex = Math.max(
-    0,
-    operations.findIndex((operation) => operation.op === "create" && operation.database === targetModuleId),
-  );
+  const marked = operations.findIndex((operation) => operation.primary === true);
+  const primaryIndex =
+    marked >= 0
+      ? marked
+      : Math.max(
+          0,
+          operations.findIndex((operation) => operation.op === "create" && operation.database === targetModuleId),
+        );
   return operations.map((operation, index) => {
     const step: ProposalStep = {
       ref: refs[index]!,
