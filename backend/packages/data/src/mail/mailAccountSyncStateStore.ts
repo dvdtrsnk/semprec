@@ -118,6 +118,41 @@ export async function ensureMailAccountSyncState(
   return existing;
 }
 
+export interface EnsureMailAccountSyncStateOfLiveMailboxInput {
+  itemId: string;
+  /** The tenant's Mailboxes database, which holds the item `itemId`. */
+  mailboxesDatabaseId: string;
+  syncMode: SyncMode;
+}
+
+/**
+ * Live-sync discovery's seeding of a mailbox's sync state (issue sp-1272c2b9): returns the row of the
+ * account as it is when it has one, with no lock and no write. Otherwise it takes a share lock on the
+ * account's live Mailboxes item with `FOR SHARE SKIP LOCKED` and only then runs
+ * `ensureMailAccountSyncState`; the lock is held until the caller's transaction ends. It returns `null`,
+ * having written nothing, when that lock finds no row: the item is in the trash, gone, or row-locked by
+ * another transaction (a removal in flight holds it `FOR UPDATE`). Under READ COMMITTED a removal that
+ * committed before the statement started leaves no live row to lock, so a removed mailbox gets no row
+ * back.
+ *
+ * It never waits for a lock, which is why it uses `SKIP LOCKED`: discovery drops an account whose
+ * seeding failed from the pass, and the pool's statement timeout would cancel a wait behind a removal
+ * that waits behind a sync pass (docs/adr/2026-11-15-live-sync-discovery-seeds-a-sync-state-only-under-a-non-waiting-share-lock-on-the-live-mailbox.md).
+ */
+export async function ensureMailAccountSyncStateOfLiveMailbox(
+  client: Queryable,
+  input: EnsureMailAccountSyncStateOfLiveMailboxInput,
+): Promise<MailAccountSyncStateRow | null> {
+  const existing = await getMailAccountSyncState(client, input.itemId);
+  if (existing) return existing;
+  const { rows } = await client.query<{ id: string }>(
+    "SELECT id FROM items WHERE database_id = $1 AND id = $2 AND deleted_at IS NULL FOR SHARE SKIP LOCKED",
+    [input.mailboxesDatabaseId, input.itemId],
+  );
+  if (rows.length === 0) return null;
+  return ensureMailAccountSyncState(client, { itemId: input.itemId, syncMode: input.syncMode });
+}
+
 export async function getMailAccountSyncState(
   client: Queryable,
   itemId: string,

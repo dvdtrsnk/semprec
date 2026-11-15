@@ -613,11 +613,13 @@ export function createMailOauthCompleteRouteHandler(pool: Pool, dependencies: Ma
           "The account's organization requires administrator approval for this application",
         );
       }
-      // `invalid_grant` is the token endpoint refusing what the caller presented: the code or its
-      // verifier (RFC 6749 §5.2). Every other 400 or 401 (`invalid_client` for a wrong or expired client
+      // `grantRefused` is the token endpoint answering `invalid_grant`: it refused what the caller
+      // presented, the code or its verifier (RFC 6749 §5.2). It is carried by a flag and not read
+      // from `providerError`, which is blanked when the caller's code happens to contain the
+      // provider's error token. Every other 400 or 401 (`invalid_client` for a wrong or expired client
       // secret, a malformed request, an answer naming no known code) is a fault of this deployment,
       // not of the caller's input, so it propagates: the adapter logs it and answers a generic 500.
-      if (error instanceof MailAuthorizationCodeRejectedError && error.providerError === "invalid_grant") {
+      if (error instanceof MailAuthorizationCodeRejectedError && error.grantRefused) {
         throw new ValidationError("The provider rejected the authorization code", { field: "code" });
       }
       throw error;

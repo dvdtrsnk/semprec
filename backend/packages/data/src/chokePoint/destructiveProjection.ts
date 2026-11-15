@@ -146,6 +146,33 @@ async function reserveItemForApproval(client: PoolClient, itemId: string, subjec
   return item;
 }
 
+/**
+ * Locks the item rows at the two ends of a relation edge without waiting, in the order of database id and then item
+ * id that the `relation.put` and `relation.set` check locks its rows in, so the check of a `relation.delete` holds
+ * the endpoint rows before it share-locks a value link row (docs/adr/2026-11-15-the-approval-check-of-a-relation-delete-locks-the-edges-endpoint-rows-before-it-reserves-its-value-links.md).
+ * A row that does not exist is skipped, as an edge to a purged item can still exist. A held row is
+ * `ApprovalResourceBusyError`, and the transaction can then only roll back; any other error propagates.
+ */
+async function lockEdgeEndpointRowsNowait(
+  client: PoolClient,
+  ends: ReadonlyArray<{ databaseId: string; itemId: string }>,
+): Promise<void> {
+  try {
+    for (const end of [...ends].sort(
+      (a, b) => a.databaseId.localeCompare(b.databaseId) || a.itemId.localeCompare(b.itemId),
+    )) {
+      await itemsStore.lockItemByIdNowait(client, end.databaseId, end.itemId);
+    }
+  } catch (error) {
+    if (error instanceof DatabaseError && error.code === "55P03") {
+      const busy = new ApprovalResourceBusyError();
+      markManagedTransactionRollbackOnly(client, busy);
+      throw busy;
+    }
+    throw error;
+  }
+}
+
 export async function computeDestructiveResourceProjection(
   client: PoolClient,
   check: DestructiveOperationCheck,
@@ -449,6 +476,12 @@ export async function computeDestructiveResourceProjection(
           locked: property.locked,
         },
       };
+      // The endpoint rows come before the links, as in the `relation.put`/`relation.set` check: the write that follows
+      // locks the rule's target row with a wait, and a held link lock before that wait can close a cycle.
+      await lockEdgeEndpointRowsNowait(client, [
+        { databaseId: edgeContext.property.databaseId, itemId: check.input.callerItemId.toLowerCase() },
+        { databaseId: edgeContext.targetDatabaseId, itemId: check.input.targetItemId.toLowerCase() },
+      ]);
       const valueLinks = await reserveEdgeLinks(client, edgeContext.reldef, [{ itemA, itemB }]);
       return {
         snapshot: buildResourceSnapshot("relation_delete", edge.id, projected),

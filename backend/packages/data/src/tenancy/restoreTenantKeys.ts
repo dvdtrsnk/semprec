@@ -20,7 +20,12 @@ const rowSchema = z
   .strict();
 const rlsSchema = z.object({ active: z.literal(true) }).strict();
 
-/** Imports previously staged wrapped rows into an offline target under the target tenant's RLS. */
+/**
+ * Imports previously staged wrapped rows into an offline target under the target tenant's RLS. A row
+ * is imported only when its tenant exists in the target, is not `deleting` and has no row in
+ * `tenant_deletions`; a refused row is skipped like the row of an absent tenant (zero rows, no error),
+ * because the deletion of a tenant erases its key and a restore must not bring that key back.
+ */
 export async function importStagedTenantKeys(
   stage: PoolClient,
   target: Pool,
@@ -54,7 +59,8 @@ export async function importStagedTenantKeys(
           const inserted = await client.query(
             `INSERT INTO public.tenant_keys (tenant_id, wrapped_key, wrap_nonce, master_key_version, created_at)
            SELECT $1::uuid, $2::bytea, $3::bytea, $4::smallint, $5::timestamptz
-           WHERE EXISTS (SELECT 1 FROM public.tenants WHERE id = $1::uuid)`,
+           WHERE EXISTS (SELECT 1 FROM public.tenants WHERE id = $1::uuid AND status <> 'deleting')
+             AND NOT EXISTS (SELECT 1 FROM public.tenant_deletions WHERE tenant_id = $1::uuid)`,
             [row.tenant_id, row.wrapped_key, row.wrap_nonce, row.master_key_version, row.created_at],
           );
           if (inserted.rowCount !== 0 && inserted.rowCount !== 1)

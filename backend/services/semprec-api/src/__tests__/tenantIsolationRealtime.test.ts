@@ -95,8 +95,9 @@ import { createSyncUpgradeHandler } from "../syncHandler.js";
  * delivered over the server's single LISTEN connection in commit order, so everything a NOTIFY
  * made the checked socket receive arrives before the sentinel. The one frame that is not made by a
  * NOTIFY of its own is the doc invalidation, which the server sends after it read the doc again, up
- * to a second after the write; `TestSocket.drainUntil` sets aside such a frame of the socket's own
- * tenant and returns one of any other tenant.
+ * to a second after the write; `TestSocket.drainUntil` and the strict consumers `openDoc` and `watchRun`
+ * set aside such a frame of the socket's own tenant (`nextSettingAsideOwnDocEcho`) and return one of any
+ * other tenant.
  *
  * Frames a socket sends are not ordered against that connection. For those, the foreign frame is
  * sent before a request of B1's own whose reply is awaited, and the handlers do the same work in
@@ -304,21 +305,19 @@ class TestSocket {
   }
 
   /**
-   * Consumes frames up to and including the first match; returns the frames that arrived before it.
+   * The next frame, with the doc invalidation of an earlier write of the socket's own tenant set aside.
    *
    * A socket that knows its tenant (`ownTenantId`) can still receive the doc invalidation of an earlier write of that
-   * tenant, and nothing orders that frame against a sentinel: the writer announces a doc update after its commit,
-   * through a pooled connection of its own and without being awaited, and the server then reads the doc before it
-   * sends the frame, which it does again a second later when the doc was written twice within that second. That
-   * frame is the echo of an earlier case, not of the event this drain checks, so it is not returned. It is dropped
-   * only after the admin pool confirmed that the item it names belongs to the socket's tenant: a doc invalidation of
-   * any other tenant is returned like every other frame and fails the drain's empty list.
+   * tenant, and nothing orders that frame against a sentinel or against the reply to a request: the writer announces
+   * a doc update after its commit, through a pooled connection of its own and without being awaited, and the server
+   * then reads the doc before it sends the frame, which it does again a second later when the doc was written twice
+   * within that second. That frame is the echo of an earlier case, not of the event the caller checks, so it is not
+   * returned. It is dropped only after the admin pool confirmed that the item it names belongs to the socket's
+   * tenant: a doc invalidation of any other tenant is returned like every other frame.
    */
-  async drainUntil(predicate: (frame: Frame) => boolean): Promise<Frame[]> {
-    const before: Frame[] = [];
+  async nextSettingAsideOwnDocEcho(): Promise<Frame> {
     for (;;) {
       const frame = await this.next();
-      if (predicate(frame)) return before;
       if (
         this.ownTenantId !== undefined &&
         isDocInvalidation(frame) &&
@@ -326,6 +325,20 @@ class TestSocket {
       ) {
         continue;
       }
+      return frame;
+    }
+  }
+
+  /**
+   * Consumes frames up to and including the first match; returns the frames that arrived before it. A doc
+   * invalidation of the socket's own tenant is set aside (`nextSettingAsideOwnDocEcho`), any other frame, a doc
+   * invalidation of another tenant included, is returned and fails a drain that expects an empty list.
+   */
+  async drainUntil(predicate: (frame: Frame) => boolean): Promise<Frame[]> {
+    const before: Frame[] = [];
+    for (;;) {
+      const frame = await this.nextSettingAsideOwnDocEcho();
+      if (predicate(frame)) return before;
       before.push(frame);
     }
   }
@@ -831,20 +844,25 @@ async function waitForDocUpdateCount(fixture: TenantFixture, docId: string, expe
   }
 }
 
-/** Opens `docId` on `socket`; the very next frame must be the server's SyncStep1 for that doc. */
+/**
+ * Opens `docId` on `socket`; the very next frame must be the server's SyncStep1 for that doc. A late doc invalidation
+ * of the socket's own tenant, the echo of an earlier case's write, is not that frame and is set aside; a frame of any
+ * other tenant is.
+ */
 async function openDoc(socket: TestSocket, docId: string): Promise<void> {
   socket.sendJson({ type: "doc:open", docId });
-  expect(await socket.next()).toMatchObject({ kind: "binary", docId });
+  expect(await socket.nextSettingAsideOwnDocEcho()).toMatchObject({ kind: "binary", docId });
 }
 
 /**
  * Watches `fixture`'s run from the start; the next frames must be exactly its replayed events. Once
- * they arrived the live subscription is registered, so no later event can be missed.
+ * they arrived the live subscription is registered, so no later event can be missed. A late doc invalidation of the
+ * socket's own tenant is set aside like in `openDoc`; a frame of any other tenant is not.
  */
 async function watchRun(socket: TestSocket, fixture: TenantFixture): Promise<void> {
   socket.sendJson({ type: "agent:watch", runId: fixture.runId, afterEventId: "0" });
   for (let replayed = 0; replayed < fixture.runEventCount; replayed++) {
-    expect(await socket.next()).toMatchObject({
+    expect(await socket.nextSettingAsideOwnDocEcho()).toMatchObject({
       kind: "text",
       type: "agent:event",
       body: { agentRunId: fixture.runId },

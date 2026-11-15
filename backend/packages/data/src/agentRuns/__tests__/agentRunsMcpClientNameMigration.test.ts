@@ -7,6 +7,13 @@ import { Pool } from "pg";
 import { expect, it } from "vitest";
 import { runMigrations } from "../../db/migrate.js";
 
+/** The error code of a client whose backend the server terminated (`DROP DATABASE ... WITH (FORCE)`). */
+const ADMIN_SHUTDOWN_CODE = "57P01";
+
+function isAdminShutdown(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === ADMIN_SHUTDOWN_CODE;
+}
+
 it("adds mcp_client_name to a database with existing runs, leaving it NULL for them", async () => {
   const url = process.env.TEST_DATABASE_URL;
   if (!url) throw new Error("Missing test database URL");
@@ -18,6 +25,12 @@ it("adds mcp_client_name to a database with existing runs, leaving it NULL for t
   let scratch: Pool | undefined;
   let created = false;
   let failure: { error: unknown } | undefined;
+  let scratchEnding = false;
+  // Every pool has an error handler: an idle client the server drops would otherwise be an uncaught exception that
+  // fails the whole run after every test passed.
+  admin.on("error", (error) => {
+    failure ??= { error };
+  });
   try {
     const files = (await readdir(migrations)).filter((entry) => entry.endsWith(".sql")).sort();
     // Found by its name, so the test follows the file when its ordinal changes.
@@ -28,6 +41,12 @@ it("adds mcp_client_name to a database with existing runs, leaving it NULL for t
     const scratchUrl = new URL(url);
     scratchUrl.pathname = `/${name}`;
     scratch = new Pool({ connectionString: scratchUrl.toString() });
+    // `pool.end()` returns before the sockets of its idle clients closed, so the backend of one can still be there when
+    // the database is dropped, and `WITH (FORCE)` terminates it: that is expected once the pool is ending, any other
+    // error of the pool is not.
+    scratch.on("error", (error) => {
+      if (!(scratchEnding && isAdminShutdown(error))) failure ??= { error };
+    });
     for (const file of files.filter((entry) => entry < migration)) {
       await copyFile(path.join(migrations, file), path.join(dir, file));
     }
@@ -71,7 +90,10 @@ it("adds mcp_client_name to a database with existing runs, leaving it NULL for t
     failure = { error };
   }
   for (const cleanup of [
-    async () => scratch?.end(),
+    async () => {
+      scratchEnding = true;
+      await scratch?.end();
+    },
     async () => {
       if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
     },

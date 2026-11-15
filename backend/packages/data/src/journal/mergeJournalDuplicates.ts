@@ -73,8 +73,10 @@ function withoutRepeatedHeading(duplicateMarkdown: string, survivorMarkdown: str
  * 5. The duplicate is moved to the Trash through the choke point's `itemDeleteWithClient`, as the system writer.
  *
  * A merge that leaves edges on the duplicate in steps 3 and 4 still succeeds, and says so: every such edge is in
- * `refusedEdges` of the result, and one log line per edge, ids and the refusal's code only, is written once the
- * caller's transaction has committed.
+ * `refusedEdges` of the result, and one log line per edge, ids, the refusal's code and its `field` only, is written
+ * once the caller's transaction has committed. The `field` is a fixed name (`callerItemId`, `targetItemId` or a
+ * property key), or `null` when the refusal names none, and never an item's name or content. An edge the survivor
+ * already holds is not left behind and is in neither: the duplicate's copy of it is deleted.
  *
  * See docs/adr/2026-11-10-journal-duplicate-merge-locks-the-reservation-before-both-entries.md.
  */
@@ -121,12 +123,12 @@ export async function mergeJournalDuplicates(
   });
   // The row is locked since step 1, so the trash finds it; a missing row would mean the lock was not held.
   if (!trashed) throw new Error(`Journal entry ${duplicateId} disappeared during its merge`);
-  // The edges are left behind by design, so the merge goes on; the log is what lets an operator see it. It follows the
-  // commit, so a merge that is rolled back logs nothing.
-  for (const { relationPropertyId, otherItemId, code } of refusedEdges) {
+  // The edges are left behind by design, so the merge goes on; the log is what lets an operator see why each one was
+  // refused (`code` and `field`). It follows the commit, so a merge that is rolled back logs nothing.
+  for (const { relationPropertyId, otherItemId, code, field } of refusedEdges) {
     runAfterCommit(client, () =>
       logger.info(
-        { survivorId, mergedItemId: duplicateId, relationPropertyId, otherItemId, code },
+        { survivorId, mergedItemId: duplicateId, relationPropertyId, otherItemId, code, field },
         "Journal duplicate merge left a refused edge on the merged entry",
       ),
     );

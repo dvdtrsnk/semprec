@@ -3,8 +3,9 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
-import { Pool } from "pg";
+import { afterEach, describe, expect, it } from "vitest";
+import { Pool, type PoolConfig } from "pg";
+import { dropClosedDatabase } from "../testSupport/dropClosedDatabase.js";
 import { z } from "zod";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { login, verifySessionToken } from "../auth/authActions.js";
@@ -31,27 +32,31 @@ import { upsertMailMessageMeta } from "../mail/mailMessageMetaStore.js";
 const EXAMPLES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "db", "migrationExamples");
 const LONG_TITLE = "a title longer than ten characters";
 
-/** pg-pool.end() may resolve before its sockets finish closing. Never FORCE those sockets away. */
-async function dropClosedDatabase(admin: Pool, name: string): Promise<void> {
-  if (!/^[a-z0-9_]+$/.test(name)) throw new Error("Invalid fixture database name");
-  await vi.waitFor(
-    async () => {
-      const { rows } = await admin.query<{ remaining: number }>(
-        "SELECT count(*)::int AS remaining FROM pg_stat_activity WHERE datname = $1",
-        [name],
-      );
-      expect(rows).toEqual([{ remaining: 0 }]);
-    },
-    { timeout: 5000, interval: 10 },
-  );
-  await admin.query(`DROP DATABASE "${name}"`);
+const poolErrors: unknown[] = [];
+
+/**
+ * A pool whose errors fail the test that owns it. A pool without an 'error' listener turns the error of an idle client
+ * the server dropped into an uncaught exception, which fails the whole run after every test passed. No fixture pool is
+ * expected to fail, so every error counts.
+ */
+function guardedPool(config: PoolConfig): Pool {
+  const pool = new Pool(config);
+  pool.on("error", (error) => {
+    poolErrors.push(error);
+  });
+  return pool;
 }
+
+afterEach(() => {
+  const errors = poolErrors.splice(0);
+  if (errors.length) throw new AggregateError(errors, "A pool of the test reported an error");
+});
 
 it("adds unverified classification without changing populated historical blobs", async () => {
   const url = process.env.TEST_DATABASE_URL;
   if (!url) throw new Error("Missing test database URL");
   const name = `batch23_blobs_${randomUUID().replaceAll("-", "")}`;
-  const admin = new Pool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
+  const admin = guardedPool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
   const dir = await mkdtemp(path.join(tmpdir(), "semprec-batch23-blobs-"));
   const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
   const migration = "0131_blob_detected_mime_type.sql";
@@ -63,7 +68,7 @@ it("adds unverified classification without changing populated historical blobs",
     created = true;
     const scratchUrl = new URL(url);
     scratchUrl.pathname = `/${name}`;
-    scratch = new Pool({
+    scratch = guardedPool({
       connectionString: scratchUrl.toString(),
       connectionTimeoutMillis: 5000,
       statement_timeout: 30000,
@@ -120,7 +125,7 @@ it("preserves populated users when the display name migration runs", async () =>
   if (!url) throw new Error("Missing test database URL");
   // The database identifier consists of a fixed prefix and generated UUID hex.
   const name = `batch20_users_${randomUUID().replaceAll("-", "")}`;
-  const admin = new Pool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
+  const admin = guardedPool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
   const dir = await mkdtemp(path.join(tmpdir(), "semprec-batch20-users-"));
   const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
   const migration = "0124_users_display_name.sql";
@@ -132,7 +137,7 @@ it("preserves populated users when the display name migration runs", async () =>
     created = true;
     const scratchUrl = new URL(url);
     scratchUrl.pathname = `/${name}`;
-    scratch = new Pool({
+    scratch = guardedPool({
       connectionString: scratchUrl.toString(),
       connectionTimeoutMillis: 5000,
       statement_timeout: 30000,
@@ -218,7 +223,7 @@ it("adds the move state table over populated mail without changing existing meta
   if (!url) throw new Error("Missing test database URL");
   // The generated identifier is a fixed prefix and UUID hex.
   const name = `batch18_move_${randomUUID().replaceAll("-", "")}`;
-  const admin = new Pool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
+  const admin = guardedPool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
   const dir = await mkdtemp(path.join(tmpdir(), "semprec-batch18-move-"));
   const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
   const migration = "0129_mail_message_move_sync_state.sql";
@@ -230,7 +235,7 @@ it("adds the move state table over populated mail without changing existing meta
     created = true;
     const scratchUrl = new URL(url);
     scratchUrl.pathname = `/${name}`;
-    scratch = new Pool({
+    scratch = guardedPool({
       connectionString: scratchUrl.toString(),
       connectionTimeoutMillis: 5000,
       statement_timeout: 30000,
@@ -361,7 +366,7 @@ it("preserves a historical problem and lazily records its last known occurrence 
   if (!url) throw new Error("Missing test database URL");
   // The generated database identifier contains a fixed prefix and UUID hex.
   const name = `batch18_receipt_${randomUUID().replaceAll("-", "")}`;
-  const admin = new Pool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
+  const admin = guardedPool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
   const dir = await mkdtemp(path.join(tmpdir(), "semprec-batch18-receipt-"));
   const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
   const migration = "0128_semp_problem_occurrences.sql";
@@ -373,7 +378,7 @@ it("preserves a historical problem and lazily records its last known occurrence 
     created = true;
     const scratchUrl = new URL(url);
     scratchUrl.pathname = `/${name}`;
-    scratch = new Pool({
+    scratch = guardedPool({
       connectionString: scratchUrl.toString(),
       connectionTimeoutMillis: 5000,
       statement_timeout: 30000,
@@ -487,7 +492,7 @@ it("upgrades a populated search index through the page text migration", async ()
   if (!url) throw new Error("Missing test database URL");
   // The database identifier consists of a fixed prefix and UUID hex.
   const name = `batch18_search_${randomUUID().replaceAll("-", "")}`;
-  const admin = new Pool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
+  const admin = guardedPool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
   const dir = await mkdtemp(path.join(tmpdir(), "semprec-batch18-search-"));
   const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
   const migration = "0120_item_search_index_body.sql";
@@ -499,7 +504,7 @@ it("upgrades a populated search index through the page text migration", async ()
     created = true;
     const scratchUrl = new URL(url);
     scratchUrl.pathname = `/${name}`;
-    scratch = new Pool({
+    scratch = guardedPool({
       connectionString: scratchUrl.toString(),
       connectionTimeoutMillis: 5000,
       statement_timeout: 30000,
@@ -590,7 +595,7 @@ it("upgrades populated heartbeats and sessions through tick and device migration
   const url = process.env.TEST_DATABASE_URL;
   if (!url) throw new Error("Missing test database URL");
   const name = `batch16_upgrade_${randomUUID().replaceAll("-", "")}`;
-  const admin = new Pool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
+  const admin = guardedPool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
   const dir = await mkdtemp(path.join(tmpdir(), "semprec-batch16-upgrade-"));
   const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
   let scratch: Pool | undefined;
@@ -602,7 +607,7 @@ it("upgrades populated heartbeats and sessions through tick and device migration
     created = true;
     const scratchUrl = new URL(url);
     scratchUrl.pathname = `/${name}`;
-    scratch = new Pool({
+    scratch = guardedPool({
       connectionString: scratchUrl.toString(),
       connectionTimeoutMillis: 5000,
       statement_timeout: 30000,
@@ -724,7 +729,7 @@ it("upgrades populated approvals and notifications through the batch 15 additive
   if (!url) throw new Error("Missing test database URL");
   // The generated database identifier contains only a fixed prefix and UUID hex.
   const name = `batch15_upgrade_${randomUUID().replaceAll("-", "")}`;
-  const admin = new Pool({ connectionString: url });
+  const admin = guardedPool({ connectionString: url });
   const dir = await mkdtemp(path.join(tmpdir(), "semprec-batch15-upgrade-"));
   const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
   let files: string[] = [];
@@ -737,7 +742,7 @@ it("upgrades populated approvals and notifications through the batch 15 additive
     created = true;
     const scratchUrl = new URL(url);
     scratchUrl.pathname = `/${name}`;
-    scratch = new Pool({ connectionString: scratchUrl.toString() });
+    scratch = guardedPool({ connectionString: scratchUrl.toString() });
     const db = scratch;
     async function migrateThrough(last: string): Promise<void> {
       for (const file of files.filter((entry) => entry <= last)) {
@@ -911,7 +916,7 @@ it("upgrades populated item automation through migration 0092 and retains legacy
   const url = process.env.TEST_DATABASE_URL;
   if (!url) throw new Error("Missing test database URL");
   const name = `automation_upgrade_${randomUUID().replaceAll("-", "")}`;
-  const admin = new Pool({ connectionString: url });
+  const admin = guardedPool({ connectionString: url });
   const dir = await mkdtemp(path.join(tmpdir(), "semprec-automation-upgrade-"));
   const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
   const migration = "0092_item_automation_error_code.sql";
@@ -923,7 +928,7 @@ it("upgrades populated item automation through migration 0092 and retains legacy
     created = true;
     const scratchUrl = new URL(url);
     scratchUrl.pathname = `/${name}`;
-    scratch = new Pool({ connectionString: scratchUrl.toString() });
+    scratch = guardedPool({ connectionString: scratchUrl.toString() });
     for (const file of (await readdir(migrations))
       .filter((entry) => entry.endsWith(".sql") && entry < migration)
       .sort())
@@ -996,10 +1001,10 @@ async function previousReleaseWritesAndReadsANote(pool: Pool): Promise<void> {
 
 async function withScratchSchema(fn: (pool: Pool) => Promise<void>): Promise<void> {
   const schema = `migration_compat_${randomUUID().replaceAll("-", "")}`;
-  const adminPool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
+  const adminPool = guardedPool({ connectionString: process.env.TEST_DATABASE_URL });
   try {
     await adminPool.query(`CREATE SCHEMA "${schema}"`);
-    const scratchPool = new Pool({
+    const scratchPool = guardedPool({
       connectionString: process.env.TEST_DATABASE_URL,
       options: `-c search_path=${schema}`,
     });
@@ -1062,7 +1067,7 @@ it("upgrades populated properties through the real runner and retains previous-r
   if (!url) throw new Error("Missing test database URL");
   // The database name is a fixed prefix and UUID hex, so the identifier cannot escape.
   const name = `property_upgrade_${randomUUID().replaceAll("-", "")}`;
-  const admin = new Pool({ connectionString: url });
+  const admin = guardedPool({ connectionString: url });
   const dir = await mkdtemp(path.join(tmpdir(), "semprec-property-upgrade-"));
   const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
   const migration = "0127_properties_initial_position.sql";
@@ -1074,7 +1079,7 @@ it("upgrades populated properties through the real runner and retains previous-r
     created = true;
     const scratchUrl = new URL(url);
     scratchUrl.pathname = `/${name}`;
-    scratch = new Pool({ connectionString: scratchUrl.toString() });
+    scratch = guardedPool({ connectionString: scratchUrl.toString() });
     for (const file of (await readdir(migrations))
       .filter((entry) => entry.endsWith(".sql") && entry < migration)
       .sort()) {
@@ -1160,7 +1165,7 @@ it("upgrades populated MCP and notification rows through the batch 08 migrations
   if (!url) throw new Error("Missing test database URL");
   // The generated identifier contains only a fixed prefix and UUID hex.
   const name = `batch08_upgrade_${randomUUID().replaceAll("-", "")}`;
-  const admin = new Pool({ connectionString: url });
+  const admin = guardedPool({ connectionString: url });
   const dir = await mkdtemp(path.join(tmpdir(), "semprec-batch08-upgrade-"));
   const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
   const files = (await readdir(migrations)).filter((file) => file.endsWith(".sql")).sort();
@@ -1172,7 +1177,7 @@ it("upgrades populated MCP and notification rows through the batch 08 migrations
     created = true;
     const scratchUrl = new URL(url);
     scratchUrl.pathname = `/${name}`;
-    scratch = new Pool({ connectionString: scratchUrl.toString() });
+    scratch = guardedPool({ connectionString: scratchUrl.toString() });
     const db = scratch;
     async function migrateThrough(last: string): Promise<void> {
       for (const file of files.filter((entry) => entry <= last)) {
@@ -1360,7 +1365,7 @@ it("upgrades populated heartbeats and runs through origin and retry migrations",
   // This identifier contains only the hexadecimal digits of a generated UUID.
   const name = `batch12_upgrade_${randomUUID().replaceAll("-", "")}`;
   const dir = await mkdtemp(path.join(tmpdir(), "semprec-batch12-upgrade-"));
-  const admin = new Pool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
+  const admin = guardedPool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
   const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
   let scratch: Pool | undefined;
   let created = false;
@@ -1370,7 +1375,7 @@ it("upgrades populated heartbeats and runs through origin and retry migrations",
     created = true;
     const scratchUrl = new URL(url);
     scratchUrl.pathname = `/${name}`;
-    scratch = new Pool({
+    scratch = guardedPool({
       connectionString: scratchUrl.toString(),
       connectionTimeoutMillis: 5000,
       statement_timeout: 30000,
@@ -1510,7 +1515,7 @@ it.skipIf(!process.env.BATCH29_BRIDGE_READER)(
       throw new Error("Bridge reader export missing");
     }
     const name = `batch29_bridge_${randomUUID().replaceAll("-", "")}`;
-    const admin = new Pool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
+    const admin = guardedPool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
     const dir = await mkdtemp(path.join(tmpdir(), "semprec-bridge-migrations-"));
     const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
     const migration = "0138_item_automation_not_found_and_source.sql";
@@ -1522,7 +1527,7 @@ it.skipIf(!process.env.BATCH29_BRIDGE_READER)(
       created = true;
       const scratchUrl = new URL(url);
       scratchUrl.pathname = `/${name}`;
-      scratch = new Pool({
+      scratch = guardedPool({
         connectionString: scratchUrl.toString(),
         connectionTimeoutMillis: 5000,
         statement_timeout: 30000,
@@ -1625,7 +1630,7 @@ it("adds Semp error and accounting columns over populated synthetic legacy rows 
   if (!url) throw new Error("Missing test database URL");
   // CREATE and DROP interpolate only this fixed ASCII prefix and randomUUID hex identifier.
   const name = `batch31_semp_${randomUUID().replaceAll("-", "")}`;
-  const admin = new Pool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
+  const admin = guardedPool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
   const dir = await mkdtemp(path.join(tmpdir(), "semprec-batch31-migrations-"));
   const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
   const additions = ["0139_semp_messages_error_code.sql", "0140_ai_gateway_calls_semp_message_id.sql"];
@@ -1637,7 +1642,7 @@ it("adds Semp error and accounting columns over populated synthetic legacy rows 
     created = true;
     const scratchUrl = new URL(url);
     scratchUrl.pathname = `/${name}`;
-    scratch = new Pool({
+    scratch = guardedPool({
       connectionString: scratchUrl.toString(),
       connectionTimeoutMillis: 5000,
       statement_timeout: 30000,
@@ -1737,7 +1742,7 @@ it("accepts the calendar invitation kind after migration 0171 and keeps every ea
   if (!url) throw new Error("Missing test database URL");
   // CREATE and DROP interpolate only this fixed ASCII prefix and randomUUID hex identifier.
   const name = `gh1954_kind_${randomUUID().replaceAll("-", "")}`;
-  const admin = new Pool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
+  const admin = guardedPool({ connectionString: url, connectionTimeoutMillis: 5000, statement_timeout: 30000 });
   const dir = await mkdtemp(path.join(tmpdir(), "semprec-gh1954-kind-"));
   const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
   const migration = "0171_notification_kind_calendar_invitation.sql";
@@ -1764,7 +1769,7 @@ it("accepts the calendar invitation kind after migration 0171 and keeps every ea
     created = true;
     const scratchUrl = new URL(url);
     scratchUrl.pathname = `/${name}`;
-    scratch = new Pool({
+    scratch = guardedPool({
       connectionString: scratchUrl.toString(),
       connectionTimeoutMillis: 5000,
       statement_timeout: 30000,

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import { z } from "zod";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createBlob } from "../blobs/blobsStore.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
@@ -131,6 +132,28 @@ async function setDeletedAt(ids: string[], deletedAt: string): Promise<void> {
     [ids, deletedAt],
   );
   expect(result.rowCount).toBe(ids.length);
+}
+
+/**
+ * Whether another connection cannot lock the row at once: `FOR UPDATE NOWAIT` on the superuser pool, rolled back
+ * at once, fails with SQLSTATE 55P03 exactly when a transaction holds a lock on it. A missing row is not locked.
+ */
+async function isRowLocked(itemId: string): Promise<boolean> {
+  const client = await admin.connect();
+  try {
+    await client.query("BEGIN");
+    try {
+      await client.query("SELECT id FROM items WHERE id = $1 FOR UPDATE NOWAIT", [itemId]);
+      return false;
+    } catch (thrown) {
+      if (z.object({ code: z.literal("55P03") }).safeParse(thrown).success) return true;
+      throw thrown;
+    } finally {
+      await client.query("ROLLBACK");
+    }
+  } finally {
+    client.release();
+  }
 }
 
 const sorted = (ids: string[]): string[] => [...ids].sort();
@@ -591,6 +614,245 @@ describe("item purge hooks", () => {
 
       expect(purged.purgedItemIds).toEqual([item.id]);
       expect(calls).toEqual([]);
+    });
+  });
+  describe("a row that is not trashed past the cutoff when the purge reaches it", () => {
+    /** The cutoff of these tests; the rows are backdated to before it with `setDeletedAt`, and every real trash after that is later. */
+    const CUTOFF = new Date("2026-02-01T00:00:00Z");
+    const BEFORE_CUTOFF = "2026-01-01T00:00:00Z";
+
+    /**
+     * A root with two rows in an inline database, `restorable` and `sibling`, and one row under `sibling`. The
+     * purge walks it root first, then `restorable` and `sibling` in either order, then `leaf` last: `leaf` is two
+     * levels below the root, so its turn comes after the turn of `restorable`. `restorable` has a text property
+     * `note`. Every row reserves an idempotency key, one of the built-in dependents the purge deletes. Nothing is
+     * trashed yet: `trashBackdated` does that.
+     */
+    async function makeBranchedPage() {
+      const rootDb = await cp.createDatabase({ name: "Root" });
+      const root = await cp.createItem({ databaseId: rootDb.id, properties: {}, idempotencyKey: "branch-root" });
+      const midDb = await cp.createInlineDatabase({ name: "Mid", parentItemId: root.id });
+      await cp.createProperty({ databaseId: midDb.id, key: "note", name: "Note", type: "text" });
+      const restorable = await cp.createItem({
+        databaseId: midDb.id,
+        properties: {},
+        idempotencyKey: "branch-restorable",
+      });
+      const sibling = await cp.createItem({ databaseId: midDb.id, properties: {}, idempotencyKey: "branch-sibling" });
+      const leafDb = await cp.createInlineDatabase({ name: "Leaf", parentItemId: sibling.id });
+      const leaf = await cp.createItem({ databaseId: leafDb.id, properties: {}, idempotencyKey: "branch-leaf" });
+      return {
+        rootDb,
+        root,
+        midDb,
+        restorable,
+        sibling,
+        leafDb,
+        leaf,
+        ids: [root.id, restorable.id, sibling.id, leaf.id],
+      };
+    }
+
+    /** Trashes the page's root with its whole cascade, then backdates every row of `ids` to before `CUTOFF`. */
+    async function trashBackdated(page: Awaited<ReturnType<typeof makeBranchedPage>>, ids: string[]): Promise<void> {
+      await cp.softDeleteItem(page.rootDb.id, page.root.id);
+      await setDeletedAt(ids, BEFORE_CUTOFF);
+    }
+
+    it("locks only the row that is trashed before the cutoff: not a live row, a row trashed at or after it, or a missing row", async () => {
+      await runInTenant(tenant, async () => {
+        const database = await cp.createDatabase({ name: "Notes" });
+        const live = await cp.createItem({ databaseId: database.id, properties: {} });
+        const before = await cp.createItem({ databaseId: database.id, properties: {} });
+        const exact = await cp.createItem({ databaseId: database.id, properties: {} });
+        const after = await cp.createItem({ databaseId: database.id, properties: {} });
+        for (const item of [before, exact, after]) await cp.softDeleteItem(database.id, item.id);
+        await setDeletedAt([before.id], "2026-01-01T00:00:00Z");
+        await setDeletedAt([exact.id], CUTOFF.toISOString());
+        await setDeletedAt([after.id], "2026-03-01T00:00:00Z");
+        const missingId = randomUUID();
+        const stored = await storedItems([live.id, before.id, exact.id, after.id]);
+        const names = { live: live.id, before: before.id, exact: exact.id, after: after.id, missing: missingId };
+
+        const seen = await withTransaction(pool, async (client) => {
+          const returned: Record<string, ItemRow | null> = {};
+          for (const [name, id] of Object.entries(names)) {
+            returned[name] = await itemsStore.lockTrashedItemBefore(client, database.id, id, CUTOFF);
+          }
+          // Another connection probes while this transaction still holds whatever it locked.
+          const locked: Record<string, boolean> = {};
+          for (const [name, id] of Object.entries(names)) locked[name] = await isRowLocked(id);
+          return { returned, locked };
+        });
+
+        expect(seen.returned).toEqual({
+          live: null,
+          before: stored.get(before.id),
+          exact: null,
+          after: null,
+          missing: null,
+        });
+        expect(seen.locked).toEqual({ live: false, before: true, exact: false, after: false, missing: false });
+        expect(await isRowLocked(before.id)).toBe(false);
+        // Nothing was written: the three trashed rows keep their trash and the live row stays live.
+        expect(await itemStates([live.id, before.id, exact.id, after.id])).toEqual(
+          byId([
+            { id: live.id, trashed: false },
+            { id: before.id, trashed: true },
+            { id: exact.id, trashed: true },
+            { id: after.id, trashed: true },
+          ]),
+        );
+      });
+    });
+
+    it("skips a nested row a restore made live before the purge reached it, with no hook, no dependent delete and no lock held", async () => {
+      await runInTenant(tenant, async () => {
+        const page = await makeBranchedPage();
+        await trashBackdated(page, page.ids);
+        await createDomainRows(page.ids);
+        const before = await storedItems(page.ids);
+        const restoredDeletedAt: (string | null | undefined)[] = [];
+        const lockedWhenAHookRan: { itemId: string; locked: boolean }[] = [];
+        // The restore commits on another connection inside the root's hook call, after the walk read `restorable`
+        // as trashed. Every other hook call probes `restorable` from another connection while the purge transaction
+        // is still open. Only the leaf's call is certain to run after the purge has passed `restorable`: the
+        // sibling's call may come before it, and its probe finds nothing locked either way.
+        const calls = recordPurgeHook(async ({ client, item }) => {
+          if (item.id === page.root.id) {
+            restoredDeletedAt.push((await cp.restoreItem(page.midDb.id, page.restorable.id))?.deletedAt);
+          } else {
+            lockedWhenAHookRan.push({ itemId: item.id, locked: await isRowLocked(page.restorable.id) });
+          }
+          await client.query("DELETE FROM item_purge_hook_test_rows WHERE item_id = $1", [item.id]);
+        });
+
+        const purged = await cp.purgeExpiredTrashSubtree(page.root.id, CUTOFF);
+
+        expect(restoredDeletedAt).toEqual([null]);
+        expect(purged.purgedItemIds[0]).toBe(page.root.id);
+        expect(sorted(purged.purgedItemIds)).toEqual(sorted([page.root.id, page.sibling.id, page.leaf.id]));
+        expect(calls.map((call) => call.item.id)).toEqual(purged.purgedItemIds);
+        expect(calls.map((call) => call.item.id)).not.toContain(page.restorable.id);
+        // The rows that were removed got their row exactly as stored, with a trash older than the cutoff.
+        for (const call of calls) {
+          expect(call.item).toEqual(before.get(call.item.id));
+          expect(new Date(call.item.deletedAt ?? "9999-01-01T00:00:00Z") < CUTOFF).toBe(true);
+        }
+        // `leaf` is the last row of the walk, so the purge had passed `restorable` before its hook call. That probe
+        // is the one that fails against a purge that locks a row before it re-checks it; the sibling's may precede
+        // `restorable`. Neither probe found the restored row locked.
+        expect(lockedWhenAHookRan).toHaveLength(2);
+        expect(lockedWhenAHookRan.map((probe) => probe.locked)).toEqual([false, false]);
+        expect(lockedWhenAHookRan.at(-1)?.itemId).toBe(page.leaf.id);
+        expect(await isRowLocked(page.restorable.id)).toBe(false);
+        // The restored row is live and keeps its idempotency reservation and its domain row.
+        expect(await itemStates(page.ids)).toEqual([{ id: page.restorable.id, trashed: false }]);
+        expect(await reservedItemIds(page.ids)).toEqual([page.restorable.id]);
+        expect(await domainRowItemIds()).toEqual([page.restorable.id]);
+      });
+    });
+
+    it("does not remove a nested row that was restored and trashed again after the walk, nor its cascade, and a later purge does", async () => {
+      await runInTenant(tenant, async () => {
+        const page = await makeBranchedPage();
+        // A row under `restorable`, trashed in the same cascade, so the re-trash makes it fresh as well.
+        const childDb = await cp.createInlineDatabase({ name: "Child", parentItemId: page.restorable.id });
+        const child = await cp.createItem({ databaseId: childDb.id, properties: {}, idempotencyKey: "branch-child" });
+        const ids = [...page.ids, child.id];
+        await trashBackdated(page, ids);
+        await createDomainRows(ids);
+        const reTrashed: Map<string, ItemRow>[] = [];
+        // After the walk read `restorable` and `child` as trashed before the cutoff, both commit a restore and a new
+        // trash on other connections inside the root's hook call, so their `deletedAt` is now far past the cutoff.
+        const calls = recordPurgeHook(async ({ client, item }) => {
+          if (item.id === page.root.id) {
+            await cp.restoreItem(page.midDb.id, page.restorable.id);
+            await cp.softDeleteItem(page.midDb.id, page.restorable.id);
+            reTrashed.push(await storedItems([page.restorable.id, child.id]));
+          }
+          await client.query("DELETE FROM item_purge_hook_test_rows WHERE item_id = $1", [item.id]);
+        });
+
+        const purged = await cp.purgeExpiredTrashSubtree(page.root.id, CUTOFF);
+
+        expect(reTrashed).toHaveLength(1);
+        for (const id of [page.restorable.id, child.id]) {
+          expect(new Date(reTrashed[0]?.get(id)?.deletedAt ?? "0000-01-01T00:00:00Z") >= CUTOFF).toBe(true);
+        }
+        expect(sorted(purged.purgedItemIds)).toEqual(sorted([page.root.id, page.sibling.id, page.leaf.id]));
+        expect(calls.map((call) => call.item.id)).toEqual(purged.purgedItemIds);
+        for (const call of calls) expect(new Date(call.item.deletedAt ?? "9999-01-01T00:00:00Z") < CUTOFF).toBe(true);
+        // Both rows are still in the trash with their reservations and domain rows; no lock is held on them.
+        expect(await itemStates(ids)).toEqual(
+          byId([
+            { id: page.restorable.id, trashed: true },
+            { id: child.id, trashed: true },
+          ]),
+        );
+        expect(await reservedItemIds(ids)).toEqual(sorted([page.restorable.id, child.id]));
+        expect(await domainRowItemIds()).toEqual(sorted([page.restorable.id, child.id]));
+        expect(await isRowLocked(page.restorable.id)).toBe(false);
+        expect(await isRowLocked(child.id)).toBe(false);
+
+        const later = await cp.purgeExpiredTrashSubtree(page.restorable.id, EVERYTHING_EXPIRED);
+
+        expect(sorted(later.purgedItemIds)).toEqual(sorted([page.restorable.id, child.id]));
+        expect(sorted(calls.slice(purged.purgedItemIds.length).map((call) => call.item.id))).toEqual(
+          sorted([page.restorable.id, child.id]),
+        );
+        // Each hook of the later call got the row exactly as stored, with the trash the re-trash gave it.
+        expect(calls.slice(purged.purgedItemIds.length).map((call) => call.item)).toEqual(
+          later.purgedItemIds.map((id) => reTrashed[0]?.get(id)),
+        );
+        expect(await itemStates(ids)).toEqual([]);
+        expect(await reservedItemIds(ids)).toEqual([]);
+        expect(await domainRowItemIds()).toEqual([]);
+      });
+    });
+
+    it("lets a writer of the restored row commit while the purge is still running once the purge has skipped the row", async () => {
+      await runInTenant(tenant, async () => {
+        const page = await makeBranchedPage();
+        await trashBackdated(page, page.ids);
+        let pendingUpdate: Promise<unknown> | undefined;
+        const outcomes: ("committed" | "waited")[] = [];
+        recordPurgeHook(async ({ item }) => {
+          if (item.id === page.root.id) {
+            await cp.restoreItem(page.midDb.id, page.restorable.id);
+            return;
+          }
+          if (item.id !== page.leaf.id) return;
+          // The purge has skipped `restorable` by now. The update would wait for this very transaction if the
+          // purge still locked the row, so it is raced against a timeout instead of awaited unconditionally.
+          pendingUpdate = cp.updateItem({
+            databaseId: page.midDb.id,
+            itemId: page.restorable.id,
+            propertiesPatch: { note: "edited during the purge" },
+          });
+          let timer: NodeJS.Timeout | undefined;
+          try {
+            outcomes.push(
+              await Promise.race([
+                pendingUpdate.then(() => "committed" as const),
+                new Promise<"waited">((resolve) => {
+                  timer = setTimeout(() => resolve("waited"), 5000);
+                }),
+              ]),
+            );
+          } finally {
+            clearTimeout(timer);
+          }
+        });
+
+        await cp.purgeExpiredTrashSubtree(page.root.id, CUTOFF);
+        await pendingUpdate;
+
+        expect(outcomes).toEqual(["committed"]);
+        const stored = (await storedItems([page.restorable.id])).get(page.restorable.id);
+        expect(stored?.deletedAt).toBeNull();
+        expect(stored?.properties).toEqual({ note: "edited during the purge" });
+      });
     });
   });
 });

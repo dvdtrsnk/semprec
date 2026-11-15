@@ -58,7 +58,7 @@ describe("route_graph_subscription (issue #997)", () => {
     expect(rows[0]).toEqual({
       secdef: true,
       owner: "semprec_router",
-      config: ["search_path=pg_catalog, public"],
+      config: ["search_path=pg_catalog, public, pg_temp"],
     });
 
     const role = await pool.query<{ rolbypassrls: boolean; rolcanlogin: boolean; rolsuper: boolean }>(

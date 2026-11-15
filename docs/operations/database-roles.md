@@ -13,7 +13,8 @@ Issue #243. Two roles, created by migration `0040_least_privilege_roles.sql`
   connection pool (its own `process_heartbeats` row,
   mail ingest, doc persistence, the blob-plus-item transaction in `fileUploadStore.ts`).
 - **`semprec_side`** — read-only (`SELECT`) on the choke-point tables above, full DML on
-  every module side table, and full access to graphile-worker's own `graphile_worker` schema
+  every module side table except the ones listed under "Identity tables" below, and full access to
+  graphile-worker's own `graphile_worker` schema
   (granted by `grantQueueSchemaPrivileges` in `backend/packages/queue/src/index.ts`, called
   once right after `ensureQueueSchema`, since that schema doesn't exist yet at migration time).
   `INSERT`/`UPDATE`/`DELETE` against a choke-point table under this role fails outright — a
@@ -50,24 +51,46 @@ automatically, so adding a new choke-point or side table always requires a visib
 grant change in the same migration. A new table the choke-point writes goes in both the
 `semprec_data` (full) and `semprec_side` (`SELECT`-only) grant lists; every other new table
 goes only in the `semprec_side` (full) grant list. A new identity-plane table (see below) is the
-exception: it is granted full DML directly to `semprec_data` and `SELECT` only to `semprec_side`, never
-through `semprec_side`'s full grant.
+exception: it is granted full DML directly to `semprec_data`, never through `semprec_side`'s full
+grant, and `SELECT` to `semprec_side` only when a side process has to read it (as `users` and
+`tenants` are read today). A table that holds a credential, token or session secret follows the next
+paragraph and gets nothing to `semprec_side`.
+
+A new table that holds a bearer credential, a session secret, a delivery endpoint or a row that makes
+an actor is granted directly to `semprec_data` and nothing to `semprec_side`: no side process needs
+it, and a side-role compromise must not read or mint it. The side tables that already hold encrypted
+credentials, wrapped keys or grant rows (`external_credentials`, `tenant_keys`, `mail_oauth_states`,
+`agent_database_grants`, `project_mcp_grants`, `agent_run_read_allowances`) keep their grants; the
+decision record lists them as the accepted remainder
+(`docs/adr/2026-11-15-the-side-role-cannot-create-an-actor-or-read-credentials.md`).
 
 ## Identity tables
 
 `users`, `sessions`, `password_reset_tokens`, `login_attempts` and `tenants` make up the identity
 plane: they decide who a request is and which tenant it belongs to. Only `semprec-api` writes them
-(login, logout, session touch, first-account setup, password reset), so:
+(login, logout, session touch, first-account setup, password reset). Four more tables turn a database
+row into an actor the API accepts or into a delivery endpoint: `agent_runs`,
+`agent_run_mcp_credentials`, `approval_requests` and `push_subscriptions`. They are written only by
+`semprec_data` as well, so:
 
 - `semprec_data` holds `SELECT, INSERT, UPDATE, DELETE` on them directly — granted to the role itself,
   not inherited from `semprec_side`. Its `login_attempts.id` sequence access still comes through the
   inherited `USAGE, SELECT` on all sequences.
-- `semprec_side` holds `SELECT` only (the restore-test recorder and `app_sole_tenant()` read them).
+- `semprec_side` cannot write any of them. It cannot read `agent_run_mcp_credentials`,
+  `push_subscriptions`, `sessions`, `password_reset_tokens`, `login_attempts`, `invites`,
+  `admin_audit_log` or `tenant_deletions` at all (no privilege of any kind). It reads `users`,
+  `tenants`, `tenant_ai_budgets`, `agent_runs` and `approval_requests` (`SELECT` only), plus its own
+  side tables: `app_sole_tenant()`, the operator alert and the restore-test recorder read `users` and
+  `tenants`, and the AI gateway reads `agent_runs` to check that the run it attributes a call to
+  exists.
 
 The reason is containment: a compromised side-role process (`semprec-ai-gateway`,
-`semprec-restore-test`) must not be able to mint a session, rebind a user to another tenant, promote a
-user to `admin` or change a tenant's status. Migration
-`0057_identity_tables_api_role_only.sql` applies the split.
+`semprec-restore-test`) must not be able to mint a session or an MCP run credential, rebind a user to
+another tenant, promote a user to `admin`, change a tenant's status or register a push endpoint for
+another user. Migration `0057_identity_tables_api_role_only.sql` applies the split to the identity
+plane; `0177_side_role_cannot_mint_actors.sql` extends it to the four actor and endpoint tables and
+takes the read of the credentials and tokens away (decision record:
+`docs/adr/2026-11-15-the-side-role-cannot-create-an-actor-or-read-credentials.md`).
 
 ## DDL the API role needs
 
@@ -76,8 +99,8 @@ The one DDL statement the choke-point needs at runtime — creating a new databa
 partition inside `createDatabase`'s transaction — goes through `create_items_partition(uuid)`,
 created by migration `0048_create_items_partition_function.sql`:
 
-- It is `SECURITY DEFINER` with `search_path = pg_catalog, public`, owned by the migrating role
-  (the owner of `items`), and runs
+- It is `SECURITY DEFINER` with `search_path = pg_catalog, public, pg_temp`, owned by the migrating
+  role (the owner of `items`), and runs
   `CREATE TABLE public.items_p_<hex> PARTITION OF public.items FOR VALUES IN ('<id>')` — the same
   partition name the application built before the function existed.
 - `EXECUTE` is revoked from `PUBLIC` and granted to `semprec_data` only; `semprec_side` cannot
@@ -92,11 +115,21 @@ this shape — owned by the migrating role, `EXECUTE` revoked from `PUBLIC` and 
 role that needs it — never through a schema-level `CREATE` grant or a change of table ownership
 (decision record: `docs/adr/2026-09-27-runtime-ddl-through-security-definer-functions.md`).
 
+**Rule:** the `search_path` of a `SECURITY DEFINER` function ends with `pg_temp` and lists no schema
+a runtime role can create objects in. Without `pg_temp` PostgreSQL searches the session's temporary
+schema first for relation and type names, so a runtime role could shadow a type the function body
+names (finding R2-DB-1 of gh-1086; migration `0176_definer_search_path_ends_with_pg_temp.sql`
+applies it to `create_items_partition(uuid)` and `drop_items_partition(uuid)`). The deploy-time
+verifier (`db/tenancyInvariants.ts`) refuses any other shape in every schema (decision record:
+`docs/adr/2026-11-15-security-definer-search-path-ends-with-pg-temp.md`).
+
 ## Cross-tenant router functions (semprec_router)
 
 `semprec_router` is `NOLOGIN` and `BYPASSRLS`, and holds only column-level `SELECT` on the columns
 its functions read (no table-level privilege). It owns the router functions below, which are
-`SECURITY DEFINER` with a pinned `search_path` and schema-qualified objects.
+`SECURITY DEFINER` with `search_path = pg_catalog, public, pg_temp` and schema-qualified objects. The
+rule above applies to them too: `pg_temp` is last, and no schema a runtime role can create objects
+in is listed.
 
 **Rule:** an external identifier that must be mapped to a tenant before any tenant is known goes
 through such a function. `EXECUTE` is revoked from `PUBLIC` and granted to exactly one runtime role,

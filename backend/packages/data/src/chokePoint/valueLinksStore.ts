@@ -451,20 +451,47 @@ export async function deleteEmptyValueLink(client: PoolClient, linkId: string): 
 }
 
 /**
+ * Locks, in item id order and in one statement, the rows of the items of the database owned by module
+ * `ownerModuleId` that have a value link with an item source naming `sourceItemId`, in the caller's
+ * transaction. A caller that detaches those links calls it before it takes the first link, so it holds
+ * the rows the propagation job takes before the links.
+ */
+export async function lockItemRowsOfLinksSourcedFromItem(
+  client: PoolClient,
+  sourceItemId: string,
+  ownerModuleId: string,
+): Promise<void> {
+  await client.query(
+    `SELECT i.id FROM items i
+     JOIN databases d ON d.id = i.database_id AND d.tenant_id = i.tenant_id AND d.owner_module_id = $2
+     WHERE i.tenant_id = app_tenant_default()
+       AND i.id IN (
+         SELECT l.item_id FROM value_links l
+         WHERE l.tenant_id = app_tenant_default()
+           AND EXISTS (SELECT 1 FROM value_link_sources s WHERE s.tenant_id = app_tenant_default() AND s.link_id = l.id AND s.source_kind = 'item' AND s.source_item_id = $1))
+     ORDER BY i.id FOR UPDATE OF i`,
+    [sourceItemId, ownerModuleId],
+  );
+}
+
+/**
  * Removes every item source naming `sourceItemId` (issue #1656), in the caller's transaction. Each
- * affected link is locked first, in id order, as `moveValueLinkItemSources` locks them. Link states
+ * affected link is locked first, in the order of its item id, the position of its rule in `ruleKeyOrder`
+ * and its link id. A link whose rule is not in `ruleKeyOrder`, or any link when it is empty, sorts after
+ * the others of its item and by link id. The returned array keeps the order of the locks. Link states
  * and the inheriting items' values are not changed. Returns each affected link with its item.
  */
 export async function deleteValueLinkSourcesBySourceItem(
   client: PoolClient,
   sourceItemId: string,
+  ruleKeyOrder: readonly string[] = [],
 ): Promise<Array<{ linkId: string; itemId: string }>> {
   const { rows } = await client.query<{ id: string; item_id: string }>(
     `SELECT l.id, l.item_id FROM value_links l
      WHERE l.tenant_id = app_tenant_default()
        AND EXISTS (SELECT 1 FROM value_link_sources s WHERE s.tenant_id = app_tenant_default() AND s.link_id = l.id AND s.source_kind = 'item' AND s.source_item_id = $1)
-     ORDER BY l.id FOR UPDATE`,
-    [sourceItemId],
+     ORDER BY l.item_id, array_position($2::text[], l.rule_key), l.id FOR UPDATE`,
+    [sourceItemId, [...ruleKeyOrder]],
   );
   if (rows.length === 0) return [];
   const linkIds = rows.map((row) => row.id);

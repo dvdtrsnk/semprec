@@ -41,7 +41,8 @@ const PRAGUE_EVENTS: Record<string, Record<string, unknown>> = {
     time: "08:30–09:30",
   },
   withStartOnly: { name: "With start only", date: "2026-10-16T08:00:00Z", timeFrom: "08:30" },
-  text: { name: "Text", date: "abc" },
+  // Not hexadecimal: the ids that the migration logs are random UUIDs, which can contain "abc" by chance.
+  text: { name: "Text", date: "no-such-date" },
   impossible: { name: "Impossible", date: "2026-02-30" },
   current: { name: "Current", date: "2026-10-16", timeFrom: "09:00", timeTo: "10:00", time: "09:00–10:00" },
 };
@@ -335,7 +336,7 @@ describe("the Events 1.0.0 to 1.1.0 data migration (issue gh-1797)", () => {
     expect(logged.map(([fields]) => fields).sort(byItemId)).toEqual(
       [...ids, ...ids].map((id) => ({ itemId: id, reason: id })).sort(byItemId),
     );
-    expect(JSON.stringify(info.mock.calls)).not.toContain("abc");
+    expect(JSON.stringify(info.mock.calls)).not.toContain("no-such-date");
     expect(JSON.stringify(info.mock.calls)).not.toContain("2026-02-30");
   });
 

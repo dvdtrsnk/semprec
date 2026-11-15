@@ -145,7 +145,9 @@ describe("tenant AI budgets: admin writer and overview (issue #1039)", () => {
       `SELECT p.proowner::regrole::text AS owner, p.prosecdef, p.proconfig
          FROM pg_proc p WHERE p.proname = 'ai_tenant_spend'`,
     );
-    expect(rows).toEqual([{ owner: "semprec_router", prosecdef: true, proconfig: ["search_path=pg_catalog, public"] }]);
+    expect(rows).toEqual([
+      { owner: "semprec_router", prosecdef: true, proconfig: ["search_path=pg_catalog, public, pg_temp"] },
+    ]);
 
     await expect(sidePool.query("SELECT * FROM ai_tenant_spend()")).rejects.toThrow(/permission denied/);
     await expect(dataPool.query("SELECT * FROM ai_tenant_spend()")).resolves.toBeDefined();

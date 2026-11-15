@@ -28,6 +28,38 @@ export default defineConfig({
         replacement: fileURLToPath(new URL("../shared/block-model/src/index.ts", import.meta.url)),
       },
       {
+        find: /^@semprec\/data$/,
+        replacement: fileURLToPath(new URL("./packages/data/src/index.ts", import.meta.url)),
+      },
+      {
+        find: /^@semprec\/realtime$/,
+        replacement: fileURLToPath(new URL("./packages/realtime/src/index.ts", import.meta.url)),
+      },
+      {
+        find: /^@semprec\/application$/,
+        replacement: fileURLToPath(new URL("./packages/application/src/index.ts", import.meta.url)),
+      },
+      {
+        find: /^@semprec\/notifications$/,
+        replacement: fileURLToPath(new URL("./packages/notifications/src/index.ts", import.meta.url)),
+      },
+      {
+        find: /^@semprec\/ai-gateway-client$/,
+        replacement: fileURLToPath(new URL("./packages/ai-gateway-client/src/index.ts", import.meta.url)),
+      },
+      {
+        find: /^@semprec\/ai-gateway$/,
+        replacement: fileURLToPath(new URL("./packages/ai-gateway/src/index.ts", import.meta.url)),
+      },
+      {
+        find: /^@semprec\/agent-runtime$/,
+        replacement: fileURLToPath(new URL("./packages/agent-runtime/src/index.ts", import.meta.url)),
+      },
+      {
+        find: /^@semprec\/credentials$/,
+        replacement: fileURLToPath(new URL("./packages/credentials/src/index.ts", import.meta.url)),
+      },
+      {
         find: /^@semprec\/shared\/src\/logger\.js$/,
         replacement: fileURLToPath(new URL("./packages/shared/src/logger.ts", import.meta.url)),
       },
@@ -37,6 +69,11 @@ export default defineConfig({
     include: ["packages/*/src/**/*.test.ts", "services/*/src/**/*.test.ts"],
     exclude: [...configDefaults.exclude, "**/*.unit.test.ts", "**/*.e2e.test.ts"],
     globalSetup: ["./packages/data/src/testSupport/globalSetup.ts"],
+    // Sets SEMPREC_TENANT_SCOPE for each test file: `warn` for the files on the shrink-only list, `strict` otherwise.
+    setupFiles: ["./packages/data/src/testSupport/tenantScopeMode.ts"],
+    // The value this vitest process was started with, read here before `globalSetup` runs, so that
+    // `tenantScopeModeDefault.test.ts` can tell a developer override from a default that some setup step applied.
+    provide: { explicitTenantScopeMode: process.env.SEMPREC_TENANT_SCOPE ?? null },
     environment: "node",
     // Issue #1199: warn-level output, chiefly tenant_scope_missing, can exceed
     // Relay's output limit and hide real failures. Preserve developer overrides.

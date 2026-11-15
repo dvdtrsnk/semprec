@@ -81,7 +81,11 @@ In order, it:
    point at a commit on `main`, or already has a `releases/<tag>` directory;
 2. exports the tagged commit into a hidden `releases/.<tag>.partial.*` directory, runs
    `pnpm install --frozen-lockfile` and `pnpm -r run build` in its `backend/` and
-   `pnpm install --frozen-lockfile` + `pnpm run build` in its `web/`, producing `web/dist`, and
+   `pnpm install --frozen-lockfile` + `pnpm run build` in its `web/`, producing `web/dist`, runs
+   `backend/scripts/check-native-entrypoints.mjs` in a transient `systemd-run` unit with no
+   `EnvironmentFile`, which starts each of the eleven compiled entries of the units and scripts as a
+   plain `node <entry>` with no configuration and refuses the release, with "native entrypoint
+   check failed", when one fails to load instead of ending in its own configuration refusal, and
    writes `release.env` (`APP_VERSION=<tag>`, not a secret);
 3. runs the release's migrations CLI in a transient `systemd-run` unit that loads
    `/opt/semprec/shared/env/migrate.env` — and nothing else — and connects with its
@@ -183,17 +187,101 @@ the repository within 7 days, measured from the last backup that still held the 
 advancing while backups do not run.
 
 **Disaster recovery needs both halves.** Keep the restored database and all services offline.
-Restore a selected main snapshot and its schema, then restore the newest independent
-`/var/backups/semprec/tenant-keys.dump` snapshot to a protected regular file. Supply the offline
-admin and non-owner target database URLs, the exact 64-character ID of the selected offline
-PostgreSQL container, and a new path in a protected operator-owned directory for the cleanup
-receipt through `SEMPREC_RESTORE_ADMIN_URL`, `SEMPREC_RESTORE_TARGET_URL`,
-`SEMPREC_RESTORE_CONTAINER`, and `SEMPREC_RESTORE_RECEIPT`. The target role must already have
-SELECT on `tenants` and SELECT/INSERT on `tenant_keys`; it must be subject to the target's RLS.
-Run `node /opt/semprec/current/backend/packages/data/dist/tenancy/restoreTenantKeysCli.js <key-dump>`
-with those variables in its environment. It checks the local Docker context and server identity,
-restores the selected table data into an owned staging database, and imports only rows belonging to
-restored tenants. It does not decrypt keys or fall back to an older key artifact. A failure may
+Initialise the new PostgreSQL cluster with the same `POSTGRES_USER` and `POSTGRES_DB` as the
+backed-up one: the main dump records its tables as owned by that superuser, and the block below
+fails before `pg_restore` when `SEMPREC_RESTORE_OWNER` (that user's name) does not exist in the
+cluster. The block restores the selected main snapshot and then the newest independent key
+snapshot:
+
+- It creates `semprec_side`, `semprec_data` (a member of `semprec_side`) and `semprec_router` when
+  they are missing, with the attributes of migrations 0040 and 0069, before `pg_restore`, because the
+  dump's row-level security policies and grants name them. It sets the passwords of `semprec_data`
+  and `semprec_side` from `SEMPREC_DATA_DB_PASSWORD` and `SEMPREC_SIDE_DB_PASSWORD` through
+  psql's `\getenv` (psql 15 or newer), so no password is placed in a command-line argument.
+- The production restore keeps owners and privileges: it never passes `--no-owner` or
+  `--no-privileges`, because the restored services connect as `semprec_data`, `semprec_side` and
+  `semprec_router` and hold only the privileges the dump grants them. (The monthly restore test
+  skips both, in a disposable cluster whose roles it creates itself.)
+- It restores the main dump from the snapshot named by `SEMPREC_RESTORE_SNAPSHOT` (list the
+  candidates with `restic snapshots --path /var/backups/semprec/postgres.dump`) and the two blob
+  storage directories from that same snapshot, under their original absolute paths.
+- It selects the newest key snapshot with `restic dump --path /var/backups/semprec/tenant-keys.dump
+  latest`. Never choose an older key dump: it can hold the key of a tenant whose deletion erased it
+  since, and key snapshots expire after 7 days. The import below also refuses the key of a tenant
+  that is `deleting` or tombstoned in `tenant_deletions`.
+
+Supply the offline cluster's superuser connection through `PGHOST`, `PGPORT`, `PGUSER` and
+`PGPASSWORD`, the offline admin and non-owner target database URLs, the exact 64-character ID of the
+selected offline PostgreSQL container, and a new path in a protected operator-owned directory for the
+cleanup receipt through `SEMPREC_RESTORE_ADMIN_URL`, `SEMPREC_RESTORE_TARGET_URL`,
+`SEMPREC_RESTORE_CONTAINER`, and `SEMPREC_RESTORE_RECEIPT`. Run the block as a directly executed
+Bash script; do not source it. The key import target role must already have `SELECT` on `tenants`
+and `tenant_deletions` and `SELECT, INSERT` on `tenant_keys`; it must be subject to the target's RLS.
+
+<!-- restore-database-command:start -->
+```bash
+set -euo pipefail
+umask 077
+: "${SEMPREC_RESTORE_OWNER:?SEMPREC_RESTORE_OWNER must be set to the superuser name of the backed-up database}"
+: "${SEMPREC_RESTORE_DATABASE:?SEMPREC_RESTORE_DATABASE must be set}"
+: "${SEMPREC_RESTORE_SNAPSHOT:?SEMPREC_RESTORE_SNAPSHOT must be set to the selected main snapshot ID}"
+: "${SEMPREC_RESTORE_MAIN_DUMP:?SEMPREC_RESTORE_MAIN_DUMP must be set}"
+: "${SEMPREC_RESTORE_KEY_DUMP:?SEMPREC_RESTORE_KEY_DUMP must be set}"
+: "${SEMPREC_DATA_DB_PASSWORD:?SEMPREC_DATA_DB_PASSWORD must be set}"
+: "${SEMPREC_SIDE_DB_PASSWORD:?SEMPREC_SIDE_DB_PASSWORD must be set}"
+: "${SEMPREC_RESTORE_ADMIN_URL:?SEMPREC_RESTORE_ADMIN_URL must be set}"
+: "${SEMPREC_RESTORE_TARGET_URL:?SEMPREC_RESTORE_TARGET_URL must be set}"
+: "${SEMPREC_RESTORE_CONTAINER:?SEMPREC_RESTORE_CONTAINER must be set}"
+: "${SEMPREC_RESTORE_RECEIPT:?SEMPREC_RESTORE_RECEIPT must be set}"
+: "${PGHOST:?PGHOST must be set}"
+: "${PGUSER:?PGUSER must be set}"
+: "${PGPASSWORD:?PGPASSWORD must be set}"
+[[ "$SEMPREC_RESTORE_SNAPSHOT" =~ ^[0-9a-f]{8,64}$ ]] || {
+  echo "SEMPREC_RESTORE_SNAPSHOT must be a restic snapshot ID" >&2
+  exit 1
+}
+export PGDATABASE="$SEMPREC_RESTORE_DATABASE"
+owner_query="SELECT count(*) FROM pg_roles WHERE rolname = :'owner'"
+owner_count="$(printf '%s\n' "$owner_query" |
+  psql --no-psqlrc --tuples-only --no-align --set=ON_ERROR_STOP=1 --set=owner="$SEMPREC_RESTORE_OWNER")"
+[[ "$owner_count" == 1 ]] || {
+  echo "the cluster has no role named SEMPREC_RESTORE_OWNER; initialise it with the backed-up POSTGRES_USER" >&2
+  exit 1
+}
+psql --no-psqlrc --set=ON_ERROR_STOP=1 <<'SQL'
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'semprec_side') THEN
+    CREATE ROLE semprec_side LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'semprec_data') THEN
+    CREATE ROLE semprec_data LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION IN ROLE semprec_side;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'semprec_router') THEN
+    CREATE ROLE semprec_router NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS;
+  END IF;
+END
+$$;
+\getenv data_password SEMPREC_DATA_DB_PASSWORD
+\getenv side_password SEMPREC_SIDE_DB_PASSWORD
+ALTER ROLE semprec_data PASSWORD :'data_password';
+ALTER ROLE semprec_side PASSWORD :'side_password';
+SQL
+restic dump "$SEMPREC_RESTORE_SNAPSHOT" /var/backups/semprec/postgres.dump > "$SEMPREC_RESTORE_MAIN_DUMP"
+pg_restore --exit-on-error --dbname="$SEMPREC_RESTORE_DATABASE" "$SEMPREC_RESTORE_MAIN_DUMP"
+restic restore "$SEMPREC_RESTORE_SNAPSHOT" --target / \
+  --include /opt/semprec/data/files --include /opt/semprec/data/mail-attachments
+restic dump --path /var/backups/semprec/tenant-keys.dump latest \
+  /var/backups/semprec/tenant-keys.dump > "$SEMPREC_RESTORE_KEY_DUMP"
+node /opt/semprec/current/backend/packages/data/dist/tenancy/restoreTenantKeysCli.js "$SEMPREC_RESTORE_KEY_DUMP"
+```
+<!-- restore-database-command:end -->
+
+The "Re-applying account deletions after a restore" block follows this one. The key import checks
+the local Docker context and server identity, restores the selected table data into an owned
+staging database, and imports only rows belonging to restored tenants that are not `deleting` and
+have no row in `tenant_deletions`; a refused row is skipped without an error. It does not decrypt
+keys or fall back to an older key artifact. A failure may
 leave a partially populated offline target: recreate it from the main dump before retrying. A
 nonempty receipt identifies staging state whose cleanup was not established; retain it and resolve
 that exact owned state before retrying. If a key is absent, affected credentials remain unavailable
@@ -219,7 +307,11 @@ PostgreSQL container on a dedicated bridge with IP masquerade disabled, a random
 port and a generated private password. This is not a claim of universal egress isolation. The
 script never addresses production Compose containers or volumes. The run passes only if all of these hold:
 
-- `pg_restore --exit-on-error` of the restored custom dump succeeds;
+- `clusterRoles`: the three cluster roles `semprec_side`, `semprec_data` (a member of
+  `semprec_side`) and `semprec_router` are created, `NOLOGIN`, in the disposable cluster before the
+  restore, because the dump's row-level security policies name them and `--no-privileges` does not
+  skip policies;
+- `pg_restore --exit-on-error --no-owner --no-privileges` of the restored custom dump succeeds;
 - `items` is non-empty and its newest `updated_at` is at most 48 hours old;
 - `doc_snapshots` is non-empty and no row has an empty `state`;
 - `deletionLedger`: the bounded strict artifact covers every exact `tenant_deletions` ID in the
@@ -228,9 +320,9 @@ script never addresses production Compose containers or volumes. The run passes 
   not execute replay or activate services;
 - `tenantKeysExcluded`: the restored main database has no `tenant_keys` rows;
 - `tenantKeysRestore`: the newest independent key snapshot is imported through the offline owner
-  into the restored database under a narrow non-owner role, with target FK and RLS active. Extra
-  keys for tenants absent from the main snapshot are not inserted. No master key or decryption is
-  used; a missing key remains unavailable;
+  into the restored database under a narrow non-owner role, with target FK and RLS active. No key
+  is imported for a tenant that is absent from the main snapshot, `deleting` there, or tombstoned in
+  `tenant_deletions`. No master key or decryption is used; a missing key remains unavailable;
 - 20 random hashed `blobs` rows (all of them, when fewer exist) each have a restored file with
   exactly the recorded size and SHA-256 hash — looked up by `storage_key` under the restored
   `FILES_STORAGE_DIR` first, then under the restored `MAIL_ATTACHMENTS_DIR`.

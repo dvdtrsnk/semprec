@@ -17,6 +17,11 @@ readonly RESTORE_DATABASE=semprec_restore
 readonly ITEMS_MAX_AGE_HOURS=48
 readonly BLOB_SAMPLE_SIZE=20
 readonly READY_ATTEMPTS=60
+# The cluster roles that migrations 0040 and 0069 create, which belong to no database and so are in no
+# dump, recreated NOLOGIN in the disposable cluster. The dump names them in policies and owners.
+readonly CLUSTER_ROLES_SQL="CREATE ROLE semprec_side NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+CREATE ROLE semprec_data NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION IN ROLE semprec_side;
+CREATE ROLE semprec_router NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS;"
 
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 readonly RUN_ID
@@ -196,9 +201,16 @@ start_postgres() {
   RESTORE_DATABASE_URL="postgresql://postgres:${password}@127.0.0.1:${port}/${RESTORE_DATABASE}"
 }
 
+create_cluster_roles() {
+  CURRENT_CHECK=clusterRoles
+  pg_query "$CLUSTER_ROLES_SQL" >/dev/null
+}
+
 restore_postgres() {
   CURRENT_CHECK=pgRestore
-  # Ownership and grants name production roles the disposable server does not have.
+  # A dump holds row-level security policies that name cluster roles (CREATE POLICY ... TO semprec_side),
+  # and --no-privileges skips GRANTs but not policies, so pg_restore --exit-on-error stops on the first
+  # one unless the roles exist. create_cluster_roles runs first. Ownership and grants stay skipped.
   docker exec --interactive "$POSTGRES_ID" \
     pg_restore --username=postgres --dbname="$RESTORE_DATABASE" \
     --exit-on-error --no-owner --no-privileges < "$WORK_DIRECTORY/$RESTORED_DUMP_PATH"
@@ -317,6 +329,7 @@ main() {
 
   restore_snapshot
   start_postgres
+  create_cluster_roles
   restore_postgres
   pg_query "CREATE ROLE semprec_restore NOLOGIN NOSUPERUSER NOBYPASSRLS;
     GRANT USAGE ON SCHEMA public TO semprec_restore;

@@ -3,7 +3,7 @@ import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
-import { Transform, type Readable } from "node:stream";
+import { PassThrough, Transform, type Readable } from "node:stream";
 import { logger } from "./logger.js";
 
 /**
@@ -16,6 +16,8 @@ import { logger } from "./logger.js";
  * separately. Streamed via `pipeline()` (not bare `.pipe()` — a documented imapflow bug,
  * #65, truncates the write under backpressure), computing size/content hash incrementally
  * as bytes flow rather than after buffering the whole attachment.
+ *
+ * The contract every `writeStream` implementation must follow is on `BlobStorageWriter.writeStream`.
  */
 export interface WriteStreamOptions {
   /**
@@ -36,6 +38,16 @@ export class MaxBytesExceededError extends Error {
 }
 
 export interface BlobStorageWriter {
+  /**
+   * Contract for every implementation
+   * (`docs/adr/2026-11-15-a-blob-writer-consumes-its-source-from-the-tick-it-is-called.md`): it consumes
+   * `source` and observes its errors from the tick it is called, before its first `await`, so a caller may
+   * hand over a producer that blocks on a full pipe or can fail (a child process's stdout, a request body
+   * that gets aborted) without having read it first. Asynchronous preparation (a directory, credentials, a
+   * multipart upload) runs while the source is consumed into a bounded buffer, or after the pipeline is
+   * attached. When the preparation or the write fails, the implementation destroys `source`, removes the
+   * partial bytes and rejects with the first error.
+   */
   writeStream(
     storageKey: string,
     source: Readable,
@@ -93,6 +105,13 @@ export function readMaxFileSizeBytes(env: Readonly<Record<string, string | undef
  * Local-filesystem default, adequate for a single self-hosted server before object storage
  * (issue #40) is provisioned — the same "adequate for one deployment, not over-engineered"
  * judgment call the credentials master key makes.
+ *
+ * `writeStream` attaches to its source before it creates the key's directory: the source is piped
+ * through the hashing and size-counting `Transform` into a `PassThrough`, and that intake chain holds
+ * at most its default high-water marks while the directory is created, so a producer that is faster
+ * than the disk is paused instead of being read late. Only then is the staged stream piped into the
+ * file. A failure at either step destroys the staging stream with the failure, which destroys the
+ * source with that same error, and removes whatever was written.
  */
 export class LocalFsBlobStorageWriter implements BlobStorageWriter {
   constructor(private readonly baseDir: string) {}
@@ -103,7 +122,6 @@ export class LocalFsBlobStorageWriter implements BlobStorageWriter {
     options: WriteStreamOptions = {},
   ): Promise<{ byteSize: number; contentHash: string }> {
     const path = join(this.baseDir, storageKey);
-    await mkdir(dirname(path), { recursive: true });
 
     const hash = createHash("sha256");
     let byteSize = 0;
@@ -126,13 +144,31 @@ export class LocalFsBlobStorageWriter implements BlobStorageWriter {
       },
     });
 
+    // The source is attached here, before the first `await`: a producer that is not read yet (a
+    // child's stdout, a stream that can fail) must not sit unobserved while the directory is created.
+    // `staged` holds what has been read until the file is open; the default high-water marks of the
+    // chain are what bounds it.
+    const staged = new PassThrough();
+    const intake = pipeline(source, hasher, staged);
+    // The outcome of `intake` reaches the caller through `staged`, which the file pipeline reads, and
+    // through the `await intake` below; this handler only marks a rejection that happens before either
+    // of them is waiting as observed.
+    intake.catch(() => undefined);
+
     try {
-      await pipeline(source, hasher, createWriteStream(path));
+      await mkdir(dirname(path), { recursive: true });
+      await pipeline(staged, createWriteStream(path));
+      await intake;
     } catch (err) {
-      // `pipeline()` has already destroyed the write stream by the time its promise rejects, but
-      // whatever it had already flushed to disk is still there — issue #158's "abort and clean
-      // partial state on overflow" requires a failed/aborted write to leave nothing behind, not
-      // just stop growing.
+      // Destroying `staged` with the failure makes `intake` destroy the source and the hasher with that
+      // same error. A bare `destroy()` would destroy the source with ERR_STREAM_PREMATURE_CLOSE, and a
+      // caller that observes its own source would report that instead of the storage error.
+      staged.destroy(err instanceof Error ? err : new Error("Blob write failed", { cause: err }));
+      // `intake` settles once the source is destroyed; its rejection repeats `err` and must not replace it.
+      await intake.catch(() => undefined);
+      // The file pipeline has already destroyed the write stream by now, but whatever it had already
+      // flushed to disk is still there — issue #158's "abort and clean partial state on overflow"
+      // requires a failed/aborted write to leave nothing behind, not just stop growing.
       try {
         await this.delete(storageKey);
       } catch (cleanupError) {

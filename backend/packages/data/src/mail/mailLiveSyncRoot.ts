@@ -3,7 +3,11 @@ import type { Pool } from "pg";
 import { currentTenantScope, runAsSystem, runInTenant } from "@semprec/shared";
 import { withTransaction } from "../db/pool.js";
 import { listItems } from "../chokePoint/itemsStore.js";
-import { defaultSyncModeForProvider, ensureMailAccountSyncState, type SyncMode } from "./mailAccountSyncStateStore.js";
+import {
+  defaultSyncModeForProvider,
+  ensureMailAccountSyncStateOfLiveMailbox,
+  type SyncMode,
+} from "./mailAccountSyncStateStore.js";
 import { enqueueMailAccountSync } from "./mailSyncJob.js";
 import { resolveMailModuleIds } from "./mailModuleIds.js";
 import { forEachActiveTenant } from "../tenancy/forEachActiveTenant.js";
@@ -154,7 +158,7 @@ interface HostedEntry {
  * Restart-safe by construction rather than by any explicit "am I already running" check: a
  * fresh process starts with an empty `hosted` map, and the only account state it ever reads is
  * whatever `mail_account_sync_state` already persisted (cursors, watch/subscription expiry via
- * `ensureMailAccountSyncState`, which never overwrites an existing row) — so restoring after a
+ * `ensureMailAccountSyncStateOfLiveMailbox`, which never overwrites an existing row) — so restoring after a
  * restart is just discovery finding the same active accounts again and handing each one a
  * fresh lifecycle built from its already-persisted state, never resetting it. Running two
  * roots at once against the same database would duplicate watchers exactly like running two
@@ -230,12 +234,17 @@ export function createMailLiveSyncRoot(
                 // Never overwrites an existing row's `syncMode` (mailAccountSyncStateStore.ts) — this
                 // only seeds state for an account discovered here for the first time; a user's
                 // subsequent manual `setSyncMode` switch is picked up below because we read it back
-                // from the row itself, not from `defaultSyncModeForProvider` again.
-                const state = await ensureMailAccountSyncState(client, {
+                // from the row itself, not from `defaultSyncModeForProvider` again. A first-time seed
+                // happens only under a non-waiting share lock on the live item, so a mailbox whose
+                // removal committed after `listItems` read it gets no row back; `null` means the
+                // item is trashed, gone or locked by a removal in flight, and leaves the account out
+                // of this pass without an error (the next pass sees it again if it is still live).
+                const state = await ensureMailAccountSyncStateOfLiveMailbox(client, {
                   itemId: item.id,
+                  mailboxesDatabaseId,
                   syncMode: defaultSyncModeForProvider(provider),
                 });
-                found.set(item.id, { tenantId, syncMode: state.syncMode });
+                if (state) found.set(item.id, { tenantId, syncMode: state.syncMode });
                 await client.query("RELEASE SAVEPOINT discover_account");
               } catch (err) {
                 // One account's state failing to read/seed must not drop every other account on this

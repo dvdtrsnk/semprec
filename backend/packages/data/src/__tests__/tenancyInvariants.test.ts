@@ -281,8 +281,8 @@ describe("findTenancyViolations", () => {
       const byDefault = probeName("tenancy_invariants_default_acl");
       const granted = probeName("tenancy_invariants_granted");
       const violations = await violationsAfter([
-        `CREATE FUNCTION ${byDefault}() RETURNS int LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog AS 'SELECT 1'`,
-        `CREATE FUNCTION ${granted}() RETURNS int LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog AS 'SELECT 1'`,
+        `CREATE FUNCTION ${byDefault}() RETURNS int LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS 'SELECT 1'`,
+        `CREATE FUNCTION ${granted}() RETURNS int LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS 'SELECT 1'`,
         `REVOKE EXECUTE ON FUNCTION ${granted}() FROM PUBLIC`,
         `GRANT EXECUTE ON FUNCTION ${granted}() TO PUBLIC`,
       ]);
@@ -300,7 +300,7 @@ describe("findTenancyViolations", () => {
       expect(
         await violationsAfter([
           `CREATE ROLE ${owner} NOLOGIN`,
-          `CREATE FUNCTION ${fn}() RETURNS int LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog AS 'SELECT 1'`,
+          `CREATE FUNCTION ${fn}() RETURNS int LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS 'SELECT 1'`,
           `REVOKE EXECUTE ON FUNCTION ${fn}() FROM PUBLIC`,
           `ALTER FUNCTION ${fn}() OWNER TO ${owner}`,
         ]),
@@ -317,11 +317,198 @@ describe("findTenancyViolations", () => {
       const fn = probeName("tenancy_invariants_router_fn");
       expect(
         await violationsAfter([
-          `CREATE FUNCTION ${fn}() RETURNS int LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog AS 'SELECT 1'`,
+          `CREATE FUNCTION ${fn}() RETURNS int LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS 'SELECT 1'`,
           `REVOKE EXECUTE ON FUNCTION ${fn}() FROM PUBLIC`,
           `ALTER FUNCTION ${fn}() OWNER TO semprec_router`,
         ]),
       ).toEqual([]);
+    });
+
+    describe("definerFunction: the shape of the search_path", () => {
+      /** A definer function that is revoked from PUBLIC, so only its `search_path` can be reported. */
+      function definerFunction(name: string, searchPath: string): string[] {
+        return [
+          `CREATE FUNCTION ${name}() RETURNS int LANGUAGE sql SECURITY DEFINER SET search_path = ${searchPath} AS 'SELECT 1'`,
+          `REVOKE EXECUTE ON FUNCTION ${name}() FROM PUBLIC`,
+        ];
+      }
+
+      it("a search_path that does not name pg_temp", async () => {
+        const fn = probeName("tenancy_invariants_no_temp");
+        expect(await violationsAfter(definerFunction(fn, "pg_catalog, public"))).toEqual([
+          { invariant: "definerFunction", object: `${fn}()`, detail: "search_path does not end with pg_temp" },
+        ]);
+      });
+
+      it("pg_temp listed first", async () => {
+        const fn = probeName("tenancy_invariants_temp_first");
+        expect(await violationsAfter(definerFunction(fn, "pg_temp, pg_catalog"))).toEqual([
+          {
+            invariant: "definerFunction",
+            object: `${fn}()`,
+            detail: "search_path does not end with pg_temp; search_path lists pg_temp before its end",
+          },
+        ]);
+      });
+
+      it("pg_temp listed twice, once at the end", async () => {
+        const fn = probeName("tenancy_invariants_temp_twice");
+        expect(await violationsAfter(definerFunction(fn, "pg_catalog, pg_temp, pg_temp"))).toEqual([
+          {
+            invariant: "definerFunction",
+            object: `${fn}()`,
+            detail: "search_path does not end with pg_temp; search_path lists pg_temp before its end",
+          },
+        ]);
+      });
+
+      it("pg_temp in the middle of the list and another schema last", async () => {
+        const fn = probeName("tenancy_invariants_temp_middle");
+        expect(await violationsAfter(definerFunction(fn, "pg_catalog, pg_temp, public"))).toEqual([
+          {
+            invariant: "definerFunction",
+            object: `${fn}()`,
+            detail: "search_path does not end with pg_temp; search_path lists pg_temp before its end",
+          },
+        ]);
+      });
+
+      it("an empty search_path", async () => {
+        const fn = probeName("tenancy_invariants_empty_path");
+        expect(await violationsAfter(definerFunction(fn, "''"))).toEqual([
+          { invariant: "definerFunction", object: `${fn}()`, detail: "search_path does not end with pg_temp" },
+        ]);
+      });
+
+      it('"$user", whose quotes are stripped before the schema is looked up', async () => {
+        const fn = probeName("tenancy_invariants_user_path");
+        expect(await violationsAfter(definerFunction(fn, '"$user", pg_catalog, pg_temp'))).toEqual([
+          {
+            invariant: "definerFunction",
+            object: `${fn}()`,
+            detail: "search_path names $user, which is not an existing schema",
+          },
+        ]);
+      });
+
+      it("a schema that does not exist, named once however often it is listed", async () => {
+        const fn = probeName("tenancy_invariants_missing_path");
+        const missing = probeName("tenancy_invariants_no_schema");
+        const other = probeName("tenancy_invariants_no_other");
+        expect(
+          await violationsAfter(definerFunction(fn, `pg_catalog, ${missing}, ${other}, ${missing}, pg_temp`)),
+        ).toEqual([
+          {
+            invariant: "definerFunction",
+            object: `${fn}()`,
+            detail: `search_path names ${missing}, which is not an existing schema; search_path names ${other}, which is not an existing schema`,
+          },
+        ]);
+      });
+
+      it.each(["semprec_data", "semprec_side", "PUBLIC"])(
+        "a schema in which %s may create objects",
+        async (grantee) => {
+          const fn = probeName("tenancy_invariants_writable_path");
+          const schema = probeName("tenancy_invariants_writable");
+          expect(
+            await violationsAfter([
+              `CREATE SCHEMA ${schema}`,
+              `GRANT CREATE ON SCHEMA ${schema} TO ${grantee}`,
+              ...definerFunction(fn, `pg_catalog, ${schema}, pg_temp`),
+            ]),
+          ).toEqual([
+            {
+              invariant: "definerFunction",
+              object: `${fn}()`,
+              detail: `search_path names ${schema}, in which a runtime role may create objects`,
+            },
+          ]);
+        },
+      );
+
+      it.each(["semprec_data", "semprec_side", "PUBLIC"])(
+        "pg_catalog when %s may create objects in it",
+        async (grantee) => {
+          const fn = probeName("tenancy_invariants_catalog_path");
+          const violations = await violationsAfter([
+            `GRANT CREATE ON SCHEMA pg_catalog TO ${grantee}`,
+            ...definerFunction(fn, "pg_catalog, public, pg_temp"),
+          ]);
+          // Every migrated definer function names pg_catalog as well, so all of them are reported with it.
+          expect(violations.length).toBeGreaterThan(1);
+          for (const violation of violations) {
+            expect(violation).toMatchObject({
+              invariant: "definerFunction",
+              detail: "search_path names pg_catalog, in which a runtime role may create objects",
+            });
+          }
+          expect(violations.map((violation) => violation.object)).toEqual(
+            expect.arrayContaining([`${fn}()`, "create_items_partition(uuid)"]),
+          );
+        },
+      );
+
+      it("accepts a schema in which no runtime role may create objects", async () => {
+        const fn = probeName("tenancy_invariants_closed_path");
+        const schema = probeName("tenancy_invariants_closed");
+        expect(
+          await violationsAfter([
+            `CREATE SCHEMA ${schema}`,
+            `GRANT USAGE ON SCHEMA ${schema} TO semprec_data, semprec_side`,
+            ...definerFunction(fn, `pg_catalog, ${schema}, public, pg_temp`),
+          ]),
+        ).toEqual([]);
+      });
+
+      it("a missing schema is reported before a writable one", async () => {
+        const fn = probeName("tenancy_invariants_both_path");
+        const missing = probeName("tenancy_invariants_no_schema");
+        const writable = probeName("tenancy_invariants_writable");
+        expect(
+          await violationsAfter([
+            `CREATE SCHEMA ${writable}`,
+            `GRANT CREATE ON SCHEMA ${writable} TO semprec_data`,
+            ...definerFunction(fn, `${writable}, ${missing}, pg_temp`),
+          ]),
+        ).toEqual([
+          {
+            invariant: "definerFunction",
+            object: `${fn}()`,
+            detail: `search_path names ${missing}, which is not an existing schema; search_path names ${writable}, in which a runtime role may create objects`,
+          },
+        ]);
+      });
+
+      it("a function in a schema other than public", async () => {
+        const fn = probeName("tenancy_invariants_other_schema_fn");
+        const schema = probeName("tenancy_invariants_other_schema");
+        expect(
+          await violationsAfter([
+            `CREATE SCHEMA ${schema}`,
+            `CREATE FUNCTION ${schema}.${fn}() RETURNS int LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, public AS 'SELECT 1'`,
+            `REVOKE EXECUTE ON FUNCTION ${schema}.${fn}() FROM PUBLIC`,
+          ]),
+        ).toEqual([
+          {
+            invariant: "definerFunction",
+            object: `${schema}.${fn}()`,
+            detail: "search_path does not end with pg_temp",
+          },
+        ]);
+      });
+
+      it("create_items_partition(uuid) with the search_path of finding R2-DB-1", async () => {
+        expect(
+          await violationsAfter(["ALTER FUNCTION create_items_partition(uuid) SET search_path = pg_catalog, public"]),
+        ).toEqual([
+          {
+            invariant: "definerFunction",
+            object: "create_items_partition(uuid)",
+            detail: "search_path does not end with pg_temp",
+          },
+        ]);
+      });
     });
   });
 });
@@ -352,6 +539,28 @@ describe("verifyTenancy", () => {
     expect(await verifyTenancy(verifyPool, output.sink)).toBe(0);
     expect(output.info).toEqual(["tenancy: verified"]);
     expect(output.error).toEqual([]);
+  });
+
+  it("returns 1 for create_items_partition(uuid) with the search_path of finding R2-DB-1", async () => {
+    // verifyTenancy reads through its own pool connections, so the break must be committed and is
+    // restored below; integration files run one at a time.
+    await verifyPool.query("ALTER FUNCTION create_items_partition(uuid) SET search_path = pg_catalog, public");
+    try {
+      const output = recordingOutput();
+      expect(await verifyTenancy(verifyPool, output.sink)).toBe(1);
+      expect(output.error).toEqual([
+        "tenancy violation [definerFunction] create_items_partition(uuid): search_path does not end with pg_temp",
+      ]);
+      expect(output.info).toEqual([]);
+    } finally {
+      await verifyPool.query(
+        "ALTER FUNCTION create_items_partition(uuid) SET search_path = pg_catalog, public, pg_temp",
+      );
+    }
+    const restored = await verifyPool.query<{ proconfig: string[] }>(
+      "SELECT proconfig FROM pg_proc WHERE oid = 'create_items_partition(uuid)'::regprocedure",
+    );
+    expect(restored.rows).toEqual([{ proconfig: ["search_path=pg_catalog, public, pg_temp"] }]);
   });
 
   it("returns 1 and writes one error line per violation", async () => {

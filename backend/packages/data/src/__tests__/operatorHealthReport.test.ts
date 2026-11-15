@@ -265,7 +265,9 @@ describe("getOperatorHealthReport (issue #1038)", () => {
       `SELECT p.proowner::regrole::text AS owner, p.prosecdef AS secdef, p.proconfig AS config
          FROM pg_proc p WHERE p.proname = 'ops_health_counts'`,
     );
-    expect(rows).toEqual([{ owner: "semprec_router", secdef: true, config: ["search_path=pg_catalog, public"] }]);
+    expect(rows).toEqual([
+      { owner: "semprec_router", secdef: true, config: ["search_path=pg_catalog, public, pg_temp"] },
+    ]);
   });
 
   it("grants semprec_router only the listed SELECT columns on the three counted tables", async () => {

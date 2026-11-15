@@ -1193,12 +1193,28 @@ describe("transcription step 1 (prepare)", () => {
     };
   }
 
-  /** `blobStorage`, except that `hook` runs as step 1 starts storing ffmpeg's output: after its read transaction, before its write transaction. */
+  /**
+   * `blobStorage`, except that `hook` runs as step 1 starts storing ffmpeg's output: after its read transaction,
+   * before its write transaction.
+   *
+   * The real write starts first and the hook runs beside it, like it does for a real storage writer that begins
+   * to read ffmpeg's stdout at once. A hook that ran before the first read would leave stdout unread for as long
+   * as the hook takes: once ffmpeg exits, Node drains an unread stdout and drops what it held, the stored audio is
+   * empty and step 1 fails on ffprobe with `mediaUnreadable` instead of reaching the write transaction the hook
+   * is there to interfere with. Under load the hook outlasts ffmpeg's run. The hook's failure is thrown after the
+   * write settled, so no write is still in flight when step 1 discards the audio.
+   */
   function storageWithMidNormalizationHook(hook: () => Promise<void>): BlobStorageWriter {
     return {
       writeStream: async (storageKey, source, options) => {
-        if (storageKey.startsWith(transcriptionsPrefix)) await hook();
-        return blobStorage.writeStream(storageKey, source, options);
+        if (!storageKey.startsWith(transcriptionsPrefix)) return blobStorage.writeStream(storageKey, source, options);
+        const [written, hooked] = await Promise.allSettled([
+          blobStorage.writeStream(storageKey, source, options),
+          hook(),
+        ]);
+        if (hooked.status === "rejected") throw hooked.reason;
+        if (written.status === "rejected") throw written.reason;
+        return written.value;
       },
       delete: (storageKey) => blobStorage.delete(storageKey),
       readStream: (storageKey, range) => blobStorage.readStream(storageKey, range),

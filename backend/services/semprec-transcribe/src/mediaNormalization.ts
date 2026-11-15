@@ -464,6 +464,8 @@ async function streamFfmpegToStorage(
   });
 
   try {
+    // `child.stdout` is handed over unread: `BlobStorageWriter.writeStream` consumes its source from the
+    // tick it is called, so ffmpeg cannot finish and lose its output while the writer prepares.
     const [exitResult, writeResult] = await Promise.allSettled([
       exit,
       blobStorage.writeStream(storageKey, child.stdout),

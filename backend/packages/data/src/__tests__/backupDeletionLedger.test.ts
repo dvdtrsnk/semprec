@@ -16,6 +16,7 @@ import { handleTenantPurgeTask, replayTenantDeletions } from "../tenancy/tenantP
 import { validateRestoreLedger } from "../tenancy/validateRestoreLedger.js";
 import { parseRestoreReplayLedger } from "../tenancy/restoreReplayLedger.js";
 import { createBackupRecoveryFixture } from "./fixtures/backupRecovery.js";
+import { dropClosedDatabase } from "../testSupport/dropClosedDatabase.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 let admin: Pool;
@@ -67,13 +68,18 @@ describe("restore ledger database validation", () => {
 describe("PostgreSQL 16 dump and later replay ledger", () => {
   it("retains a purge after the dump while requiring every earlier tombstone", async () => {
     const fixture = await createBackupRecoveryFixture();
+    const cleanup: unknown[] = [];
+    // Every pool has an error handler: an idle client the server drops would otherwise be an uncaught exception that
+    // fails the whole run after every test passed. No pool of this test is expected to fail, so any error is one.
     const source = new Pool({ connectionString: fixture.adminUrl });
+    source.on("error", (error) => {
+      cleanup.push(error);
+    });
     const sourceRuntime = createPool(fixture.adminUrl, { role: "semprec_data" });
     let restored: Pool | undefined;
     let restoredRuntime: Pool | undefined;
     let restoredCreated = false;
     let failure: { value: unknown } | undefined;
-    const cleanup: unknown[] = [];
     try {
       const backend = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
       await promisify(execFile)(process.execPath, [join(backend, "packages/data/dist/db/runMigrationsCli.js")], {
@@ -115,6 +121,9 @@ describe("PostgreSQL 16 dump and later replay ledger", () => {
       const url = new URL(fixture.adminUrl);
       url.pathname = "/restored_ledger";
       restored = new Pool({ connectionString: url.toString() });
+      restored.on("error", (error) => {
+        cleanup.push(error);
+      });
       restoredRuntime = createPool(url.toString(), { role: "semprec_data" });
       const before = await restored.query<{ tenant: boolean; tombstone: boolean }>(
         "SELECT EXISTS(SELECT 1 FROM tenants WHERE id=$1) AS tenant, EXISTS(SELECT 1 FROM tenant_deletions WHERE tenant_id=$1) AS tombstone",
@@ -142,7 +151,8 @@ describe("PostgreSQL 16 dump and later replay ledger", () => {
     }
     if (restoredCreated) {
       try {
-        await source.query("DROP DATABASE restored_ledger");
+        // `pool.end()` can resolve before the sockets of its idle clients closed: wait for their backends to be gone.
+        await dropClosedDatabase(source, "restored_ledger");
         const absence = await source.query<{ present: boolean }>(
           "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = 'restored_ledger') AS present",
         );

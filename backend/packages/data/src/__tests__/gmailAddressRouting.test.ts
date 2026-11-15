@@ -73,7 +73,9 @@ describe("route_gmail_address (issue #998)", () => {
       `SELECT p.prosecdef AS secdef, pg_get_userbyid(p.proowner) AS owner, p.proconfig AS config
        FROM pg_proc p WHERE p.proname = 'route_gmail_address'`,
     );
-    expect(rows).toEqual([{ secdef: true, owner: "semprec_router", config: ["search_path=pg_catalog, public"] }]);
+    expect(rows).toEqual([
+      { secdef: true, owner: "semprec_router", config: ["search_path=pg_catalog, public, pg_temp"] },
+    ]);
   });
 
   it("grants EXECUTE to semprec_data only, and semprec_router cannot read last_error", async () => {

@@ -7,8 +7,11 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client, Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { runInTenant } from "@semprec/shared";
+import { ensureQueueSchema, grantQueueSchemaPrivileges } from "@semprec/queue";
+import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runMigrations } from "../db/migrate.js";
 import { withTransaction } from "../db/pool.js";
+import { dropClosedDatabase } from "../testSupport/dropClosedDatabase.js";
 import { restoreTenantKeys, RestoreStageUncertainError } from "../tenancy/restoreTenantKeys.js";
 import { RestorePostgresTools } from "../tenancy/restorePostgresTools.js";
 import {
@@ -20,18 +23,94 @@ import {
 const A = "11111111-1111-4111-8111-111111111111";
 const B = "22222222-2222-4222-8222-222222222222";
 const C = "33333333-3333-4333-8333-333333333333";
+// The tenant ids are fixed UUID literals and the database names of the cases are fixed identifiers, so the SQL below
+// that interpolates them cannot inject.
+const DELETING = "44444444-4444-4444-8444-444444444444";
+const TOMBSTONED = "55555555-5555-4555-8555-555555555555";
+const RESTORE_TEST_SCRIPT = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../../../deploy/systemd/scripts/semprec-restore-test.sh",
+);
 let fixture: BackupRecoveryFixture;
 let admin: Pool;
 let runtime: Pool;
+const poolErrors: unknown[] = [];
 let archive: Buffer;
 let mainArchive: Buffer;
 let targetUrl: string;
 
 async function sql(database: string, text: string): Promise<void> {
-  await fixture.exec(
+  await sqlOn(fixture, database, text);
+}
+
+interface ProcessResult {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+/** Runs a process to completion with its output bounded; a signal, a spawn error or too much output rejects. */
+function runProcess(
+  command: string,
+  args: readonly string[],
+  options: { env?: NodeJS.ProcessEnv; input?: Buffer; cwd?: string } = {},
+): Promise<ProcessResult> {
+  return new Promise((resolveChild, reject) => {
+    const child = spawn(command, args, { cwd: options.cwd, env: options.env, stdio: ["pipe", "pipe", "pipe"] });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let bytes = 0;
+    let childFailure: { value: unknown } | undefined;
+    const collect = (chunks: Buffer[], chunk: Buffer): void => {
+      bytes += chunk.length;
+      if (bytes <= 1_000_000) chunks.push(chunk);
+    };
+    child.stdout.on("data", (chunk: Buffer) => collect(stdout, chunk));
+    child.stderr.on("data", (chunk: Buffer) => collect(stderr, chunk));
+    child.stdin.on("error", (error) => {
+      childFailure ??= { value: error };
+    });
+    child.on("error", (error) => {
+      childFailure ??= { value: error };
+    });
+    child.on("close", (code, signal) => {
+      if (childFailure) reject(new Error("Test process failed", { cause: childFailure.value }));
+      else if (signal !== null || bytes > 1_000_000) reject(new Error("Test process failed"));
+      else
+        resolveChild({
+          code,
+          stdout: Buffer.concat(stdout).toString("utf8"),
+          stderr: Buffer.concat(stderr).toString("utf8"),
+        });
+    });
+    child.stdin.end(options.input ?? Buffer.alloc(0));
+  });
+}
+
+/** Runs one command inside a fixture's container, keeping the exit code and stderr that `fixture.exec` drops. */
+function execInFixture(target: BackupRecoveryFixture, args: readonly string[], input?: Buffer): Promise<ProcessResult> {
+  return runProcess("docker", ["exec", "--interactive", target.containerId, ...args], { input });
+}
+
+async function sqlOn(target: BackupRecoveryFixture, database: string, text: string): Promise<void> {
+  await target.exec(
     ["psql", "--username=postgres", `--dbname=${database}`, "--no-psqlrc", "--set=ON_ERROR_STOP=1"],
     Buffer.from(text),
   );
+}
+
+function databaseUrl(base: string, database: string): string {
+  const url = new URL(base);
+  url.pathname = `/${database}`;
+  return url.toString();
+}
+
+/** The role statement the monthly script runs, read from the script itself so the test cannot drift from it. */
+async function clusterRolesSqlOfScript(): Promise<string> {
+  const script = await readFile(RESTORE_TEST_SCRIPT, "utf8");
+  const match = /^readonly CLUSTER_ROLES_SQL="([^"]+)"$/m.exec(script);
+  if (!match?.[1]) throw new Error("The restore test script has no CLUSTER_ROLES_SQL");
+  return match[1];
 }
 
 beforeAll(async () => {
@@ -40,7 +119,27 @@ beforeAll(async () => {
     "postgres",
     `
     CREATE ROLE semprec_restore NOLOGIN NOSUPERUSER NOBYPASSRLS;
-    CREATE TABLE public.tenants (id uuid PRIMARY KEY);
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'semprec_side') THEN
+        CREATE ROLE semprec_side NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'semprec_data') THEN
+        CREATE ROLE semprec_data NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION IN ROLE semprec_side;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'semprec_router') THEN
+        CREATE ROLE semprec_router NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS;
+      END IF;
+    END
+    $$;
+    -- The shape of the production catalog that names cluster roles: a policy for semprec_side and a
+    -- function owned by semprec_router. A restore into a cluster without these roles fails on both.
+    CREATE TABLE public.catalog_role_probe (id integer PRIMARY KEY);
+    ALTER TABLE public.catalog_role_probe ENABLE ROW LEVEL SECURITY;
+    CREATE POLICY semprec_side_all ON public.catalog_role_probe TO semprec_side USING (true) WITH CHECK (true);
+    CREATE FUNCTION public.catalog_role_probe_fn() RETURNS integer LANGUAGE sql AS 'SELECT 1';
+    ALTER FUNCTION public.catalog_role_probe_fn() OWNER TO semprec_router;
+    CREATE TABLE public.tenants (id uuid PRIMARY KEY, status text NOT NULL DEFAULT 'active');
     CREATE TABLE public.tenant_deletions (tenant_id uuid PRIMARY KEY);
     CREATE TABLE public.items (updated_at timestamptz NOT NULL);
     INSERT INTO public.items VALUES (now());
@@ -97,7 +196,7 @@ beforeAll(async () => {
     "restored_main",
     `
     GRANT USAGE ON SCHEMA public TO semprec_restore;
-    GRANT SELECT ON public.tenants TO semprec_restore;
+    GRANT SELECT ON public.tenants, public.tenant_deletions TO semprec_restore;
     GRANT SELECT, INSERT ON public.tenant_keys TO semprec_restore;
     GRANT EXECUTE ON FUNCTION public.app_tenant_default() TO semprec_restore;
   `,
@@ -107,6 +206,10 @@ beforeAll(async () => {
   targetUrl = target.toString();
   admin = new Pool({ connectionString: targetUrl });
   runtime = new Pool({ connectionString: targetUrl, options: "-c role=semprec_restore" });
+  // An idle client dropped by the server is an error event; without a listener it is an uncaught exception that
+  // fails the whole run after every test passed. Every such error is recorded and fails afterAll.
+  admin.on("error", (error) => poolErrors.push(error));
+  runtime.on("error", (error) => poolErrors.push(error));
 }, 120_000);
 
 afterAll(async () => {
@@ -126,6 +229,7 @@ afterAll(async () => {
   } catch (error) {
     failures.push(error);
   }
+  failures.push(...poolErrors);
   if (failures.length) throw new AggregateError(failures, "Recovery fixture cleanup failed");
 }, 120_000);
 
@@ -380,13 +484,14 @@ describe("offline compatible tenant keys", () => {
       await sql(
         "restored_cli",
         `GRANT USAGE ON SCHEMA public TO semprec_restore;
-        GRANT SELECT ON public.tenants TO semprec_restore;
+        GRANT SELECT ON public.tenants, public.tenant_deletions TO semprec_restore;
         GRANT SELECT, INSERT ON public.tenant_keys TO semprec_restore;
         GRANT EXECUTE ON FUNCTION public.app_tenant_default() TO semprec_restore`,
       );
       const url = new URL(fixture.adminUrl);
       url.pathname = `/${database}`;
       target = new Pool({ connectionString: url.toString() });
+      target.on("error", (error) => cleanup.push(error));
       await writeFile(archivePath, archive, { mode: 0o600, flag: "wx" });
       const backend = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
       await writeFile(badArchive, "synthetic secret marker", { mode: 0o600, flag: "wx" });
@@ -455,7 +560,7 @@ describe("offline compatible tenant keys", () => {
     }
     if (created) {
       try {
-        await admin.query("DROP DATABASE restored_cli");
+        await dropClosedDatabase(admin, "restored_cli");
         const absent = await admin.query<{ present: boolean }>(
           "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = 'restored_cli') AS present",
         );
@@ -474,6 +579,298 @@ describe("offline compatible tenant keys", () => {
       throw new AggregateError(
         failure ? [failure.value, ...cleanup] : cleanup,
         "Compiled key owner fixture cleanup failed",
+      );
+    if (failure) throw failure.value;
+  }, 120_000);
+
+  it("imports only the key of an active tenant and skips a deleting and a tombstoned tenant", async () => {
+    const target = "restored_status";
+    const source = "key_status_source";
+    const created: string[] = [];
+    let targetPool: Pool | undefined;
+    let failure: { value: unknown } | undefined;
+    const cleanup: unknown[] = [];
+    try {
+      await admin.query(`CREATE DATABASE ${target}`);
+      created.push(target);
+      await admin.query(`CREATE DATABASE ${source}`);
+      created.push(source);
+      await fixture.exec(
+        ["pg_restore", "--username=postgres", `--dbname=${target}`, "--exit-on-error", "--no-owner", "--no-privileges"],
+        mainArchive,
+      );
+      // The restored catalog is synthetic and has no writer for these states: tenant A is active in the main
+      // snapshot, the deleting tenant has the status beginTenantDeletion sets, and the tombstoned tenant is still
+      // present in tenants next to its tenant_deletions row.
+      await sqlOn(
+        fixture,
+        target,
+        `GRANT USAGE ON SCHEMA public TO semprec_restore;
+        GRANT SELECT ON public.tenants, public.tenant_deletions TO semprec_restore;
+        GRANT SELECT, INSERT ON public.tenant_keys TO semprec_restore;
+        GRANT EXECUTE ON FUNCTION public.app_tenant_default() TO semprec_restore;
+        INSERT INTO public.tenants (id, status) VALUES ('${DELETING}', 'deleting'), ('${TOMBSTONED}', 'active');
+        INSERT INTO public.tenant_deletions (tenant_id) VALUES ('${TOMBSTONED}')`,
+      );
+      await sqlOn(
+        fixture,
+        source,
+        `CREATE TABLE public.tenant_keys (
+          tenant_id uuid PRIMARY KEY, wrapped_key bytea NOT NULL, wrap_nonce bytea NOT NULL,
+          master_key_version smallint NOT NULL, created_at timestamptz NOT NULL
+        );
+        INSERT INTO public.tenant_keys VALUES
+          ('${A}', decode(repeat('01',48),'hex'), decode(repeat('02',24),'hex'), 3, '2026-01-02 03:04:05.123456+00'),
+          ('${DELETING}', decode(repeat('07',48),'hex'), decode(repeat('08',24),'hex'), 6, '2026-01-02 03:04:05+00'),
+          ('${TOMBSTONED}', decode(repeat('09',48),'hex'), decode(repeat('0a',24),'hex'), 7, '2026-01-02 03:04:05+00')`,
+      );
+      const stagedKeys = await fixture.exec([
+        "pg_dump",
+        "--username=postgres",
+        `--dbname=${source}`,
+        "--format=custom",
+        "--data-only",
+        "--table=public.tenant_keys",
+      ]);
+      const targetUrlOfCase = databaseUrl(fixture.adminUrl, target);
+      targetPool = new Pool({ connectionString: targetUrlOfCase });
+      targetPool.on("error", (error) => cleanup.push(error));
+      await restoreTenantKeys({
+        adminUrl: targetUrlOfCase,
+        targetUrl: targetUrlOfCase,
+        targetRole: "semprec_restore",
+        container: fixture.containerId,
+        archive: stagedKeys,
+        recordStage: async () => undefined,
+      });
+      const rows = await targetPool.query<{ tenant_id: string; wrapped: string; version: number }>(
+        "SELECT tenant_id::text, encode(wrapped_key,'hex') AS wrapped, master_key_version AS version FROM tenant_keys ORDER BY tenant_id",
+      );
+      expect(rows.rows).toEqual([{ tenant_id: A, wrapped: "01".repeat(48), version: 3 }]);
+    } catch (error) {
+      failure = { value: error };
+    }
+    try {
+      await targetPool?.end();
+    } catch (error) {
+      cleanup.push(error);
+    }
+    for (const database of created.reverse()) {
+      try {
+        await dropClosedDatabase(admin, database);
+      } catch (error) {
+        cleanup.push(error);
+      }
+    }
+    if (cleanup.length)
+      throw new AggregateError(failure ? [failure.value, ...cleanup] : cleanup, "Tenant status fixture cleanup failed");
+    if (failure) throw failure.value;
+  }, 120_000);
+
+  it("restores a dump of the real migrated catalog into a role-less cluster with the script's role statement", async () => {
+    const rolesSql = await clusterRolesSqlOfScript();
+    expect(rolesSql.match(/^CREATE ROLE /gm)).toHaveLength(3);
+    const source = "migrated_catalog";
+    let sourceCreated = false;
+    let sourcePool: Pool | undefined;
+    let roleless: BackupRecoveryFixture | undefined;
+    let failure: { value: unknown } | undefined;
+    const cleanup: unknown[] = [];
+    try {
+      await admin.query(`CREATE DATABASE ${source}`);
+      sourceCreated = true;
+      sourcePool = new Pool({ connectionString: databaseUrl(fixture.adminUrl, source) });
+      sourcePool.on("error", (error) => cleanup.push(error));
+      const migrated = sourcePool;
+      // The schema steps of runMigrationsCli.ts that create objects naming cluster roles.
+      await runAsSystem("backup key restore test", async () => {
+        await runMigrations(migrated);
+        await ensureQueueSchema(migrated);
+        await grantQueueSchemaPrivileges(migrated);
+      });
+      const dump = await fixture.exec([
+        "pg_dump",
+        "--username=postgres",
+        `--dbname=${source}`,
+        "--format=custom",
+        "--exclude-table-data=public.tenant_keys",
+      ]);
+      const migrationCount = await sourcePool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM schema_migrations",
+      );
+
+      roleless = await createBackupRecoveryFixture();
+      const restoreFlags = [
+        "--username=postgres",
+        "--dbname=restored_catalog",
+        "--exit-on-error",
+        "--no-owner",
+        "--no-privileges",
+      ];
+      const existing = await roleless.exec([
+        "psql",
+        "--username=postgres",
+        "--dbname=postgres",
+        "--no-psqlrc",
+        "--tuples-only",
+        "--no-align",
+        "--command=SELECT count(*) FROM pg_roles WHERE rolname LIKE 'semprec\\_%'",
+      ]);
+      expect(existing.toString("utf8").trim()).toBe("0");
+
+      await sqlOn(roleless, "postgres", "CREATE DATABASE restored_catalog");
+      const withoutRoles = await execInFixture(roleless, ["pg_restore", ...restoreFlags], dump);
+      expect(withoutRoles.code).not.toBe(0);
+      expect(withoutRoles.stderr).toContain('role "semprec_side" does not exist');
+
+      // The failed restore stopped halfway; the next attempt starts from an empty database as the monthly run does.
+      await sqlOn(roleless, "postgres", "DROP DATABASE restored_catalog; CREATE DATABASE restored_catalog");
+      await sqlOn(roleless, "postgres", rolesSql);
+      const withRoles = await execInFixture(roleless, ["pg_restore", ...restoreFlags], dump);
+      expect(withRoles).toEqual({ code: 0, stdout: "", stderr: "" });
+      const restoredCount = await roleless.exec([
+        "psql",
+        "--username=postgres",
+        "--dbname=restored_catalog",
+        "--no-psqlrc",
+        "--tuples-only",
+        "--no-align",
+        "--command=SELECT count(*) FROM schema_migrations",
+      ]);
+      expect(restoredCount.toString("utf8").trim()).toBe(migrationCount.rows[0]?.count);
+    } catch (error) {
+      failure = { value: error };
+    }
+    try {
+      await roleless?.close();
+    } catch (error) {
+      cleanup.push(error);
+    }
+    try {
+      await sourcePool?.end();
+    } catch (error) {
+      cleanup.push(error);
+    }
+    if (sourceCreated) {
+      try {
+        await dropClosedDatabase(admin, source);
+      } catch (error) {
+        cleanup.push(error);
+      }
+    }
+    if (cleanup.length)
+      throw new AggregateError(
+        failure ? [failure.value, ...cleanup] : cleanup,
+        "Role-less cluster fixture cleanup failed",
+      );
+    if (failure) throw failure.value;
+  }, 300_000);
+
+  it("prints the fixed ledger failure line of the compiled validator and nothing of the failure", async () => {
+    const database = "restored_ledger";
+    const work = await mkdtemp(join(tmpdir(), "semprec-ledger-cli-"));
+    const backend = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+    const cli = join(backend, "packages/data/dist/tenancy/validateRestoreLedgerCli.js");
+    const ledgerWith = join(work, "ledger-with-tombstone");
+    const ledgerWithout = join(work, "ledger-without-tombstone");
+    const ledgerInvalid = join(work, "ledger-invalid");
+    let created = false;
+    let failure: { value: unknown } | undefined;
+    const cleanup: unknown[] = [];
+    const validate = (ledger: string, databaseUrlOfRun: string): Promise<ProcessResult> =>
+      runProcess(process.execPath, [cli, "--database", ledger], {
+        cwd: backend,
+        env: {
+          ...process.env,
+          NODE_OPTIONS: undefined,
+          NODE_PATH: undefined,
+          DATABASE_URL: databaseUrlOfRun,
+          SEMPREC_RESTORE_TARGET_ROLE: "semprec_restore",
+        },
+      });
+    try {
+      await writeFile(ledgerWith, `${TOMBSTONED}\n`, { mode: 0o600, flag: "wx" });
+      await writeFile(ledgerWithout, `${DELETING}\n`, { mode: 0o600, flag: "wx" });
+      await writeFile(ledgerInvalid, "not-a-uuid\n", { mode: 0o600, flag: "wx" });
+      await admin.query(`CREATE DATABASE ${database}`);
+      created = true;
+      await fixture.exec(
+        [
+          "pg_restore",
+          "--username=postgres",
+          `--dbname=${database}`,
+          "--exit-on-error",
+          "--no-owner",
+          "--no-privileges",
+        ],
+        mainArchive,
+      );
+      // A tombstone the restored synthetic catalog holds for a tenant that is gone from tenants.
+      await sqlOn(fixture, database, `INSERT INTO public.tenant_deletions (tenant_id) VALUES ('${TOMBSTONED}')`);
+      const url = databaseUrl(fixture.adminUrl, database);
+
+      // semprec_restore holds no privilege on the restored catalog yet.
+      expect(await validate(ledgerWith, url)).toEqual({
+        code: 1,
+        stdout: "",
+        stderr: "Restore ledger validation failed: the restore role lacks a privilege\n",
+      });
+      await sqlOn(
+        fixture,
+        database,
+        `GRANT USAGE ON SCHEMA public TO semprec_restore;
+        GRANT SELECT ON public.tenants, public.tenant_deletions TO semprec_restore`,
+      );
+      // The ledger covers the snapshot's tombstone.
+      expect(await validate(ledgerWith, url)).toEqual({ code: 0, stdout: "", stderr: "" });
+      // The ledger lacks the snapshot's tombstone.
+      expect(await validate(ledgerWithout, url)).toEqual({
+        code: 1,
+        stdout: "",
+        stderr: "Restore ledger validation failed: the ledger does not cover the restored snapshot\n",
+      });
+      // A login the server refuses, and a port nothing listens on.
+      const wrongPassword = new URL(url);
+      wrongPassword.password = "not-the-password";
+      const unreachableMessage =
+        "Restore ledger validation failed: the restore database is unreachable or refused the login\n";
+      expect(await validate(ledgerWith, wrongPassword.toString())).toEqual({
+        code: 1,
+        stdout: "",
+        stderr: unreachableMessage,
+      });
+      const closedPort = new URL(url);
+      closedPort.port = "1";
+      expect(await validate(ledgerWith, closedPort.toString())).toEqual({
+        code: 1,
+        stdout: "",
+        stderr: unreachableMessage,
+      });
+      // A ledger file the parser refuses is neither of the three classes.
+      expect(await validate(ledgerInvalid, url)).toEqual({
+        code: 1,
+        stdout: "",
+        stderr: "Restore ledger validation failed\n",
+      });
+    } catch (error) {
+      failure = { value: error };
+    }
+    if (created) {
+      try {
+        await dropClosedDatabase(admin, database);
+      } catch (error) {
+        cleanup.push(error);
+      }
+    }
+    try {
+      await rm(work, { recursive: true, force: true });
+    } catch (error) {
+      cleanup.push(error);
+    }
+    if (cleanup.length)
+      throw new AggregateError(
+        failure ? [failure.value, ...cleanup] : cleanup,
+        "Ledger validator fixture cleanup failed",
       );
     if (failure) throw failure.value;
   }, 120_000);

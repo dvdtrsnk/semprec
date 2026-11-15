@@ -60,6 +60,19 @@ async function runCli(databaseUrl: string): Promise<void> {
   });
 }
 
+/** The error code of a client whose backend the server terminated (`pg_terminate_backend`, a database drop). */
+const ADMIN_SHUTDOWN_CODE = "57P01";
+
+/**
+ * `DROP DATABASE` waits for the other backends of the database to leave and ends with a checkpoint, so on a loaded
+ * host it takes longer than the 10 s the fixture's other statements are given.
+ */
+const DROP_STATEMENT_TIMEOUT_MS = 60_000;
+
+function isAdminShutdown(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === ADMIN_SHUTDOWN_CODE;
+}
+
 interface ScenarioResult {
   failure: { value: unknown } | undefined;
   creatorSettled: boolean;
@@ -74,8 +87,17 @@ async function runScenario(withholdAcknowledgement: boolean): Promise<ScenarioRe
   if (statSync(compiled).mtimeMs < statSync(source).mtimeMs)
     throw new Error("Build backend artifacts before this test");
   const poolOptions = { max: 1, connectionTimeoutMillis: 5_000, statement_timeout: 10_000, query_timeout: 12_000 };
-  const operationPool = new Pool({ connectionString: baseUrl, ...poolOptions });
-  const observer = new Pool({ connectionString: baseUrl, ...poolOptions });
+  const cleanup: unknown[] = [];
+  // Every pool has an error handler: an idle client the server drops would otherwise be an uncaught exception.
+  // The error is kept for the cleanup report unless `tolerate` says the scenario itself caused it.
+  const watch = (pool: Pool, tolerate: (error: unknown) => boolean = () => false): Pool => {
+    pool.on("error", (error) => {
+      if (!tolerate(error)) cleanup.push(error);
+    });
+    return pool;
+  };
+  const operationPool = watch(new Pool({ connectionString: baseUrl, ...poolOptions }));
+  const observer = watch(new Pool({ connectionString: baseUrl, ...poolOptions }));
   const name = `batch17_${randomUUID().replaceAll("-", "")}`;
   // The database identifier is a fixed prefix and hexadecimal digits from a generated UUID.
   const identifier = `"${name}"`;
@@ -89,7 +111,7 @@ async function runScenario(withholdAcknowledgement: boolean): Promise<ScenarioRe
   let creatorIdentity: { pid: number; backend_start: string } | undefined;
   let removalIdentity: { pid: number; backend_start: string } | undefined;
   let primary: { value: unknown } | undefined;
-  const cleanup: unknown[] = [];
+  let databasePoolEnding = false;
   const waitForOwnedBackend = async (identity: { pid: number; backend_start: string }): Promise<void> => {
     const deadline = Date.now() + 5_000;
     do {
@@ -135,7 +157,12 @@ async function runScenario(withholdAcknowledgement: boolean): Promise<ScenarioRe
     creatorSettled = true;
     const url = new URL(baseUrl);
     url.pathname = `/${name}`;
-    database = new Pool({ connectionString: url.toString(), ...poolOptions });
+    // After the pool is ended, the backend of an idle client may still be there when the database is removed, and
+    // the scenario terminates it: that termination is expected, any other error of the pool is not.
+    database = watch(
+      new Pool({ connectionString: url.toString(), ...poolOptions }),
+      (error) => databasePoolEnding && isAdminShutdown(error),
+    );
     for (const artifact of [
       compiled,
       join(backend, "packages/shared/dist/index.js"),
@@ -174,13 +201,21 @@ async function runScenario(withholdAcknowledgement: boolean): Promise<ScenarioRe
 
   let consumersSettled = false;
   try {
+    databasePoolEnding = true;
     await database?.end();
     consumersSettled = true;
   } catch (error) {
     cleanup.push(error);
   }
   if (attemptOwned && creatorSettled && consumersSettled) {
-    const removal = new Pool({ connectionString: baseUrl, ...poolOptions });
+    const removal = watch(
+      new Pool({
+        connectionString: baseUrl,
+        ...poolOptions,
+        statement_timeout: DROP_STATEMENT_TIMEOUT_MS,
+        query_timeout: DROP_STATEMENT_TIMEOUT_MS + 5_000,
+      }),
+    );
     let removalClient: import("pg").PoolClient | undefined;
     try {
       removalClient = await removal.connect();
@@ -189,6 +224,12 @@ async function runScenario(withholdAcknowledgement: boolean): Promise<ScenarioRe
       );
       if (!identity.rows[0]) throw new Error("Could not identify the owned database remover");
       removalIdentity = identity.rows[0];
+      // `pool.end()` returns before the sockets of its idle clients closed, so a backend of the fixture database can
+      // outlive the pool and keep the drop waiting. Only backends of this fixture database are terminated.
+      await removalClient.query(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()",
+        [name],
+      );
       await removalClient.query(`DROP DATABASE IF EXISTS ${identifier}`);
     } catch (error) {
       cleanup.push(error);

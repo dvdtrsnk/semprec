@@ -26,6 +26,38 @@ export default defineConfig({
         replacement: fileURLToPath(new URL("../shared/block-model/src/index.ts", import.meta.url)),
       },
       {
+        find: /^@semprec\/data$/,
+        replacement: fileURLToPath(new URL("./packages/data/src/index.ts", import.meta.url)),
+      },
+      {
+        find: /^@semprec\/realtime$/,
+        replacement: fileURLToPath(new URL("./packages/realtime/src/index.ts", import.meta.url)),
+      },
+      {
+        find: /^@semprec\/application$/,
+        replacement: fileURLToPath(new URL("./packages/application/src/index.ts", import.meta.url)),
+      },
+      {
+        find: /^@semprec\/notifications$/,
+        replacement: fileURLToPath(new URL("./packages/notifications/src/index.ts", import.meta.url)),
+      },
+      {
+        find: /^@semprec\/ai-gateway-client$/,
+        replacement: fileURLToPath(new URL("./packages/ai-gateway-client/src/index.ts", import.meta.url)),
+      },
+      {
+        find: /^@semprec\/ai-gateway$/,
+        replacement: fileURLToPath(new URL("./packages/ai-gateway/src/index.ts", import.meta.url)),
+      },
+      {
+        find: /^@semprec\/agent-runtime$/,
+        replacement: fileURLToPath(new URL("./packages/agent-runtime/src/index.ts", import.meta.url)),
+      },
+      {
+        find: /^@semprec\/credentials$/,
+        replacement: fileURLToPath(new URL("./packages/credentials/src/index.ts", import.meta.url)),
+      },
+      {
         find: /^@semprec\/shared\/src\/logger\.js$/,
         replacement: fileURLToPath(new URL("./packages/shared/src/logger.ts", import.meta.url)),
       },

@@ -310,9 +310,57 @@ describe("exchangeAuthorizationCode", () => {
     expect(error).toBeInstanceOf(MailAuthorizationCodeRejectedError);
     expect(error).not.toBeInstanceOf(MailAdminConsentRequiredError);
     expect((error as MailAuthorizationCodeRejectedError).providerError).toBe("invalid_grant");
+    expect((error as MailAuthorizationCodeRejectedError).grantRefused).toBe(true);
     expect(error.message).toContain(`status ${status}`);
     expectNoSecrets(error);
   });
+
+  it.each<[string, Partial<typeof input>]>([
+    ["a code that is a single letter of the error token", { code: "a" }],
+    ["a code that is a word of the error token", { code: "grant" }],
+    ["a code equal to the error token", { code: "invalid_grant" }],
+    ["a verifier equal to the error token", { codeVerifier: "invalid_grant" }],
+    ["a client secret that is a word of the error token", { clientSecret: "invalid" }],
+    ["a client secret equal to the error token", { clientSecret: "invalid_grant" }],
+  ])(
+    "still reports a refused grant when the submitted credentials hold the provider's error token: %s",
+    async (_name, overrides) => {
+      mockFetch(400, { error: "invalid_grant" });
+      const error = await caught(exchangeAuthorizationCode({ ...input, ...overrides }));
+      expect(error).toBeInstanceOf(MailAuthorizationCodeRejectedError);
+      expect(error).not.toBeInstanceOf(MailAdminConsentRequiredError);
+      const rejected = error as MailAuthorizationCodeRejectedError;
+      expect(rejected.grantRefused).toBe(true);
+      // The redaction is unchanged: the error code is blanked and the message does not name it.
+      expect(rejected.providerError).toBeNull();
+      expect(rejected.message).toBe("OAuth code exchange rejected the authorization code (status 400)");
+      const secrets = Object.values({ ...SENTINELS, ...overrides }).filter((value) => value === "invalid_grant");
+      for (const secret of secrets) {
+        expect(`${rejected.message} ${String(rejected.stack)} ${JSON.stringify(rejected)}`).not.toContain(secret);
+      }
+    },
+  );
+
+  it.each<[string, number, unknown, string | null]>([
+    ["invalid_client", 401, { error: "invalid_client" }, "invalid_client"],
+    ["invalid_request", 400, { error: "invalid_request" }, "invalid_request"],
+    ["unauthorized_client", 400, { error: "unauthorized_client" }, "unauthorized_client"],
+    ["an error code this server does not know", 400, { error: "redirect_uri_mismatch" }, null],
+    ["a non-JSON body", 401, "<html>nope</html>", null],
+  ])(
+    "does not report a refused grant for %s, whatever the submitted code is",
+    async (_name, status, body, providerError) => {
+      for (const code of [SENTINELS.code, "a", "invalid_client"]) {
+        mockFetch(status, body);
+        const error = await caught(exchangeAuthorizationCode({ ...input, code }));
+        expect(error).toBeInstanceOf(MailAuthorizationCodeRejectedError);
+        expect((error as MailAuthorizationCodeRejectedError).grantRefused).toBe(false);
+        // A submitted code that is part of the error token blanks `providerError`; the sentinel is not.
+        if (code === SENTINELS.code)
+          expect((error as MailAuthorizationCodeRejectedError).providerError).toBe(providerError);
+      }
+    },
+  );
 
   it("classifies consent_required and AADSTS admin-consent invalid_grant as admin consent", async () => {
     mockFetch(400, { error: "consent_required", error_description: "AADSTS65001" });

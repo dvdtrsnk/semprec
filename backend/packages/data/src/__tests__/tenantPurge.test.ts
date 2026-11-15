@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { escapeIdentifier, type Pool, type PoolClient } from "pg";
+import { DatabaseError, escapeIdentifier, type Pool, type PoolClient } from "pg";
 import { runInTenant } from "@semprec/shared";
 import { enqueueJob } from "@semprec/queue";
 import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
@@ -34,6 +34,7 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { beginTenantDeletion } from "../tenancy/deleteAccount.js";
 import { logger } from "../tenancy/logger.js";
 import { provisionTenant } from "../tenancy/provisionTenant.js";
+import { tenantLane } from "../tenancy/tenantLane.js";
 import { handleTenantExportTask } from "../tenancy/tenantExportJob.js";
 import { createMailThread, reassignThread } from "../mail/mailMessageMetaStore.js";
 import { requestTenantExport } from "../tenancy/tenantExportsStore.js";
@@ -373,6 +374,93 @@ async function createLateDatabase(tenantId: string, withItem: boolean): Promise<
   );
 }
 
+/** A row of graphile-worker's queue table, as the purge tests compare them. */
+interface QueueRow {
+  id: number;
+  queue_name: string;
+  locked_at: Date | null;
+  locked_by: string | null;
+}
+
+/**
+ * Every row of graphile-worker's queue table. The table is private to the library, so every read of it
+ * in this file goes through here; the columns were checked against graphile-worker 0.17.3.
+ */
+async function queueRows(): Promise<QueueRow[]> {
+  const { rows } = await adminPool.query<QueueRow>(
+    "SELECT id, queue_name, locked_at, locked_by FROM graphile_worker._private_job_queues ORDER BY queue_name",
+  );
+  return rows;
+}
+
+/** The queue rows named `<lane>:<tenantId>`, the way `tenantLane` names them. */
+async function laneQueuesOf(tenantId: string): Promise<QueueRow[]> {
+  return (await queueRows()).filter((row) => row.queue_name.endsWith(`:${tenantId}`));
+}
+
+/** Enqueues one `purgeTestJob` into `queueName` from inside `tenantId`'s scope, the way a lane producer does. */
+async function enqueueInQueue(tenantId: string, queueName: string): Promise<void> {
+  await runInTenant(tenantId, () => enqueueJob(pool, "purgeTestJob", { which: queueName }, { queueName }));
+}
+
+/** Enqueues one job into the tenant's `lane` queue, named by `tenantLane`, and returns the queue's name. */
+async function enqueueInLane(tenantId: string, lane: string): Promise<string> {
+  const queueName = await runInTenant(tenantId, async () => tenantLane(lane));
+  if (!queueName) throw new Error("tenantLane returned no queue inside a tenant scope");
+  await enqueueInQueue(tenantId, queueName);
+  return queueName;
+}
+
+/** Completes every job of `queueName` through graphile-worker's own function, which leaves the queue row behind idle. */
+async function completeJobsIn(queueName: string): Promise<number> {
+  const { rows } = await adminPool.query<{ id: string }>(
+    `SELECT id FROM graphile_worker.complete_jobs(ARRAY(
+       SELECT j.id FROM graphile_worker._private_jobs AS j
+         JOIN graphile_worker._private_job_queues AS q ON q.id = j.job_queue_id
+        WHERE q.queue_name = $1))`,
+    [queueName],
+  );
+  return rows.length;
+}
+
+/** The number of jobs whose `job_queue_id` names a queue row that does not exist. */
+async function jobsWithoutQueue(): Promise<number> {
+  const { rows } = await adminPool.query<Record<string, unknown>>(
+    `SELECT count(*) AS n FROM graphile_worker._private_jobs AS j
+      WHERE j.job_queue_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM graphile_worker._private_job_queues AS q WHERE q.id = j.job_queue_id)`,
+  );
+  return countSchema.parse(rows[0]).n;
+}
+
+/** Runs the purge, which must fail, and returns the messages of the failures it collected. */
+async function purgeFailureMessages(using: Pool = pool): Promise<string[]> {
+  const failure = await purge({}, using).then(
+    () => undefined,
+    (err: unknown) => err,
+  );
+  if (!(failure instanceof AggregateError)) throw new Error("the purge was expected to fail");
+  return failure.errors.map((err: unknown) => (err instanceof Error ? err.message : String(err)));
+}
+
+/** Gives `tenantId` a user, so a rolled-back finalisation shows in `users` as well. */
+async function addUser(tenantId: string): Promise<string> {
+  const user = await createUser(adminPool, {
+    email: `${randomUUID()}@example.com`,
+    passwordHash: "unused",
+    tenantId,
+  });
+  return user.id;
+}
+
+async function userCount(tenantId: string): Promise<number> {
+  const { rows } = await adminPool.query<Record<string, unknown>>(
+    "SELECT count(*) AS n FROM users WHERE tenant_id = $1",
+    [tenantId],
+  );
+  return countSchema.parse(rows[0]).n;
+}
+
 /** Whether `tenantId`'s purge lock is free, checked from a session other than the purge's. */
 async function purgeLockIsFree(tenantId: string): Promise<boolean> {
   const client = await adminPool.connect();
@@ -453,6 +541,20 @@ describe("tenant purge (issue #1055)", () => {
       );
     }
     await runInTenant(tenantB, () => enqueueJob(pool, "purgeTestJob", { which: "b" }));
+    // Two lanes of the deleted tenant, one idle lane of the other tenant and one that still holds a job.
+    const queuesOfB = [
+      await enqueueInLane(tenantB, "purgeTestLaneOne"),
+      await enqueueInLane(tenantB, "purgeTestLaneTwo"),
+    ];
+    const idleQueueOfA = await enqueueInLane(tenantA, "purgeTestLaneOne");
+    await completeJobsIn(idleQueueOfA);
+    const busyQueueOfA = await enqueueInLane(tenantA, "purgeTestLaneTwo");
+    // The seeding above already left other lane queues of both tenants (agent runs, value links, mail threads).
+    const queueNamesOf = async (tenantId: string): Promise<string[]> =>
+      (await laneQueuesOf(tenantId)).map((row) => row.queue_name);
+    expect(await queueNamesOf(tenantB)).toEqual(expect.arrayContaining(queuesOfB));
+    expect(await queueNamesOf(tenantA)).toEqual(expect.arrayContaining([busyQueueOfA, idleQueueOfA]));
+    const queuesOfABefore = await laneQueuesOf(tenantA);
     await beginDeletion(tenantB);
     const { rows: before } = await adminPool.query<{ status_changed_at: Date }>(
       "SELECT status_changed_at FROM tenants WHERE id = $1",
@@ -516,6 +618,11 @@ describe("tenant purge (issue #1055)", () => {
     ]);
     expect(audit).toHaveLength(1);
 
+    expect(await laneQueuesOf(tenantB)).toEqual([]);
+    expect((await queueRows()).filter((row) => row.queue_name.includes(tenantB))).toEqual([]);
+    expect(await laneQueuesOf(tenantA)).toEqual(queuesOfABefore);
+    expect(await jobsWithoutQueue()).toBe(0);
+
     expect(await rowCounts(tenantA)).toEqual(countsA);
     for (const path of a.filePaths) expect(existsSync(path)).toBe(true);
     expect(await tenantStatus(tenantA)).toBe("active");
@@ -535,6 +642,158 @@ describe("tenant purge (issue #1055)", () => {
       .parse(await readJobPayloadsByIdentifier(adminPool, "purgeTestJob"));
     expect(remaining.map((job) => [job.tenantId, job.payload.which])).toEqual([[tenantA, "a"]]);
     expect(await tenantStatus(tenantB)).toBeUndefined();
+  });
+
+  it("keeps a deleting tenant deleting while one of its queues is locked by a running job, and erases the queue once it is idle", async () => {
+    const tenantB = await provisionedTenant();
+    await addUser(tenantB);
+    const queueName = await enqueueInLane(tenantB, "purgeTestLane");
+    // A worker that runs a job locks the job and its queue; only a running task produces that state, so the test sets it directly.
+    await adminPool.query(
+      "UPDATE graphile_worker._private_job_queues SET locked_at = now(), locked_by = 'purge-test-worker' WHERE queue_name = $1",
+      [queueName],
+    );
+    await adminPool.query(
+      `UPDATE graphile_worker._private_jobs SET locked_at = now(), locked_by = 'purge-test-worker'
+        WHERE job_queue_id = (SELECT id FROM graphile_worker._private_job_queues WHERE queue_name = $1)`,
+      [queueName],
+    );
+    await beginDeletion(tenantB);
+
+    const messages = await purgeFailureMessages();
+
+    expect(messages).toEqual(["Tenant purge left rows behind in: graphile_worker._private_job_queues"]);
+    expect(messages.join()).not.toContain(queueName);
+    expect(messages.join()).not.toContain(tenantB);
+    expect(await tenantStatus(tenantB)).toBe("deleting");
+    expect(await tombstones(tenantB)).toHaveLength(0);
+    expect(await userCount(tenantB)).toBe(1);
+    expect((await laneQueuesOf(tenantB)).map((row) => row.queue_name)).toEqual([queueName]);
+
+    // The job is gone but the queue is still marked locked: the name and the lock alone must keep the queue.
+    await adminPool.query(
+      "UPDATE graphile_worker._private_jobs SET locked_at = NULL, locked_by = NULL WHERE job_queue_id IS NOT NULL",
+    );
+    expect(await completeJobsIn(queueName)).toBe(1);
+    expect(await purgeFailureMessages()).toEqual([
+      "Tenant purge left rows behind in: graphile_worker._private_job_queues",
+    ]);
+    expect(await tenantStatus(tenantB)).toBe("deleting");
+    expect(await tombstones(tenantB)).toHaveLength(0);
+    expect((await laneQueuesOf(tenantB)).map((row) => row.queue_name)).toEqual([queueName]);
+
+    await adminPool.query(
+      "UPDATE graphile_worker._private_job_queues SET locked_at = NULL, locked_by = NULL WHERE queue_name = $1",
+      [queueName],
+    );
+    await purge();
+
+    expect(await tenantStatus(tenantB)).toBeUndefined();
+    expect(await tombstones(tenantB)).toHaveLength(1);
+    expect(await userCount(tenantB)).toBe(0);
+    expect(await laneQueuesOf(tenantB)).toEqual([]);
+  });
+
+  it("keeps a queue that holds a job enqueued after the jobs step, and erases it on the next run", async () => {
+    const tenantB = await provisionedTenant();
+    await beginDeletion(tenantB);
+    let lateQueue: string | undefined;
+    // The second catalog read is the finalisation's: a lane producer that was running at deletion time enqueues just before it.
+    const writer = await poolRunningAfter("FROM pg_constraint", 2, async () => {
+      lateQueue = await enqueueInLane(tenantB, "purgeTestLane");
+    });
+    try {
+      expect(await purgeFailureMessages(writer)).toEqual([
+        "Tenant purge left rows behind in: graphile_worker._private_job_queues",
+      ]);
+    } finally {
+      await writer.end();
+    }
+
+    if (!lateQueue) throw new Error("the late producer never ran");
+    expect(await tenantStatus(tenantB)).toBe("deleting");
+    expect(await tombstones(tenantB)).toHaveLength(0);
+    expect((await laneQueuesOf(tenantB)).map((row) => row.queue_name)).toEqual([lateQueue]);
+
+    await purge();
+
+    expect(await tenantStatus(tenantB)).toBeUndefined();
+    expect(await tombstones(tenantB)).toHaveLength(1);
+    expect(await laneQueuesOf(tenantB)).toEqual([]);
+    expect(await jobsWithoutQueue()).toBe(0);
+  });
+
+  it("does not delete another tenant's idle queue whose name holds the purged id outside the ':<tenantId>' suffix", async () => {
+    const tenantB = await provisionedTenant();
+    const lookalikes = [`purgeTestLane:${tenantB}:${tenantA}`, `${tenantB}:purgeTestLane`, `purgeTestLane-${tenantB}`];
+    for (const queueName of lookalikes) {
+      await enqueueInQueue(tenantA, queueName);
+      // Idle, so that only the name decides whether the purge keeps the queue.
+      expect(await completeJobsIn(queueName)).toBe(1);
+    }
+    const ownQueue = await enqueueInLane(tenantB, "purgeTestLane");
+    await completeJobsIn(ownQueue);
+    const lookalikeRows = (await queueRows()).filter((row) => lookalikes.includes(row.queue_name));
+    expect(lookalikeRows).toHaveLength(3);
+    await beginDeletion(tenantB);
+
+    await purge();
+
+    expect(await tenantStatus(tenantB)).toBeUndefined();
+    expect(await tombstones(tenantB)).toHaveLength(1);
+    expect(await laneQueuesOf(tenantB)).toEqual([]);
+    expect((await queueRows()).filter((row) => lookalikes.includes(row.queue_name))).toEqual(lookalikeRows);
+  });
+
+  it("fails finalisation while another transaction has an open enqueue into the tenant's lane, and completes once it has committed", async () => {
+    const tenantB = await provisionedTenant();
+    await addUser(tenantB);
+    // An earlier job leaves the lane's queue row behind, idle: the open enqueue below does not create it.
+    const queueName = await enqueueInLane(tenantB, "purgeTestLane");
+    expect(await completeJobsIn(queueName)).toBe(1);
+    expect((await laneQueuesOf(tenantB)).map((row) => row.queue_name)).toEqual([queueName]);
+    await beginDeletion(tenantB);
+
+    const open = await adminPool.connect();
+    let committed = false;
+    try {
+      await open.query("BEGIN");
+      await runInTenant(tenantB, () => enqueueJob(open, "purgeTestJob", { which: "open" }, { queueName }));
+
+      const failure = await purge().then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+
+      if (!(failure instanceof AggregateError)) throw new Error("the purge was expected to fail");
+      const cause: unknown = failure.errors[0];
+      expect(failure.errors).toHaveLength(1);
+      expect(cause instanceof DatabaseError ? cause.code : cause).toBe("55P03");
+      expect(await tenantStatus(tenantB)).toBe("deleting");
+      expect(await tombstones(tenantB)).toHaveLength(0);
+      expect(await userCount(tenantB)).toBe(1);
+      expect((await laneQueuesOf(tenantB)).map((row) => row.queue_name)).toEqual([queueName]);
+
+      await open.query("COMMIT");
+      committed = true;
+    } finally {
+      try {
+        if (!committed) await open.query("ROLLBACK");
+      } finally {
+        open.release();
+      }
+    }
+    expect(await jobsWithoutQueue()).toBe(0);
+
+    // The job the transaction committed is removed by the next run's jobs step, then its queue is erased.
+    await purge();
+
+    expect(await tenantStatus(tenantB)).toBeUndefined();
+    expect(await tombstones(tenantB)).toHaveLength(1);
+    expect(await userCount(tenantB)).toBe(0);
+    expect(await laneQueuesOf(tenantB)).toEqual([]);
+    expect(await readJobPayloadsByIdentifier(adminPool, "purgeTestJob")).toEqual([]);
+    expect(await jobsWithoutQueue()).toBe(0);
   });
 
   it("never touches an active or a suspended tenant", async () => {

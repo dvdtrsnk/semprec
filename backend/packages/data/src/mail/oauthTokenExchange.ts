@@ -295,6 +295,9 @@ export async function exchangeAuthorizationCode(
   if (!response.ok) {
     if (response.status === 400 || response.status === 401) {
       const { code: providerCode, adminConsent } = await readProviderError(response);
+      // Classified from the unredacted code: a caller's `code` that is a substring of the provider's
+      // error token blanks `code` below, and the answer must still be recognized as a refused grant.
+      const grantRefused = providerCode === "invalid_grant";
       const code =
         providerCode &&
         [input.code, input.codeVerifier, input.clientSecret].some(
@@ -309,6 +312,7 @@ export async function exchangeAuthorizationCode(
       throw new MailAuthorizationCodeRejectedError(
         `OAuth code exchange rejected the authorization code (${detail})`,
         code,
+        grantRefused,
       );
     }
     const cleanupFailures: unknown[] = [];

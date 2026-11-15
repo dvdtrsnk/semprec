@@ -2,12 +2,18 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
-import { computeDestructiveResourceProjection } from "../chokePoint/destructiveProjection.js";
+import { buildResourceSnapshot, computeDestructiveResourceProjection } from "../chokePoint/destructiveProjection.js";
+import * as propertiesStore from "../chokePoint/propertiesStore.js";
+import * as relationsStore from "../chokePoint/relationsStore.js";
 import { withTransaction } from "../db/pool.js";
-import { NotFoundError } from "../errors.js";
+import { ApprovalResourceBusyError, NotFoundError } from "../errors.js";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
+
+afterAll(async () => {
+  await pool?.end();
+});
 
 /**
  * Snapshot hash correctness (issue #89): `computeDestructiveResourceProjection`'s sha256 is what
@@ -21,10 +27,6 @@ describe("computeDestructiveResourceProjection snapshot hashing (issue #89)", ()
     pool ??= getTestPool();
     chokePoint ??= createChokePoint(pool);
     await resetDatabase(pool);
-  });
-
-  afterAll(async () => {
-    await pool?.end();
   });
 
   it("database.archive: is deterministic for an unchanged database, and changes when the name changes", async () => {
@@ -189,5 +191,152 @@ describe("computeDestructiveResourceProjection snapshot hashing (issue #89)", ()
     await pool.query(`UPDATE properties SET locked = true WHERE id = $1`, [property.id]);
     const third = await withTransaction(pool, (client) => computeDestructiveResourceProjection(client, check));
     expect(third.snapshot.sha256).not.toBe(first.snapshot.sha256);
+  });
+});
+
+/**
+ * The check of a `relation.delete` locks the two endpoint rows without waiting before it reserves the edge's value
+ * links, as the check of a `relation.put` and a `relation.set` does. The held row here is the one a propagation job
+ * or another writer of the item holds; the lock-order schedules are in `relationDeleteApprovalLockOrder.test.ts`.
+ */
+describe("computeDestructiveResourceProjection of relation.delete locks the endpoint rows (docs/adr/2026-11-15-the-approval-check-of-a-relation-delete-locks-the-edges-endpoint-rows-before-it-reserves-its-value-links.md)", () => {
+  interface EdgeFixture {
+    check: {
+      operation: "relation.delete";
+      input: { relationPropertyId: string; callerItemId: string; targetItemId: string };
+    };
+    sourceDatabaseId: string;
+    targetDatabaseId: string;
+    callerItemId: string;
+    targetItemId: string;
+  }
+
+  async function edgeFixture(): Promise<EdgeFixture> {
+    const source = await chokePoint.createDatabase({ name: "Source" });
+    const target = await chokePoint.createDatabase({ name: "Target" });
+    const { property } = await chokePoint.createRelationProperty({
+      sourceDatabaseId: source.id,
+      key: "linked",
+      name: "Linked",
+      targetDatabaseId: target.id,
+      cardinality: "many_to_many",
+      owner: "user",
+      locked: false,
+    });
+    const callerItem = await chokePoint.createItem({ databaseId: source.id, properties: {} });
+    const targetItem = await chokePoint.createItem({ databaseId: target.id, properties: {} });
+    await chokePoint.createRelation({
+      relationPropertyId: property.id,
+      callerItemId: callerItem.id,
+      targetItemId: targetItem.id,
+    });
+    return {
+      check: {
+        operation: "relation.delete",
+        input: { relationPropertyId: property.id, callerItemId: callerItem.id, targetItemId: targetItem.id },
+      },
+      sourceDatabaseId: source.id,
+      targetDatabaseId: target.id,
+      callerItemId: callerItem.id,
+      targetItemId: targetItem.id,
+    };
+  }
+
+  /** Holds one item row `FOR UPDATE` in an open transaction on a connection of its own, as another writer of the item would. */
+  async function holdingRow<T>(itemId: string, body: () => Promise<T>): Promise<T> {
+    const holder = await pool.connect();
+    try {
+      await holder.query("BEGIN");
+      const locked = await holder.query<{ id: string }>("SELECT id FROM items WHERE id = $1 FOR UPDATE", [itemId]);
+      expect(locked.rows).toHaveLength(1);
+      return await body();
+    } finally {
+      await holder.query("ROLLBACK");
+      holder.release();
+    }
+  }
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    chokePoint ??= createChokePoint(pool);
+    await resetDatabase(pool);
+  });
+
+  it.each([["the caller's row", "callerItemId"] as const, ["the target's row", "targetItemId"] as const])(
+    "is refused as busy at once and marks the transaction rollback-only while another transaction holds %s",
+    async (_name, held) => {
+      const fixture = await edgeFixture();
+      await holdingRow(fixture[held], async () => {
+        let thrown: unknown;
+        // A check that waited for the row would never end: the holder releases it only after this body returns.
+        await expect(
+          withTransaction(pool, async (client) => {
+            try {
+              await computeDestructiveResourceProjection(client, fixture.check);
+            } catch (error) {
+              thrown = error;
+            }
+            // The body returns normally, so the refusal below is the rollback-only mark and not the thrown error.
+          }),
+        ).rejects.toBeInstanceOf(ApprovalResourceBusyError);
+        expect(thrown).toBeInstanceOf(ApprovalResourceBusyError);
+      });
+    },
+  );
+
+  it("is not refused while another transaction holds the row of an item that is no endpoint of the edge", async () => {
+    const fixture = await edgeFixture();
+    const bystander = await chokePoint.createItem({ databaseId: fixture.sourceDatabaseId, properties: {} });
+    const projection = await holdingRow(bystander.id, () =>
+      withTransaction(pool, (client) => computeDestructiveResourceProjection(client, fixture.check)),
+    );
+    expect(projection.snapshot.kind).toBe("relation_delete");
+  });
+
+  it("keeps the snapshot hash of the edge when no endpoint row is held", async () => {
+    const fixture = await edgeFixture();
+    // The hash a projection without the endpoint locks had: the edge row and four fields of the relation property.
+    const expected = await withTransaction(pool, async (client) => {
+      const property = await propertiesStore.getProperty(client, fixture.check.input.relationPropertyId);
+      const reldef = await relationsStore.getRelationDefinitionByPropertyId(
+        client,
+        fixture.check.input.relationPropertyId,
+      );
+      if (!property || !reldef) throw new Error("The relation property is missing");
+      const [edge, ...others] = await relationsStore.listRelationsForItem(client, reldef.id, fixture.callerItemId);
+      if (!edge || others.length > 0) throw new Error("Expected exactly one edge");
+      return buildResourceSnapshot("relation_delete", edge.id, {
+        ...edge,
+        property: {
+          id: property.id,
+          owner: property.owner,
+          ownerProcess: property.ownerProcess,
+          locked: property.locked,
+        },
+      });
+    });
+
+    const projection = await withTransaction(pool, (client) =>
+      computeDestructiveResourceProjection(client, fixture.check),
+    );
+
+    expect(projection.snapshot).toEqual(expected);
+    expect(projection.valueLinks).toBeUndefined();
+  });
+
+  it("still projects an edge whose other endpoint row no longer exists", async () => {
+    const fixture = await edgeFixture();
+    // The edge table keeps no foreign key to the items of its two ends, so an edge to a purged item can still exist; only raw SQL leaves that state.
+    await pool.query("DELETE FROM items WHERE id = $1", [fixture.targetItemId]);
+
+    const projection = await withTransaction(pool, (client) =>
+      computeDestructiveResourceProjection(client, fixture.check),
+    );
+
+    expect(projection.snapshot.kind).toBe("relation_delete");
+    expect(projection.currentResource).toMatchObject({
+      itemA: expect.any(String),
+      itemB: expect.any(String),
+    });
   });
 });

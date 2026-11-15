@@ -10,6 +10,7 @@ import {
 } from "../testSupport/testDb.js";
 import { withTransaction } from "../db/pool.js";
 import {
+  deleteValueLinkSourcesBySourceItem,
   insertValueLink,
   listValueLinkSourcesByLinkIds,
   listValueLinksByItemIds,
@@ -320,5 +321,133 @@ describe("value links store (issue #1403)", () => {
     } finally {
       await runtimePool.end();
     }
+  });
+
+  describe("the order the source detach locks and returns the links in", () => {
+    /**
+     * One Event that feeds a `project` and a `people` link of each of two items. Their ids are rewritten so
+     * that the link-id order (itemTwo people, itemOne people, itemTwo project, itemOne project) differs from the
+     * item order and the rule order, and within one item `people` has the smaller id.
+     */
+    async function seedDetach(runtimePool: Pool, tenant: string) {
+      const [itemOne, itemTwo] = [randomUUID(), randomUUID()].sort();
+      if (!itemOne || !itemTwo) throw new Error("Two item ids are expected");
+      const event = randomUUID();
+      const insert = (itemId: string, propertyKey: string, ruleKey: string) =>
+        withTenantTransaction(runtimePool, tenant, (client) =>
+          insertValueLink(client, {
+            itemId,
+            propertyKey,
+            ruleKey,
+            sources: [{ kind: "item", sourceItemId: event, sourcePropertyKey: propertyKey }],
+          }),
+        );
+      const generated = {
+        oneProject: (await insert(itemOne, "project", "ruleProject")).link.id,
+        onePeople: (await insert(itemOne, "people", "rulePeople")).link.id,
+        twoProject: (await insert(itemTwo, "project", "ruleProject")).link.id,
+        twoPeople: (await insert(itemTwo, "people", "rulePeople")).link.id,
+      };
+      const ids = {
+        oneProject: "00000000-0000-4000-8000-000000000004",
+        onePeople: "00000000-0000-4000-8000-000000000002",
+        twoProject: "00000000-0000-4000-8000-000000000003",
+        twoPeople: "00000000-0000-4000-8000-000000000001",
+      };
+      // Raw SQL for a state the store cannot produce, since it generates the link ids: the ids are rewritten on the
+      // admin pool, with foreign keys off, in `value_links` and in `value_link_sources` together (the foreign key has no
+      // ON UPDATE CASCADE).
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SET LOCAL session_replication_role = replica");
+        for (const name of Object.keys(ids) as Array<keyof typeof ids>) {
+          await client.query("UPDATE value_links SET id = $2 WHERE id = $1", [generated[name], ids[name]]);
+          await client.query("UPDATE value_link_sources SET link_id = $2 WHERE link_id = $1", [
+            generated[name],
+            ids[name],
+          ]);
+        }
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+      return { event, itemOne, itemTwo, ids };
+    }
+
+    async function detach(ruleKeyOrder?: readonly string[]) {
+      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      try {
+        const tenant = await createTestTenant(pool);
+        const seeded = await seedDetach(runtimePool, tenant);
+        const result = await withTenantTransaction(runtimePool, tenant, (client) =>
+          ruleKeyOrder === undefined
+            ? deleteValueLinkSourcesBySourceItem(client, seeded.event)
+            : deleteValueLinkSourcesBySourceItem(client, seeded.event, ruleKeyOrder),
+        );
+        const left = await withTenantTransaction(runtimePool, tenant, (client) =>
+          client.query<{ n: string }>("SELECT count(*)::text AS n FROM value_link_sources WHERE source_item_id = $1", [
+            seeded.event,
+          ]),
+        );
+        return { seeded, result, sourcesLeft: Number(left.rows[0]?.n) };
+      } finally {
+        await runtimePool.end();
+      }
+    }
+
+    it("locks and returns the links by item id, the position of the rule and the link id", async () => {
+      const { seeded, result, sourcesLeft } = await detach(["ruleProject", "rulePeople"]);
+
+      expect(result).toEqual([
+        { linkId: seeded.ids.oneProject, itemId: seeded.itemOne },
+        { linkId: seeded.ids.onePeople, itemId: seeded.itemOne },
+        { linkId: seeded.ids.twoProject, itemId: seeded.itemTwo },
+        { linkId: seeded.ids.twoPeople, itemId: seeded.itemTwo },
+      ]);
+      expect(sourcesLeft).toBe(0);
+    });
+
+    it("orders by item id and link id when the rule order is empty or not given", async () => {
+      for (const order of [[], undefined]) {
+        await resetDatabase(pool);
+        const { seeded, result } = await detach(order);
+
+        expect(result, String(order)).toEqual([
+          { linkId: seeded.ids.onePeople, itemId: seeded.itemOne },
+          { linkId: seeded.ids.oneProject, itemId: seeded.itemOne },
+          { linkId: seeded.ids.twoPeople, itemId: seeded.itemTwo },
+          { linkId: seeded.ids.twoProject, itemId: seeded.itemTwo },
+        ]);
+      }
+    });
+
+    it("sorts the links of a rule the order does not name after those it names, by link id", async () => {
+      const { seeded, result } = await detach(["ruleProject"]);
+
+      expect(result).toEqual([
+        { linkId: seeded.ids.oneProject, itemId: seeded.itemOne },
+        { linkId: seeded.ids.onePeople, itemId: seeded.itemOne },
+        { linkId: seeded.ids.twoProject, itemId: seeded.itemTwo },
+        { linkId: seeded.ids.twoPeople, itemId: seeded.itemTwo },
+      ]);
+    });
+
+    it("returns nothing for an item that no link names as a source", async () => {
+      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      try {
+        const tenant = await createTestTenant(pool);
+        expect(
+          await withTenantTransaction(runtimePool, tenant, (client) =>
+            deleteValueLinkSourcesBySourceItem(client, randomUUID(), ["ruleProject"]),
+          ),
+        ).toEqual([]);
+      } finally {
+        await runtimePool.end();
+      }
+    });
   });
 });
