@@ -1,8 +1,8 @@
 package cz.semprec.app.sdk
 
+import cz.semprec.app.core.FailureKind
 import cz.semprec.app.presentation.DetailPhase
 import cz.semprec.app.presentation.HomeItem
-import cz.semprec.app.core.FailureKind
 import cz.semprec.app.presentation.HomePhase
 import cz.semprec.app.presentation.JournalPhase
 import cz.semprec.app.presentation.SettingsRow

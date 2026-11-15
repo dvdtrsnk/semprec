@@ -77,6 +77,7 @@ private extension JournalScreen {
                 }
                 .padding(Theme.Spacing.medium)
             }
+            .background(Theme.Colors.groupedBackground)
             .onScrollGeometryChange(
                 for: Bool.self,
                 of: { $0.contentOffset.y > Self.collapseOffset },
