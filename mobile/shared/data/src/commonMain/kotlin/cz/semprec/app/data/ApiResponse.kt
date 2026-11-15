@@ -9,8 +9,14 @@ import kotlinx.serialization.serializer
 
 /** What a backend call answered: a success with its raw body, or the expected failure it maps to. */
 sealed interface ApiResponse {
-    data class Success(val status: Int, val body: String) : ApiResponse
+    data class Success(val status: Int, val body: String, val etag: String? = null) : ApiResponse
     data class Failure(val kind: FailureKind, val status: Int?) : ApiResponse
+}
+
+/** What a binary download answered: the bytes with their media type, or the expected failure it maps to. */
+sealed interface ApiBytesResponse {
+    class Success(val status: Int, val mimeType: String, val bytes: ByteArray) : ApiBytesResponse
+    data class Failure(val kind: FailureKind, val status: Int?) : ApiBytesResponse
 }
 
 /** The one JSON configuration of the wire: unknown fields are ignored so the server may add fields freely. */

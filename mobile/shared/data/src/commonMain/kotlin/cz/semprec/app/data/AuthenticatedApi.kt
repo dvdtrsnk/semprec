@@ -2,6 +2,7 @@ package cz.semprec.app.data
 
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.core.SessionStorage
+import cz.semprec.app.core.StoredSession
 import io.ktor.http.HttpMethod
 
 /**
@@ -13,15 +14,39 @@ class AuthenticatedApi(
     private val storage: SessionStorage,
     private val onSessionRejected: () -> Unit,
 ) {
+    /** The session the calls go out with, or `null` when nobody is signed in. */
+    fun session(): StoredSession? = storage.load()
+
     suspend fun send(
         method: HttpMethod,
         path: String,
         query: List<Pair<String, String>> = emptyList(),
         body: String? = null,
+        extraHeaders: List<Pair<String, String>> = emptyList(),
     ): ApiResponse {
         val session = storage.load() ?: return ApiResponse.Failure(FailureKind.UNAUTHORIZED, null)
-        val response = client.send(session.serverUrl, method, path, session.token, query, body)
+        val response = client.send(session.serverUrl, method, path, session.token, query, body, extraHeaders)
         if (response is ApiResponse.Failure && response.status == UNAUTHORIZED_STATUS) onSessionRejected()
+        return response
+    }
+
+    /** Uploads [bytes] as the raw body of a `POST`; [mimeType] is the `Content-Type` of the body. */
+    suspend fun upload(
+        path: String,
+        mimeType: String,
+        bytes: ByteArray,
+        extraHeaders: List<Pair<String, String>>,
+    ): ApiResponse {
+        val session = storage.load() ?: return ApiResponse.Failure(FailureKind.UNAUTHORIZED, null)
+        val response = client.upload(session.serverUrl, path, session.token, mimeType, bytes, extraHeaders)
+        if (response is ApiResponse.Failure && response.status == UNAUTHORIZED_STATUS) onSessionRejected()
+        return response
+    }
+
+    suspend fun download(path: String): ApiBytesResponse {
+        val session = storage.load() ?: return ApiBytesResponse.Failure(FailureKind.UNAUTHORIZED, null)
+        val response = client.download(session.serverUrl, path, session.token)
+        if (response is ApiBytesResponse.Failure && response.status == UNAUTHORIZED_STATUS) onSessionRejected()
         return response
     }
 
