@@ -6,12 +6,16 @@ import cz.semprec.app.core.InMemorySessionStorage
 import cz.semprec.app.core.SessionStorage
 import cz.semprec.app.data.ApiClient
 import cz.semprec.app.data.HttpAuthRepository
+import cz.semprec.app.data.HttpJournalRepository
 import cz.semprec.app.data.InMemoryPlaceholderRepository
 import cz.semprec.app.domain.LoadPlaceholderItem
 import cz.semprec.app.domain.LoadPlaceholderItems
 import cz.semprec.app.presentation.DetailViewModel
 import cz.semprec.app.presentation.HomeViewModel
 import cz.semprec.app.presentation.HomeViewModelFactory
+import cz.semprec.app.presentation.JournalSubpageViewModel
+import cz.semprec.app.presentation.JournalViewModel
+import cz.semprec.app.presentation.JournalViewModelFactory
 import cz.semprec.app.presentation.LoginViewModel
 import cz.semprec.app.presentation.SessionViewModel
 import cz.semprec.app.presentation.SettingsViewModel
@@ -46,4 +50,12 @@ class HomeSDK(
     fun sessionViewModel(): SessionViewModel = viewModels.sessionViewModel()
 
     fun loginViewModel(): LoginViewModel = viewModels.loginViewModel()
+
+    // The diary (Journal slice): its own factory, so the shared factory above stays untouched.
+    private val journalViewModels = JournalViewModelFactory(HttpJournalRepository(auth.api))
+
+    fun journalViewModel(initialDay: String): JournalViewModel = journalViewModels.journalViewModel(initialDay)
+
+    fun journalSubpageViewModel(itemId: String): JournalSubpageViewModel =
+        journalViewModels.journalSubpageViewModel(itemId)
 }
