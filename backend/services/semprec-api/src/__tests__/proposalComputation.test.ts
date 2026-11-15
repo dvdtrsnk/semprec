@@ -47,6 +47,7 @@ import {
   setAgentDatabaseGrantForProjectSettings,
   TRANSCRIPTION_OWNER_PROCESS,
   updateItemWithClient,
+  createPersonEmailReindexAction,
 } from "@semprec/data";
 import { AresLookupError, createAresHttpClient, type AresClient, type AresCompany } from "../aresClient.js";
 import { createProposalComputation } from "../proposalComputation.js";
@@ -2570,6 +2571,857 @@ describe("createProposalComputation (issue #1434)", () => {
         expect(ares.calls).toEqual([]);
         expect(result.properties).toEqual({ name: "Brainz", ico: "27419363" });
       });
+    });
+  });
+
+  describe("duplicate companies and people (issue gh-1992)", () => {
+    const EXISTING_ICO = "07654321";
+
+    async function createCompany(properties: Record<string, unknown>): Promise<string> {
+      const databaseId = await databaseIdFor("companies");
+      return (await createChokePoint(pool).createItem({ databaseId, properties })).id;
+    }
+
+    /** A person, with its addresses claimed in `person_email_index` by the heartbeat action production runs for it. */
+    async function createPerson(properties: Record<string, unknown>): Promise<string> {
+      const peopleDatabaseId = await databaseIdFor("people");
+      const id = (await createChokePoint(pool).createItem({ databaseId: peopleDatabaseId, properties })).id;
+      await inTenantZero(() =>
+        createPersonEmailReindexAction(pool)(
+          { peopleDatabaseId },
+          { heartbeatId: "hb", projectItemId: semprecProjectId, itemId: id },
+        ),
+      );
+      return id;
+    }
+
+    async function trash(moduleId: string, itemId: string): Promise<void> {
+      await createChokePoint(pool).softDeleteItem(await databaseIdFor(moduleId), itemId);
+    }
+
+    async function onlyCard(): Promise<Record<string, unknown>> {
+      const cards = await proposalCards();
+      expect(cards).toHaveLength(1);
+      return cards[0]!;
+    }
+
+    const storedProposal = z.object({
+      properties: z.record(z.string(), z.unknown()),
+      operations: z
+        .array(
+          z.object({ ref: z.string(), op: z.string(), role: z.string(), itemId: z.string().optional() }).passthrough(),
+        )
+        .optional(),
+    });
+
+    const countItems = async (moduleId: string): Promise<number> =>
+      Number(
+        (
+          await pool.query<{ n: string }>("SELECT count(*) AS n FROM items WHERE database_id = $1", [
+            await databaseIdFor(moduleId),
+          ])
+        ).rows[0]!.n,
+      );
+
+    /** The input of a computation for an Inbox item of a database type, as the tick builds it. */
+    async function computationInput(
+      targetModule: string,
+    ): Promise<Parameters<ReturnType<typeof createProposalComputation>>[0]> {
+      const itemId = await createTaskItem("Capture", targetModule);
+      const item = await withTransaction(pool, (client) => getItemById(client, config.inboxDatabaseId, itemId));
+      if (!item) throw new Error("Missing Inbox item");
+      return {
+        sourceItem: item,
+        type: null,
+        entityKind: "database",
+        targetDatabaseId: await databaseIdFor(targetModule),
+        targetModuleId: targetModule,
+        locale: "en",
+        projectItemId: semprecProjectId,
+      };
+    }
+
+    function compute(
+      input: Awaited<ReturnType<typeof computationInput>>,
+      answer: unknown,
+      computationPool: Pool = pool,
+    ) {
+      const computation = createProposalComputation({
+        pool: computationPool,
+        gateway: stubGateway(answer),
+        openBlob: noBlobBytes,
+        aresClient: knowsNoCompany,
+      });
+      return inTenantZero(() => computation(input));
+    }
+
+    describe("a company", () => {
+      it("with the number of a live company is proposed as an update of it that changes nothing, and the card is proposed", async () => {
+        const companyId = await createCompany({ name: "Bakery", ico: EXISTING_ICO });
+
+        await runTick(
+          pool,
+          stubGateway({ properties: { name: "Bakery U Lucie", ico: EXISTING_ICO } }),
+          await createTaskItem("Bakery, IČO 07654321", "companies"),
+        );
+
+        const card = await onlyCard();
+        expect(card.status).toBe("proposed");
+        const proposal = storedProposal.parse(card.proposal);
+        expect(proposal.properties).toEqual({});
+        expect(proposal.operations).toHaveLength(1);
+        expect(proposal.operations?.[0]).toMatchObject({ op: "update", role: "primary", itemId: companyId });
+        expect(proposal.operations?.[0]).not.toHaveProperty("properties");
+        expect(proposal.operations?.[0]).not.toHaveProperty("relations");
+        expect(proposal.operations?.some((step) => step.op === "create")).toBe(false);
+        expect(await countItems("companies")).toBe(1);
+      });
+
+      it("matches the number in its eight-digit form: a short, spaced number finds the company", async () => {
+        const companyId = await createCompany({ name: "Bakery", ico: "00012345" });
+
+        await runTick(
+          pool,
+          stubGateway({ properties: { name: "Bakery", ico: " 12 345 " } }),
+          await createTaskItem("Bakery", "companies"),
+        );
+
+        expect(storedProposal.parse((await onlyCard()).proposal).operations?.[0]).toMatchObject({
+          op: "update",
+          itemId: companyId,
+        });
+      });
+
+      it("with a number nobody holds stays a create", async () => {
+        await createCompany({ name: "Bakery", ico: EXISTING_ICO });
+
+        await runTick(
+          pool,
+          stubGateway({ properties: { name: "New", ico: "07654322" } }),
+          await createTaskItem("New", "companies"),
+        );
+
+        const card = await onlyCard();
+        expect(card.status).toBe("proposed");
+        const proposal = storedProposal.parse(card.proposal);
+        expect(proposal.operations).toBeUndefined();
+        expect(proposal.properties).toEqual({ name: "New", ico: "07654322" });
+      });
+
+      it("with no number at all stays a create", async () => {
+        await createCompany({ name: "Bakery", ico: EXISTING_ICO });
+
+        await runTick(
+          pool,
+          stubGateway({ properties: { name: "Bakery" } }),
+          await createTaskItem("Bakery", "companies"),
+        );
+
+        const proposal = storedProposal.parse((await onlyCard()).proposal);
+        expect(proposal.operations).toBeUndefined();
+        expect(proposal.properties).toEqual({ name: "Bakery" });
+      });
+
+      it("with the number of a company in the Trash is not a duplicate", async () => {
+        const trashed = await createCompany({ name: "Bakery", ico: EXISTING_ICO });
+        await trash("companies", trashed);
+
+        await runTick(
+          pool,
+          stubGateway({ properties: { name: "Bakery", ico: EXISTING_ICO } }),
+          await createTaskItem("Bakery", "companies"),
+        );
+
+        const card = await onlyCard();
+        expect(card.status).toBe("proposed");
+        const proposal = storedProposal.parse(card.proposal);
+        expect(proposal.operations).toBeUndefined();
+        expect(proposal.properties).toEqual({ name: "Bakery", ico: EXISTING_ICO });
+      });
+
+      it("with a new number is created together with its new person and the person-to-company edge", async () => {
+        await createCompany({ name: "Bakery", ico: EXISTING_ICO });
+        const gateway = stubGateway({
+          properties: { name: "Brainz", ico: "27419363" },
+          operations: [
+            { op: "create", database: "companies", alias: "brainz", properties: { name: "Brainz", ico: "27419363" } },
+            {
+              op: "create",
+              database: "people",
+              properties: { name: "Eva" },
+              relations: { companies: [{ alias: "brainz" }] },
+            },
+          ],
+        });
+
+        await runTick(pool, gateway, await createTaskItem("Eva at Brainz", "companies"));
+
+        const card = await onlyCard();
+        expect(card.status).toBe("proposed");
+        const proposal = storedProposal.parse(card.proposal);
+        expect(proposal.operations?.map((step) => [step.ref, step.op, step.role])).toEqual([
+          ["brainz", "create", "primary"],
+          ["op2", "create", "secondary"],
+        ]);
+        expect(proposal.operations?.[1]).toMatchObject({ relations: { companies: [{ ref: "brainz" }] } });
+      });
+
+      it("that is nested in a person's answer becomes a link step the person's relation refers to, and the person stays", async () => {
+        const companyId = await createCompany({ name: "Bakery", ico: EXISTING_ICO });
+        const gateway = stubGateway({
+          properties: { name: "Eva" },
+          operations: [
+            {
+              op: "create",
+              database: "people",
+              properties: { name: "Eva" },
+              relations: { companies: [{ alias: "co" }] },
+            },
+            { op: "create", database: "companies", alias: "co", properties: { name: "Bakery", ico: EXISTING_ICO } },
+          ],
+        });
+
+        await runTick(pool, gateway, await createTaskItem("Eva at the bakery", "people"));
+
+        const card = await onlyCard();
+        expect(card.status).toBe("proposed");
+        const proposal = storedProposal.parse(card.proposal);
+        expect(proposal.operations).toEqual([
+          expect.objectContaining({
+            ref: "op1",
+            op: "create",
+            role: "primary",
+            databaseKey: "people",
+            relations: { companies: [{ ref: "co" }] },
+          }),
+          { ref: "co", op: "link", role: "secondary", itemId: companyId },
+        ]);
+        expect(await countItems("companies")).toBe(1);
+      });
+    });
+
+    describe("a person", () => {
+      it("with an address of an existing person is proposed as an update of that person that changes nothing", async () => {
+        const personId = await createPerson({ name: "Lucie", emails: "lucie@brainz.cz" });
+
+        await runTick(
+          pool,
+          stubGateway({ properties: { name: "Lucie N.", emails: "Lucie@Brainz.cz" } }),
+          await createTaskItem("Lucie, lucie@brainz.cz", "people"),
+        );
+
+        const card = await onlyCard();
+        expect(card.status).toBe("proposed");
+        const proposal = storedProposal.parse(card.proposal);
+        expect(proposal.properties).toEqual({});
+        expect(proposal.operations).toHaveLength(1);
+        expect(proposal.operations?.[0]).toMatchObject({ op: "update", role: "primary", itemId: personId });
+        expect(proposal.operations?.[0]).not.toHaveProperty("properties");
+        expect(proposal.operations?.[0]).not.toHaveProperty("relations");
+        expect(await countItems("people")).toBe(1);
+      });
+
+      it("tries the next address when an earlier one is unknown", async () => {
+        const personId = await createPerson({ name: "Lucie", emails: "lucie@brainz.cz" });
+
+        await runTick(
+          pool,
+          stubGateway({
+            properties: { name: "Lucie", emails: "other@example.test\nlucie@brainz.cz, third@example.test" },
+          }),
+          await createTaskItem("Lucie", "people"),
+        );
+
+        expect(storedProposal.parse((await onlyCard()).proposal).operations?.[0]).toMatchObject({
+          op: "update",
+          itemId: personId,
+        });
+      });
+
+      it("with an address nobody holds stays a create", async () => {
+        await createPerson({ name: "Lucie", emails: "lucie@brainz.cz" });
+
+        await runTick(
+          pool,
+          stubGateway({ properties: { name: "Petr", emails: "petr@brainz.cz" } }),
+          await createTaskItem("Petr", "people"),
+        );
+
+        const card = await onlyCard();
+        expect(card.status).toBe("proposed");
+        const proposal = storedProposal.parse(card.proposal);
+        expect(proposal.operations).toBeUndefined();
+        expect(proposal.properties).toEqual({ name: "Petr", emails: "petr@brainz.cz" });
+      });
+
+      it("with an address that is indexed only for a person in the Trash stays a create, and the card is proposed", async () => {
+        const trashed = await createPerson({ name: "Lucie", emails: "lucie@brainz.cz" });
+        await trash("people", trashed);
+
+        await runTick(
+          pool,
+          stubGateway({ properties: { name: "Lucie", emails: "lucie@brainz.cz" } }),
+          await createTaskItem("Lucie", "people"),
+        );
+
+        const card = await onlyCard();
+        expect(card.status).toBe("proposed");
+        const proposal = storedProposal.parse(card.proposal);
+        expect(proposal.operations).toBeUndefined();
+        expect(proposal.properties).toEqual({ name: "Lucie", emails: "lucie@brainz.cz" });
+      });
+
+      it("skips an address of a person in the Trash and uses the next address, which a live person holds", async () => {
+        const trashed = await createPerson({ name: "Old", emails: "old@brainz.cz" });
+        await trash("people", trashed);
+        const live = await createPerson({ name: "Lucie", emails: "lucie@brainz.cz" });
+
+        await runTick(
+          pool,
+          stubGateway({ properties: { name: "Lucie", emails: "old@brainz.cz\nlucie@brainz.cz" } }),
+          await createTaskItem("Lucie", "people"),
+        );
+
+        expect(storedProposal.parse((await onlyCard()).proposal).operations?.[0]).toMatchObject({
+          op: "update",
+          itemId: live,
+        });
+      });
+
+      it("with no address at all stays a create", async () => {
+        await createPerson({ name: "Lucie", emails: "lucie@brainz.cz" });
+
+        await runTick(pool, stubGateway({ properties: { name: "Lucie" } }), await createTaskItem("Lucie", "people"));
+
+        expect(storedProposal.parse((await onlyCard()).proposal).operations).toBeUndefined();
+      });
+
+      it("that is the own record of a multi-step answer keeps the create of its new company and has the update as its primary step", async () => {
+        const personId = await createPerson({ name: "Lucie", emails: "lucie@brainz.cz" });
+        const gateway = stubGateway({
+          properties: { name: "Lucie", emails: "lucie@brainz.cz" },
+          operations: [
+            {
+              op: "create",
+              database: "people",
+              properties: { name: "Lucie", emails: "lucie@brainz.cz" },
+              relations: { companies: [{ alias: "brainz" }] },
+            },
+            { op: "create", database: "companies", alias: "brainz", properties: { name: "Brainz", ico: "27419363" } },
+          ],
+        });
+
+        await runTick(pool, gateway, await createTaskItem("Lucie at Brainz", "people"));
+
+        const card = await onlyCard();
+        expect(card.status).toBe("proposed");
+        const proposal = storedProposal.parse(card.proposal);
+        expect(proposal.properties).toEqual({});
+        expect(proposal.operations?.map((step) => [step.ref, step.op, step.role])).toEqual([
+          ["op1", "update", "primary"],
+          ["brainz", "create", "secondary"],
+        ]);
+        expect(proposal.operations?.[0]).toMatchObject({ itemId: personId });
+        expect(proposal.operations?.[0]).not.toHaveProperty("relations");
+      });
+    });
+
+    describe("the replacement", () => {
+      it("keeps the alias of the create it replaces and drops its database, properties and relations", async () => {
+        const companyId = await createCompany({ name: "Bakery", ico: EXISTING_ICO });
+        const input = await computationInput("people");
+
+        const result = await compute(input, {
+          properties: { name: "Eva" },
+          operations: [
+            {
+              op: "create",
+              database: "people",
+              properties: { name: "Eva" },
+              relations: { companies: [{ alias: "co" }] },
+            },
+            {
+              op: "create",
+              database: "companies",
+              alias: "co",
+              properties: { name: "Bakery", ico: EXISTING_ICO },
+              relations: { people: [{ alias: "someone" }] },
+            },
+          ],
+        });
+
+        expect(result.operations).toEqual([
+          {
+            op: "create",
+            database: "people",
+            properties: { name: "Eva" },
+            relations: { companies: [{ alias: "co" }] },
+          },
+          { op: "link", itemId: companyId, alias: "co" },
+        ]);
+      });
+
+      it("marks only the update of the own record as primary", async () => {
+        const companyId = await createCompany({ name: "Bakery", ico: EXISTING_ICO });
+
+        const result = await compute(await computationInput("companies"), {
+          properties: { name: "Bakery", ico: EXISTING_ICO },
+        });
+
+        expect(result.operations).toEqual([{ op: "update", itemId: companyId, primary: true }]);
+      });
+
+      it("ignores a primary marker in the model's answer, so the first create into the target stays the primary step", async () => {
+        const input = await computationInput("people");
+
+        const result = await compute(input, {
+          properties: { name: "Eva" },
+          operations: [
+            { op: "create", database: "companies", primary: true, properties: { name: "Brainz" } },
+            { op: "create", database: "people", properties: { name: "Eva" } },
+          ],
+        });
+
+        expect(result.operations).toHaveLength(2);
+        expect(result.operations?.some((operation) => "primary" in operation)).toBe(false);
+      });
+
+      it("leaves an answer that carries invalidProposal unchanged", async () => {
+        await createCompany({ name: "Bakery", ico: EXISTING_ICO });
+        const input = await computationInput("people");
+        const unlistedItem = randomUUID();
+
+        const result = await compute(input, {
+          properties: { name: "Eva" },
+          operations: [
+            { op: "link", itemId: unlistedItem },
+            { op: "create", database: "companies", properties: { name: "Bakery", ico: EXISTING_ICO } },
+          ],
+        });
+
+        expect(result.invalidProposal).toBe("workspaceReference");
+        expect(result.operations).toEqual([
+          { op: "link", itemId: unlistedItem },
+          { op: "create", database: "companies", properties: { name: "Bakery", ico: EXISTING_ICO } },
+        ]);
+      });
+
+      it("reads no number or address for a target that is neither Companies nor People", async () => {
+        await createCompany({ name: "Bakery", ico: EXISTING_ICO });
+        await createPerson({ name: "Lucie", emails: "lucie@brainz.cz" });
+
+        const result = await compute(await computationInput("tasks"), {
+          properties: { name: "Task", ico: EXISTING_ICO, emails: "lucie@brainz.cz" },
+        });
+
+        expect(result.operations).toBeUndefined();
+        expect(result.properties).toEqual({ name: "Task", ico: EXISTING_ICO, emails: "lucie@brainz.cz" });
+      });
+
+      it.each([
+        [
+          "a link the model gave to a company and a company create with its number",
+          (companyId: string) => [
+            { op: "link", itemId: companyId },
+            { op: "create", database: "companies", properties: { name: "Bakery", ico: EXISTING_ICO } },
+          ],
+        ],
+        [
+          "two company creates with one number",
+          () => [
+            { op: "create", database: "companies", properties: { name: "Bakery", ico: EXISTING_ICO } },
+            { op: "create", database: "companies", properties: { name: "Bakery too", ico: EXISTING_ICO } },
+          ],
+        ],
+      ])("leaves %s as they are, and the card is needsClarification", async (_label, operations) => {
+        const companyId = await createCompany({ name: "Bakery", ico: EXISTING_ICO });
+        const gateway = stubGateway({
+          properties: { name: "Bakery", ico: EXISTING_ICO },
+          operations: operations(companyId),
+        });
+        // The model's link names the company, so the company has to be one the workspace context lists.
+        await runTick(pool, gateway, await createTaskItem("Bakery", "companies"));
+
+        const card = await onlyCard();
+        expect(card.status).toBe("needsClarification");
+        expect(card.proposal).toBeNull();
+        // The refusal of `prepareComputedUpdates`, not the one of a link to an item the workspace does not list.
+        expect(JSON.stringify(card.history)).toContain("Repeated mutation of a proposal target");
+        expect(await countItems("companies")).toBe(1);
+      });
+    });
+
+    it("writes no row and reads with no transaction left open", async () => {
+      await createCompany({ name: "Bakery", ico: EXISTING_ICO });
+      await createPerson({ name: "Lucie", emails: "lucie@brainz.cz" });
+      const rowsBefore = Number(
+        (
+          await pool.query<{ n: string }>(
+            "SELECT (SELECT count(*) FROM items) + (SELECT count(*) FROM item_relations) AS n",
+          )
+        ).rows[0]!.n,
+      );
+      const statements: string[] = [];
+
+      for (const [target, answer] of [
+        ["companies", { properties: { name: "Bakery", ico: EXISTING_ICO } }],
+        ["people", { properties: { name: "Lucie", emails: "lucie@brainz.cz" } }],
+      ] as const) {
+        const input = await computationInput(target);
+        const rowsWithItem = Number(
+          (
+            await pool.query<{ n: string }>(
+              "SELECT (SELECT count(*) FROM items) + (SELECT count(*) FROM item_relations) AS n",
+            )
+          ).rows[0]!.n,
+        );
+        statements.length = 0;
+        const result = await compute(input, answer, recordingPool(pool, statements));
+        expect(result.operations).toEqual([expect.objectContaining({ op: "update", primary: true })]);
+        expect(statements.some((sql) => /\bperson_email_index\b|\bFROM items\b/i.test(sql))).toBe(true);
+        expect(statements.filter((sql) => /\b(insert|update|delete|truncate|alter|drop|create)\b/i.test(sql))).toEqual(
+          [],
+        );
+        expect(
+          Number(
+            (
+              await pool.query<{ n: string }>(
+                "SELECT (SELECT count(*) FROM items) + (SELECT count(*) FROM item_relations) AS n",
+              )
+            ).rows[0]!.n,
+          ),
+        ).toBe(rowsWithItem);
+      }
+      expect(rowsBefore).toBeGreaterThan(0);
+      expect(await openTransactionCount()).toBe(0);
+    });
+
+    it("finds a duplicate only in the caller's own tenant, through the runtime role pool", async () => {
+      const tenantA = await createTestTenant(pool);
+      const tenantB = await createTestTenant(pool);
+      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      try {
+        // Tenant B holds the company and the person; tenant A holds nothing but the Inbox item it computes for.
+        const setup = (tenant: string, withRecords: boolean) =>
+          runInTenant(tenant, async () => {
+            await seedSystem(runtime);
+            const idFor = async (moduleId: string) => {
+              const { rows } = await runtime.query<{ id: string }>(
+                "SELECT id FROM databases WHERE owner_module_id = $1",
+                [moduleId],
+              );
+              if (!rows[0]) throw new Error(`Missing ${moduleId}`);
+              return rows[0].id;
+            };
+            const cp = createChokePoint(runtime);
+            const companiesDatabaseId = await idFor("companies");
+            const peopleDatabaseId = await idFor("people");
+            const project = await cp.createItem({
+              databaseId: await idFor("projects"),
+              properties: { name: "Project", status: "inProgress" },
+            });
+            let companyId: string | undefined;
+            let personId: string | undefined;
+            if (withRecords) {
+              companyId = (
+                await cp.createItem({
+                  databaseId: companiesDatabaseId,
+                  properties: { name: "Bakery", ico: EXISTING_ICO },
+                })
+              ).id;
+              personId = (
+                await cp.createItem({
+                  databaseId: peopleDatabaseId,
+                  properties: { name: "Lucie", emails: "lucie@brainz.cz" },
+                })
+              ).id;
+              await createPersonEmailReindexAction(runtime)(
+                { peopleDatabaseId },
+                { heartbeatId: "hb", projectItemId: project.id, itemId: personId },
+              );
+            }
+            const inbox = await idFor("inbox");
+            const item = await cp.createItem({
+              databaseId: inbox,
+              properties: { text: "Capture", date: "2026-08-28", time: "09:00" },
+            });
+            return { companyId, personId, project, inbox, companiesDatabaseId, peopleDatabaseId, item };
+          });
+        const a = await setup(tenantA, false);
+        const b = await setup(tenantB, true);
+        const computeIn = async (
+          tenant: string,
+          side: Awaited<ReturnType<typeof setup>>,
+          module: string,
+          databaseId: string,
+          answer: unknown,
+        ) => {
+          const item = await runInTenant(tenant, () =>
+            withTransaction(runtime, (client) => getItemById(client, side.inbox, side.item.id)),
+          );
+          if (!item) throw new Error("Missing Inbox item");
+          return runInTenant(tenant, () =>
+            createProposalComputation({
+              pool: runtime,
+              gateway: stubGateway(answer),
+              openBlob: noBlobBytes,
+              aresClient: knowsNoCompany,
+            })({
+              sourceItem: item,
+              type: null,
+              entityKind: "database",
+              targetDatabaseId: databaseId,
+              targetModuleId: module,
+              locale: "en",
+              projectItemId: side.project.id,
+            }),
+          );
+        };
+        const companyAnswer = { properties: { name: "Bakery", ico: EXISTING_ICO } };
+        const personAnswer = { properties: { name: "Lucie", emails: "lucie@brainz.cz" } };
+
+        const inA = [
+          await computeIn(tenantA, a, "companies", a.companiesDatabaseId, companyAnswer),
+          await computeIn(tenantA, a, "people", a.peopleDatabaseId, personAnswer),
+        ];
+        const inB = [
+          await computeIn(tenantB, b, "companies", b.companiesDatabaseId, companyAnswer),
+          await computeIn(tenantB, b, "people", b.peopleDatabaseId, personAnswer),
+        ];
+
+        expect(inA.map((result) => result.operations)).toEqual([undefined, undefined]);
+        expect(inB.map((result) => result.operations?.map((operation) => operation.itemId))).toEqual([
+          [b.companyId],
+          [b.personId],
+        ]);
+      } finally {
+        await runtime.end();
+      }
+    });
+  });
+
+  describe("past event durations of the people in the context (issue gh-1993)", () => {
+    const durationsSchema = z.record(
+      z.string(),
+      z.array(z.object({ eventId: z.string(), minutes: z.number(), startDate: z.string() }).strict()),
+    );
+
+    function userMessage(gateway: StubGateway): string {
+      return z.string().parse(gateway.calls[0]?.messages[0]?.content);
+    }
+
+    /** The section of the request, or `null` when the request has none. */
+    function durationsOf(gateway: StubGateway): z.infer<typeof durationsSchema> | null {
+      const prefix = "Past event durations (JSON): ";
+      const line = userMessage(gateway)
+        .split("\n")
+        .find((candidate) => candidate.startsWith(prefix));
+      return line === undefined ? null : durationsSchema.parse(JSON.parse(line.slice(prefix.length)));
+    }
+
+    async function createPerson(name: string): Promise<string> {
+      const databaseId = await databaseIdFor("people");
+      return (await inTenantZero(() => createChokePoint(pool).createItem({ databaseId, properties: { name } }))).id;
+    }
+
+    /** A same-day Event of `personId` on `date` from `timeFrom` to `timeTo`. */
+    async function createEvent(
+      personId: string,
+      date: string,
+      timeFrom: string,
+      timeTo: string,
+      name = "Meeting",
+    ): Promise<string> {
+      const cp = createChokePoint(pool);
+      const eventsDatabaseId = await databaseIdFor("events");
+      const property = await pool.query<{ id: string }>(
+        "SELECT id FROM properties WHERE database_id = $1 AND key = 'people'",
+        [eventsDatabaseId],
+      );
+      return inTenantZero(async () => {
+        const event = await cp.createItem({
+          databaseId: eventsDatabaseId,
+          properties: { name, date, timeFrom, timeTo },
+        });
+        await cp.createRelation({
+          relationPropertyId: property.rows[0]!.id,
+          callerItemId: event.id,
+          targetItemId: personId,
+        });
+        return event.id;
+      });
+    }
+
+    const callAnswer = { properties: { name: "Call with Petr", date: "2026-08-27", timeFrom: "14:00" } };
+
+    it("gives a proposal for an Events item the lengths of the last same-day events of a person of the context, newest first, at most five", async () => {
+      const petr = await createPerson("Petr");
+      const ids: string[] = [];
+      for (let day = 1; day <= 6; day++) {
+        ids.push(
+          await createEvent(
+            petr,
+            `2026-08-${String(day).padStart(2, "0")}`,
+            "09:00",
+            // The Event starts at 09:00 and lasts 10 minutes on day 1, 20 on day 2, and so on.
+            `${String(9 + Math.floor(day / 6)).padStart(2, "0")}:${String((10 * day) % 60).padStart(2, "0")}`,
+            "SECRET_EVENT_NAME",
+          ),
+        );
+      }
+      const gateway = stubGateway(callAnswer);
+
+      await runTick(pool, gateway, await createTaskItem("Call with Petr on Thursday at two", "events"));
+
+      expect(durationsOf(gateway)).toEqual({
+        [petr]: [
+          { eventId: ids[5], minutes: 60, startDate: "2026-08-06" },
+          { eventId: ids[4], minutes: 50, startDate: "2026-08-05" },
+          { eventId: ids[3], minutes: 40, startDate: "2026-08-04" },
+          { eventId: ids[2], minutes: 30, startDate: "2026-08-03" },
+          { eventId: ids[1], minutes: 20, startDate: "2026-08-02" },
+        ],
+      });
+      expect(userMessage(gateway)).not.toContain("SECRET_EVENT_NAME");
+      expect(Buffer.byteLength(JSON.stringify(gateway.calls[0]))).toBeLessThan(1024 * 1024);
+    });
+
+    it("leaves out an earlier event that has an endDate or no timeTo", async () => {
+      const petr = await createPerson("Petr");
+      const counted = await createEvent(petr, "2026-08-10", "09:00", "10:00");
+      const spanning = await createEvent(petr, "2026-08-12", "09:00", "10:00");
+      const unfinished = await createEvent(petr, "2026-08-13", "09:00", "10:00");
+      // Both states pass the Events validation only as a whole: a second day needs a timeTo, and a timeFrom alone
+      // gets one, so the stored values are set directly.
+      await pool.query(
+        'UPDATE items SET properties = properties || \'{"endDate":"2026-08-14"}\'::jsonb WHERE id = $1',
+        [spanning],
+      );
+      await pool.query("UPDATE items SET properties = properties - 'timeTo' WHERE id = $1", [unfinished]);
+      const gateway = stubGateway(callAnswer);
+
+      await runTick(pool, gateway, await createTaskItem("Call with Petr", "events"));
+
+      expect(durationsOf(gateway)).toEqual({ [petr]: [{ eventId: counted, minutes: 60, startDate: "2026-08-10" }] });
+    });
+
+    it("has a section, empty, when no person of the context has a counted event", async () => {
+      await createPerson("Petr");
+      const gateway = stubGateway(callAnswer);
+
+      await runTick(pool, gateway, await createTaskItem("Call with Petr", "events"));
+
+      expect(durationsOf(gateway)).toEqual({});
+    });
+
+    it.each([["tasks"], ["people"], ["companies"]])("is not in the request when the target is %s", async (target) => {
+      const petr = await createPerson("Petr");
+      await createEvent(petr, "2026-08-10", "09:00", "10:00");
+      const gateway = stubGateway({ properties: { name: "Call with Petr" } });
+
+      await runTick(pool, gateway, await createTaskItem("Call with Petr", target));
+
+      expect(durationsOf(gateway)).toBeNull();
+      expect(userMessage(gateway)).not.toContain("Past event durations");
+      expect(gateway.calls[0]?.system).not.toContain("past event durations");
+    });
+
+    it("is not in the request of an untyped item that recognition resolves", async () => {
+      const petr = await createPerson("Petr");
+      await createEvent(petr, "2026-08-10", "09:00", "10:00");
+      const gateway = stubGateway({
+        properties: { name: "Call with Petr" },
+        candidates: [{ targetDatabaseKey: "events", confidence: 0.9 }],
+      });
+      const itemId = (
+        await createChokePoint(pool).createItem({
+          databaseId: config.inboxDatabaseId,
+          properties: { text: "Call with Petr", date: "2026-08-28", time: "09:00" },
+        })
+      ).id;
+      const item = await withTransaction(pool, (client) => getItemById(client, config.inboxDatabaseId, itemId));
+      if (!item) throw new Error("Missing Inbox item");
+
+      await inTenantZero(() =>
+        createProposalComputation({ pool, gateway, openBlob: noBlobBytes, aresClient: knowsNoCompany })({
+          sourceItem: item,
+          type: null,
+          entityKind: "database",
+          recognition: true,
+          activeTypes: [],
+          locale: "en",
+          projectItemId: semprecProjectId,
+        }),
+      );
+
+      expect(durationsOf(gateway)).toBeNull();
+    });
+
+    it("mentions the section in the instructions, and only when it is in the request", async () => {
+      const withSection = stubGateway(callAnswer);
+      await runTick(pool, withSection, await createTaskItem("Call with Petr", "events"));
+      const withoutSection = stubGateway({ properties: { name: "Buy milk" } });
+      await runTick(pool, withoutSection, await createTaskItem("Buy milk"));
+
+      expect(withSection.calls[0]?.system).toContain("past event durations");
+      expect(withSection.calls[0]?.system).toContain("timeTo");
+      expect(withoutSection.calls[0]?.system).not.toContain("past event durations");
+    });
+
+    it("sends no durations when the Semprec project may not read Events or People", async () => {
+      const petr = await createPerson("Petr");
+      await createEvent(petr, "2026-08-10", "09:00", "10:00");
+      for (const closed of ["events", "people"]) {
+        // No API marks a built-in database sensitive, so the test does, and gives the project no grant.
+        await pool.query("UPDATE databases SET sensitive = true WHERE owner_module_id = $1", [closed]);
+        const gateway = stubGateway(callAnswer);
+
+        await runTick(pool, gateway, await createTaskItem(`Call with Petr ${closed}`, "events"));
+
+        expect(durationsOf(gateway)).toBeNull();
+        await pool.query("UPDATE databases SET sensitive = false WHERE owner_module_id = $1", [closed]);
+      }
+    });
+
+    it("drops the durations of a person the request budget drops from the context, and keeps the others", async () => {
+      const people: string[] = [];
+      for (let n = 0; n < 6; n++) {
+        const person = await createPerson(`Person ${n} ${"x".repeat(90)}`);
+        people.push(person);
+        await createEvent(person, "2026-08-10", "09:00", "10:00");
+      }
+      const itemId = await createTaskItem("Call with a person", "events");
+      const item = await withTransaction(pool, (client) => getItemById(client, config.inboxDatabaseId, itemId));
+      if (!item) throw new Error("Missing Inbox item");
+      const input = (text: string) => ({
+        sourceItem: { ...item, properties: { ...item.properties, text } },
+        type: null,
+        entityKind: "database" as const,
+        targetDatabaseId: undefined,
+        targetModuleId: "events" as const,
+        locale: "en",
+        projectItemId: semprecProjectId,
+      });
+      const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+      const read = (text: string) => inTenantZero(() => readProposalContext(pool, input(text)));
+      const whole = await read("");
+      const wholePeople = whole.workspace.find((group) => group.moduleId === "people")?.items ?? [];
+      expect(wholePeople).toHaveLength(6);
+      expect(Object.keys(whole.pastEventDurations ?? {}).sort()).toEqual(wholePeople.map((person) => person.id).sort());
+      // Enough text that every entry of the events and companies groups and about two people have to go.
+      const dropped = [
+        ...whole.workspace.filter((group) => group.moduleId === "events" || group.moduleId === "companies"),
+      ];
+      const lastTwo = wholePeople.slice(-2).map((person) => [person, whole.pastEventDurations?.[person.id]]);
+      const text = "a".repeat(REQUEST_BUDGET_BYTES - bytes(whole) + bytes(dropped) + bytes(lastTwo));
+
+      const fitted = await read(text);
+
+      const keptPeople = fitted.workspace.find((group) => group.moduleId === "people")?.items ?? [];
+      expect(keptPeople.length).toBeLessThan(wholePeople.length);
+      expect(keptPeople.length).toBeGreaterThan(0);
+      expect(Object.keys(fitted.pastEventDurations ?? {}).sort()).toEqual(keptPeople.map((person) => person.id).sort());
+      expect(bytes(fitted)).toBeLessThanOrEqual(REQUEST_BUDGET_BYTES);
     });
   });
 });

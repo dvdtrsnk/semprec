@@ -1,3 +1,4 @@
+import type { ModuleLinkRuleProjection } from "@semprec/module-registry";
 import type { RelationEdgeChangedHookContext } from "../chokePoint/hooks.js";
 import { lockItemById } from "../chokePoint/itemsStore.js";
 import {
@@ -9,7 +10,7 @@ import {
   lockValueLink,
   removeValueLinkItemSource,
 } from "../chokePoint/valueLinksStore.js";
-import { loadLinkRules, resolveLinkRule } from "./linkRuleCatalog.js";
+import { loadLinkRules, resolveLinkRule, type ResolvedLinkRule } from "./linkRuleCatalog.js";
 import {
   applyInheritedValues,
   enqueueLinkPropagation,
@@ -20,6 +21,38 @@ import {
 } from "./linkPropagation.js";
 import { enqueueResolverRulesForEdge } from "./linkResolverTriggers.js";
 import { currentPropagationHop } from "./propagationContext.js";
+
+/**
+ * The two ends of a written edge of a rule's via relation, and the one of them that is the rule's target
+ * item. `linkRuleEdgeHook` and `linkRuleEdgeLockHook` both read the target from here, so they name the same row.
+ */
+function viaEdgeItems(
+  rule: ModuleLinkRuleProjection,
+  resolved: ResolvedLinkRule,
+  context: Pick<RelationEdgeChangedHookContext, "itemA" | "itemB">,
+): { viaItem: string; otherItem: string; targetId: string } {
+  const viaIsSideA = resolved.viaDefinition.propertyIdA === resolved.viaProperty.id;
+  const viaItem = viaIsSideA ? context.itemA : context.itemB;
+  const otherItem = viaIsSideA ? context.itemB : context.itemA;
+  return { viaItem, otherItem, targetId: rule.via.databaseKey === rule.target.databaseKey ? viaItem : otherItem };
+}
+
+/**
+ * Locks, with the call and the blocking wait `linkRuleEdgeHook` uses, the target item of each rule whose via
+ * relation is the written edge's, in catalog order, and does nothing else: it locks and reads no value link
+ * row. A user or agent edge write runs it before it ends the `on` link of an edge side, so the item row comes
+ * before the link row as it does in the propagation job and in `linkRuleEdgeHook`, which then finds the row
+ * already locked by this transaction. A `system` writer never ends a link and takes no lock.
+ * See `docs/adr/2026-11-15-a-user-edge-write-on-a-link-rules-via-relation-locks-the-rules-target-item-before-ending-value-links.md`.
+ */
+export async function linkRuleEdgeLockHook(context: RelationEdgeChangedHookContext): Promise<void> {
+  if (context.op === "update" || context.writer.writerKind === "system") return;
+  for (const rule of await loadLinkRules()) {
+    const resolved = await resolveLinkRule(context.client, rule);
+    if (!resolved || resolved.viaDefinition.id !== context.relationDefinitionId) continue;
+    await lockItemById(context.client, resolved.targetDatabase.id, viaEdgeItems(rule, resolved, context).targetId);
+  }
+}
 
 export async function linkRuleEdgeHook(context: RelationEdgeChangedHookContext): Promise<void> {
   if (context.op === "update") return;
@@ -55,9 +88,7 @@ export async function linkRuleEdgeHook(context: RelationEdgeChangedHookContext):
       await enqueueLinkPropagation(context.client, rule.key, sourceId, effectiveHop);
       continue;
     }
-    const viaItem = resolved.viaDefinition.propertyIdA === resolved.viaProperty.id ? context.itemA : context.itemB;
-    const otherItem = resolved.viaDefinition.propertyIdA === resolved.viaProperty.id ? context.itemB : context.itemA;
-    const targetId = rule.via.databaseKey === rule.target.databaseKey ? viaItem : otherItem;
+    const { viaItem, otherItem, targetId } = viaEdgeItems(rule, resolved, context);
     const sourceId = rule.via.databaseKey === rule.source.databaseKey ? viaItem : otherItem;
     const target = await lockItemById(context.client, resolved.targetDatabase.id, targetId);
     if (!target || target.deletedAt) continue;

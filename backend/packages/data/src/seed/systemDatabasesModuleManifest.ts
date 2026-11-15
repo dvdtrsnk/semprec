@@ -442,6 +442,17 @@ export const manifest: ModuleManifest = {
       target: { databaseKey: FILES_MODULE_ID, propertyKey: "companies" },
       via: { databaseKey: FILES_MODULE_ID, relationKey: "projects" },
     },
+    // A file attached to an Event takes over that Event's project (issue #1756); its company then follows from that
+    // project through `fileCompaniesFromProjects`. Ownership handoff: `Files.projects` stays `owner: user`, and the
+    // `valueLinks` process writes it only while the file's value link for that property is `on`. Nothing is
+    // backfilled. Removing the attachment ends the file's company link (`blobs/eventAttachmentLinkRelease.ts`). See
+    // docs/adr/2026-11-15-an-event-attachments-company-link-ends-with-the-attachment.md.
+    {
+      key: "fileProjectsFromEvents",
+      source: { databaseKey: EVENTS_MODULE_ID, propertyKey: "project" },
+      target: { databaseKey: FILES_MODULE_ID, propertyKey: "projects" },
+      via: { databaseKey: FILES_MODULE_ID, relationKey: "events" },
+    },
     // A transcript takes over its Event's project and participants, and its company from its project
     // (issue #1697). Ownership handoff: `Transcripts.project`, `Transcripts.company` and `Transcripts.people`
     // stay `owner: user`, and the `valueLinks` process writes them only while the item's value link for that
@@ -486,6 +497,17 @@ export const manifest: ModuleManifest = {
       target: { databaseKey: TASKS_MODULE_ID, propertyKey: "people" },
       via: { databaseKey: TASKS_MODULE_ID, relationKey: "sourceEvents" },
       valueFilter: { omit: { databaseKey: SYSTEM_SETTINGS_MODULE_ID, propertyKey: "selfPerson" } },
+    },
+    // A file attached to a task takes over that task's project (issue #1702). Ownership handoff:
+    // `Files.projects` stays `owner: user`, and the `valueLinks` process writes it only while the file's value
+    // link for that property is `on`. A file attached to two tasks holds the projects of both; a file that
+    // already has a project of its own when it is attached keeps it and gets no link. Nothing is backfilled. See
+    // docs/adr/2026-11-15-a-files-projects-follow-its-tasks-by-a-link-rule.md.
+    {
+      key: "fileProjectsFromTasks",
+      source: { databaseKey: TASKS_MODULE_ID, propertyKey: "project" },
+      target: { databaseKey: FILES_MODULE_ID, propertyKey: "projects" },
+      via: { databaseKey: FILES_MODULE_ID, relationKey: "tasks" },
     },
   ],
   customRoutes: [

@@ -1,12 +1,15 @@
 import type { Pool, PoolClient } from "pg";
 import {
   buildTargetCatalog,
+  EVENTS_MODULE_ID,
   getCalendarClock,
   listPropertiesByDatabase,
   listWritableProposalTargets,
+  readPastEventDurations,
   readProposalRelationCatalog,
   readProposalWorkspaceContext,
   withTransaction,
+  type PastEventDuration,
   type ProposalComputationInput,
   type ProposalRelationCatalogEntry,
   type ProposalWorkspaceGroup,
@@ -73,6 +76,13 @@ export interface ProposalContext {
   targetCatalog: TargetCatalog | null;
   targets: CatalogTarget[] | null;
   workspace: ProposalWorkspaceGroup[];
+  /**
+   * For an Events target only (issue gh-1993): per person of the workspace's People group, up to five of the person's
+   * most recent same-day Events with both times, newest first, as `{ eventId, minutes, startDate }`. A person with no
+   * such Event has no key. Absent when the project may not read People or Events. The section follows the People group:
+   * a person dropped to fit the budget is dropped here too.
+   */
+  pastEventDurations?: Record<string, PastEventDuration[]>;
   /** The set parts of the card being recomputed (`ProposalComputationInput.previousProposal`). */
   previous?: ProposalComputationInput["previousProposal"];
 }
@@ -96,26 +106,30 @@ function byteLength(value: unknown): number {
 /**
  * Drops workspace entries until the serialized context fits `REQUEST_BUDGET_BYTES`: the kinds in
  * `BUDGET_DROP_ORDER`, and within a kind the last entry first, which is the one the reader ranked lowest (the oldest
- * update; for events the farthest date). The item text, the facts and the previous state are never cut. A context that
+ * update; for events the farthest date); a person dropped from the People group loses its past event durations too. The
+ * item text, the facts and the previous state are never cut. A context that
  * still exceeds the budget with an empty workspace is returned as it is; the gateway refuses the request only when its
  * body exceeds its own 1 MiB limit, so a context between the budget and that limit is accepted.
  */
 function fitToBudget(context: ProposalContext): ProposalContext {
   const workspace = structuredClone(context.workspace);
-  // The workspace is the only part that changes, so the rest is measured once, with an empty list in its place.
-  const rest = byteLength({ ...context, workspace: [] }) - byteLength([]);
-  const size = () => rest + byteLength(workspace);
+  const durations = context.pastEventDurations && structuredClone(context.pastEventDurations);
+  // The workspace and the durations are the only parts that change, so the rest is measured once, with an empty list
+  // in the place of the workspace and without the durations.
+  const rest = byteLength({ ...context, workspace: [], pastEventDurations: undefined }) - byteLength([]);
+  const size = () => rest + byteLength(workspace) + (durations ? byteLength({ pastEventDurations: durations }) : 0);
   let dropped = 0;
   for (const moduleId of BUDGET_DROP_ORDER) {
     const group = workspace.find((candidate) => candidate.moduleId === moduleId);
     while (group && group.items.length > 0 && size() > REQUEST_BUDGET_BYTES) {
-      group.items.pop();
+      const removed = group.items.pop();
+      if (durations && moduleId === "people" && removed) delete durations[removed.id];
       dropped++;
     }
   }
   if (dropped > 0) logger.info({ count: dropped }, "Dropped workspace entries to fit the request budget");
   if (size() > REQUEST_BUDGET_BYTES) logger.warn({ bytes: size() }, "The proposal request context exceeds its budget");
-  return { ...context, workspace };
+  return { ...context, workspace, ...(durations ? { pastEventDurations: durations } : {}) };
 }
 
 async function readPropertyCatalog(client: PoolClient, databaseId: string): Promise<CatalogProperty[]> {
@@ -150,6 +164,19 @@ export function readProposalContext(pool: Pool, input: ProposalComputationInput)
       captureDate: properties.date,
       limitPerKind: CONTEXT_LIMIT_PER_KIND,
     });
+    // Issue gh-1993: only a proposal for the Events database carries the lengths of the people's earlier Events, and
+    // only when the project may read both People and Events: the workspace has no group for a database it may not read.
+    const people = workspace.find((group) => group.moduleId === "people");
+    const pastEventDurations =
+      input.entityKind === "database" &&
+      input.targetModuleId === EVENTS_MODULE_ID &&
+      people &&
+      workspace.some((group) => group.moduleId === "events")
+        ? await readPastEventDurations(
+            client,
+            people.items.map((person) => person.id),
+          )
+        : undefined;
     const catalog =
       input.entityKind === "database" && input.targetDatabaseId
         ? await readPropertyCatalog(client, input.targetDatabaseId)
@@ -190,6 +217,7 @@ export function readProposalContext(pool: Pool, input: ProposalComputationInput)
       targetCatalog,
       targets,
       workspace,
+      ...(pastEventDurations ? { pastEventDurations } : {}),
       ...(input.previousProposal ? { previous: input.previousProposal } : {}),
     });
   });

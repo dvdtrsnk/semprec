@@ -4,6 +4,7 @@ import { mutateDoc } from "../docs/docPersistence.js";
 import { createDocStore } from "../docs/docStore.js";
 import { getOrCreateJournalItem } from "../journal/journalStore.js";
 import { buildProposalEnvelope, resolveModelPagePlacement, type TickSnapshot } from "../inbox/inboxTickSnapshot.js";
+import { buildProposalSteps } from "../inbox/proposalOperations.js";
 import "../domainWriteHooks.js";
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -2751,7 +2752,10 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
       propertiesStore.getPropertyByKey(client, projectsId, "tasks"),
     );
     if (!property) throw new Error("Missing Projects.tasks relation");
-    await api.createRelation({ relationPropertyId: property.id, callerItemId: other.id, targetItemId: task.id });
+    // In a tenant scope, as a request is: a write of a Tasks.project edge queues value-link propagation (issue #1702).
+    await runInTenant(getTenantZeroId(), () =>
+      api.createRelation({ relationPropertyId: property.id, callerItemId: other.id, targetItemId: task.id }),
+    );
     await restoreSource(item.id);
     await runTick(pool, databaseIds, item.id, async () => {
       throw new Error("Unchanged source must not be recomputed");
@@ -5740,12 +5744,15 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
         propertiesStore.getPropertyByKey(client, tasksDb, "project"),
       );
       if (!property) throw new Error("Missing Tasks.project");
-      await withTransaction(pool, (client) =>
-        createRelationWithClient(client, {
-          relationPropertyId: property.id,
-          callerItemId: task,
-          targetItemId: project,
-        }),
+      // In a tenant scope, as a request is: a write of a Tasks.project edge queues value-link propagation (issue #1702).
+      await runInTenant(getTenantZeroId(), () =>
+        withTransaction(pool, (client) =>
+          createRelationWithClient(client, {
+            relationPropertyId: property.id,
+            callerItemId: task,
+            targetItemId: project,
+          }),
+        ),
       );
       const envelope = await updateEnvelope(
         {
@@ -5784,12 +5791,15 @@ describe("assertValidProposalEnvelope validates multi-step envelopes (issue #147
         propertiesStore.getPropertyByKey(client, projectsDb, "tasks"),
       );
       if (!property) throw new Error("Missing Projects.tasks");
-      await withTransaction(pool, (client) =>
-        createRelationWithClient(client, {
-          relationPropertyId: property.id,
-          callerItemId: first,
-          targetItemId: task,
-        }),
+      // In a tenant scope, as a request is: a write of a Tasks.project edge queues value-link propagation (issue #1702).
+      await runInTenant(getTenantZeroId(), () =>
+        withTransaction(pool, (client) =>
+          createRelationWithClient(client, {
+            relationPropertyId: property.id,
+            callerItemId: first,
+            targetItemId: task,
+          }),
+        ),
       );
       const step = { before: { relations: { tasks: [task] } }, after: { relations: { tasks: [task] } } };
       await validate(await updateEnvelope(step, first));
@@ -7429,5 +7439,199 @@ describe("semprec.tick proposes a journal entry for the journal method (issue gh
     } finally {
       await runtime.end();
     }
+  });
+});
+
+describe("an operation marked primary stands for an existing record (issue gh-1992)", () => {
+  let databaseIds: TickDatabaseIds;
+  let proposalsId: string;
+  let companiesId: string;
+  let peopleId: string;
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    viewTypeRegistry = createViewTypeRegistry();
+    await resetDatabase(pool);
+    await seedSystem(pool, viewTypeRegistry);
+    proposalsId = await databaseIdFor("processingProposals");
+    companiesId = await databaseIdFor("companies");
+    peopleId = await databaseIdFor("people");
+    databaseIds = {
+      inboxDatabaseId: await databaseIdFor("inbox"),
+      inboxItemTypesDatabaseId: await databaseIdFor("inboxItemTypes"),
+      processingProposalsDatabaseId: proposalsId,
+    };
+  });
+
+  const existingCompany = { op: "update" as const, alias: "co", primary: true as const };
+
+  /** An Inbox item of a database type that targets `targetDatabase`. */
+  async function typedItem(targetDatabase: "companies" | "people"): Promise<string> {
+    const type = await withTransaction(pool, (client) =>
+      createInboxTypeWithClient(client, {
+        inboxItemTypesDatabaseId: databaseIds.inboxItemTypesDatabaseId,
+        name: "Capture",
+        emoji: "N",
+        processingMethod: "database",
+        targetDatabase,
+      }),
+    );
+    const item = await withTransaction(pool, (client) =>
+      createInboxItemWithClient(client, {
+        inboxDatabaseId: databaseIds.inboxDatabaseId,
+        date: "2026-10-16",
+        time: "09:00",
+        text: "Capture",
+        type: type.id,
+      }),
+    );
+    return item.id;
+  }
+
+  async function snapshotOf(targetModuleId: "companies" | "people", targetDatabaseId: string): Promise<TickSnapshot> {
+    const itemId = await typedItem(targetModuleId);
+    const item = await withTransaction(pool, (client) =>
+      itemsStore.getItemById(client, databaseIds.inboxDatabaseId, itemId),
+    );
+    if (!item) throw new Error("Missing item");
+    return {
+      sourceTypeId: null,
+      item,
+      type: null,
+      processingMethod: "database",
+      entityKind: "database",
+      targetDatabaseId,
+      targetModuleId,
+      existingProposal: null,
+      fingerprint: "fingerprint",
+      locale: "en",
+    };
+  }
+
+  async function liveItem(databaseId: string, properties: Record<string, unknown>): Promise<string> {
+    return (await withTransaction(pool, (client) => createItemWithClient(client, { databaseId, properties }))).id;
+  }
+
+  describe("buildProposalSteps", () => {
+    const personCreate = { op: "create" as const, database: "people", properties: { name: "Eva" } };
+    const companyCreate = { op: "create" as const, database: "companies", properties: { name: "Brainz" } };
+
+    it("makes the marked operation the primary step and does not store the marker", () => {
+      const steps = buildProposalSteps([personCreate, { ...existingCompany, itemId: "item-1" }], "people");
+
+      expect(steps.map((step) => [step.ref, step.op, step.role])).toEqual([
+        ["op1", "create", "secondary"],
+        ["co", "update", "primary"],
+      ]);
+      expect(steps.flatMap((step) => Object.keys(step))).not.toContain("primary");
+    });
+
+    it("keeps the first create into the target database as the primary step when no operation is marked", () => {
+      const steps = buildProposalSteps([companyCreate, personCreate], "people");
+
+      expect(steps.map((step) => step.role)).toEqual(["secondary", "primary"]);
+    });
+  });
+
+  describe("buildProposalEnvelope", () => {
+    it("stores one marked operation as a multi-step envelope whose top-level properties are the primary step's", async () => {
+      const snapshot = await snapshotOf("companies", companiesId);
+
+      const envelope = buildProposalEnvelope(snapshot, {
+        properties: { name: "Ignored", ico: "07654321" },
+        operations: [{ ...existingCompany, itemId: "item-1" }],
+      });
+
+      expect(envelope).toEqual({
+        entityKind: "database",
+        target: companiesId,
+        properties: {},
+        operations: [{ ref: "co", op: "update", itemId: "item-1", role: "primary", after: {} }],
+      });
+    });
+
+    it("stores a single unmarked operation as the ordinary single write, as before", async () => {
+      const snapshot = await snapshotOf("companies", companiesId);
+
+      const envelope = buildProposalEnvelope(snapshot, {
+        properties: { name: "Acme" },
+        operations: [{ op: "create", database: "companies", properties: { name: "Acme" } }],
+      });
+
+      expect(envelope).toEqual({ entityKind: "database", target: companiesId, properties: { name: "Acme" } });
+    });
+  });
+
+  describe("the tick", () => {
+    async function onlyCard(itemId: string) {
+      const card = await findProposalForItem(pool, proposalsId, itemId);
+      if (!card) throw new Error("No card was stored");
+      return card;
+    }
+
+    it("stores a proposed card whose primary step is an update that changes nothing, for the existing company", async () => {
+      const companyId = await liveItem(companiesId, { name: "Bakery", ico: "07654321" });
+      const itemId = await typedItem("companies");
+
+      await runTick(pool, databaseIds, itemId, async () => ({
+        properties: { name: "Bakery", ico: "07654321" },
+        operations: [{ ...existingCompany, itemId: companyId }],
+      }));
+
+      const card = await onlyCard(itemId);
+      expect(card.properties.status).toBe("proposed");
+      expect(card.properties.proposal).toEqual({
+        entityKind: "database",
+        target: companiesId,
+        properties: {},
+        operations: [
+          {
+            ref: "co",
+            op: "update",
+            itemId: companyId,
+            role: "primary",
+            before: { properties: {}, relations: {} },
+            after: { properties: {}, relations: {} },
+          },
+        ],
+      });
+    });
+
+    it("stores a proposed card with the person create and a link step for the existing company", async () => {
+      const companyId = await liveItem(companiesId, { name: "Bakery", ico: "07654321" });
+      const itemId = await typedItem("people");
+
+      await runTick(pool, databaseIds, itemId, async () => ({
+        properties: { name: "Eva" },
+        operations: [
+          {
+            op: "create",
+            database: "people",
+            properties: { name: "Eva" },
+            relations: { companies: [{ alias: "co" }] },
+          },
+          { op: "link", itemId: companyId, alias: "co" },
+        ],
+      }));
+
+      const card = await onlyCard(itemId);
+      expect(card.properties.status).toBe("proposed");
+      expect(card.properties.proposal).toEqual({
+        entityKind: "database",
+        target: peopleId,
+        properties: { name: "Eva" },
+        operations: [
+          {
+            ref: "op1",
+            op: "create",
+            role: "primary",
+            databaseKey: "people",
+            properties: { name: "Eva" },
+            relations: { companies: [{ ref: "co" }] },
+          },
+          { ref: "co", op: "link", role: "secondary", itemId: companyId },
+        ],
+      });
+    });
   });
 });

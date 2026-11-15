@@ -33,7 +33,10 @@ export const manifest: ModuleManifest = {
   // The union cases use the real `fileCompaniesFromProjects` rule of the systemDatabases manifest (issue #1653),
   // which replaced the fixture rule over the same three properties. The conflict case uses the real
   // `taskProjectFromEvent` rule (issue #1724): the fixture rule it replaced ran the other way over the same edge,
-  // from `Tasks.project` to `Events.project`, and the two together would be a cycle.
+  // from `Tasks.project` to `Events.project`, and the two together would be a cycle. The single-value case runs
+  // from the many-valued `Files.area` into the one-valued `Events.area`: the fixture rule it replaced ran from
+  // `Files.projects` into `Tasks.project` over `Tasks.files`, the other way of the real rule
+  // `fileProjectsFromTasks` (issue #1702), and the two together would be a cycle.
   linkRules: [
     {
       key: "fixtureProposal.eventName",
@@ -42,10 +45,10 @@ export const manifest: ModuleManifest = {
       via: { databaseKey: "transcripts", relationKey: "event" },
     },
     {
-      key: "fixtureSingle.fileProjects",
-      source: { databaseKey: "files", propertyKey: "projects" },
-      target: { databaseKey: "tasks", propertyKey: "project" },
-      via: { databaseKey: "tasks", relationKey: "files" },
+      key: "fixtureSingle.fileAreas",
+      source: { databaseKey: "files", propertyKey: "area" },
+      target: { databaseKey: "events", propertyKey: "area" },
+      via: { databaseKey: "events", relationKey: "files" },
     },
     ...["areas", "projects", "tasks", "events", "people", "companies"].map((source, index) => ({
       key: `fixtureChain.hop${index + 1}`,
@@ -587,29 +590,32 @@ describe("value link via-edge union", () => {
         if (!db) throw new Error(`Missing ${module}`);
         return db.id;
       };
-      const projects = id("projects"),
+      const areas = id("areas"),
         files = id("files"),
-        tasks = id("tasks");
-      const fileProjects = (await cp.listProperties(files)).find((entry) => entry.key === "projects");
-      const attachments = (await cp.listProperties(tasks)).find((entry) => entry.key === "files");
-      const taskProject = (await cp.listProperties(tasks)).find((entry) => entry.key === "project");
-      if (!fileProjects || !attachments || !taskProject) throw new Error("Missing fixture relations");
-      const first = await cp.createItem({ databaseId: projects, properties: { name: "First" } });
-      const second = await cp.createItem({ databaseId: projects, properties: { name: "Second" } });
+        events = id("events");
+      const fileAreas = (await cp.listProperties(files)).find((entry) => entry.key === "area");
+      const attachments = (await cp.listProperties(events)).find((entry) => entry.key === "files");
+      const eventArea = (await cp.listProperties(events)).find((entry) => entry.key === "area");
+      if (!fileAreas || !attachments || !eventArea) throw new Error("Missing fixture relations");
+      const first = await cp.createItem({ databaseId: areas, properties: { name: "First" } });
+      const second = await cp.createItem({ databaseId: areas, properties: { name: "Second" } });
       const file = await cp.createItem({ databaseId: files, properties: { name: "File" } });
-      const task = await cp.createItem({ databaseId: tasks, properties: { name: "Task" } });
-      for (const project of [first, second])
+      const event = await cp.createItem({
+        databaseId: events,
+        properties: { name: "Event", date: "2024-03-01T12:00:00.000Z" },
+      });
+      for (const area of [first, second])
         await cp.createRelation({
-          relationPropertyId: fileProjects.id,
+          relationPropertyId: fileAreas.id,
           callerItemId: file.id,
-          targetItemId: project.id,
+          targetItemId: area.id,
         });
-      await cp.createRelation({ relationPropertyId: attachments.id, callerItemId: task.id, targetItemId: file.id });
+      await cp.createRelation({ relationPropertyId: attachments.id, callerItemId: event.id, targetItemId: file.id });
       expect(
-        (await cp.listItemRelations(task.id))?.filter((edge) => edge.relationPropertyId === taskProject.id),
+        (await cp.listItemRelations(event.id))?.filter((edge) => edge.relationPropertyId === eventArea.id),
       ).toEqual([]);
       const rows = await withTransaction(data, (client) =>
-        client.query("SELECT id FROM value_links WHERE item_id = $1 AND property_key = 'project'", [task.id]),
+        client.query("SELECT id FROM value_links WHERE item_id = $1 AND property_key = 'area'", [event.id]),
       );
       expect(rows.rowCount).toBe(0);
     });

@@ -474,7 +474,8 @@ describe("inbox custom route handlers (issue #239)", () => {
         );
       });
       const handler = createConfirmProposalRouteHandler(pool);
-      const response = await handler({ params: { id: proposalId }, body: {} });
+      // In a tenant scope, as a request is: the task's Tasks.project edge queues value-link propagation (issue #1702).
+      const response = await runInTenant(getTenantZeroId(), () => handler({ params: { id: proposalId }, body: {} }));
       if (!("item" in response) || !response.results) throw new Error("Missing confirmed results");
       expect(response.results).toHaveLength(2);
       expect(response.results).toEqual([

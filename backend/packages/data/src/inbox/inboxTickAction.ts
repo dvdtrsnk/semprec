@@ -94,6 +94,12 @@ import { getTenantUserLocale } from "../auth/usersStore.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
 
 export { selectActiveSteps } from "./proposalStepGraph.js";
+// The reads of the proposal computation of issues gh-1992 (the exact-match lookups) and gh-1993 (the past event
+// durations) are re-exported here, because the barrel `index.ts` already holds 900 counted lines, the cap of
+// `max-lines`, and this module is exported whole.
+export { lookupLiveCompanyIdByIco } from "./companyIcoLookup.js";
+export { readPastEventDurations, type PastEventDuration } from "./pastEventDurations.js";
+export { lookupPersonIdByEmail, normalizeEmailAddress } from "../mail/personEmailIndexStore.js";
 
 const logger: Logger = createLogger("inbox-tick");
 

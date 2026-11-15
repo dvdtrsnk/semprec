@@ -16,6 +16,7 @@ import {
   registerItemDeletePreLockHook,
   registerItemRestorePreLockHook,
   registerItemPurgePreLockHook,
+  registerRelationEdgeBeforeLinkBreakHook,
   registerRelationEdgeChangedHook,
   registerAutomationBatchReader,
   registerItemDeleteHook,
@@ -23,6 +24,7 @@ import {
   runAutomationBatchReader,
   runItemDeleteHooks,
   runItemRestoreHooks,
+  runRelationEdgeBeforeLinkBreakHooks,
   runRelationEdgeChangedHooks,
   runItemPreWriteTransforms,
   runItemUpdateHooks,
@@ -167,6 +169,75 @@ describe("changed relation hook registry", () => {
     await runRelationEdgeChangedHooks(context);
     await runRelationEdgeChangedHooks(context);
     expect(seen).toEqual(["b", "c", "b", "c"]);
+  });
+});
+
+describe("before-link-break relation hook registry", () => {
+  beforeEach(() => clearHooksForTests());
+  const context: RelationEdgeChangedHookContext = {
+    client: offlineClient,
+    op: "delete",
+    relationDefinitionId: "definition",
+    propertyId: "property",
+    itemA: "a",
+    itemB: "b",
+    metadata: { note: "kept" },
+    writer: { writerKind: "user" },
+  };
+  it("runs nothing when no hook is registered", async () => {
+    await expect(runRelationEdgeBeforeLinkBreakHooks(context)).resolves.toBeUndefined();
+  });
+  it("deduplicates and runs hooks in registration order with the context of the edge", async () => {
+    const calls: Array<[number, RelationEdgeChangedHookContext]> = [];
+    const first = async (current: RelationEdgeChangedHookContext) => {
+      calls.push([1, current]);
+    };
+    registerRelationEdgeBeforeLinkBreakHook(first);
+    registerRelationEdgeBeforeLinkBreakHook(first);
+    registerRelationEdgeBeforeLinkBreakHook(async (current) => {
+      calls.push([2, current]);
+    });
+    await runRelationEdgeBeforeLinkBreakHooks(context);
+    expect(calls).toEqual([
+      [1, context],
+      [2, context],
+    ]);
+  });
+  it("is a registry of its own: the edge-changed hooks neither run it nor are run by it", async () => {
+    const changed = vi.fn();
+    const beforeBreak = vi.fn();
+    registerRelationEdgeChangedHook(async () => {
+      changed();
+    });
+    registerRelationEdgeBeforeLinkBreakHook(async () => {
+      beforeBreak();
+    });
+    await runRelationEdgeBeforeLinkBreakHooks(context);
+    expect(beforeBreak).toHaveBeenCalledTimes(1);
+    expect(changed).not.toHaveBeenCalled();
+    await runRelationEdgeChangedHooks(context);
+    expect(beforeBreak).toHaveBeenCalledTimes(1);
+    expect(changed).toHaveBeenCalledTimes(1);
+  });
+  it("stops after the first rejection and passes the error on", async () => {
+    const later = vi.fn();
+    registerRelationEdgeBeforeLinkBreakHook(async () => {
+      throw new Error("hook failed");
+    });
+    registerRelationEdgeBeforeLinkBreakHook(async () => {
+      later();
+    });
+    await expect(runRelationEdgeBeforeLinkBreakHooks(context)).rejects.toThrow("hook failed");
+    expect(later).not.toHaveBeenCalled();
+  });
+  it("is emptied by clearHooksForTests", async () => {
+    const hook = vi.fn();
+    registerRelationEdgeBeforeLinkBreakHook(async () => {
+      hook();
+    });
+    clearHooksForTests();
+    await runRelationEdgeBeforeLinkBreakHooks(context);
+    expect(hook).not.toHaveBeenCalled();
   });
 });
 

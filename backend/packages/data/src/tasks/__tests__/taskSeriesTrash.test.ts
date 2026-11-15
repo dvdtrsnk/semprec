@@ -9,7 +9,6 @@ import { createRelationWithClient } from "../../chokePoint/relationOps.js";
 import { getTaskRecurrenceBySeriesId } from "../taskRecurrenceStore.js";
 import { getPropertyByKey } from "../../chokePoint/propertiesStore.js";
 import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } from "../../chokePoint/relationsStore.js";
-import { insertValueLink } from "../../chokePoint/valueLinksStore.js";
 import { getValueLinksForItems } from "../../chokePoint/valueLinkReads.js";
 import { withTransaction } from "../../db/pool.js";
 import type { BlobStorageWriter } from "../../mail/blobStorage.js";
@@ -467,25 +466,17 @@ describe("trashing and restoring a recurring task series (issue gh-1882)", () =>
       const file = await create("files", { name: "checklist.pdf" });
       await runInTenant(tenant, async () => {
         await cp.createRelation({
+          relationPropertyId: await propertyId("tasks", "project"),
+          callerItemId: open,
+          targetItemId: project.id,
+        });
+        // The attach makes the file follow the task's project through the link rule `fileProjectsFromTasks`
+        // (issue #1702): the file takes the project and gets the link that records it.
+        await cp.createRelation({
           relationPropertyId: await propertyId("tasks", "files"),
           callerItemId: open,
           targetItemId: file.id,
         });
-        // The value the file inherited from the task, and the link that records it: no shipped link rule writes a
-        // `projects` link, so the links store's own insert stands in for such a rule's producer.
-        await cp.createRelation({
-          relationPropertyId: await propertyId("files", "projects"),
-          callerItemId: file.id,
-          targetItemId: project.id,
-        });
-        await withTransaction(pool, (client) =>
-          insertValueLink(client, {
-            itemId: file.id,
-            propertyKey: "projects",
-            ruleKey: "test.inheritProjects",
-            sources: [{ kind: "item", sourceItemId: open, sourcePropertyKey: "project" }],
-          }),
-        );
       });
       expect((await inheritedProjectsOf(file.id)).get(file.id)?.projects).toBeDefined();
 

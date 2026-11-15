@@ -196,11 +196,15 @@ describe("ten hardcoded databases (issue #24)", () => {
       "SELECT id FROM properties WHERE database_id = $1 AND key = 'project'",
       [tasksId],
     );
-    await chokePoint.createRelation({
-      relationPropertyId: propRows[0].id,
-      callerItemId: task.id,
-      targetItemId: project.id,
-    });
+    // Tasks.project is the source of the fileProjectsFromTasks link rule (issue #1702), whose propagation is queued
+    // in the writer's tenant, so the write runs in the tenant scope every production write has.
+    await runInTenant(getTenantZeroId(), () =>
+      chokePoint.createRelation({
+        relationPropertyId: propRows[0].id,
+        callerItemId: task.id,
+        targetItemId: project.id,
+      }),
+    );
 
     await startTaskSeries(pool, {
       databaseId: tasksId,
@@ -209,7 +213,10 @@ describe("ten hardcoded databases (issue #24)", () => {
       rule: { kind: "weekdays", days: ["mon", "fri"] },
     });
 
-    const next = await advanceTaskRecurrence(pool, { databaseId: tasksId, itemId: task.id, timezone: "Europe/Prague" });
+    // The advance carries the Project edge to the next instance, a write of Tasks.project: in the tenant scope.
+    const next = await runInTenant(getTenantZeroId(), () =>
+      advanceTaskRecurrence(pool, { databaseId: tasksId, itemId: task.id, timezone: "Europe/Prague" }),
+    );
     expect(next).not.toBeNull();
     expect(next!.properties.name).toBe("Take out trash");
     expect(next!.properties.status).toBe("notDone");
@@ -259,11 +266,15 @@ describe("ten hardcoded databases (issue #24)", () => {
       "SELECT id FROM properties WHERE database_id = $1 AND key = 'project'",
       [tasksId],
     );
-    await chokePoint.createRelation({
-      relationPropertyId: propRows[0].id,
-      callerItemId: task.id,
-      targetItemId: project.id,
-    });
+    // Tasks.project is the source of the fileProjectsFromTasks link rule (issue #1702), whose propagation is queued
+    // in the writer's tenant, so the write runs in the tenant scope every production write has.
+    await runInTenant(getTenantZeroId(), () =>
+      chokePoint.createRelation({
+        relationPropertyId: propRows[0].id,
+        callerItemId: task.id,
+        targetItemId: project.id,
+      }),
+    );
     await startTaskSeries(pool, {
       databaseId: tasksId,
       itemId: task.id,
@@ -296,11 +307,16 @@ describe("ten hardcoded databases (issue #24)", () => {
       "SELECT id FROM properties WHERE database_id = $1 AND key = 'actionItems'",
       [eventsId],
     );
-    await chokePoint.createRelation({
-      relationPropertyId: actionItemsProp[0].id,
-      callerItemId: event.id,
-      targetItemId: task.id,
-    });
+    // The edge gives the task the Event's project, a write of Tasks.project: the source of the
+    // fileProjectsFromTasks link rule (issue #1702), whose propagation is queued in the writer's tenant, so the
+    // write runs in the tenant scope every production write has.
+    await runInTenant(getTenantZeroId(), () =>
+      chokePoint.createRelation({
+        relationPropertyId: actionItemsProp[0].id,
+        callerItemId: event.id,
+        targetItemId: task.id,
+      }),
+    );
 
     await startTaskSeries(pool, {
       databaseId: tasksId,
