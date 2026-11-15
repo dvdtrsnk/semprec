@@ -8,6 +8,7 @@ extension FieldOption {
     }
 }
 
+// MARK: - Shared targets
 extension FieldTarget {
 
     init(_ target: SharedSDK.TargetView) {
@@ -15,6 +16,7 @@ extension FieldTarget {
     }
 }
 
+// MARK: - Shared kinds
 extension FieldKind {
 
     init(_ kind: SharedSDK.FieldKind) {
@@ -34,6 +36,7 @@ extension FieldKind {
     }
 }
 
+// MARK: - Shared contents
 extension FieldContent {
 
     init(_ content: any SharedSDK.FieldContent) {
@@ -53,6 +56,7 @@ extension FieldContent {
     }
 }
 
+// MARK: - Shared origins
 extension ValueOrigin {
 
     init(_ origin: SharedSDK.OriginView) {
@@ -70,12 +74,15 @@ extension ValueOrigin {
         }
         self.init(
             kind: kind,
-            sources: origin.sources.map { OriginSource(itemId: $0.itemId, databaseKey: $0.databaseKey, title: $0.title) },
+            sources: origin.sources.map {
+                OriginSource(itemId: $0.itemId, databaseKey: $0.databaseKey, title: $0.title)
+            },
             brokenBy: author
         )
     }
 }
 
+// MARK: - Shared field views
 extension FieldView {
 
     init(_ view: SharedSDK.FieldView) {
@@ -91,6 +98,7 @@ extension FieldView {
     }
 }
 
+// MARK: - Shared failures
 extension Failed {
 
     init(_ failed: SharedSDK.Failed) {

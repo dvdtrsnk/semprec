@@ -1,4 +1,5 @@
 import AuthFeature
+import CollectionsFeature
 import HomeFeature
 import NavigatorUI
 import SettingsFeature
@@ -87,6 +88,18 @@ private extension AppScene {
             HomeScreenFactory.detail { composition.models.makeDetail(itemId: itemId) }
         case .about:
             SettingsScreenFactory.about(version: composition.version, build: composition.build)
+        case .collection(let target):
+            CollectionsScreenFactory.collection(
+                target,
+                makeModel: { composition.models.makeCollection(target: $0) },
+                router: composition.collectionsRouter
+            )
+        case .collectionItem(let itemId, let databaseKey):
+            CollectionsScreenFactory.item(
+                itemId: itemId,
+                makeModel: { composition.models.makeItem(itemId: itemId, databaseKey: databaseKey) },
+                router: composition.collectionsRouter
+            )
         }
     }
 }

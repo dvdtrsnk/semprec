@@ -46,7 +46,14 @@ public struct CollectionHeader: Equatable, Sendable {
     public let color: String?
     public let searchPlaceholder: String?
 
-    public init(databaseId: String, key: String?, name: String, icon: String?, color: String?, searchPlaceholder: String?) {
+    public init(
+        databaseId: String,
+        key: String?,
+        name: String,
+        icon: String?,
+        color: String?,
+        searchPlaceholder: String?
+    ) {
         self.databaseId = databaseId
         self.key = key
         self.name = name
@@ -93,7 +100,14 @@ public struct CollectionRow: Equatable, Sendable, Identifiable {
     public let subtitle: [FieldContent]
     public let fileType: String?
 
-    public init(id: String, title: String, group: FieldOption?, date: String?, subtitle: [FieldContent], fileType: String?) {
+    public init(
+        id: String,
+        title: String,
+        group: FieldOption?,
+        date: String?,
+        subtitle: [FieldContent],
+        fileType: String?
+    ) {
         self.id = id
         self.title = title
         self.group = group
@@ -290,4 +304,5 @@ public enum CollectionEffect: Equatable, Sendable {
 public typealias CollectionScreenModel = ScreenModel<CollectionState, CollectionAction, CollectionEffect>
 
 /// Collection screen model for previews and tests; it never starts the Kotlin runtime.
-public typealias ScriptedCollectionScreenModel = ScriptedScreenModel<CollectionState, CollectionAction, CollectionEffect>
+public typealias ScriptedCollectionScreenModel =
+    ScriptedScreenModel<CollectionState, CollectionAction, CollectionEffect>
