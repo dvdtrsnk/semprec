@@ -23,7 +23,8 @@ internal fun itemState(detail: ItemDetail, previous: ItemState): ItemState {
         ),
         fields = detail.item.fieldViews(database),
         related = detail.related.map {
-            RelatedView(it.database.id, it.database.key, it.database.name, it.database.icon, it.database.color, it.count)
+            val related = it.database
+            RelatedView(related.id, related.key, related.name, related.icon, related.color, it.count)
         },
         saving = false,
     )

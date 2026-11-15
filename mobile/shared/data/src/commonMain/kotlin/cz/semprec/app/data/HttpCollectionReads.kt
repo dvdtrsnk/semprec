@@ -27,7 +27,8 @@ class HttpCollectionReads(private val api: AuthenticatedApi) : CollectionReads {
 
     override suspend fun schema(): RepositoryResult<CollectionSchema> {
         val kept = cached
-        return if (kept != null && kept.first == api.session()) RepositoryResult.Content(kept.second) else refreshSchema()
+        val fresh = kept != null && kept.first == api.session()
+        return if (fresh) RepositoryResult.Content(kept.second) else refreshSchema()
     }
 
     override suspend fun refreshSchema(): RepositoryResult<CollectionSchema> {
@@ -103,7 +104,8 @@ class HttpCollectionReads(private val api: AuthenticatedApi) : CollectionReads {
         val path = "/api/items/${itemId.encodeURLPathPart()}/page.md"
         return when (val response = api.send(HttpMethod.Get, path)) {
             is ApiResponse.Failure -> RepositoryResult.Failure(response.kind)
-            is ApiResponse.Success -> response.etag?.trim('"')?.let { RepositoryResult.Content(PageContent(response.body, it)) }
+            is ApiResponse.Success -> response.etag?.trim('"')
+                ?.let { RepositoryResult.Content(PageContent(response.body, it)) }
                 ?: RepositoryResult.Failure(FailureKind.INVALID_DATA)
         }
     }

@@ -18,7 +18,8 @@ internal fun decodeValue(kind: PropertyKind, element: JsonElement): FieldValue? 
     PropertyKind.TITLE, PropertyKind.TEXT, PropertyKind.LONG_TEXT, PropertyKind.URL, PropertyKind.COLOR,
     PropertyKind.DATE, PropertyKind.TIME,
     -> text(element)?.let { FieldValue.Text(it) }
-    PropertyKind.NUMBER -> (element as? JsonPrimitive)?.takeIf { !it.isString }?.doubleOrNull?.let { FieldValue.Number(it) }
+    PropertyKind.NUMBER ->
+        (element as? JsonPrimitive)?.takeIf { !it.isString }?.doubleOrNull?.let { FieldValue.Number(it) }
     PropertyKind.CHECKBOX -> (element as? JsonPrimitive)?.booleanOrNull?.let { FieldValue.Flag(it) }
     PropertyKind.SELECT -> text(element)?.let { FieldValue.Choices(listOf(it)) }
     PropertyKind.MULTI_SELECT -> (element as? JsonArray)?.mapNotNull(::text)?.let { FieldValue.Choices(it) }

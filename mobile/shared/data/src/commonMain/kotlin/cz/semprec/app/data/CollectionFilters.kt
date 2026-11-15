@@ -89,19 +89,21 @@ internal object CollectionFilters {
         }
 
     private fun oneOf(database: CollectionDatabase, selection: FacetSelection.OneOf): JsonElement? {
-        if (selection.values.isEmpty()) return null
-        val kind = database.property(selection.propertyKey)?.kind
-        if (kind != PropertyKind.RELATION) {
-            return buildJsonObject {
+        val isRelation = database.property(selection.propertyKey)?.kind == PropertyKind.RELATION
+        return when {
+            selection.values.isEmpty() -> null
+            isRelation -> {
+                val conditions = selection.values.map { relationContains(selection.propertyKey, it) }
+                conditions.singleOrNull() ?: buildJsonObject {
+                    put(TYPE, "or")
+                    put(NODES, JsonArray(conditions))
+                }
+            }
+            else -> buildJsonObject {
                 put(TYPE, "in")
                 put(PROPERTY, selection.propertyKey)
                 putJsonArray(VALUE) { selection.values.forEach { add(JsonPrimitive(it)) } }
             }
-        }
-        val conditions = selection.values.map { relationContains(selection.propertyKey, it) }
-        return conditions.singleOrNull() ?: buildJsonObject {
-            put(TYPE, "or")
-            put(NODES, JsonArray(conditions))
         }
     }
 

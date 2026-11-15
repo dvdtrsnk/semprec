@@ -1,7 +1,6 @@
 package cz.semprec.app.presentation
 
 import androidx.lifecycle.viewModelScope
-import cz.semprec.app.core.FailureKind
 import cz.semprec.app.domain.CollectionItem
 import cz.semprec.app.domain.CollectionPage
 import cz.semprec.app.domain.CollectionReads
@@ -13,31 +12,28 @@ import cz.semprec.app.domain.PropertyKind
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
-import kotlin.io.encoding.Base64
-import kotlin.io.encoding.ExperimentalEncodingApi
-
-/** What the last answers hold: the database, the loaded items and where the next page starts. */
-private class Loaded(val opened: OpenedCollection, val items: List<CollectionItem>, val nextCursor: String?)
 
 /**
  * One collection of any database: a list, gallery or board of its items, with the quick filters, search, order and
  * filter sheet the server's schema offers. It is configured, not subclassed: Projects, People, Companies, Events and
- * Files are this same ViewModel over different databases and scopes. A newer query supersedes an older one, and an
- * answer that arrives after the ViewModel was closed or superseded is dropped.
+ * Files are this same ViewModel over different targets. A newer query supersedes an older one, and an answer that
+ * arrives after the ViewModel was closed or superseded is dropped.
  */
 class CollectionViewModel internal constructor(
     private val config: CollectionConfig,
     private val openCollection: OpenCollection,
     private val reads: CollectionReads,
-    private val writes: CollectionWrites,
+    writes: CollectionWrites,
 ) : ScreenViewModel<CollectionState, CollectionAction, CollectionEffect>(CollectionState()) {
     private var inputs = Inputs()
-    private var loaded: Loaded? = null
+    private var loaded: CollectionLoaded? = null
     private var facets: List<FacetResult> = emptyList()
     private var loadJob: Job? = null
     private var moreJob: Job? = null
     private var sheetJob: Job? = null
-    private var writeJob: Job? = null
+    private val host =
+        FlowHost<CollectionState, CollectionEffect>(viewModelScope, { state.value }, { update(it) }, { emit(it) })
+    private val adding = CollectionWriteFlow(host, writes, config, { loaded?.opened?.database }, ::query)
 
     init {
         load()
@@ -54,22 +50,11 @@ class CollectionViewModel internal constructor(
                 change { sorted(action.axis, current.opened.database) }
             }
             is CollectionAction.SelectLayout -> relayout(action.layout)
-            CollectionAction.OpenFilters -> {
-                update { it.copy(filterSheet = FilterSheet(loading = true, failure = null, groups = emptyList())) }
-                loadFacets()
-            }
-            CollectionAction.CloseFilters -> update { it.copy(filterSheet = null) }
-            is CollectionAction.ToggleFilter ->
-                change { copy(selections = selections.toggled(action.propertyKey, action.value)) }
-            is CollectionAction.ToggleDatePreset ->
-                change { copy(selections = selections.presetToggled(action.propertyKey, action.preset)) }
-            is CollectionAction.ClearFilter -> change { copy(selections = selections.cleared(action.propertyKey)) }
-            CollectionAction.ClearFilters -> change { copy(selections = Selections()) }
             CollectionAction.LoadMore -> loadMore()
             is CollectionAction.OpenItem -> emit(CollectionEffect.OpenItem(action.id, loaded?.opened?.database?.key))
-            is CollectionAction.Create -> create(action.title.trim())
-            is CollectionAction.Upload -> upload(action)
             CollectionAction.DismissWriteFailure -> update { it.copy(writeFailure = null) }
+            is CollectionAction.Filter -> filter(action)
+            is CollectionAction.Write -> adding.handle(action)
         }
     }
 
@@ -78,7 +63,7 @@ class CollectionViewModel internal constructor(
         loadJob?.cancel()
         moreJob?.cancel()
         sheetJob?.cancel()
-        writeJob?.cancel()
+        adding.cancel()
         loaded = null
         facets = emptyList()
         update { CollectionState() }
@@ -123,13 +108,14 @@ class CollectionViewModel internal constructor(
         val current = loaded ?: return
         if (layout !in state.value.layouts) return
         inputs = inputs.copy(layout = layout)
-        update { collectionState(current.opened, current.items, current.nextCursor, inputs, facets, it) }
+        update { collectionState(current, inputs, facets, it) }
     }
 
     private fun loadMore() {
-        val current = loaded ?: return
-        val cursor = current.nextCursor ?: return
-        if (moreJob?.isActive == true || loadJob?.isActive == true) return
+        val current = loaded
+        val cursor = current?.nextCursor
+        val busy = moreJob?.isActive == true || loadJob?.isActive == true
+        if (current == null || cursor == null || busy) return
         update { it.copy(loadingMore = true) }
         moreJob = viewModelScope.launch {
             val database = current.opened.database
@@ -139,6 +125,22 @@ class CollectionViewModel internal constructor(
                 is Answer.Rejected -> update { it.copy(loadingMore = false) }
                 is Answer.Done -> publish(current.opened, page, previous = current.items)
             }
+        }
+    }
+
+    private fun filter(action: CollectionAction.Filter) {
+        when (action) {
+            CollectionAction.Filter.Open -> {
+                update { it.copy(filterSheet = FilterSheet(loading = true, failure = null, groups = emptyList())) }
+                loadFacets()
+            }
+            CollectionAction.Filter.Close -> update { it.copy(filterSheet = null) }
+            is CollectionAction.Filter.Toggle ->
+                change { copy(selections = selections.toggled(action.propertyKey, action.value)) }
+            is CollectionAction.Filter.ToggleDate ->
+                change { copy(selections = selections.presetToggled(action.propertyKey, action.preset)) }
+            is CollectionAction.Filter.Clear -> change { copy(selections = selections.cleared(action.propertyKey)) }
+            CollectionAction.Filter.ClearAll -> change { copy(selections = Selections()) }
         }
     }
 
@@ -155,50 +157,8 @@ class CollectionViewModel internal constructor(
                 is Answer.Rejected -> update { it.copy(filterSheet = FilterSheet(false, answered.kind, emptyList())) }
                 is Answer.Done -> {
                     facets = answered.value
-                    update { it.copy(filterSheet = FilterSheet(false, null, filterGroups(database, facets, inputs.selections))) }
-                }
-            }
-        }
-    }
-
-    private fun create(title: String) {
-        val current = loaded ?: return
-        if (title.isEmpty() || writeJob?.isActive == true) return
-        update { it.copy(creating = true, writeFailure = null) }
-        writeJob = viewModelScope.launch {
-            val database = current.opened.database
-            val created = answer { writes.create(database, title, config.relationFor(database)) }
-            ensureActive()
-            when (created) {
-                is Answer.Rejected -> update { it.copy(creating = false, writeFailure = WriteFailure(created.kind)) }
-                is Answer.Done -> {
-                    update { it.copy(creating = false) }
-                    emit(CollectionEffect.OpenItem(created.value.id, database.key))
-                }
-            }
-        }
-    }
-
-    @OptIn(ExperimentalEncodingApi::class)
-    private fun upload(action: CollectionAction.Upload) {
-        val current = loaded ?: return
-        if (writeJob?.isActive == true) return
-        val bytes = try {
-            Base64.decode(action.base64)
-        } catch (_: IllegalArgumentException) {
-            update { it.copy(writeFailure = WriteFailure(FailureKind.INVALID_DATA)) }
-            return
-        }
-        update { it.copy(creating = true, writeFailure = null) }
-        writeJob = viewModelScope.launch {
-            val relation = config.relationFor(current.opened.database)
-            val saved = answer { writes.upload(action.filename, action.mimeType, bytes, relation) }
-            ensureActive()
-            when (saved) {
-                is Answer.Rejected -> update { it.copy(creating = false, writeFailure = WriteFailure(saved.kind)) }
-                is Answer.Done -> {
-                    update { it.copy(creating = false) }
-                    query()
+                    val groups = filterGroups(database, facets, inputs.selections)
+                    update { it.copy(filterSheet = FilterSheet(false, null, groups)) }
                 }
             }
         }
@@ -208,9 +168,9 @@ class CollectionViewModel internal constructor(
         when (page) {
             is Answer.Rejected -> update { collectionFailure(page.kind, opened.database) }
             is Answer.Done -> {
-                val items = previous + page.value.items
-                loaded = Loaded(opened, items, page.value.nextCursor)
-                update { collectionState(opened, items, page.value.nextCursor, inputs, facets, it) }
+                val now = CollectionLoaded(opened, previous + page.value.items, page.value.nextCursor)
+                loaded = now
+                update { collectionState(now, inputs, facets, it) }
             }
         }
     }

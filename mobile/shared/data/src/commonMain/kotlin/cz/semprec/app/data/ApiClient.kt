@@ -23,6 +23,9 @@ private const val REQUEST_TIMEOUT_MILLIS = 30_000L
 private const val CONNECT_TIMEOUT_MILLIS = 15_000L
 private const val DEFAULT_MEDIA_TYPE = "application/octet-stream"
 
+/** The raw bytes of a request body and the media type they are sent as. */
+class RawBody(val mimeType: String, val bytes: ByteArray)
+
 /**
  * The only code that opens a connection to a Semprec server. It sends JSON, attaches the bearer token when it has
  * one, and turns every status or transport problem into a [FailureKind]; cancellation is rethrown, never mapped.
@@ -74,8 +77,7 @@ class ApiClient internal constructor(engine: HttpClientEngine?) {
         serverUrl: String,
         path: String,
         token: String?,
-        mimeType: String,
-        bytes: ByteArray,
+        body: RawBody,
         extraHeaders: List<Pair<String, String>>,
     ): ApiResponse = try {
         val response = http.request {
@@ -83,8 +85,8 @@ class ApiClient internal constructor(engine: HttpClientEngine?) {
             url("$serverUrl$path")
             headers(token)
             extraHeaders.forEach { (name, value) -> header(name, value) }
-            contentType(ContentType.parse(mimeType))
-            setBody(bytes)
+            contentType(ContentType.parse(body.mimeType))
+            setBody(body.bytes)
         }
         val failure = failureKind(response.status)
         if (failure == null) ApiResponse.Success(response.status.value, response.bodyAsText())

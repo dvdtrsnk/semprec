@@ -8,17 +8,19 @@ import cz.semprec.app.domain.OpenedCollection
 
 internal fun CollectionDatabase.header() = CollectionHeader(id, key, name, icon, color, searchPlaceholder)
 
-/** What the screen shows for [items] under [inputs]; the filter sheet, creation and write failure carry over. */
+/** What the last answers hold: the database, the loaded items and where the next page starts. */
+internal class CollectionLoaded(val opened: OpenedCollection, val items: List<CollectionItem>, val nextCursor: String?)
+
+/** What the screen shows for [loaded] under [inputs]; the filter sheet, creation and write failure carry over. */
 internal fun collectionState(
-    opened: OpenedCollection,
-    items: List<CollectionItem>,
-    nextCursor: String?,
+    loaded: CollectionLoaded,
     inputs: Inputs,
     facets: List<FacetResult>,
     previous: CollectionState,
 ): CollectionState {
+    val opened = loaded.opened
     val database = opened.database
-    val rows = items.map { it.toRow(database) }
+    val rows = loaded.items.map { it.toRow(database) }
     val layouts = database.layouts()
     val layout = inputs.layout.takeIf { it in layouts } ?: CollectionLayout.LIST
     val first = inputs.sortOf(database).firstOrNull()
@@ -37,7 +39,7 @@ internal fun collectionState(
         sections = sectionsOf(rows, database, layout, axis, opened.today),
         filterSheet = previous.filterSheet?.copy(groups = filterGroups(database, facets, inputs.selections)),
         activeFilterCount = inputs.selections.count,
-        hasMore = nextCursor != null,
+        hasMore = loaded.nextCursor != null,
         canCreate = database.title != null && database.fileProperty() == null,
         canUpload = database.fileProperty() != null,
         creating = previous.creating,

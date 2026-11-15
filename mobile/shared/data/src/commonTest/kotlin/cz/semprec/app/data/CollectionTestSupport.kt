@@ -92,8 +92,11 @@ const val PROJECT_JSON = """{
   "derived": {"area": {"values": [{"id": "$AREA_ITEM", "title": "Práce", "color": "#5856D6"}], "via": "project", "projectIds": ["$PROJECT_ITEM"]}}
 }"""
 
+/** A scripted server: answers a request of the mock engine. */
+typealias Handler = suspend MockRequestHandleScope.(HttpRequestData) -> HttpResponseData
+
 /** Records every request of a [MockEngine] and answers with [handler]. */
-class Recorder(private val handler: suspend MockRequestHandleScope.(HttpRequestData) -> HttpResponseData) {
+class Recorder(private val handler: Handler) {
     val requests = mutableListOf<HttpRequestData>()
     val bodies = mutableListOf<ByteArray>()
 

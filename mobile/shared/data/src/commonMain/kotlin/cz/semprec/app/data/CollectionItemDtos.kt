@@ -135,7 +135,10 @@ internal data class DerivedDto(val area: DerivedValuesDto? = null, val company: 
 }
 
 @Serializable
-internal data class DerivedValuesDto(val values: List<DerivedValueDto> = emptyList(), val projectIds: List<String> = emptyList()) {
+internal data class DerivedValuesDto(
+    val values: List<DerivedValueDto> = emptyList(),
+    val projectIds: List<String> = emptyList()
+) {
     fun toTargets(databaseKey: String): FieldValue =
         FieldValue.Targets(values.map { RelationTarget(it.id, databaseKey, it.title, it.color) })
 

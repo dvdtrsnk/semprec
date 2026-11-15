@@ -1,6 +1,9 @@
 package cz.semprec.app.domain
 
-/** Which items of a database a collection shows beyond its own filter: all, those of one area, or those related to one item. */
+/**
+ * Which items of a database a collection shows beyond its own filter: all, those of one area, or those related to
+ * one item.
+ */
 sealed interface CollectionScope {
     data object Everything : CollectionScope
 

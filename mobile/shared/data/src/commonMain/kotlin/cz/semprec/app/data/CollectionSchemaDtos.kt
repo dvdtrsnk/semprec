@@ -112,21 +112,22 @@ internal data class DateLabelsDto(val past: String = "", val noDate: String = ""
 private const val CREATED_AT = "createdAt"
 private const val DESCENDING = "desc"
 
+private val KINDS = mapOf(
+    "title" to PropertyKind.TITLE,
+    "text" to PropertyKind.TEXT,
+    "longText" to PropertyKind.LONG_TEXT,
+    "number" to PropertyKind.NUMBER,
+    "select" to PropertyKind.SELECT,
+    "multi_select" to PropertyKind.MULTI_SELECT,
+    "date" to PropertyKind.DATE,
+    "time" to PropertyKind.TIME,
+    "checkbox" to PropertyKind.CHECKBOX,
+    "relation" to PropertyKind.RELATION,
+    "file" to PropertyKind.FILE,
+    "image" to PropertyKind.IMAGE,
+    "url" to PropertyKind.URL,
+    "color" to PropertyKind.COLOR,
+)
+
 /** The kind a property type of the server is drawn as; a type no screen draws is [PropertyKind.OTHER]. */
-internal fun propertyKind(type: String): PropertyKind = when (type) {
-    "title" -> PropertyKind.TITLE
-    "text" -> PropertyKind.TEXT
-    "longText" -> PropertyKind.LONG_TEXT
-    "number" -> PropertyKind.NUMBER
-    "select" -> PropertyKind.SELECT
-    "multi_select" -> PropertyKind.MULTI_SELECT
-    "date" -> PropertyKind.DATE
-    "time" -> PropertyKind.TIME
-    "checkbox" -> PropertyKind.CHECKBOX
-    "relation" -> PropertyKind.RELATION
-    "file" -> PropertyKind.FILE
-    "image" -> PropertyKind.IMAGE
-    "url" -> PropertyKind.URL
-    "color" -> PropertyKind.COLOR
-    else -> PropertyKind.OTHER
-}
+internal fun propertyKind(type: String): PropertyKind = KINDS[type] ?: PropertyKind.OTHER

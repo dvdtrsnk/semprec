@@ -98,7 +98,8 @@ class HttpCollectionWrites(private val api: AuthenticatedApi, private val reads:
         )
         return when (response) {
             is ApiResponse.Failure -> RepositoryResult.Failure(response.kind)
-            is ApiResponse.Success -> response.etag?.trim('"')?.let { RepositoryResult.Content(PageContent(markdown, it)) }
+            is ApiResponse.Success -> response.etag?.trim('"')
+                ?.let { RepositoryResult.Content(PageContent(markdown, it)) }
                 ?: RepositoryResult.Failure(FailureKind.INVALID_DATA)
         }
     }
@@ -116,7 +117,7 @@ class HttpCollectionWrites(private val api: AuthenticatedApi, private val reads:
                 add(ATTACH_RELATION_HEADER to attachTo.first)
             }
         }
-        return decodeItem(api.upload("/api/files", mimeType, bytes, headers))
+        return decodeItem(api.upload("/api/files", RawBody(mimeType, bytes), headers))
     }
 
     private suspend fun decodeItem(response: ApiResponse): RepositoryResult<CollectionItem> {
