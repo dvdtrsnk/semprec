@@ -816,6 +816,42 @@ describe("POST /api/mail/mailboxes/oauth/complete (issue gh-1686)", () => {
     expect((await stateRow(state))?.used_at).not.toBeNull();
   });
 
+  it.each(["a", "grant", "invalid_grant"])(
+    "answers 400 validation_failed for the code %j that the provider refuses as invalid_grant, although the code is part of the provider's error token",
+    async (code) => {
+      const state = stateOf(await start("gmail"));
+      const provider = fakeProvider({ [GOOGLE_TOKEN_URL]: () => json({ error: "invalid_grant" }, 400) });
+
+      const error = await caught(complete({ state, code }, provider));
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toMatchObject({ status: 400, code: "validation_failed", details: { field: "code" } });
+      expect(provider.calls).toHaveLength(1);
+      expect(provider.calls[0]?.form?.get("code")).toBe(code);
+      expect(await connected()).toEqual(NOTHING);
+      expect((await stateRow(state))?.used_at).not.toBeNull();
+    },
+  );
+
+  it.each(["a", "invalid_client"])(
+    "still propagates a token endpoint that refuses the OAuth client as an unexpected error for the code %j, and creates nothing",
+    async (code) => {
+      const state = stateOf(await start("gmail"));
+      const provider = fakeProvider({ [GOOGLE_TOKEN_URL]: () => json({ error: "invalid_client" }, 401) });
+
+      const error = await caught(complete({ state, code }, provider));
+
+      expect(error).not.toBeInstanceOf(ChokePointError);
+      expect(error).toBeInstanceOf(MailAuthorizationCodeRejectedError);
+      // The submitted code is part of the error token, so the redaction blanks it, and the answer is not a refused grant.
+      expect(error).toMatchObject({ providerError: null, grantRefused: false });
+      expect(error.message).toBe("OAuth code exchange rejected the authorization code (status 401)");
+      expect(provider.calls).toHaveLength(1);
+      expect(await connected()).toEqual(NOTHING);
+      expect((await stateRow(state))?.used_at).not.toBeNull();
+    },
+  );
+
   it.each<[string, number, unknown, string | null, string]>([
     [
       "refuses the OAuth client (a wrong or expired client secret)",
@@ -843,7 +879,7 @@ describe("POST /api/mail/mailboxes/oauth/complete (issue gh-1686)", () => {
       // No `ChokePointError`: the adapter logs the failure and answers a generic 500.
       expect(error).not.toBeInstanceOf(ChokePointError);
       expect(error).toBeInstanceOf(MailAuthorizationCodeRejectedError);
-      expect(error).toMatchObject({ providerError });
+      expect(error).toMatchObject({ providerError, grantRefused: false });
       expect(error.message).toBe(`OAuth code exchange rejected the authorization code (${detail})`);
       const verifier = provider.calls[0]?.form?.get("code_verifier");
       if (!verifier) throw new Error("the token request carried no verifier");

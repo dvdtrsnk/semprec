@@ -29,7 +29,7 @@ import {
   type MailboxRemovalCleanupDependencies,
   type MailboxRemovalCleanupInput,
 } from "./mailboxRemovalProviderCleanup.js";
-import { lockMailboxSync } from "./mailboxSyncGuard.js";
+import { lockMailboxSync, MAILBOX_REMOVAL_SYNC_WAIT_MS } from "./mailboxSyncGuard.js";
 import { deleteMailServerSettings } from "./mailServerSettingsStore.js";
 
 /** The key the removal writes on the Mailboxes item: `syncStatus` is `owner: 'system'`, and the ADR named above records the removal as its second writer. */
@@ -51,6 +51,8 @@ export interface RemoveMailboxOptions {
   cleanupDependencies?: MailboxRemovalCleanupDependencies;
   /** The time limit of one cleanup step; the cleanup's default unless a test passes a shorter one. */
   cleanupStepTimeoutMs?: number;
+  /** How long the removal waits for the mailbox's sync guard; `MAILBOX_REMOVAL_SYNC_WAIT_MS` unless a test passes a shorter one. */
+  syncWaitMs?: number;
 }
 
 /**
@@ -61,10 +63,13 @@ export interface RemoveMailboxOptions {
  *
  * Its first lock is the mailbox's sync guard (`lockMailboxSync`), which the write transaction of a
  * sync pass of this mailbox takes as its first statement and holds to its end (`mailSyncJob.ts`). A
- * removal that arrives during a pass waits there, holding no row lock, until the pass has ended or the
- * statement timeout cancels the removal. A pass that arrives during a removal waits for it and then
- * finds the mailbox removed. A concurrent second removal of the same mailbox waits on the guard too
- * and then finds the mailbox trashed.
+ * removal that arrives while the guard is held waits there, holding no row lock, until the guard is
+ * free or `options.syncWaitMs` (`MAILBOX_REMOVAL_SYNC_WAIT_MS`, 15 s, by default) has passed. After that
+ * time it throws `MailboxSyncBusyError` (409 `mailbox_sync_busy`) having written nothing, and the request
+ * can be repeated; the holder can also be a pass of another mailbox, which holds its own guard while it
+ * waits for the tenant's mail-thread mutation guard. A pass that arrives during a removal waits for it,
+ * without a bound, and then finds the mailbox removed. A concurrent second removal of the same mailbox
+ * waits on the guard too and then finds the mailbox trashed.
  *
  * Under the guard it locks the `mail_account_sync_state` row and then the Mailboxes item. That is the
  * order the sync job's failure paths write them in (the state row, then `syncStatus`); they run
@@ -86,7 +91,7 @@ async function removeMailboxWithClient(
 ): Promise<MailboxRemovalCleanupInput | null> {
   const mailboxes = await getDatabaseByModuleId(client, MAILBOXES_MODULE_ID);
   if (mailboxes === null) return null;
-  await lockMailboxSync(client, mailboxItemId);
+  await lockMailboxSync(client, mailboxItemId, { maxWaitMs: options.syncWaitMs ?? MAILBOX_REMOVAL_SYNC_WAIT_MS });
   const syncState = await lockMailAccountSyncState(client, mailboxItemId);
   const mailbox = await lockItemById(client, mailboxes.id, mailboxItemId);
   if (mailbox === null || mailbox.deletedAt !== null) return null;
@@ -129,7 +134,9 @@ async function removeMailboxWithClient(
 /**
  * Removes mailbox `mailboxItemId` of the caller's tenant in one transaction (issue gh-1690): any
  * failure rolls back every write of `removeMailboxWithClient`, so the mailbox, its credential and its
- * sync rows stay as they were. Returns whether a live mailbox was removed.
+ * sync rows stay as they were. Returns whether a live mailbox was removed. A sync guard that is still
+ * held after the bounded wait fails the removal with `MailboxSyncBusyError` (409): nothing is written
+ * and no cleanup runs.
  *
  * After the commit of a removal it awaits the cleanup outside the database (issue gh-2030,
  * `cleanUpRemovedMailbox`): the hosted live-sync lifecycle, the Graph subscription and, for a Gmail

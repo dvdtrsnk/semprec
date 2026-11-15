@@ -877,7 +877,11 @@ export interface MoveRelationEdgesInput {
   toItemId: string;
 }
 
-/** An edge `moveRelationEdgesWithClient` left on `fromItemId`, because the choke point refuses it for `toItemId`. */
+/**
+ * An edge `moveRelationEdgesWithClient` left on `fromItemId`, because the choke point refuses it for `toItemId`. An
+ * edge `toItemId` already holds is never one of these, whatever state its other item is in: it is deleted from
+ * `fromItemId` and nothing is refused.
+ */
 export interface RefusedRelationEdge {
   /** The relation property the move was asked for. */
   relationPropertyId: string;
@@ -932,10 +936,13 @@ async function relationCreationRefusal(
  * Moves the edges of one relation property from `fromItemId` to `toItemId` (issue #1726), each as a delete plus a
  * create through `deleteRelationWithClient` and `createRelationIfAbsentWithClient`, with their guards, hooks and
  * announcements. Three kinds of edge are not moved:
- * - an edge `createRelationWithClient` would refuse for `toItemId` with a `ValidationError`
+ * - an edge `toItemId` already holds (the same relation definition, the same two items, the same orientation) is
+ *   checked first: it keeps its own metadata there, the one of `fromItemId` is only deleted and counted in `moved`,
+ *   and nothing is written on `toItemId`. Such an edge is never refused, whatever state its other item is in, because
+ *   nothing is lost by deleting the copy;
+ * - any other edge `createRelationWithClient` would refuse for `toItemId` with a `ValidationError`
  *   (`relationCreationRefusal`) stays on `fromItemId` untouched and is returned in `refused`, so the caller decides
  *   what a move that left edges behind means and reports it;
- * - an edge `toItemId` already has keeps its own metadata there, and the one of `fromItemId` is only deleted;
  * - an edge that is no longer stored when its delete runs is not created on `toItemId`.
  * Cardinality is not among them: only the write checks it. When `toItemId` already holds the only edge a `one_to_one`
  * or `one_to_many` relation allows it, the move fails with the `CardinalityViolationError` of the insert, which runs
@@ -961,6 +968,13 @@ export async function moveRelationEdgesWithClient(
   for (const edge of edges) {
     const otherItemId = relationsStore.otherSide(edge, input.fromItemId);
     const target = edgeOf(input.toItemId, otherItemId);
+    // The read takes no lock. A concurrent delete of the edge `toItemId` holds that commits between this read and the
+    // delete below leaves the same state as that delete running after this move, so the order is not observable.
+    const held = normalizeRelationSides(reldef, input.relationPropertyId, target.callerItemId, target.targetItemId);
+    if (await relationsStore.getItemRelationByTuple(client, reldef.id, held.itemA, held.itemB)) {
+      if (await deleteRelationWithClient(client, edgeOf(input.fromItemId, otherItemId), context)) result.moved++;
+      continue;
+    }
     const refusal = await relationCreationRefusal(client, { ...target, metadata: edge.metadata }, context);
     if (refusal) {
       result.refused.push({

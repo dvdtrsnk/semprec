@@ -156,7 +156,7 @@ describe("tenant-checked partition functions (issue #1021)", () => {
     expect(rows.map((r) => r.proname)).toEqual(["create_items_partition", "drop_items_partition"]);
     for (const row of rows) {
       expect(row.prosecdef).toBe(true);
-      expect(row.proconfig).toContain("search_path=pg_catalog, public");
+      expect(row.proconfig).toContain("search_path=pg_catalog, public, pg_temp");
       expect(row.side).toBe(false);
       expect(row.data).toBe(true);
     }

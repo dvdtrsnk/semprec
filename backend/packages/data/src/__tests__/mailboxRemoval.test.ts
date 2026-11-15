@@ -24,8 +24,10 @@ import { deleteMailFolderSyncStatesOfMailbox, ensureMailFolderSyncState } from "
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
 import { upsertMailServerSettings } from "../mail/mailServerSettingsStore.js";
 import { handleSyncMailAccountTask, type MailSyncAdapterFactory } from "../mail/mailSyncJob.js";
+import { mailboxRemovalJobKey } from "../mail/mailboxRemovalJob.js";
 import { createMailboxRemovalRouteHandler, removeMailbox } from "../mail/mailboxRemoval.js";
-import { lockMailboxSync } from "../mail/mailboxSyncGuard.js";
+import type { MailboxRemovalCleanupDependencies } from "../mail/mailboxRemovalProviderCleanup.js";
+import { lockMailboxSync, MAILBOX_REMOVAL_SYNC_WAIT_MS, MailboxSyncBusyError } from "../mail/mailboxSyncGuard.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 import { createActionQueueAffinity } from "../scheduler/actions.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -713,6 +715,313 @@ describe("mailbox removal (gh-1690)", () => {
         await expect(
           runAsSystem("test:mailbox-sync-guard", () => lockMailboxSync(client, randomUUID())),
         ).rejects.toBeInstanceOf(TenantScopeMissingError);
+      } finally {
+        client.release();
+      }
+    });
+  });
+
+  describe("the bounded wait for the sync guard (sp-98129c34)", () => {
+    /** A second transaction that holds the mailbox's sync guard until `release()`; `ended` settles once it has ended. */
+    function holdSyncGuard(mailboxItemId: string): {
+      held: Promise<void>;
+      release: () => void;
+      ended: Promise<void>;
+    } {
+      const held = signal();
+      const released = signal();
+      const ended = inTenant(async (client) => {
+        await lockMailboxSync(client, mailboxItemId);
+        held.resolve();
+        await released.promise;
+      });
+      return { held: Promise.race([held.promise, ended]), release: released.resolve, ended };
+    }
+
+    /** Cleanup members that record a call: a removal that rolled back must not reach any of them. */
+    function recordingCleanup(): { calls: string[]; dependencies: MailboxRemovalCleanupDependencies } {
+      const calls: string[] = [];
+      return {
+        calls,
+        dependencies: {
+          mailLiveSync: {
+            stopMailbox: async () => {
+              calls.push("stopMailbox");
+            },
+          },
+          outboundHttp: async () => {
+            calls.push("outboundHttp");
+            return new Response(null, { status: 200 });
+          },
+        },
+      };
+    }
+
+    function queuedRemovalJobs(mailboxItemId: string): Promise<string[]> {
+      return admin
+        .query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = $1", [
+          mailboxRemovalJobKey(mailboxItemId),
+        ])
+        .then(({ rows }) => rows.map((row) => row.key));
+    }
+
+    async function lockTimeoutOf(client: PoolClient): Promise<string> {
+      const { rows } = await client.query<{ value: string }>("SELECT current_setting('lock_timeout') AS value");
+      const value = rows[0]?.value;
+      if (value === undefined) throw new Error("current_setting returned no row");
+      return value;
+    }
+
+    it("fails with MailboxSyncBusyError after the bound, writes nothing, runs no cleanup, and a repeated removal succeeds once the guard is free", async () => {
+      const mailbox = await inTenant((client) => createConnectedMailbox(client, "Work"));
+      const before = await snapshot(mailbox);
+      const holder = holdSyncGuard(mailbox.id);
+      const cleanup = recordingCleanup();
+      try {
+        await holder.held;
+        const startedAt = Date.now();
+        const error = await runInTenant(tenant, () =>
+          removeMailbox(runtime, mailbox.id, {
+            queueAffinity: createActionQueueAffinity(),
+            syncWaitMs: 300,
+            cleanupDependencies: cleanup.dependencies,
+          }),
+        ).then(
+          () => null,
+          (caught: unknown) => caught,
+        );
+        const elapsedMs = Date.now() - startedAt;
+
+        expect(error).toBeInstanceOf(MailboxSyncBusyError);
+        expect(error).toMatchObject({ status: 409, code: "mailbox_sync_busy" });
+        // The bound is the wait: the guard was not yet free, and the removal did not wait for the statement timeout.
+        expect(elapsedMs).toBeGreaterThanOrEqual(250);
+        expect(elapsedMs).toBeLessThan(10_000);
+        expect(await snapshot(mailbox)).toEqual(before);
+        expect(await queuedRemovalJobs(mailbox.id)).toEqual([]);
+        expect(cleanup.calls).toEqual([]);
+      } finally {
+        holder.release();
+        await holder.ended;
+      }
+
+      expect(await remove(mailbox.id)).toBe(true);
+      const after = await snapshot(mailbox);
+      expect(after).toMatchObject(REMOVED);
+      expectTrashedAsNeedsReauthorization(after);
+      expect(await queuedRemovalJobs(mailbox.id)).toEqual([mailboxRemovalJobKey(mailbox.id)]);
+    });
+
+    it("lets a removal succeed when the guard is released within the bound", async () => {
+      const mailbox = await inTenant((client) => createConnectedMailbox(client, "Work"));
+      const holder = holdSyncGuard(mailbox.id);
+      await holder.held;
+      const removal = runInTenant(tenant, () =>
+        removeMailbox(runtime, mailbox.id, { queueAffinity: createActionQueueAffinity(), syncWaitMs: 20_000 }),
+      );
+      try {
+        // The removal waits at the guard: the one waiting backend waits for an advisory lock.
+        await vi.waitFor(
+          async () => {
+            expect((await lockWaits()).map((wait) => wait.lock)).toEqual(["advisory"]);
+          },
+          { timeout: 10_000, interval: 25 },
+        );
+      } finally {
+        holder.release();
+        await Promise.allSettled([holder.ended, removal]);
+      }
+
+      expect(await removal).toBe(true);
+      const after = await snapshot(mailbox);
+      expect(after).toMatchObject(REMOVED);
+      expectTrashedAsNeedsReauthorization(after);
+    });
+
+    it("answers 409 mailbox_sync_busy from the route handler when the guard is still held after the default bound", async () => {
+      const mailbox = await inTenant((client) => createConnectedMailbox(client, "Work"));
+      const before = await snapshot(mailbox);
+      const holder = holdSyncGuard(mailbox.id);
+      const handler = createMailboxRemovalRouteHandler(runtime, {});
+      let error: unknown;
+      try {
+        await holder.held;
+        const startedAt = Date.now();
+        error = await runInTenant(tenant, () =>
+          handler({ params: { id: mailbox.id }, identity: { user: { id: randomUUID() } } }),
+        ).then(
+          () => null,
+          (caught: unknown) => caught,
+        );
+        // The default bound is 15 s, below the pool's 60 s statement timeout.
+        expect(Date.now() - startedAt).toBeGreaterThanOrEqual(MAILBOX_REMOVAL_SYNC_WAIT_MS - 1_000);
+      } finally {
+        holder.release();
+        await holder.ended;
+      }
+
+      expect(error).toBeInstanceOf(MailboxSyncBusyError);
+      expect(error).toMatchObject({ status: 409, code: "mailbox_sync_busy" });
+      expect(await snapshot(mailbox)).toEqual(before);
+    }, 60_000);
+
+    it.each(["0", "7s"])("leaves lock_timeout at %s once the bounded lock is granted", async (configured) => {
+      await inTenant(async (client) => {
+        await client.query("SELECT set_config('lock_timeout', $1, true)", [configured]);
+        const before = await lockTimeoutOf(client);
+
+        await lockMailboxSync(client, randomUUID(), { maxWaitMs: 300 });
+        expect(await lockTimeoutOf(client)).toBe(before);
+      });
+    });
+
+    it.each(["0", "7s"])(
+      "sends no statement that sets lock_timeout without the option, whatever the transaction has configured (%s)",
+      async (configured) => {
+        await inTenant(async (client) => {
+          await client.query("SELECT set_config('lock_timeout', $1, true)", [configured]);
+          const before = await lockTimeoutOf(client);
+          const query = vi.spyOn(client, "query");
+          try {
+            await lockMailboxSync(client, randomUUID());
+
+            // A bound that is applied and put back would leave the setting as it was, so the sent statements
+            // are what shows that the sync pass's wait is not bounded.
+            const sent = query.mock.calls.map(([statement]) =>
+              typeof statement === "string" ? statement : (statement as { text?: string }).text,
+            );
+            expect(sent.length).toBeGreaterThan(0);
+            expect(sent.filter((statement) => statement?.includes("lock_timeout"))).toEqual([
+              expect.stringContaining("current_setting('lock_timeout')"),
+            ]);
+          } finally {
+            query.mockRestore();
+          }
+          expect(await lockTimeoutOf(client)).toBe(before);
+        });
+      },
+    );
+
+    it("lets a waiter without the option be ended by the transaction's own lock_timeout, which a default bound would have replaced", async () => {
+      const mailbox = await inTenant((client) => createBareMailbox(client, "Work"));
+      const holder = holdSyncGuard(mailbox.id);
+      await holder.held;
+      let error: unknown;
+      try {
+        const startedAt = Date.now();
+        error = await inTenant(async (client) => {
+          await client.query("SELECT set_config('lock_timeout', '200ms', true)");
+          await lockMailboxSync(client, mailbox.id);
+        }).then(
+          () => null,
+          (caught: unknown) => caught,
+        );
+        expect(Date.now() - startedAt).toBeLessThan(10_000);
+      } finally {
+        holder.release();
+        await holder.ended;
+      }
+
+      // The database's own lock_timeout ended the wait: it is not translated into the removal's busy answer.
+      expect(error).toMatchObject({ code: "55P03" });
+      expect(error).not.toBeInstanceOf(MailboxSyncBusyError);
+    });
+
+    it("leaves lock_timeout as it was after a bounded wait that ended by the grant, so a later row lock is not bounded", async () => {
+      const mailbox = await inTenant((client) => createBareMailbox(client, "Work"));
+      const holder = holdSyncGuard(mailbox.id);
+      await holder.held;
+      let seen: { before: string; after: string } | undefined;
+      const waiter = inTenant(async (client) => {
+        const before = await lockTimeoutOf(client);
+        await lockMailboxSync(client, mailbox.id, { maxWaitMs: 20_000 });
+        seen = { before, after: await lockTimeoutOf(client) };
+      });
+      try {
+        await vi.waitFor(
+          async () => {
+            expect((await lockWaits()).map((wait) => wait.lock)).toEqual(["advisory"]);
+          },
+          { timeout: 10_000, interval: 25 },
+        );
+      } finally {
+        holder.release();
+        await Promise.allSettled([holder.ended, waiter]);
+      }
+      await waiter;
+      expect(seen).toBeDefined();
+      expect(seen?.after).toBe(seen?.before);
+    });
+
+    it.each([0, -1, 1.5, Number.NaN])("refuses the maximum wait %s before any query", async (maxWaitMs) => {
+      const client = await runtime.connect();
+      try {
+        await client.query("BEGIN");
+        await expect(runInTenant(tenant, () => lockMailboxSync(client, randomUUID(), { maxWaitMs }))).rejects.toThrow(
+          RangeError,
+        );
+        await client.query("ROLLBACK");
+      } finally {
+        client.release();
+      }
+    });
+
+    it("throws before any query when the client is outside a transaction", async () => {
+      const client = await runtime.connect();
+      try {
+        const query = vi.spyOn(client, "query");
+        const error: unknown = await runInTenant(tenant, () => lockMailboxSync(client, randomUUID())).then(
+          () => null,
+          (caught: unknown) => caught,
+        );
+        expect(error).not.toBeInstanceOf(TenantScopeMissingError);
+        expect(error).toEqual(new Error("The mailbox sync guard requires a READ COMMITTED tenant transaction"));
+        expect(query).not.toHaveBeenCalled();
+      } finally {
+        client.release();
+      }
+    });
+
+    it("throws before it locks in a REPEATABLE READ transaction of the tenant, and locks in a READ COMMITTED one", async () => {
+      const mailboxItemId = randomUUID();
+      const advisoryLocksHeld = async (client: PoolClient): Promise<number> => {
+        const { rows } = await client.query<{ held: number }>(
+          "SELECT count(*)::int AS held FROM pg_locks WHERE pid = pg_backend_pid() AND locktype = 'advisory'",
+        );
+        return rows[0]?.held ?? -1;
+      };
+      await runInTenant(tenant, () =>
+        withTransaction(
+          runtime,
+          async (client) => {
+            await expect(lockMailboxSync(client, mailboxItemId)).rejects.toThrow(
+              "The mailbox sync guard requires a READ COMMITTED tenant transaction",
+            );
+            expect(await advisoryLocksHeld(client)).toBe(0);
+          },
+          { isolation: "repeatable_read" },
+        ),
+      );
+      await inTenant(async (client) => {
+        await lockMailboxSync(client, mailboxItemId);
+        expect(await advisoryLocksHeld(client)).toBe(1);
+      });
+    });
+
+    it("throws before it locks in a READ COMMITTED transaction of another tenant than the scope's", async () => {
+      const other = await createTestTenant(admin);
+      const client = await runtime.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.tenant_id', $1, true)", [other]);
+        await expect(runInTenant(tenant, () => lockMailboxSync(client, randomUUID()))).rejects.toThrow(
+          "The mailbox sync guard requires a READ COMMITTED tenant transaction",
+        );
+        const { rows } = await client.query<{ held: number }>(
+          "SELECT count(*)::int AS held FROM pg_locks WHERE pid = pg_backend_pid() AND locktype = 'advisory'",
+        );
+        expect(rows[0]?.held).toBe(0);
+        await client.query("ROLLBACK");
       } finally {
         client.release();
       }

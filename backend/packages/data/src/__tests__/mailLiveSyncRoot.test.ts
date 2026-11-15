@@ -25,6 +25,8 @@ import { withTransaction } from "../db/pool.js";
 import { getMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
 import { provisionTenant } from "../tenancy/provisionTenant.js";
+import { removeMailbox } from "../mail/mailboxRemoval.js";
+import { createActionQueueAffinity } from "../scheduler/actions.js";
 import {
   createMailLiveSyncRoot,
   type MailAccountLifecycle,
@@ -1810,5 +1812,255 @@ describe("mail live-sync root: stopMailbox (issue gh-2030)", () => {
     expect(stopsOf(events)).toEqual([`stop:${mailbox}`]);
     await root.stop();
     expect(stopsOf(events).sort()).toEqual([`stop:${mailbox}`, `stop:${other}`].sort());
+  });
+});
+
+describe("mail live-sync root: seeding under a share lock on the live mailbox (sp-1272c2b9)", () => {
+  let dataPool: Pool;
+  let removalPool: Pool;
+
+  beforeEach(async () => {
+    pool ??= getTestPool();
+    await resetDatabase(pool);
+    await seedSystem(pool);
+    dataPool = await createRuntimeRolePool(pool, "semprec_data");
+    removalPool = await createRuntimeRolePool(pool, "semprec_data");
+  });
+
+  afterEach(async () => {
+    await dataPool.end();
+    await removalPool.end();
+  });
+
+  const tenantId = (): string => getTenantZeroId();
+
+  /** A live mailbox of tenant zero without a sync state row, created through the runtime role. */
+  async function addMailbox(provider = "generic"): Promise<string> {
+    return runInTenant(tenantId(), () =>
+      withTransaction(dataPool, async (client) => {
+        const { mailboxesDatabaseId } = await resolveMailModuleIds(client);
+        const item = await createItemWithClient(client, { databaseId: mailboxesDatabaseId, properties: { provider } });
+        return item.id;
+      }),
+    );
+  }
+
+  function syncStateOf(mailboxItemId: string): Promise<Awaited<ReturnType<typeof getMailAccountSyncState>>> {
+    return runInTenant(tenantId(), () =>
+      withTransaction(dataPool, (client) => getMailAccountSyncState(client, mailboxItemId)),
+    );
+  }
+
+  function removal(mailboxItemId: string): Promise<boolean> {
+    return runInTenant(tenantId(), () =>
+      removeMailbox(removalPool, mailboxItemId, { queueAffinity: createActionQueueAffinity() }),
+    );
+  }
+
+  function signal(): { promise: Promise<void>; resolve: () => void } {
+    let resolve: () => void = () => {};
+    const promise = new Promise<void>((settle) => {
+      resolve = settle;
+    });
+    return { promise, resolve };
+  }
+
+  /**
+   * Wraps `target` so that the first statement of a page transaction whose text is `holdAt` stops
+   * until `release()`. `held` settles when it stopped, with the backend pid of that transaction and
+   * the id of the last account whose sync state a statement of this pool inserted. The held statement
+   * runs after the release.
+   */
+  function holdingPool(
+    target: Pool,
+    holdAt: "SAVEPOINT discover_account" | "RELEASE SAVEPOINT discover_account",
+  ): {
+    pool: Pool;
+    held: Promise<{ pid: number; lastSeeded: string | undefined }>;
+    release: () => void;
+  } {
+    const released = signal();
+    let resolveHeld: (value: { pid: number; lastSeeded: string | undefined }) => void = () => {};
+    const held = new Promise<{ pid: number; lastSeeded: string | undefined }>((settle) => {
+      resolveHeld = settle;
+    });
+    let holding = false;
+    let lastSeeded: string | undefined;
+    const proxy = new Proxy(target, {
+      get(t, prop, receiver) {
+        if (prop !== "connect") return Reflect.get(t, prop, receiver);
+        return async (...args: unknown[]) => {
+          // A heartbeat's `pool.query()` connects in callback style; only the promise style needs wrapping.
+          if (typeof args[0] === "function") return (t.connect as (...a: unknown[]) => unknown)(...args);
+          const client = await (t.connect as (...a: unknown[]) => Promise<PoolClient>)(...args);
+          return new Proxy(client, {
+            get(clientTarget, clientProp, clientReceiver) {
+              if (clientProp !== "query") return Reflect.get(clientTarget, clientProp, clientReceiver);
+              return async (...queryArgs: unknown[]) => {
+                const [text, params] = queryArgs as [string, unknown[] | undefined];
+                if (typeof text === "string" && text.includes("INSERT INTO mail_account_sync_state")) {
+                  const first = params?.[0];
+                  lastSeeded = typeof first === "string" ? first : undefined;
+                }
+                if (text === holdAt && !holding) {
+                  holding = true;
+                  const { rows } = await clientTarget.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+                  const pid = rows[0]?.pid;
+                  if (pid === undefined) throw new Error("pg_backend_pid returned no row");
+                  resolveHeld({ pid, lastSeeded });
+                  await released.promise;
+                }
+                return (clientTarget.query as (...a: unknown[]) => unknown)(...queryArgs);
+              };
+            },
+          });
+        };
+      },
+    });
+    return { pool: proxy, held, release: released.resolve };
+  }
+
+  it("seeds no row and hosts nothing for a mailbox whose removal committed between the page's read and its seeding", async () => {
+    const removed = await addMailbox();
+    const sibling = await addMailbox();
+    const hold = holdingPool(dataPool, "SAVEPOINT discover_account");
+    const errors: Array<{ mailboxItemId: string; phase: string }> = [];
+    const { factory, byAccount } = recordingFactory();
+    const root = createMailLiveSyncRoot(hold.pool, factory, {
+      onLifecycleError: (mailboxItemId, phase) => errors.push({ mailboxItemId, phase }),
+    });
+
+    const pass = root.reconcileOnce();
+    try {
+      // The page transaction has listed both mailboxes as live and has seeded none of them.
+      await Promise.race([hold.held, pass]);
+      expect(await syncStateOf(removed)).toBeNull();
+      // The removal commits on a second pool before discovery seeds anything.
+      expect(await removal(removed)).toBe(true);
+    } finally {
+      hold.release();
+      await pass;
+    }
+
+    expect(await syncStateOf(removed)).toBeNull();
+    expect(byAccount.has(removed)).toBe(false);
+    expect(errors).toEqual([]);
+    expect(byAccount.get(sibling)?.starts).toBe(1);
+    expect((await syncStateOf(sibling))?.syncMode).toBe("imap");
+
+    // A later pass does not seed or host the trashed mailbox either.
+    await root.reconcileOnce();
+    expect(await syncStateOf(removed)).toBeNull();
+    expect(byAccount.has(removed)).toBe(false);
+    await root.stop();
+  });
+
+  it("makes a removal that starts after discovery's share lock wait for the page transaction, and then leaves the mailbox without a row", async () => {
+    const first = await addMailbox();
+    const second = await addMailbox();
+    const hold = holdingPool(dataPool, "RELEASE SAVEPOINT discover_account");
+    const errors: Array<{ mailboxItemId: string; phase: string }> = [];
+    const { factory } = recordingFactory();
+    const root = createMailLiveSyncRoot(hold.pool, factory, {
+      onLifecycleError: (mailboxItemId, phase) => errors.push({ mailboxItemId, phase }),
+    });
+
+    const pass = root.reconcileOnce();
+    let removing: Promise<boolean> | undefined;
+    let seeded: string | undefined;
+    try {
+      // The page transaction has inserted the row of the account it seeded first, under its share lock.
+      const { pid, lastSeeded } = await Promise.race([hold.held, pass.then(() => Promise.reject(new Error("ended")))]);
+      seeded = lastSeeded;
+      if (seeded === undefined) throw new Error("discovery seeded no account");
+      expect([first, second]).toContain(seeded);
+      let removalSettled = false;
+      removing = removal(seeded).finally(() => {
+        removalSettled = true;
+      });
+      // The removal waits for the discovery transaction (observed through the database, not a timeout).
+      await vi.waitFor(
+        async () => {
+          const { rows } = await pool.query<{ pid: number }>(
+            "SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+            [pid],
+          );
+          expect(rows).toHaveLength(1);
+        },
+        { timeout: 10_000, interval: 25 },
+      );
+      expect(removalSettled).toBe(false);
+    } finally {
+      hold.release();
+      await Promise.allSettled([pass, removing]);
+    }
+
+    await pass;
+    expect(await removing).toBe(true);
+    if (seeded === undefined) throw new Error("discovery seeded no account");
+    // The removal deleted the row discovery inserted, and the mailbox is in the trash.
+    expect(await syncStateOf(seeded)).toBeNull();
+    const { rows } = await pool.query<{ deleted: boolean }>(
+      "SELECT deleted_at IS NOT NULL AS deleted FROM items WHERE id = $1",
+      [seeded],
+    );
+    expect(rows).toEqual([{ deleted: true }]);
+    // The other mailbox of the page kept its row.
+    const other = seeded === first ? second : first;
+    expect(await syncStateOf(other)).not.toBeNull();
+    expect(errors).toEqual([]);
+    await root.stop();
+  });
+
+  it("does not wait for a mailbox whose item another transaction holds FOR UPDATE: the account is left out of that pass and hosted by a later one", async () => {
+    const locked = await addMailbox();
+    const sibling = await addMailbox();
+    const holderHasLock = signal();
+    const holderMayEnd = signal();
+    const holder = runInTenant(tenantId(), () =>
+      withTransaction(removalPool, async (client) => {
+        await client.query("SELECT id FROM items WHERE id = $1 FOR UPDATE", [locked]);
+        holderHasLock.resolve();
+        await holderMayEnd.promise;
+      }),
+    );
+    const errors: Array<{ mailboxItemId: string; phase: string }> = [];
+    const { factory, byAccount } = recordingFactory();
+    const root = createMailLiveSyncRoot(dataPool, factory, {
+      onLifecycleError: (mailboxItemId, phase) => errors.push({ mailboxItemId, phase }),
+    });
+    try {
+      await Promise.race([holderHasLock.promise, holder]);
+      // This pass ends while the holder's transaction is still open.
+      await root.reconcileOnce();
+      expect(byAccount.has(locked)).toBe(false);
+      expect(await syncStateOf(locked)).toBeNull();
+      expect(byAccount.get(sibling)?.starts).toBe(1);
+      expect(errors).toEqual([]);
+    } finally {
+      holderMayEnd.resolve();
+      await holder;
+    }
+
+    await root.reconcileOnce();
+    expect(byAccount.get(locked)?.starts).toBe(1);
+    expect((await syncStateOf(locked))?.syncMode).toBe("imap");
+    expect(errors).toEqual([]);
+    await root.stop();
+  });
+
+  it("gives a live mailbox without a row the provider's default sync mode and hosts it", async () => {
+    const gmail = await addMailbox("gmail");
+    const outlook = await addMailbox("outlook");
+    const { factory, byAccount } = recordingFactory();
+    const root = createMailLiveSyncRoot(dataPool, factory);
+
+    await root.reconcileOnce();
+
+    expect((await syncStateOf(gmail))?.syncMode).toBe("gmail_api");
+    expect((await syncStateOf(outlook))?.syncMode).toBe("graph_api");
+    expect(byAccount.get(gmail)?.starts).toBe(1);
+    expect(byAccount.get(outlook)?.starts).toBe(1);
+    await root.stop();
   });
 });

@@ -14,7 +14,7 @@ describe("parseRestoreTestResultArgs (issue #178)", () => {
     });
   });
 
-  it.each(["deletionLedger", "tenantKeysExcluded", "tenantKeysRestore"])(
+  it.each(["clusterRoles", "deletionLedger", "tenantKeysExcluded", "tenantKeysRestore"])(
     "parses a failure at the %s check",
     (failedCheck) => {
       expect(parseRestoreTestResultArgs(["failed", "run-1", failedCheck])).toEqual({

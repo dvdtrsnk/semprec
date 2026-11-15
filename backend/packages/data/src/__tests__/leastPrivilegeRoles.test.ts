@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import {
   createTestProjectItem,
+  createTestTenant,
   getTenantZeroId,
   getTestPool,
   resetDatabase,
@@ -12,6 +13,7 @@ import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
+import { hashToken } from "../auth/token.js";
 import { mintMcpRunCredential, resolveMcpRunCredential } from "../mcp/mcpRunCredentialAction.js";
 import { recordDesiredMailMessageFlags } from "../mail/mailMessageFlagSyncStore.js";
 
@@ -35,6 +37,14 @@ function roleConnectionString(role: string): string {
   url.username = role;
   url.password = TEST_ROLE_PASSWORD;
   return url.toString();
+}
+
+/** Expects `statement` to be refused for a missing privilege on `table` (SQLSTATE 42501). */
+async function expectPermissionDenied(statement: Promise<unknown>, table: string): Promise<void> {
+  await expect(statement).rejects.toMatchObject({
+    code: "42501",
+    message: expect.stringContaining(`permission denied for table ${table}`) as unknown,
+  });
 }
 
 async function seedDatabaseAndItem() {
@@ -196,8 +206,9 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
       "rollup_dependencies",
     ];
     const WRITE_PRIVILEGES = ["INSERT", "UPDATE", "DELETE"];
-    // Written only by semprec_data (migration 0057); covered by identityTablePrivileges.test.ts.
-    const IDENTITY_TABLES = new Set(["users", "sessions", "password_reset_tokens", "login_attempts", "tenants"]);
+    // Written only by semprec_data (migration 0057); semprec_side keeps SELECT on these two only
+    // (migration 0177 revoked the rest); covered by identityTablePrivileges.test.ts.
+    const IDENTITY_TABLES = new Set(["users", "tenants"]);
 
     // Deliberately without UPDATE for both runtime roles (migration 0062): rewriting a key row would
     // orphan every credential sealed under it, so a key is only ever inserted or deleted (crypto-shred).
@@ -205,18 +216,31 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
 
     // Operator configuration written only by semprec-api (migration 0070): the gateway's semprec_side
     // may read it but never raise its own caps, and nobody deletes a row (it goes with its tenant).
-    // admin_audit_log (migration 0074) is append-only: semprec_side reads it, semprec_data only inserts.
-    // invites (migration 0077) is written by the admin routes only: semprec_side reads it, semprec_data runs DML.
     // transcript_action_item_states (issue #1754) is written by the API's transcript route and the trash purge:
     // semprec_side reads it, semprec_data runs DML.
+    // agent_runs and approval_requests (migration 0177) create or retarget an actor: the AI gateway reads
+    // agent_runs to attribute a call, semprec_data runs the DML.
     const READ_ONLY_FOR_SIDE_TABLES = new Set([
       "tenant_ai_budgets",
-      "admin_audit_log",
-      "invites",
-      "tenant_deletions",
       "transcript_action_item_states",
+      "agent_runs",
+      "approval_requests",
     ]);
-    // tenant_deletions (migration 0079) is the purge tombstone: semprec_side reads, semprec_data only inserts.
+    // Bearer credentials, session secrets, delivery endpoints and admin-plane rows no side process needs
+    // (migration 0177): semprec_side holds no privilege on them, semprec_data holds DML directly.
+    // admin_audit_log (migration 0074) is append-only and tenant_deletions (migration 0079) is the purge
+    // tombstone: semprec_data only inserts. invites (migration 0077) is written by the admin routes only.
+    const NO_ACCESS_FOR_SIDE_TABLES = new Set([
+      "agent_run_mcp_credentials",
+      "push_subscriptions",
+      "sessions",
+      "password_reset_tokens",
+      "login_attempts",
+      "invites",
+      "admin_audit_log",
+      "tenant_deletions",
+    ]);
+    // tenant_deletions (migration 0079) is the purge tombstone: semprec_data only inserts.
     const NO_DELETE_TABLES = new Set(["tenant_ai_budgets", "admin_audit_log", "tenant_deletions"]);
 
     async function listTables(): Promise<{ name: string; oid: string }[]> {
@@ -250,16 +274,17 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
       const chokePointNames = new Set(CHOKE_POINT_TABLES);
       const offenders: string[] = [];
       for (const table of await listTables()) {
+        const noAccessForSide = NO_ACCESS_FOR_SIDE_TABLES.has(table.name);
         const sideReadOnly =
           chokePointNames.has(table.name) ||
           IDENTITY_TABLES.has(table.name) ||
           READ_ONLY_FOR_SIDE_TABLES.has(table.name);
-        if (!(await hasPrivilege("semprec_side", table.oid, "SELECT"))) {
+        if ((await hasPrivilege("semprec_side", table.oid, "SELECT")) === noAccessForSide) {
           offenders.push(`${table.name}:semprec_side:SELECT`);
         }
         const noUpdate = NO_UPDATE_TABLES.has(table.name);
         for (const privilege of WRITE_PRIVILEGES) {
-          const expectedForSide = !sideReadOnly && !(noUpdate && privilege === "UPDATE");
+          const expectedForSide = !noAccessForSide && !sideReadOnly && !(noUpdate && privilege === "UPDATE");
           const sideHas = await hasPrivilege("semprec_side", table.oid, privilege);
           if (sideHas !== expectedForSide) offenders.push(`${table.name}:semprec_side:${privilege}`);
         }
@@ -307,7 +332,24 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
       expect(rows).toEqual([{ desired_state: true }]);
     });
 
-    it("lets semprec_side UPDATE and DELETE rows of both tables", async () => {
+    it("lets semprec_side UPDATE and DELETE mail_message_flag_sync_state rows", async () => {
+      const messageItemId = randomUUID();
+      await withTransaction(adminPool, (client) =>
+        recordDesiredMailMessageFlags(client, messageItemId, { read: true }),
+      );
+
+      const flagUpdate = await sidePool.query(
+        `UPDATE mail_message_flag_sync_state SET current_state = true WHERE message_item_id = $1`,
+        [messageItemId],
+      );
+      const flagDelete = await sidePool.query(`DELETE FROM mail_message_flag_sync_state WHERE message_item_id = $1`, [
+        messageItemId,
+      ]);
+
+      expect([flagUpdate.rowCount, flagDelete.rowCount]).toEqual([1, 1]);
+    });
+
+    it("refuses semprec_side every statement on agent_run_mcp_credentials", async () => {
       const passwordHash = await hashPassword("s3cret-password");
       // The run's actor must be the run's own tenant's user (agent_runs_actor_user_id_tenant_fkey).
       const user = await createUser(adminPool, {
@@ -317,32 +359,117 @@ describe("least-privilege runtime roles (semprec_data / semprec_side)", () => {
         tenantId: getTenantZeroId(),
       });
       const projectItemId = await createTestProjectItem(adminPool);
-      const minted = await withTransaction(adminPool, (client) =>
+      const minted = await withTransaction(dataPool, (client) =>
         mintMcpRunCredential(client, { projectItemId, capabilities: ["core.item.read"], userId: user.id }),
       );
-      const messageItemId = randomUUID();
-      await withTransaction(adminPool, (client) =>
-        recordDesiredMailMessageFlags(client, messageItemId, { read: true }),
+
+      await expectPermissionDenied(
+        sidePool.query(`UPDATE agent_run_mcp_credentials SET expires_at = now() WHERE agent_run_id = $1`, [
+          minted.run.id,
+        ]),
+        "agent_run_mcp_credentials",
+      );
+      await expectPermissionDenied(
+        sidePool.query(`DELETE FROM agent_run_mcp_credentials WHERE agent_run_id = $1`, [minted.run.id]),
+        "agent_run_mcp_credentials",
+      );
+      await expectPermissionDenied(
+        sidePool.query(`SELECT agent_run_id FROM agent_run_mcp_credentials`),
+        "agent_run_mcp_credentials",
       );
 
-      const credentialUpdate = await sidePool.query(
-        `UPDATE agent_run_mcp_credentials SET expires_at = now() WHERE agent_run_id = $1`,
+      // The refused statements changed nothing: the credential still resolves, with its expiry.
+      expect((await resolveMcpRunCredential(dataPool, minted.token))?.runId).toBe(minted.run.id);
+      const { rows } = await adminPool.query<{ expired: boolean }>(
+        `SELECT expires_at <= now() AS expired FROM agent_run_mcp_credentials WHERE agent_run_id = $1`,
         [minted.run.id],
       );
-      const flagUpdate = await sidePool.query(
-        `UPDATE mail_message_flag_sync_state SET current_state = true WHERE message_item_id = $1`,
-        [messageItemId],
-      );
-      const credentialDelete = await sidePool.query(`DELETE FROM agent_run_mcp_credentials WHERE agent_run_id = $1`, [
-        minted.run.id,
-      ]);
-      const flagDelete = await sidePool.query(`DELETE FROM mail_message_flag_sync_state WHERE message_item_id = $1`, [
-        messageItemId,
-      ]);
+      expect(rows).toEqual([{ expired: false }]);
+    });
 
-      expect([credentialUpdate.rowCount, flagUpdate.rowCount, credentialDelete.rowCount, flagDelete.rowCount]).toEqual([
-        1, 1, 1, 1,
-      ]);
+    it("semprec_side cannot mint an MCP run credential", async () => {
+      const passwordHash = await hashPassword("s3cret-password");
+      // The run's actor must be the run's own tenant's user (agent_runs_actor_user_id_tenant_fkey).
+      const user = await createUser(adminPool, {
+        email: `owner-${randomUUID()}@example.test`,
+        passwordHash,
+        locale: "en",
+        tenantId: getTenantZeroId(),
+      });
+      const otherUser = await createUser(adminPool, {
+        email: `other-${randomUUID()}@example.test`,
+        passwordHash,
+        locale: "en",
+        tenantId: await createTestTenant(adminPool),
+      });
+      const projectItemId = await createTestProjectItem(adminPool);
+      // The one legitimate run and credential, written by semprec_data the way the mint action does.
+      const minted = await withTransaction(dataPool, (client) =>
+        mintMcpRunCredential(client, { projectItemId, capabilities: ["core.item.read"], userId: user.id }),
+      );
+      const rogueToken = `rogue-${randomUUID()}`;
+
+      // Every statement runs in tenant zero's scope, where the minted run lives, as the review's sequence did.
+      await expectPermissionDenied(
+        sidePool.query(
+          `INSERT INTO agent_runs (project_item_id, triggered_by, unit, task, actor_user_id)
+           VALUES ($1, 'mcp', 'invocation', 'minted by the side role', $2)`,
+          [projectItemId, user.id],
+        ),
+        "agent_runs",
+      );
+      await expectPermissionDenied(
+        sidePool.query(`UPDATE agent_runs SET actor_user_id = $1 WHERE id = $2`, [otherUser.id, minted.run.id]),
+        "agent_runs",
+      );
+      await expectPermissionDenied(
+        sidePool.query(
+          `INSERT INTO agent_run_mcp_credentials (tenant_id, agent_run_id, token_hash, capabilities, expires_at)
+           VALUES ($1, $2, $3, $4, now() + interval '1 hour')`,
+          [getTenantZeroId(), minted.run.id, hashToken(rogueToken), ["core.item.write"]],
+        ),
+        "agent_run_mcp_credentials",
+      );
+      await expectPermissionDenied(
+        sidePool.query(
+          `INSERT INTO approval_requests (agent_run_id, tool_name, risk_class, payload, resource_snapshot)
+           VALUES ($1, 'rogue_tool', 'unclassified', '{}'::jsonb, '{"kind":"test","resourceId":"rogue","sha256":null}'::jsonb)`,
+          [minted.run.id],
+        ),
+        "approval_requests",
+      );
+      await expectPermissionDenied(
+        sidePool.query(
+          `INSERT INTO push_subscriptions (user_id, channel, platform, endpoint, p256dh, auth_secret)
+           VALUES ($1, 'web_push', 'web', 'https://attacker.example.test/push', 'p256dh', 'auth')`,
+          [user.id],
+        ),
+        "push_subscriptions",
+      );
+
+      // Nothing was stored (checked on the admin pool, which bypasses row-level security).
+      const { rows } = await adminPool.query<{
+        runs: number;
+        actor_user_id: string;
+        credentials: number;
+        approvals: number;
+        subscriptions: number;
+      }>(
+        `SELECT (SELECT count(*)::int FROM agent_runs) AS runs,
+                (SELECT actor_user_id FROM agent_runs WHERE id = $1) AS actor_user_id,
+                (SELECT count(*)::int FROM agent_run_mcp_credentials) AS credentials,
+                (SELECT count(*)::int FROM approval_requests) AS approvals,
+                (SELECT count(*)::int FROM push_subscriptions) AS subscriptions`,
+        [minted.run.id],
+      );
+      expect(rows).toEqual([{ runs: 1, actor_user_id: user.id, credentials: 1, approvals: 0, subscriptions: 0 }]);
+      expect(await resolveMcpRunCredential(dataPool, rogueToken)).toBeNull();
+      expect((await resolveMcpRunCredential(dataPool, minted.token))?.runId).toBe(minted.run.id);
+
+      // What the AI gateway needs stays allowed: reading the runs and approval requests.
+      const readable = await sidePool.query<{ id: string }>(`SELECT id FROM agent_runs WHERE id = $1`, [minted.run.id]);
+      expect(readable.rows).toEqual([{ id: minted.run.id }]);
+      await expect(sidePool.query(`SELECT id FROM approval_requests`)).resolves.toBeDefined();
     });
   });
 });

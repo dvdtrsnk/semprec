@@ -443,18 +443,25 @@ export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
      * the root's own eligibility inside this transaction (rather than trusting the caller's
      * earlier candidate snapshot); that snapshot read is a plain, unlocked `SELECT`, so it alone
      * cannot stop a `restoreItem` from committing on one of these rows between this scan and the
-     * delete loop below — the actual guard against that race is `itemsStore.hardDeleteItem`'s own
-     * `deleted_at IS NOT NULL` condition, which turns a race-restored row's delete into a no-op
-     * instead of destroying it. Rejects — and purges nothing — if any database in the eligible
+     * delete loop below — the guard against that race is the delete loop's own locking read
+     * (`itemsStore.lockTrashedItemBefore`, below), with `itemsStore.hardDeleteItem`'s
+     * `deleted_at IS NOT NULL` condition behind it: a race-restored row is skipped instead of
+     * destroyed. Rejects — and purges nothing — if any database in the eligible
      * subtree is archived, same as `softDeleteItem`/`restoreItem`.
      *
-     * The delete loop reads each row of the walk again with `itemsStore.lockItemById`, immediately
-     * before its delete. That is the row lock the delete itself takes, one statement earlier, so
-     * no other transaction can change or remove the row between that read and the delete: the
-     * locked row is the row exactly as it was removed, not as the unlocked walk first saw it. The
-     * locked read does not decide the removal, `hardDeleteItem` still does; a row that is gone by
-     * then is skipped, and a race-restored row stays locked until this transaction ends without
-     * being removed.
+     * The delete loop reads each row of the walk again with `itemsStore.lockTrashedItemBefore`,
+     * immediately before its delete: a locking read whose own statement requires the row to be
+     * trashed and trashed before `cutoff`. The lock is the one the delete itself takes, one
+     * statement earlier, so no other transaction can change or remove the row between that read and
+     * the delete: the locked row is the row exactly as it was removed, not as the unlocked walk
+     * first saw it. A row that does not qualify when that statement runs is skipped with no lock, no
+     * write, no dependent delete and no hook: one that is gone, one a restore made live again, and
+     * one that was restored and trashed again after the walk, with a trash at or after `cutoff`,
+     * which a later sweep removes. The purge transaction runs at READ COMMITTED, so a restore or a
+     * new trash that committed before the statement is seen by it, and a row that changes while the
+     * statement waits for its lock is rechecked against its latest version; the one case in which a
+     * skipped row is still locked is a restore that commits during that wait, and the lock then
+     * stays until this transaction ends. `hardDeleteItem` stays the delete's own guard.
      *
      * Every removed row's dependents go with it in the same transaction (`deleteItemDependents`,
      * issue #675), derived from that locked row; a race-restored row keeps all of them. Each
@@ -513,9 +520,11 @@ export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
         const blobStorageKeys: string[] = [];
         for (const row of subtree) {
           // `row` is what the unlocked walk read; a write committed since then is not in it. The
-          // locked read returns the row the delete below removes, and holds it until then.
-          const locked = await itemsStore.lockItemById(client, row.databaseId, row.id);
-          if (!locked) continue; // gone since the walk: nothing to remove
+          // locked read returns the row the delete below removes, and holds it until then, but only
+          // when that row is still trashed before `cutoff`: a row that is gone, was restored, or was
+          // trashed again at or after `cutoff` since the walk gets no lock, no delete and no hook.
+          const locked = await itemsStore.lockTrashedItemBefore(client, row.databaseId, row.id, cutoff);
+          if (!locked) continue;
           const removed = await itemsStore.hardDeleteItem(client, locked.databaseId, locked.id);
           if (!removed) continue;
           purgedItemIds.push(locked.id);

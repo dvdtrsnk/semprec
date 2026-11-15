@@ -184,7 +184,7 @@ describe("no leak between checkouts", () => {
 describe("strict mode", () => {
   it("rejects all three paths with TenantScopeMissingError and takes no connection", async () => {
     const strict = newPool();
-    await strict.query("SELECT 1"); // opens one idle connection (warn mode, pinned by globalSetup)
+    await strict.query("SELECT 1"); // opens one idle connection (warn mode, set for this listed file by tenantScopeMode.ts)
     process.env.SEMPREC_TENANT_SCOPE = "strict";
     const total = strict.totalCount;
 

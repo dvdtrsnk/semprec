@@ -9,7 +9,6 @@ import {
   createMailTransportFactory,
   mergeModuleTaskListForAffinity,
   resolveTaskAffinitySets,
-  runHeartbeatFireQueueSplitMigration,
   setEventInvitationDelivery,
   setInvitationReplyDelivery,
   setThreadProjectTriageRuntime,
@@ -66,9 +65,9 @@ export async function createApiQueueRuntime(
 ): Promise<ApiQueueRuntime> {
   await ensureQueueSchema(pool);
   await grantQueueSchemaPrivileges(pool);
-  // Issue #222's one-time cutover for any job still queued under the legacy `heartbeatFire`
-  // name — runs exactly once, here, at API install; the agents runtime never runs it.
-  await runHeartbeatFireQueueSplitMigration(pool);
+  // No data migration runs at the start of this service: one-time application-code steps run from
+  // `db/runMigrationsCli.ts` at deploy time (docs/adr/2026-09-10-app-code-post-migration-steps.md), which
+  // includes issue #222's cutover of a job still queued under the legacy `heartbeatFire` name.
 
   const gmail = readOAuthClient(process.env, "GMAIL_OAUTH_CLIENT_ID", "GMAIL_OAUTH_CLIENT_SECRET");
   const graph = readOAuthClient(process.env, "MS_GRAPH_OAUTH_CLIENT_ID", "MS_GRAPH_OAUTH_CLIENT_SECRET");

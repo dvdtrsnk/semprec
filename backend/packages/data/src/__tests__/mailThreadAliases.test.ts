@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runMigrations } from "../db/migrate.js";
+import { dropClosedDatabase } from "../testSupport/dropClosedDatabase.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
@@ -166,14 +167,19 @@ it("upgrades populated legacy state before installing the alias table", async ()
   const url = process.env.TEST_DATABASE_URL;
   if (!url) throw new Error("Missing test database URL");
   const name = `mail_upgrade_${randomUUID().replaceAll("-", "")}`;
+  const failures: unknown[] = [];
+  // Every pool has an error handler: an idle client the server drops would otherwise be an uncaught exception that
+  // fails the whole run after every test passed. No pool of this test is expected to fail, so any error is one.
   const admin = new Pool({ connectionString: url });
+  admin.on("error", (error) => {
+    failures.push(error);
+  });
   const dir = await mkdtemp(path.join(tmpdir(), "semprec-mail-upgrade-"));
   const migrations = fileURLToPath(new URL("../db/migrations/", import.meta.url));
   const target = "0111_mail_thread_aliases.sql";
   const existingId = randomUUID();
   let scratch: Pool | undefined;
   let created = false;
-  const failures: unknown[] = [];
   try {
     // name is a fixed prefix followed only by hexadecimal UUID digits.
     await admin.query(`CREATE DATABASE "${name}"`);
@@ -181,6 +187,9 @@ it("upgrades populated legacy state before installing the alias table", async ()
     const scratchUrl = new URL(url);
     scratchUrl.pathname = `/${name}`;
     scratch = new Pool({ connectionString: scratchUrl.toString() });
+    scratch.on("error", (error) => {
+      failures.push(error);
+    });
     const database = scratch;
     for (const file of (await readdir(migrations)).filter((entry) => entry.endsWith(".sql") && entry < target).sort()) {
       await copyFile(path.join(migrations, file), path.join(dir, file));
@@ -215,8 +224,9 @@ it("upgrades populated legacy state before installing the alias table", async ()
     failures.push(error);
   }
   try {
-    // The same fixed-prefix, hexadecimal UUID identifier was created above.
-    if (created) await admin.query(`DROP DATABASE "${name}"`);
+    // The same fixed-prefix, hexadecimal UUID identifier was created above. The drop waits until no backend of the
+    // database is left, because `scratch.end()` can resolve before the sockets of its idle clients are closed.
+    if (created) await dropClosedDatabase(admin, name);
   } catch (error) {
     failures.push(error);
   }

@@ -7,6 +7,7 @@ export const RESTORE_TEST_FAILED_CHECKS = [
   "configuration",
   "snapshotRestore",
   "postgresStart",
+  "clusterRoles",
   "pgRestore",
   "itemsCount",
   "itemsFreshness",

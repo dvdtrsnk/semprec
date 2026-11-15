@@ -124,12 +124,13 @@ describe("accountsAdminStore (issue #1037)", () => {
     });
   });
 
-  it("lets semprec_side SELECT but not INSERT", async () => {
+  it("refuses semprec_side both SELECT and INSERT", async () => {
     await runAsSystem("adminAuditTest", async () => {
-      await expect(sidePool.query("SELECT count(*) FROM admin_audit_log")).resolves.toBeDefined();
+      await expect(sidePool.query("SELECT count(*) FROM admin_audit_log")).rejects.toMatchObject({ code: "42501" });
       await expect(
         sidePool.query("INSERT INTO admin_audit_log (actor_user_id, action) VALUES ($1, 'inviteCreated')", [ACTOR]),
       ).rejects.toMatchObject({ code: "42501" });
+      expect(await rows()).toEqual([]);
     });
   });
 });

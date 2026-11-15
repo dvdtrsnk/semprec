@@ -63,6 +63,13 @@ afterAll(async () => {
   await pool.end();
 });
 
+/** The error code of a client whose backend the server terminated (`DROP DATABASE ... WITH (FORCE)`). */
+const ADMIN_SHUTDOWN_CODE = "57P01";
+
+function isAdminShutdown(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === ADMIN_SHUTDOWN_CODE;
+}
+
 describe("mail server settings store (issue #1473)", () => {
   it("upgrades a populated pre-0101 database with the real migration runner", async () => {
     const url = process.env.TEST_DATABASE_URL;
@@ -75,12 +82,24 @@ describe("mail server settings store (issue #1473)", () => {
     let created = false;
     let scratch: Pool | undefined;
     let failure: { error: unknown } | undefined;
+    let scratchEnding = false;
+    // Every pool has an error handler: an idle client the server drops would otherwise be an uncaught exception that
+    // fails the whole run after every test passed.
+    admin.on("error", (error) => {
+      failure ??= { error };
+    });
     try {
       await admin.query(`CREATE DATABASE "${name}"`);
       created = true;
       const scratchUrl = new URL(url);
       scratchUrl.pathname = `/${name}`;
       scratch = new Pool({ connectionString: scratchUrl.toString() });
+      // `pool.end()` returns before the sockets of its idle clients closed, so the backend of one can still be there when
+      // the database is dropped, and `WITH (FORCE)` terminates it: that is expected once the pool is ending, any other
+      // error of the pool is not.
+      scratch.on("error", (error) => {
+        if (!(scratchEnding && isAdminShutdown(error))) failure ??= { error };
+      });
       const files = (await readdir(migrations)).filter((file) => file.endsWith(".sql") && file < "0101_").sort();
       for (const file of files) await copyFile(path.join(migrations, file), path.join(dir, file));
       await runMigrations(scratch, dir);
@@ -120,7 +139,10 @@ describe("mail server settings store (issue #1473)", () => {
       failure = { error };
     }
     for (const cleanup of [
-      async () => scratch?.end(),
+      async () => {
+        scratchEnding = true;
+        await scratch?.end();
+      },
       async () => {
         if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
       },

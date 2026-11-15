@@ -204,20 +204,68 @@ async function findPartitionPrivilegeViolations(client: Queryable): Promise<Tena
 }
 
 /**
- * A `SECURITY DEFINER` function in `public` without a pinned `search_path`, executable by
- * `PUBLIC` (a NULL `proacl` is the default, which grants it), or owned by neither `semprec_router`
- * nor the owner of `public.items`.
+ * The elements of the value of a `proconfig` `search_path=` setting: split on `,`, trimmed, the
+ * surrounding double quotes of an element removed, empty elements dropped.
+ */
+function parseSearchPath(value: string): string[] {
+  return value
+    .split(",")
+    .map((element) => element.trim())
+    .map((element) =>
+      element.length >= 2 && element.startsWith('"') && element.endsWith('"') ? element.slice(1, -1) : element,
+    )
+    .filter((element) => element.length > 0);
+}
+
+type SchemaFacts = { exists: boolean; runtimeRoleMayCreate: boolean };
+
+/**
+ * For each schema name, whether the catalog of `client`'s database has it and whether `PUBLIC`,
+ * `semprec_data` or `semprec_side` holds `CREATE` on it. A runtime role that does not exist is
+ * skipped here; `findRuntimeRoleViolations` reports it.
+ */
+async function readSchemaFacts(client: Queryable, names: string[]): Promise<Map<string, SchemaFacts>> {
+  const facts = new Map<string, SchemaFacts>();
+  if (names.length === 0) return facts;
+  const { rows } = await client.query<{ name: string; schema_exists: boolean; may_create: boolean }>(
+    `SELECT wanted.name, ns.oid IS NOT NULL AS schema_exists,
+            COALESCE(has_schema_privilege('public', ns.oid, 'CREATE')
+                     OR EXISTS (SELECT 1 FROM pg_roles r
+                                 WHERE r.rolname = ANY($2::text[])
+                                   AND has_schema_privilege(r.oid, ns.oid, 'CREATE')), false) AS may_create
+       FROM unnest($1::text[]) AS wanted(name)
+      CROSS JOIN LATERAL (SELECT to_regnamespace(quote_ident(wanted.name))::oid AS oid) AS ns`,
+    [names, RUNTIME_ROLES],
+  );
+  for (const row of rows) {
+    facts.set(row.name, { exists: row.schema_exists, runtimeRoleMayCreate: row.may_create });
+  }
+  return facts;
+}
+
+/**
+ * A `SECURITY DEFINER` function, in any schema but `pg_catalog` and `information_schema`, that
+ * - has no pinned `search_path`, or one that does not end with `pg_temp` (the temporary schema is
+ *   searched first for relation and type names unless it is listed, finding R2-DB-1 of gh-1086),
+ *   lists `pg_temp` before its end, names a schema that does not exist (`"$user"` included), or
+ *   names a schema in which `PUBLIC`, `semprec_data` or `semprec_side` may create objects;
+ * - is executable by `PUBLIC` (a NULL `proacl` is the default, which grants it);
+ * - or is owned by neither `semprec_router` nor the owner of `public.items`.
+ *
+ * Schema details are named by the `search_path` element, never by anything read from a function body.
  */
 async function findDefinerFunctionViolations(client: Queryable): Promise<TenancyViolation[]> {
   const { rows } = await client.query<{
     function_name: string;
-    pinned_search_path: boolean;
+    search_path: string | null;
     public_execute: boolean;
     allowed_owner: boolean;
   }>(
     `SELECT p.oid::regprocedure::text AS function_name,
-            EXISTS (SELECT 1 FROM unnest(COALESCE(p.proconfig, '{}')) AS setting
-                     WHERE setting LIKE 'search\\_path=%') AS pinned_search_path,
+            (SELECT substr(setting, length('search_path=') + 1)
+               FROM unnest(COALESCE(p.proconfig, '{}')) AS setting
+              WHERE setting LIKE 'search\\_path=%'
+              LIMIT 1) AS search_path,
             (p.proacl IS NULL
              OR EXISTS (SELECT 1 FROM aclexplode(p.proacl) AS acl
                          WHERE acl.grantee = 0 AND acl.privilege_type = 'EXECUTE')) AS public_execute,
@@ -225,14 +273,49 @@ async function findDefinerFunctionViolations(client: Queryable): Promise<Tenancy
              OR p.proowner = (SELECT relowner FROM pg_class WHERE oid = to_regclass('public.items'))) IS TRUE
               AS allowed_owner
        FROM pg_proc p
-      WHERE p.pronamespace = 'public'::regnamespace
+      WHERE p.pronamespace NOT IN ('pg_catalog'::regnamespace, 'information_schema'::regnamespace)
         AND p.prosecdef
       ORDER BY 1`,
   );
+  const elementsOf = new Map(
+    rows.map((row) => [row.function_name, row.search_path === null ? null : parseSearchPath(row.search_path)]),
+  );
+  // `pg_catalog` is looked up too: it always exists, but a runtime role holding CREATE on it could
+  // shadow functions and operators in the schema that is searched first.
+  const schemaNames = new Set<string>();
+  for (const elements of elementsOf.values()) {
+    for (const element of elements ?? []) {
+      if (element !== "pg_temp") schemaNames.add(element);
+    }
+  }
+  const schemaFacts = await readSchemaFacts(client, [...schemaNames]);
+
   const violations: TenancyViolation[] = [];
   for (const row of rows) {
     const problems: string[] = [];
-    if (!row.pinned_search_path) problems.push("has no pinned search_path");
+    const elements = elementsOf.get(row.function_name) ?? null;
+    if (elements === null) {
+      problems.push("has no pinned search_path");
+    } else {
+      const tempPositions = elements.flatMap((element, index) => (element === "pg_temp" ? [index] : []));
+      if (elements.at(-1) !== "pg_temp" || tempPositions.length > 1) {
+        problems.push("search_path does not end with pg_temp");
+      }
+      if (tempPositions.some((position) => position !== elements.length - 1)) {
+        problems.push("search_path lists pg_temp before its end");
+      }
+      const schemas = [...new Set(elements.filter((element) => schemaNames.has(element)))];
+      for (const schema of schemas) {
+        if (schemaFacts.get(schema)?.exists !== true) {
+          problems.push(`search_path names ${schema}, which is not an existing schema`);
+        }
+      }
+      for (const schema of schemas) {
+        if (schemaFacts.get(schema)?.runtimeRoleMayCreate === true) {
+          problems.push(`search_path names ${schema}, in which a runtime role may create objects`);
+        }
+      }
+    }
     if (row.public_execute) problems.push("is executable by PUBLIC");
     if (!row.allowed_owner) problems.push("is owned by neither semprec_router nor the owner of items");
     if (problems.length > 0) {

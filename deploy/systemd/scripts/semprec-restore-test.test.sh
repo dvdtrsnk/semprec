@@ -97,6 +97,7 @@ case "$1" in
     if [[ "$arguments" == *" pg_isready "* ]]; then ! fail postgres-ready
     elif [[ "$arguments" == *" pg_restore "* && "$arguments" == *" --data-only "* ]]; then cat > /dev/null; ! fail key-restore
     elif [[ "$arguments" == *" pg_restore "* ]]; then cat > /dev/null; ! fail pg-restore
+    elif [[ "$arguments" == *"CREATE ROLE semprec_side"* ]]; then ! fail cluster-roles
     elif [[ "$arguments" == *"CREATE ROLE semprec_restore"* ]]; then :
     elif [[ "$arguments" == *"count(*) FROM tenant_keys"* ]]; then if fail tenant-keys-present; then echo 2; else echo 0; fi
     elif [[ "$arguments" == *"FROM blobs"* ]]; then cat "$TEST_STATE/blob-rows"
@@ -205,6 +206,18 @@ grep -qx "$PING_URL" "$TEST_STATE/pings"
 test "$(count_lines . "$TEST_STATE/results")" -eq 1
 grep -Eq '^passed [0-9]{8}T[0-9]{6}Z-[0-9]+ DATABASE_URL=postgres://semprec_side@' "$TEST_STATE/results"
 grep -q -- '--exit-on-error' "$TEST_STATE/commands"
+# The three cluster roles are created in one statement run before the first pg_restore, which keeps
+# skipping owners and privileges because the dump's policies, not its grants, name the roles.
+role_line="$(grep -n -m1 -- '--command=CREATE ROLE semprec_side NOLOGIN' "$TEST_STATE/commands" | cut -d: -f1)"
+restore_line="$(grep -n -m1 '^docker exec .* pg_restore ' "$TEST_STATE/commands" | cut -d: -f1)"
+test -n "$role_line"
+test -n "$restore_line"
+test "$(grep -c -- 'CREATE ROLE semprec_side NOLOGIN' "$TEST_STATE/commands")" -eq 1
+grep -q -- 'psql .* --command=CREATE ROLE semprec_side NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;$' "$TEST_STATE/commands"
+grep -q '^CREATE ROLE semprec_data NOLOGIN .* IN ROLE semprec_side;$' "$TEST_STATE/commands"
+grep -q '^CREATE ROLE semprec_router NOLOGIN .* BYPASSRLS;$' "$TEST_STATE/commands"
+test "$role_line" -lt "$restore_line"
+grep '^docker exec .* pg_restore ' "$TEST_STATE/commands" | grep -q -- '--exit-on-error --no-owner --no-privileges'
 # Each restore names its snapshot kind, and the key import uses the offline owner.
 test "$(count_lines '^restic restore latest ' "$TEST_STATE/commands")" -eq 2
 grep -q '^restic restore latest --path /var/backups/semprec/postgres.dump --target ' "$TEST_STATE/commands"
@@ -257,6 +270,10 @@ assert_failure() {
 assert_failure snapshotRestore restic-restore
 assert_failure postgresStart postgres-ready
 assert_failure pgRestore pg-restore
+# A failing role statement fails the run under its own check and pg_restore is never reached.
+assert_failure clusterRoles cluster-roles
+test "$(count_lines 'pg_restore ' "$TEST_STATE/commands")" -eq 0
+test "$(count_lines 'CREATE ROLE semprec_side NOLOGIN' "$TEST_STATE/commands")" -eq 1
 assert_failure itemsCount no-items
 assert_failure itemsFreshness stale-items
 assert_failure docSnapshotsCount no-doc-snapshots

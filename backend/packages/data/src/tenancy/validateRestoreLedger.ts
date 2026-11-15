@@ -2,6 +2,14 @@ import type { Pool } from "pg";
 import { z } from "zod";
 import { runAsSystem } from "@semprec/shared";
 
+/** The restored snapshot and the replay ledger disagree; `restoreLedgerFailureMessage` recognises it by class. */
+export class RestoreLedgerMismatchError extends Error {
+  constructor() {
+    super("Restore ledger validation failed");
+    this.name = "RestoreLedgerMismatchError";
+  }
+}
+
 const verdictSchema = z.object({ covered: z.boolean(), consistent: z.boolean() }).strict();
 
 /** Checks snapshot tombstones and contradictions against an already validated replay ledger. */
@@ -19,5 +27,5 @@ export async function validateRestoreLedger(pool: Pool, tenantIds: readonly stri
   );
   if (result.rows.length !== 1) throw new Error("Restore ledger validation failed");
   const verdict = verdictSchema.parse(result.rows[0]);
-  if (!verdict.covered || !verdict.consistent) throw new Error("Restore ledger validation failed");
+  if (!verdict.covered || !verdict.consistent) throw new RestoreLedgerMismatchError();
 }

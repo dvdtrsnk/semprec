@@ -29,6 +29,38 @@ export default defineConfig({
         replacement: fileURLToPath(new URL("../shared/block-model/src/index.ts", import.meta.url)),
       },
       {
+        find: /^@semprec\/data$/,
+        replacement: fileURLToPath(new URL("./packages/data/src/index.ts", import.meta.url)),
+      },
+      {
+        find: /^@semprec\/realtime$/,
+        replacement: fileURLToPath(new URL("./packages/realtime/src/index.ts", import.meta.url)),
+      },
+      {
+        find: /^@semprec\/application$/,
+        replacement: fileURLToPath(new URL("./packages/application/src/index.ts", import.meta.url)),
+      },
+      {
+        find: /^@semprec\/notifications$/,
+        replacement: fileURLToPath(new URL("./packages/notifications/src/index.ts", import.meta.url)),
+      },
+      {
+        find: /^@semprec\/ai-gateway-client$/,
+        replacement: fileURLToPath(new URL("./packages/ai-gateway-client/src/index.ts", import.meta.url)),
+      },
+      {
+        find: /^@semprec\/ai-gateway$/,
+        replacement: fileURLToPath(new URL("./packages/ai-gateway/src/index.ts", import.meta.url)),
+      },
+      {
+        find: /^@semprec\/agent-runtime$/,
+        replacement: fileURLToPath(new URL("./packages/agent-runtime/src/index.ts", import.meta.url)),
+      },
+      {
+        find: /^@semprec\/credentials$/,
+        replacement: fileURLToPath(new URL("./packages/credentials/src/index.ts", import.meta.url)),
+      },
+      {
         find: /^@semprec\/shared\/src\/logger\.js$/,
         replacement: fileURLToPath(new URL("./packages/shared/src/logger.ts", import.meta.url)),
       },
@@ -40,7 +72,12 @@ export default defineConfig({
     environment: "node",
     // Issue #1199: warn-level output, chiefly tenant_scope_missing, can exceed
     // Relay's output limit and hide real failures. Preserve developer overrides.
-    env: { LOG_LEVEL: process.env.LOG_LEVEL ?? "error" },
+    // The e2e tier keeps `warn`: its scenarios still write through fixtures outside any scope. `globalSetup` no
+    // longer sets the mode, so it is pinned here, as `vitest.unit.config.ts` pins the unit tier.
+    env: {
+      LOG_LEVEL: process.env.LOG_LEVEL ?? "error",
+      SEMPREC_TENANT_SCOPE: process.env.SEMPREC_TENANT_SCOPE ?? "warn",
+    },
     testTimeout: 30_000,
     hookTimeout: 60_000,
     fileParallelism: false,

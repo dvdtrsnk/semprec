@@ -87,9 +87,13 @@ for arg in "$@"; do
 done
 assert-not-current "$(dirname "$working_directory")"
 test -f "$working_directory/built"
-grep -qx "APP_VERSION=v[0-9.]*" "$(dirname "$working_directory")/release.env"
+# The native entrypoint check runs right after the build, before the release env file exists.
+if [[ "$*" != *check-native-entrypoints.mjs* ]]; then
+  grep -qx "APP_VERSION=v[0-9.]*" "$(dirname "$working_directory")/release.env"
+fi
 echo "systemd-run $*" >> "$TEST_STATE/commands"
-if [[ -f "$TEST_STATE/fail-migrate" ]]; then exit 1; fi
+if [[ -f "$TEST_STATE/fail-native" && "$*" == *check-native-entrypoints.mjs* ]]; then exit 1; fi
+if [[ -f "$TEST_STATE/fail-migrate" && "$*" == *runMigrationsCli.js* ]]; then exit 1; fi
 if [[ -f "$TEST_STATE/fail-seed" && "$*" == *runSeedCli.js* ]]; then exit 1; fi
 if [[ -f "$TEST_STATE/fail-verify" && "$*" == *verifyTenancyCli.js* ]]; then exit 1; fi'
 # `restart` simulates systemd: the new process gets a service group file (never migrate.env) plus current/release.env.
@@ -132,6 +136,19 @@ assert_no_partial_releases() {
 
 assert_current() {
   test "$(readlink "$TEST_SEMPREC_ROOT/current")" == "$TEST_SEMPREC_ROOT/releases/$1"
+}
+
+# A successful deploy runs the native entrypoint check once, after the build and before the migration,
+# without an EnvironmentFile (the check must see no secret).
+assert_native_check_after_build_before_migration() {
+  grep -n 'check-native-entrypoints.mjs' "$TEST_STATE/commands" | cut -d: -f1 > "$TEST_STATE/native.line"
+  test "$(wc -l < "$TEST_STATE/native.line")" -eq 1
+  test "$(grep -c 'check-native-entrypoints.mjs' "$TEST_STATE/commands")" -eq 1
+  test "$(grep 'check-native-entrypoints.mjs' "$TEST_STATE/commands" | grep -c 'EnvironmentFile=')" -eq 0
+  grep -n '^pnpm ' "$TEST_STATE/commands" | tail -n 1 | cut -d: -f1 > "$TEST_STATE/last-build.line"
+  grep -n 'runMigrationsCli.js' "$TEST_STATE/commands" | cut -d: -f1 > "$TEST_STATE/first-migrate.line"
+  test "$(cat "$TEST_STATE/last-build.line")" -lt "$(cat "$TEST_STATE/native.line")"
+  test "$(cat "$TEST_STATE/native.line")" -lt "$(cat "$TEST_STATE/first-migrate.line")"
 }
 
 # A successful deploy runs migrate, seed and verify once each, in that order, before any restart.
@@ -177,10 +194,11 @@ for unit in semprec-ai-gateway semprec-api semprec-agents semprec-transcribe; do
 done
 test "$(grep -c '^systemctl restart ' "$TEST_STATE/commands")" -eq 4
 grep -q 'pnpm install --frozen-lockfile' "$TEST_STATE/commands"
-test "$(grep -c '^systemd-run ' "$TEST_STATE/commands")" -eq 3
+test "$(grep -c '^systemd-run ' "$TEST_STATE/commands")" -eq 4
 test "$(grep -c "EnvironmentFile=$TEST_SEMPREC_ROOT/shared/env/migrate.env " "$TEST_STATE/commands")" -eq 3
 test "$(grep -c 'EnvironmentFile=' "$TEST_STATE/commands")" -eq 3
 assert_pre_activation_order
+assert_native_check_after_build_before_migration
 test -f "$TEST_SEMPREC_ROOT/releases/v1.0.0/web/dist/index.html"
 grep -qx 'pnpm run build' "$TEST_STATE/commands"
 if grep -q 'migrate-secret-value' "$TEST_STATE/deploy.out"; then
@@ -199,6 +217,17 @@ rm "$TEST_STATE/fail-build"
 touch "$TEST_STATE/fail-web-build"
 expect_refused 'build of the staged web client failed' v1.1.0
 rm "$TEST_STATE/fail-web-build"
+# The native entrypoint check fails after a successful build: no migration, seed or verify command runs.
+touch "$TEST_STATE/fail-native"
+expect_refused 'native entrypoint check failed' v1.1.0
+rm "$TEST_STATE/fail-native"
+grep -q 'check-native-entrypoints.mjs' "$TEST_STATE/commands"
+if grep -qE 'runMigrationsCli.js|runSeedCli.js|verifyTenancyCli.js' "$TEST_STATE/commands"; then
+  echo 'a failed native entrypoint check was followed by a migration, seed or verify command' >&2
+  exit 1
+fi
+assert_current v1.0.0
+assert_no_partial_releases
 touch "$TEST_STATE/fail-migrate"
 expect_refused 'migrations failed' v1.1.0
 rm "$TEST_STATE/fail-migrate"
@@ -233,6 +262,7 @@ rm "$TEST_STATE/commands"
 run_deploy v1.1.0 > "$TEST_STATE/deploy.out"
 assert_current v1.1.0
 assert_pre_activation_order
+assert_native_check_after_build_before_migration
 grep -qx two "$TEST_SEMPREC_ROOT/releases/v1.1.0/backend/marker"
 grep -qx one "$TEST_SEMPREC_ROOT/releases/v1.0.0/backend/marker"
 for unit in semprec-ai-gateway semprec-api semprec-agents semprec-transcribe; do
@@ -246,6 +276,7 @@ rm "$TEST_STATE/commands"
 run_deploy v1.3.0 > "$TEST_STATE/deploy.out"
 assert_current v1.3.0
 assert_pre_activation_order
+assert_native_check_after_build_before_migration
 rm "$TEST_STATE/commands"
 # A staging directory left by an interrupted deploy is not a release and must not count as the newest.
 mkdir "$TEST_SEMPREC_ROOT/releases/.v1.4.0.partial.test"

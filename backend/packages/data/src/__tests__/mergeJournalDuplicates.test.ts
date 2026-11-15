@@ -761,10 +761,76 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
             relationPropertyId: area.id,
             otherItemId: gone,
             code: "validation_failed",
+            field: "targetItemId",
           },
           REFUSED_EDGE_MESSAGE,
         ],
       ]);
+    });
+
+    it("does not report an edge to a trashed item that the survivor already holds, and deletes the duplicate's copy", async () => {
+      const { older, newer } = await duplicatedDay();
+      const shared = await createNamed(ids.areas, "Shared");
+      await link("area", older, shared, { from: "survivor" });
+      await link("area", newer, shared, { from: "duplicate" });
+      await runInTenant(tenant, () => cp.softDeleteItem(ids.areas, shared));
+      // An insert on the survivor, or a check that its edge could be created, would fail the merge.
+      failEdgeCreatedOn = older;
+      failEdgeCheckOf = older;
+
+      expect(await merge()).toEqual({ survivorId: older, mergedItemId: newer, refusedEdges: [] });
+
+      expect(await related(ids.journal, "area", older)).toEqual([{ item: shared, metadata: { from: "survivor" } }]);
+      expect(await relatedIds(ids.journal, "area", newer)).toEqual([]);
+      expect(refusedEdgeLog).not.toHaveBeenCalled();
+    });
+
+    it("reports only the trashed item the survivor does not hold when the duplicate has an edge to each", async () => {
+      const { older, newer } = await duplicatedDay();
+      const shared = await createNamed(ids.areas, "Shared");
+      const gone = await createNamed(ids.areas, "Gone");
+      await link("area", older, shared);
+      await link("area", newer, shared);
+      await link("area", newer, gone);
+      await runInTenant(tenant, () => cp.softDeleteItem(ids.areas, shared));
+      await runInTenant(tenant, () => cp.softDeleteItem(ids.areas, gone));
+      const { property: area } = await relationProperty(ids.journal, "area");
+
+      expect(await merge()).toEqual({
+        survivorId: older,
+        mergedItemId: newer,
+        refusedEdges: [
+          { relationPropertyId: area.id, otherItemId: gone, code: "validation_failed", field: "targetItemId" },
+        ],
+      });
+
+      expect(await relatedIds(ids.journal, "area", older)).toEqual([shared]);
+      expect(await relatedIds(ids.journal, "area", newer)).toEqual([gone]);
+      expect(refusedEdgeLog.mock.calls.map(([fields]) => fields)).toEqual([
+        {
+          survivorId: older,
+          mergedItemId: newer,
+          relationPropertyId: area.id,
+          otherItemId: gone,
+          code: "validation_failed",
+          field: "targetItemId",
+        },
+      ]);
+    });
+
+    it("neither checks nor writes an edge to a live item that the survivor already holds, and keeps its metadata", async () => {
+      const { older, newer } = await duplicatedDay();
+      const home = await createNamed(ids.areas, "Home");
+      await link("area", older, home, { from: "survivor" });
+      await link("area", newer, home, { from: "duplicate" });
+      failEdgeCreatedOn = older;
+      failEdgeCheckOf = older;
+
+      expect(await merge()).toEqual({ survivorId: older, mergedItemId: newer, refusedEdges: [] });
+
+      expect(await related(ids.journal, "area", older)).toEqual([{ item: home, metadata: { from: "survivor" } }]);
+      expect(await relatedIds(ids.journal, "area", newer)).toEqual([]);
+      expect(refusedEdgeLog).not.toHaveBeenCalled();
     });
 
     it("leaves a stored area on the duplicate when the survivor's area is derived from its project and reports it", async () => {
@@ -792,6 +858,7 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
             relationPropertyId: area.id,
             otherItemId: home,
             code: "validation_failed",
+            field: "area",
           },
           REFUSED_EDGE_MESSAGE,
         ],
@@ -823,6 +890,7 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
             relationPropertyId: journalDay.id,
             otherItemId: trashed,
             code: "validation_failed",
+            field: "callerItemId",
           },
           REFUSED_EDGE_MESSAGE,
         ],
@@ -844,7 +912,19 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
 
       expect(await relatedIds(ids.journal, "area", older)).toEqual([]);
       expect(await relatedIds(ids.journal, "area", newer)).toEqual([home]);
-      expect(refusedEdgeLog).toHaveBeenCalledTimes(1);
+      expect(refusedEdgeLog.mock.calls).toEqual([
+        [
+          {
+            survivorId: older,
+            mergedItemId: newer,
+            relationPropertyId: area.id,
+            otherItemId: home,
+            code: "validation_failed",
+            field: null,
+          },
+          REFUSED_EDGE_MESSAGE,
+        ],
+      ]);
     });
 
     it("reports the edges left on the duplicate across relation properties, one log line each", async () => {
@@ -874,6 +954,7 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
           relationPropertyId: area.id,
           otherItemId: gone,
           code: "validation_failed",
+          field: "targetItemId",
         },
         {
           survivorId: older,
@@ -881,6 +962,7 @@ describe("merging the duplicate Journal entries of one period (issue #1726)", ()
           relationPropertyId: journalDay.id,
           otherItemId: trashed,
           code: "validation_failed",
+          field: "callerItemId",
         },
       ]);
     });

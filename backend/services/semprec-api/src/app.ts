@@ -1,8 +1,14 @@
 import { createRecordingsRequestListener } from "./recordingsHandler.js";
-import { createCollectionMetadataResolver, createMailTransportFactory, resolveModuleRuleKinds } from "@semprec/data";
+import {
+  createCollectionMetadataResolver,
+  createMailTransportFactory,
+  resolveModuleRuleKinds,
+  type CollectionMetadataResolver,
+  type HeartbeatRuleKindRegistry,
+} from "@semprec/data";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
-import { CAPABILITY_IDS, withTraceContext } from "@semprec/shared";
+import { CAPABILITY_IDS, withTraceContext, type GenericApplicationPort } from "@semprec/shared";
 import { createGenericApplicationService, createGenericOperationGateway } from "@semprec/application";
 import type { BlobStorageWriter, InviteMailer, PasswordResetMailer, loadFullModuleRegistry } from "@semprec/data";
 import { createMcpRequestListener } from "./mcp/mcpHandler.js";
@@ -11,7 +17,7 @@ import {
   mountCustomRoutes,
   type CustomRouteDependencies,
 } from "./adapter/customRouteMount.js";
-import { mountRoutes } from "./adapter/routeTable.js";
+import { mountRoutes, type RouteDefinition } from "./adapter/routeTable.js";
 import { createSempThreadRoutes } from "./sempThreadsHandler.js";
 import { createSempSpeechRequestListener, isMessageSpeechPath } from "./sempSpeechHandler.js";
 import type { HttpAiGatewayClientConfig } from "@semprec/ai-gateway-client";
@@ -79,6 +85,31 @@ export interface AppOptions {
 }
 
 /**
+ * Every resource route this service mounts through `mountRoutes`, in mount order: the account, Semp thread, admin,
+ * database, property, view, item, page-changes and search families. `createDispatcher` mounts the result, and
+ * `__tests__/routeMatrixCoverage.unit.test.ts` reads it to check that each route has a `ROUTE_MATRIX` entry.
+ */
+export function createResourceRouteDefinitions(
+  pool: Pool,
+  options: AppOptions,
+  heartbeatRuleKinds: () => Promise<HeartbeatRuleKindRegistry>,
+  genericApplicationService: GenericApplicationPort,
+  collectionMetadataResolver: CollectionMetadataResolver,
+): RouteDefinition[] {
+  return [
+    ...createAccountRoutes(pool, options),
+    ...createSempThreadRoutes(pool, heartbeatRuleKinds),
+    ...createAdminRoutes(pool, options),
+    ...createDatabaseRoutes(genericApplicationService, options.moduleRegistry),
+    ...createPropertyRoutes(genericApplicationService, options.moduleRegistry),
+    ...createViewRoutes(genericApplicationService, pool),
+    ...createItemRoutes(genericApplicationService, pool, collectionMetadataResolver),
+    ...createPageChangesRoutes(genericApplicationService),
+    ...createSearchRoutes(genericApplicationService),
+  ];
+}
+
+/**
  * The full request dispatcher: `serve.ts` calls this to get the listener it hands to
  * `http.createServer`, and `__tests__/routeMatrix.test.ts` (issue #143) calls it the same way to
  * drive `routeMatrix.ts`'s inventory against a real in-memory server, with no process/port of
@@ -137,17 +168,16 @@ export async function createDispatcher(
   // second write path — a route never constructs its own `createChokePoint(pool)`.
   const collectionMetadataResolver = await createCollectionMetadataResolver(options.moduleRegistry);
   const genericApplicationService = createGenericApplicationService(pool, collectionMetadataResolver);
-  const dispatchResourceRoute = mountRoutes(pool, [
-    ...createAccountRoutes(pool, options),
-    ...createSempThreadRoutes(pool, heartbeatRuleKinds),
-    ...createAdminRoutes(pool, options),
-    ...createDatabaseRoutes(genericApplicationService, options.moduleRegistry),
-    ...createPropertyRoutes(genericApplicationService, options.moduleRegistry),
-    ...createViewRoutes(genericApplicationService, pool),
-    ...createItemRoutes(genericApplicationService, pool, collectionMetadataResolver),
-    ...createPageChangesRoutes(genericApplicationService),
-    ...createSearchRoutes(genericApplicationService),
-  ]);
+  const dispatchResourceRoute = mountRoutes(
+    pool,
+    createResourceRouteDefinitions(
+      pool,
+      options,
+      heartbeatRuleKinds,
+      genericApplicationService,
+      collectionMetadataResolver,
+    ),
+  );
   // Issue #220's own composition root over the same generic catalog: a second
   // `GenericOperationGateway` instance over this process's one `Pool`, never sharing state with
   // the REST `genericApplicationService` above beyond the `Pool` itself (#219's ADR — REST and

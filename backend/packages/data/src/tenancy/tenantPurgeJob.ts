@@ -22,6 +22,15 @@ const BLOB_PAGE = 500;
 /** How long dropping an `items` partition may wait for its `ACCESS EXCLUSIVE` lock before the tenant is retried next run. */
 const PARTITION_LOCK_TIMEOUT = "5s";
 
+/**
+ * How long finalisation may wait for the `LOCK TABLE` on graphile-worker's job table, or for a row lock
+ * in its queue table, before the run fails and the next sweep retries.
+ */
+const QUEUE_LOCK_TIMEOUT = "2s";
+
+/** Matches the tenant's lane queues: the `:<tenantId>` suffix of `tenantLane` (a colon and a 36 character UUID). */
+const TENANT_QUEUE_SUFFIX_LENGTH = 37;
+
 /** The two blob roots a tenant's bytes can live under. */
 export interface TenantPurgeDirs {
   files: string;
@@ -268,8 +277,43 @@ async function assertNothingRemains(client: PoolClient, tenantId: string, tables
 }
 
 /**
+ * Erases the tenant's idle lane queues (`<lane>:<tenantId>`) from graphile-worker's queue table, the
+ * last statements of the finalisation transaction. `add_job` takes no lock on a queue row and
+ * `_private_jobs.job_queue_id` has no foreign key, so without the table lock a job that a
+ * still-open transaction enqueued into the lane is invisible to the `NOT EXISTS` and would be left
+ * pointing at a deleted queue, which no worker selects. The lock waits for such a transaction (or
+ * times out, which fails the run) and is held until the commit that follows.
+ * A queue that a running job holds, or that still holds a job, is kept and fails the run, naming
+ * only the table. See `docs/adr/2026-11-15-tenant-purge-erases-the-tenants-queue-rows.md`.
+ */
+async function eraseIdleQueues(client: PoolClient, tenantId: string): Promise<void> {
+  await client.query("SELECT set_config('lock_timeout', $1, true)", [QUEUE_LOCK_TIMEOUT]);
+  await client.query("LOCK TABLE graphile_worker._private_jobs IN SHARE ROW EXCLUSIVE MODE");
+  // Zero rows is valid: a tenant that never enqueued into a lane has no queue, and a held queue is kept and caught below.
+  const erased = await client.query(
+    `DELETE FROM graphile_worker._private_job_queues AS q
+      WHERE right(q.queue_name, $2::int) = ':' || $1::text
+        AND q.locked_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM graphile_worker._private_jobs AS j WHERE j.job_queue_id = q.id)`,
+    [tenantId, TENANT_QUEUE_SUFFIX_LENGTH],
+  );
+  logger.info({ tenantId, step: "queues", count: erased.rowCount ?? 0 }, "tenant_purge_step");
+  const { rows } = await client.query<{ present: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM graphile_worker._private_job_queues AS q
+        WHERE right(q.queue_name, $2::int) = ':' || $1::text
+     ) AS present`,
+    [tenantId, TENANT_QUEUE_SUFFIX_LENGTH],
+  );
+  if (requireSingleRow(rows, "tenant queue presence").present) {
+    throw new Error("Tenant purge left rows behind in: graphile_worker._private_job_queues");
+  }
+}
+
+/**
  * Finalises the purge in one transaction: asserts nothing tenant-owned remains, erases the
- * tenant's identity rows, records the tombstone and deletes the `tenants` row.
+ * tenant's identity rows, records the tombstone, deletes the `tenants` row and then erases the
+ * tenant's idle queue rows.
  */
 async function finalise(ctx: PurgeContext): Promise<void> {
   const { tables } = await readCatalog(ctx.pool);
@@ -319,6 +363,7 @@ async function finalise(ctx: PurgeContext): Promise<void> {
       await client.query("DELETE FROM tenants WHERE id = $1 AND status = 'deleting'", [ctx.tenantId]),
       "tenants delete",
     );
+    await eraseIdleQueues(client, ctx.tenantId);
   });
 }
 

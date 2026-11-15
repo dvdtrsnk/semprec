@@ -10,8 +10,10 @@ import {
   createHeartbeat,
   loadFullModuleRegistry,
   mergeModuleTaskListForAffinity,
+  runHeartbeatFireQueueSplitMigration,
   withTransaction,
 } from "@semprec/data";
+import { runAsSystem } from "@semprec/shared";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { createApiQueueRuntime, type ApiQueueRuntime } from "../queueRuntime.js";
 import * as apiFixtureModule from "./fixtures/apiFixtureModule.js";
@@ -203,7 +205,7 @@ describe("createApiQueueRuntime (issue #91)", () => {
     });
   });
 
-  it("re-enqueues a legacy heartbeatFire job exactly once under its split task name at install, and the deterministic heartbeat actually executes in the API runtime", async () => {
+  it("moves a legacy heartbeatFire job under its split task name in the deploy-time migration, and the deterministic heartbeat actually executes in the API runtime", async () => {
     await seedSystem(pool);
     const projectItemId = await getSemprecProjectId(pool);
     const heartbeat = await withTransaction(pool, (client) =>
@@ -223,13 +225,16 @@ describe("createApiQueueRuntime (issue #91)", () => {
       ),
     );
 
+    // The step the deploy runs from `runMigrationsCli.ts`; the API start no longer runs it.
+    await runAsSystem("deploy migrations", () => runHeartbeatFireQueueSplitMigration(pool));
+
     const registry = await buildRegistryWith("apiFixtureModule.js", "fixture-api-queue-runtime");
     runtime = await createApiQueueRuntime(pool, registry);
 
     expect(await jobCountFor(pool, "heartbeatFire")).toBe(0);
     expect(await jobCountFor(pool, CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE)).toBe(1);
 
-    // Presence alone only proves the migration ran, not that the API runtime actually owns and
+    // Presence alone only proves the deploy-time migration ran, not that the API runtime actually owns and
     // runs `heartbeatFireCore` — this runtime's action registry has no handler for `"noop"`, so
     // the job errors rather than completing, but graphile-worker still has to claim and invoke
     // it to discover that. `attempts >= 1` is the positive proof of real execution: the same

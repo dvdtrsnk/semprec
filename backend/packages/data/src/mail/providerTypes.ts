@@ -16,15 +16,21 @@ export class MailReauthorizationRequiredError extends Error {}
 /**
  * Thrown by `exchangeAuthorizationCode` when the provider answered 400/401 and the refusal is no
  * request for administrator consent. `providerError` is the provider's short `error` code when it
- * is a plain token, never free text, and it says what was refused: `invalid_grant` is the
- * authorization code or its PKCE verifier, which the caller presented. Any other value, or none,
- * is the OAuth client or the request itself (`invalid_client` for a wrong or expired client secret),
- * which is a fault of the deployment and no input error of the caller.
+ * is one of the fixed set the exchange knows, never free text, and it is `null` when that code
+ * occurs inside the submitted code, the PKCE verifier or the client secret, so no field of the
+ * error holds anything that equals part of a secret. `grantRefused` carries the classification
+ * the caller needs instead, as a boolean that cannot hold a secret: true when the token endpoint
+ * refused the grant itself (`invalid_grant`), which is the authorization code or its PKCE
+ * verifier, what the caller presented. It stays true when `providerError` was blanked. False for
+ * any other refusal, or an answer naming no known code, which is the OAuth client or the request
+ * itself (`invalid_client` for a wrong or expired client secret) and a fault of the deployment,
+ * no input error of the caller.
  */
 export class MailAuthorizationCodeRejectedError extends Error {
   constructor(
     message: string,
     readonly providerError: string | null,
+    readonly grantRefused: boolean,
   ) {
     super(message);
     this.name = "MailAuthorizationCodeRejectedError";

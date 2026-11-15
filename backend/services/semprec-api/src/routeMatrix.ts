@@ -57,9 +57,13 @@ import { MCP_SERVERS_ROUTES } from "./routeMatrix/mcpServers.js";
  * HTTP or client-side view, and whether it is reachable without a session.
  * `__tests__/routeMatrix.test.ts` drives every `surface: "api"` entry end to end against the
  * real dispatcher (`app.ts`'s `createDispatcher`) — an entry with `public: false` that a handler
- * doesn't actually gate behind `authenticateRequest` fails that test with a non-401 response,
- * and a newly added route that's never added here simply isn't covered, so adding a route always
- * means adding (and justifying) an entry. `surface: "view"` entries have no backend of their own
+ * doesn't actually gate behind `authenticateRequest` fails that test with a non-401 response.
+ * A mounted route without an entry fails `__tests__/routeMatrixCoverage.unit.test.ts`, which
+ * compares every module custom route and every resource route of `app.ts`'s
+ * `createResourceRouteDefinitions` with the `surface: "api"` entries here, so adding a route always
+ * means adding (and justifying) an entry. The paths `createDispatcher` routes by prefix in its
+ * listener chain (`/mcp`, `/api/auth/`, `/api/files` and the rest) are not definitions and are
+ * still covered only by their own entries. `surface: "view"` entries have no backend of their own
  * to fetch-test — this service doesn't serve the SPA — so they're listed for the record only;
  * the "documents a reason for every public entry" test still covers them.
  *

@@ -7,7 +7,9 @@
 #
 # Run as root from an operator checkout of the repository whose `origin` holds the release tags.
 # Everything up to the symlink swap happens in a hidden staging directory; any failure there
-# removes it and leaves `current` and the running services untouched.
+# removes it and leaves `current` and the running services untouched. Right after the build the staged
+# release's compiled entries are run natively with no configuration, so a release whose services cannot
+# load is refused before `current` moves.
 #
 # A rollback builds nothing, fetches nothing and runs no migration: it repoints `current` at a
 # release already on disk and restarts the services. Migrations are forward-only and compatible
@@ -118,6 +120,19 @@ build_release() {
       CI=true pnpm install --frozen-lockfile --package-import-method=copy &&
       pnpm run build
   ) || fail "build of the staged web client failed"
+}
+
+# Runs every compiled entry the units and scripts start as a plain `node` with no configuration
+# (backend/scripts/check-native-entrypoints.mjs): each must reach its own configuration refusal instead
+# of a module-resolution failure. No `EnvironmentFile` is given, so the check sees no secret and, with an
+# empty configuration, connects to nothing. A failure leaves `current` and the running services untouched,
+# like a build failure.
+verify_native_entrypoints() {
+  systemd-run --quiet --wait --pipe --collect \
+    --uid=semprec --gid=semprec \
+    --working-directory="$staging_dir/backend" \
+    /bin/sh -c 'exec node scripts/check-native-entrypoints.mjs' \
+    || fail "native entrypoint check failed"
 }
 
 # Non-secret and release-specific, so it lives in the release; every unit loads it after the
@@ -284,6 +299,7 @@ deploy() {
   trap remove_staging EXIT
   stage_release "$tag" "$commit"
   build_release
+  verify_native_entrypoints
   write_release_env "$tag"
   run_migrations
   run_seed

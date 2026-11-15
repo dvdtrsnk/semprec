@@ -110,6 +110,31 @@ describe("recordRestoreTestResult (issue #178)", () => {
     });
   });
 
+  it("records a failed run on a semprec_side pool, the role of the semprec-restore-test process", async () => {
+    const userId = await createTestUser();
+    const sidePool = await createRuntimeRolePool(pool, "semprec_side");
+
+    let outcome: Awaited<ReturnType<typeof record>>;
+    try {
+      outcome = await record({ status: "failed", runId: "run-1", failedCheck: "itemsFreshness" }, sidePool);
+    } finally {
+      await sidePool.end();
+    }
+
+    const check = await getRestoreCheck();
+    expect(check?.status).toBe("alerting");
+    expect(check?.detail).toMatchObject({ runId: "run-1", failedCheck: "itemsFreshness" });
+    const notifications = await listNotifications();
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toMatchObject({
+      id: outcome.notificationIds[0],
+      user_id: userId,
+      kind: "backup_restore_failed",
+      payload: { runId: "run-1", failedCheck: "itemsFreshness" },
+    });
+    expect(outcome.notificationIds).toHaveLength(1);
+  });
+
   it("does not duplicate the notification when the same run is recorded again", async () => {
     await createTestUser();
     const input = { status: "failed", runId: "run-1", failedCheck: "pgRestore" } as const;

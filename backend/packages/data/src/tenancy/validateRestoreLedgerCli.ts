@@ -2,6 +2,7 @@ import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import { Pool } from "pg";
 import { MAX_RESTORE_LEDGER_BYTES, parseRestoreReplayLedger } from "./restoreReplayLedger.js";
+import { restoreLedgerFailureMessage } from "./restoreLedgerFailure.js";
 import { validateRestoreLedger } from "./validateRestoreLedger.js";
 
 async function readLedger(path: string): Promise<Buffer> {
@@ -77,7 +78,7 @@ async function main(): Promise<void> {
 
 try {
   await main();
-} catch {
-  console.error("Restore ledger validation failed");
+} catch (error) {
+  console.error(restoreLedgerFailureMessage(error));
   process.exitCode = 1;
 }

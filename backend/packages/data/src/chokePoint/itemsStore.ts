@@ -69,6 +69,27 @@ export async function lockItemById(client: Queryable, databaseId: string, itemId
   return rows[0] ? mapItemRow(rows[0]) : null;
 }
 
+/**
+ * Row-locking read of a row that is trashed and was trashed strictly before `cutoff`: the permanent purge's read of
+ * a row it is about to remove. The predicate is part of the locking statement, so a row that does not qualify (gone,
+ * live, or trashed at or after `cutoff`) is not locked and the call returns `null`. A row another transaction
+ * changes while the statement waits for its lock is rechecked against its latest committed version, and that version
+ * is what is returned and locked.
+ */
+export async function lockTrashedItemBefore(
+  client: Queryable,
+  databaseId: string,
+  itemId: string,
+  cutoff: Date,
+): Promise<ItemRow | null> {
+  const { rows } = await client.query<ItemDbRow>(
+    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at
+     FROM items WHERE database_id = $1 AND id = $2 AND deleted_at IS NOT NULL AND deleted_at < $3 FOR UPDATE`,
+    [databaseId, itemId, cutoff],
+  );
+  return rows[0] ? mapItemRow(rows[0]) : null;
+}
+
 /** Row-locking read that reports a contended row through PostgreSQL's lock-not-available error. */
 export async function lockItemByIdNowait(
   client: Queryable,

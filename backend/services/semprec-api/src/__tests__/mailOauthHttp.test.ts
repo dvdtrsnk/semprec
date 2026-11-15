@@ -188,8 +188,8 @@ function stateOf(authorizeUrl: URL): string {
   return state;
 }
 
-function complete(state: string): Promise<Answer> {
-  return request("POST", "/api/mail/mailboxes/oauth/complete", { state, code: SECRETS.code }, bearer);
+function complete(state: string, code: string = SECRETS.code): Promise<Answer> {
+  return request("POST", "/api/mail/mailboxes/oauth/complete", { state, code }, bearer);
 }
 
 /** `used_at` of the row of `state`, read as the superuser. */
@@ -390,6 +390,22 @@ describe("the mailbox sign-in routes behind the REST adapter (issue gh-1686)", (
     expect(answer.body).toEqual({ error: { code: "validation_failed", details: { field: "code" } } });
     expect(logged).not.toHaveBeenCalled();
   });
+
+  it.each(["a", "grant", "invalid_grant"])(
+    "answers 400 validation_failed, not 500, for the code %j that is part of the provider's invalid_grant error token, and logs no error",
+    async (code) => {
+      const logged = vi.spyOn(logger, "error");
+      providerRoutes = { [GOOGLE_TOKEN_URL]: () => json({ error: "invalid_grant" }, 400) };
+      const state = stateOf(await start("gmail"));
+
+      const answer = await complete(state, code);
+
+      expect(answer.status).toBe(400);
+      expect(answer.body).toEqual({ error: { code: "validation_failed", details: { field: "code" } } });
+      expect(logged).not.toHaveBeenCalled();
+      expect(await usedAt(state)).not.toBeNull();
+    },
+  );
 
   it("answers a token endpoint that refuses the OAuth client with a generic 500, and logs the provider's error code without a secret", async () => {
     const logged = vi.spyOn(logger, "error");
