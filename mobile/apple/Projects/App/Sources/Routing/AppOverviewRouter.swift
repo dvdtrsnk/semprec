@@ -24,7 +24,7 @@ extension AppOverviewRouter: OverviewRouting {
         case .profile: context.presentSheet(.profile, from: .overview)
         case .inbox: context.showInbox(in: .overview)
         case .mail: context.showMail(MailListStart(), in: .overview)
-        case .recordings: pending(String(localized: "pending.recordings"))
+        case .recordings: context.push(.recordings(tab: .overview), in: .overview)
         case .tasks: context.showTasks(TasksStart(), in: .overview)
         case .finance: pending(String(localized: "pending.finance"))
         case .journal: pending(String(localized: "pending.journal"))

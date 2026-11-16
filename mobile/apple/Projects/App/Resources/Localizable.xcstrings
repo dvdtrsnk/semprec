@@ -65,22 +65,6 @@
         }
       }
     },
-    "pending.recordings" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nahrávky"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Recordings"
-          }
-        }
-      }
-    },
     "pending.searchResult" : {
       "localizations" : {
         "cs" : {

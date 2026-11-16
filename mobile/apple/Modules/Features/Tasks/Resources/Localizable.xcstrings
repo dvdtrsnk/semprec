@@ -321,6 +321,22 @@
         }
       }
     },
+    "details.eventPage" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otevřít stránku události"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open the event page"
+          }
+        }
+      }
+    },
     "details.files" : {
       "localizations" : {
         "cs" : {

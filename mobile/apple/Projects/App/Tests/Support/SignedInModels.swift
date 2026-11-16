@@ -100,6 +100,13 @@ final class SignedInModels: ScreenModelFactory {
 
     func makeSempBubble() -> any SempBubbleScreenModel { real.makeSempBubble() }
 
+    func makeRecordings() -> any RecordingsScreenModel { real.makeRecordings() }
+    func makeRecorder(eventId: String?) -> any RecorderScreenModel { real.makeRecorder(eventId: eventId) }
+    func makeTranscript(transcriptId: String) -> any TranscriptScreenModel {
+        real.makeTranscript(transcriptId: transcriptId)
+    }
+    func makeMeeting(eventId: String) -> any MeetingScreenModel { real.makeMeeting(eventId: eventId) }
+
     func makeSession() -> any SessionScreenModel {
         ScriptedSessionScreenModel(
             state: .signedIn(SessionUser(email: "a@b.cz", role: "member", serverUrl: "https://s.example"))

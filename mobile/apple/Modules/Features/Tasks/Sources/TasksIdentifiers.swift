@@ -18,6 +18,7 @@ enum TasksIdentifiers {
     static let detailsDone = "taskDetails.done"
     static let detailsClose = "taskDetails.close"
     static let detailsDelete = "taskDetails.delete"
+    static let detailsEventPage = "taskDetails.eventPage"
     static let detailsDate = "taskDetails.date"
     static let detailsProject = "taskDetails.project"
     static let detailsPeople = "taskDetails.people"
