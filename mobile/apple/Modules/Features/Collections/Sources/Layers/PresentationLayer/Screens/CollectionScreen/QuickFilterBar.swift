@@ -27,6 +27,9 @@ struct QuickFilterBar: View {
             .padding(.horizontal, Theme.Spacing.medium)
             .padding(.vertical, 6)
         }
+        // A horizontal scroll view takes all the height it is offered; in a safe area bar that is the whole screen,
+        // which drew the bar's scroll edge effect over the collection.
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 

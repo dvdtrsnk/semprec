@@ -53,14 +53,9 @@ private extension CollectionScreen {
         let state = viewModel.state
         return items(state)
             .safeAreaBar(edge: .top, spacing: 0) {
-                QuickFilterBar(
-                    chips: state.quickFilters,
-                    selected: state.selectedQuickFilter,
-                    activeFilterCount: state.activeFilterCount,
-                    canFilter: state.header != nil,
-                    tint: appearance(state).baseTint,
-                    send: viewModel.send
-                )
+                if state.header != nil || !state.quickFilters.isEmpty {
+                    quickFilterBar(state)
+                }
             }
             .searchable(
                 text: $query,
@@ -96,6 +91,17 @@ private extension CollectionScreen {
             } message: { failure in
                 Text(FailureKind.message(for: failure.kind))
             }
+    }
+
+    func quickFilterBar(_ state: CollectionState) -> some View {
+        QuickFilterBar(
+            chips: state.quickFilters,
+            selected: state.selectedQuickFilter,
+            activeFilterCount: state.activeFilterCount,
+            canFilter: state.header != nil,
+            tint: appearance(state).baseTint,
+            send: viewModel.send
+        )
     }
 
     @ViewBuilder
