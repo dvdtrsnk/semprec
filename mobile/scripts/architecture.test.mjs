@@ -18,13 +18,12 @@ const MOBILE = path.resolve(path.dirname(SCRIPT), "..");
 const KOTLIN = "kotlin/cz/semprec/app";
 const PRESENTATION = `shared/presentation/src/commonMain/${KOTLIN}/presentation`;
 const HOME_FEATURE = `android/feature/home/src/main/${KOTLIN}/feature/home/presentation/screen`;
-const HOME_MODULE = "apple/Modules/Features/Home";
-const HOME_SWIFT_SCREENS = `${HOME_MODULE}/Sources/Layers/PresentationLayer/Screens`;
-const HOME_SCREEN_SWIFT = `${HOME_SWIFT_SCREENS}/HomeScreen/HomeScreen.swift`;
+const AUTH_MODULE = "apple/Modules/Features/Auth";
+const AUTH_SWIFT_SCREENS = `${AUTH_MODULE}/Sources/Layers/PresentationLayer/Screens`;
+const LOGIN_SCREEN_SWIFT = `${AUTH_SWIFT_SCREENS}/LoginScreen/LoginScreen.swift`;
 const COREKIT_SHARED = "apple/Modules/Core/CoreKit/Sources/Shared";
 const PROJECT_CONFIGURATION = "apple/Tuist/ProjectDescriptionHelpers/ProjectConfiguration.swift";
-const HOME_CATALOG = `${HOME_MODULE}/Resources/Localizable.xcstrings`;
-const SETTINGS_CATALOG = "apple/Modules/Features/Settings/Resources/Localizable.xcstrings";
+const AUTH_CATALOG = `${AUTH_MODULE}/Resources/Localizable.xcstrings`;
 const APP_CATALOG = "apple/Projects/App/Resources/Localizable.xcstrings";
 const APP_MANIFEST = "apple/Projects/App/Project.swift";
 const UI_TESTS = "apple/Projects/App/UITests";
@@ -166,15 +165,15 @@ describe("ARCH-GRADLE", () => {
 describe("ARCH-APPLE", () => {
   it("fails an import of a module the policy does not allow, which the manifest does not declare either", () => {
     const root = copyOfTree();
-    replace(root, HOME_SCREEN_SWIFT, "import DesignSystem\n", "import DesignSystem\nimport SettingsFeature\n");
-    const violations = assertViolations(root, ["ARCH-APPLE"], /HomeFeature imports SettingsFeature, which .*allowed does not list/, /HomeFeature imports SettingsFeature without declaring it/);
-    assert.ok(violations.every((v) => v.file === HOME_SCREEN_SWIFT && v.line === 3));
+    replace(root, LOGIN_SCREEN_SWIFT, "import DesignSystem\n", "import DesignSystem\nimport Dependencies\n");
+    const violations = assertViolations(root, ["ARCH-APPLE"], /AuthFeature imports Dependencies, which .*allowed does not list/, /AuthFeature imports Dependencies without declaring it/);
+    assert.ok(violations.every((v) => v.file === LOGIN_SCREEN_SWIFT && v.line === 3));
   });
 
   it("fails an import the policy allows but the manifest does not declare", () => {
     const root = copyOfTree();
-    replace(root, `${HOME_MODULE}/Project.swift`, '                .project(target: "DesignSystem", path: "../../Core/DesignSystem"),\n', "");
-    const violations = assertViolations(root, ["ARCH-APPLE"], /HomeFeature imports DesignSystem without declaring it as a dependency in apple\/Modules\/Features\/Home\/Project.swift/);
+    replace(root, `${AUTH_MODULE}/Project.swift`, '                .project(target: "DesignSystem", path: "../../Core/DesignSystem"),\n', "");
+    const violations = assertViolations(root, ["ARCH-APPLE"], /AuthFeature imports DesignSystem without declaring it as a dependency in apple\/Modules\/Features\/Auth\/Project.swift/);
     assert.ok(violations.every((v) => /without declaring/.test(v.message)));
   });
 
@@ -186,46 +185,46 @@ describe("ARCH-APPLE", () => {
 
   it("fails a project dependency the policy does not allow", () => {
     const root = copyOfTree();
-    replace(root, `${HOME_MODULE}/Project.swift`, '.project(target: "DesignSystem", path: "../../Core/DesignSystem"),', '.project(target: "DesignSystem", path: "../../Core/DesignSystem"),\n                .project(target: "SettingsFeature", path: "../Settings"),');
-    assertViolations(root, ["ARCH-APPLE"], /HomeFeature depends on SettingsFeature, which apple.targets.HomeFeature.allowed does not list/);
+    replace(root, `${AUTH_MODULE}/Project.swift`, '.project(target: "DesignSystem", path: "../../Core/DesignSystem"),', '.project(target: "DesignSystem", path: "../../Core/DesignSystem"),\n                .project(target: "Dependencies", path: "../../Core/Dependencies"),');
+    assertViolations(root, ["ARCH-APPLE"], /AuthFeature depends on Dependencies, which apple.targets.AuthFeature.allowed does not list/);
   });
 
   it("fails an external dependency the policy does not allow", () => {
     const root = copyOfTree();
-    replace(root, `${HOME_MODULE}/Project.swift`, '.project(target: "DesignSystem", path: "../../Core/DesignSystem"),', '.project(target: "DesignSystem", path: "../../Core/DesignSystem"),\n                .external(name: "NavigatorUI"),');
-    const violations = assertViolations(root, ["ARCH-APPLE"], /HomeFeature depends on NavigatorUI, which apple.targets.HomeFeature.allowed does not list/);
+    replace(root, `${AUTH_MODULE}/Project.swift`, '.project(target: "DesignSystem", path: "../../Core/DesignSystem"),', '.project(target: "DesignSystem", path: "../../Core/DesignSystem"),\n                .external(name: "NavigatorUI"),');
+    const violations = assertViolations(root, ["ARCH-APPLE"], /AuthFeature depends on NavigatorUI, which apple.targets.AuthFeature.allowed does not list/);
     assert.equal(violations.length, 1);
   });
 
   it("fails an external dependency that is not an external module of the policy", () => {
     const root = copyOfTree();
-    replace(root, `${HOME_MODULE}/Project.swift`, '.project(target: "DesignSystem", path: "../../Core/DesignSystem"),', '.project(target: "DesignSystem", path: "../../Core/DesignSystem"),\n                .external(name: "Alamofire"),');
-    assertViolations(root, ["ARCH-APPLE"], /HomeFeature depends on external Alamofire, which apple.externalModules does not list/);
+    replace(root, `${AUTH_MODULE}/Project.swift`, '.project(target: "DesignSystem", path: "../../Core/DesignSystem"),', '.project(target: "DesignSystem", path: "../../Core/DesignSystem"),\n                .external(name: "Alamofire"),');
+    assertViolations(root, ["ARCH-APPLE"], /AuthFeature depends on external Alamofire, which apple.externalModules does not list/);
   });
 
   it("fails a dependency on a target the policy does not list", () => {
     const root = copyOfTree();
-    replace(root, `${HOME_MODULE}/Project.swift`, '.project(target: "DesignSystem", path: "../../Core/DesignSystem"),', '.project(target: "DesignSystem", path: "../../Core/DesignSystem"),\n                .project(target: "Profile", path: "../Profile"),');
-    const violations = assertViolations(root, ["ARCH-APPLE"], /HomeFeature depends on Profile, which apple.targets does not list/);
+    replace(root, `${AUTH_MODULE}/Project.swift`, '.project(target: "DesignSystem", path: "../../Core/DesignSystem"),', '.project(target: "DesignSystem", path: "../../Core/DesignSystem"),\n                .project(target: "Profile", path: "../Profile"),');
+    const violations = assertViolations(root, ["ARCH-APPLE"], /AuthFeature depends on Profile, which apple.targets does not list/);
     assert.equal(violations.length, 1);
   });
 
   it("fails a project dependency whose path is not the project of its target", () => {
     const root = copyOfTree();
-    replace(root, `${HOME_MODULE}/Project.swift`, '.project(target: "DesignSystem", path: "../../Core/DesignSystem")', '.project(target: "DesignSystem", path: "../../Core/CoreKit")');
-    assertViolations(root, ["ARCH-APPLE"], /HomeFeature depends on DesignSystem in path "..\/..\/Core\/CoreKit", but apple.targets places it in Modules\/Core\/DesignSystem/);
+    replace(root, `${AUTH_MODULE}/Project.swift`, '.project(target: "DesignSystem", path: "../../Core/DesignSystem")', '.project(target: "DesignSystem", path: "../../Core/CoreKit")');
+    assertViolations(root, ["ARCH-APPLE"], /AuthFeature depends on DesignSystem in path "..\/..\/Core\/CoreKit", but apple.targets places it in Modules\/Core\/DesignSystem/);
   });
 
   it("fails a declared target without a policy entry", () => {
     const root = copyOfTree();
-    replace(root, "apple/Modules/Core/DesignSystem/Project.swift", 'SemprecProject.framework("DesignSystem", resources: ["Resources/**"])', 'SemprecProject.framework("DesignSystem", resources: ["Resources/**"]), SemprecProject.tests("DesignSystemTests", for: "DesignSystem")');
-    assertViolations(root, ["ARCH-APPLE"], /declares target DesignSystemTests, which has no entry in apple.targets/);
+    replace(root, "apple/Modules/Core/DesignSystem/Project.swift", 'SemprecProject.tests("DesignSystemTests", for: "DesignSystem"),', 'SemprecProject.tests("DesignSystemTests", for: "DesignSystem"),\n        SemprecProject.tests("ProbeTests", for: "DesignSystem"),');
+    assertViolations(root, ["ARCH-APPLE"], /declares target ProbeTests, which has no entry in apple.targets/);
   });
 
   it("fails a target declared in another project than the policy says", () => {
     const root = copyOfTree();
-    replace(root, "apple/Modules/Features/Settings/Project.swift", '"SettingsFeatureTests"', '"HomeFeatureTests"');
-    assertViolations(root, ["ARCH-APPLE"], /declares target HomeFeatureTests, which apple.targets places in Modules\/Features\/Home/, /apple.targets lists SettingsFeatureTests, which no Project.swift/);
+    replace(root, "apple/Modules/Core/DesignSystem/Project.swift", '"DesignSystemTests"', '"AuthFeatureTests"');
+    assertViolations(root, ["ARCH-APPLE"], /declares target AuthFeatureTests, which apple.targets places in Modules\/Features\/Auth/, /apple.targets lists DesignSystemTests, which no Project.swift/);
   });
 
   it("fails a policy target that no manifest declares", () => {
@@ -249,11 +248,11 @@ describe("ARCH-APPLE", () => {
 
   it("fails an import of an app module in the UI tests, and a dependency on one", () => {
     const root = copyOfTree();
-    write(root, `${UI_TESTS}/ImportProbe.swift`, "import XCTest\nimport HomeFeature\n");
-    assertViolations(root, ["ARCH-APPLE"], /SemprecUITests imports HomeFeature, which apple.targets.SemprecUITests.allowed does not list \(allowed: none\)$/, /SemprecUITests imports HomeFeature without declaring it/);
+    write(root, `${UI_TESTS}/ImportProbe.swift`, "import XCTest\nimport AuthFeature\n");
+    assertViolations(root, ["ARCH-APPLE"], /SemprecUITests imports AuthFeature, which apple.targets.SemprecUITests.allowed does not list \(allowed: none\)$/, /SemprecUITests imports AuthFeature without declaring it/);
     const other = copyOfTree();
-    replace(other, APP_MANIFEST, "dependencies: [.target(name: app)]", 'dependencies: [.target(name: app), .project(target: "HomeFeature", path: "../../Modules/Features/Home")]');
-    assertViolations(other, ["ARCH-APPLE"], /SemprecUITests depends on HomeFeature, which apple.targets.SemprecUITests.allowed does not list \(allowed: none\)/);
+    replace(other, APP_MANIFEST, "dependencies: [.target(name: app)]", 'dependencies: [.target(name: app), .project(target: "AuthFeature", path: "../../Modules/Features/Auth")]');
+    assertViolations(other, ["ARCH-APPLE"], /SemprecUITests depends on AuthFeature, which apple.targets.SemprecUITests.allowed does not list \(allowed: none\)/);
   });
 
   it("fails a UI test target without a dependency on its app under test", () => {
@@ -266,13 +265,14 @@ describe("ARCH-APPLE", () => {
 
   it("checks a file the UI tests compile from another target against the UI tests' policy, not that target's", () => {
     const root = copyOfTree();
-    const homeIdentifiers = `${HOME_MODULE}/Sources/HomeIdentifiers.swift`;
+    const authIdentifiers = `${AUTH_MODULE}/Sources/AuthIdentifiers.swift`;
     const appIdentifiers = "apple/Projects/App/Sources/AppIdentifiers.swift";
-    write(root, homeIdentifiers, `import CoreKit\n${readFileSync(path.join(MOBILE, homeIdentifiers), "utf8")}`);
+    replace(root, APP_MANIFEST, '"Sources/AppIdentifiers.swift",', '"Sources/AppIdentifiers.swift",\n                "../../Modules/Features/Auth/Sources/AuthIdentifiers.swift",');
+    write(root, authIdentifiers, `import CoreKit\n${readFileSync(path.join(MOBILE, authIdentifiers), "utf8")}`);
     write(root, appIdentifiers, `import NavigatorUI\n${readFileSync(path.join(MOBILE, appIdentifiers), "utf8")}`);
     const violations = assertViolations(root, ["ARCH-APPLE"], /SemprecUITests imports CoreKit, which apple.targets.SemprecUITests.allowed does not list/, /SemprecUITests imports NavigatorUI, which apple.targets.SemprecUITests.allowed does not list/);
     assert.ok(violations.every((v) => v.message.startsWith("SemprecUITests ") && v.line === 1), violations.map((v) => v.message).join("\n"));
-    assert.deepEqual([...new Set(violations.map((v) => v.file))].sort(), [appIdentifiers, homeIdentifiers].sort());
+    assert.deepEqual([...new Set(violations.map((v) => v.file))].sort(), [appIdentifiers, authIdentifiers].sort());
   });
 
   it("fails a file the UI tests compile from CoreKit's directory when it imports the Kotlin framework", () => {
@@ -285,8 +285,8 @@ describe("ARCH-APPLE", () => {
 
   it("fails a UI tests source it cannot check: a glob outside their directory, a missing file, an unresolvable path", () => {
     const glob = copyOfTree();
-    replace(glob, APP_MANIFEST, '"../../Modules/Features/Home/Sources/HomeIdentifiers.swift"', '"../../Modules/Features/Home/Sources/**"');
-    assertViolations(glob, ["ARCH-APPLE"], /SemprecUITests compiles ..\/..\/Modules\/Features\/Home\/Sources\/\*\*, which is neither below its apple.targets.SemprecUITests.sources \(UITests\) nor one Swift file/);
+    replace(glob, APP_MANIFEST, '"Sources/AppIdentifiers.swift",', '"Sources/AppIdentifiers.swift",\n                "../../Modules/Features/Auth/Sources/**",');
+    assertViolations(glob, ["ARCH-APPLE"], /SemprecUITests compiles ..\/..\/Modules\/Features\/Auth\/Sources\/\*\*, which is neither below its apple.targets.SemprecUITests.sources \(UITests\) nor one Swift file/);
     const missing = copyOfTree();
     replace(missing, APP_MANIFEST, '"Sources/AppIdentifiers.swift"', '"Sources/AppIdentifierz.swift"');
     assertViolations(missing, ["ARCH-APPLE"], /SemprecUITests compiles Sources\/AppIdentifierz.swift, which does not exist/);
@@ -328,7 +328,7 @@ describe("KMP-COMMON", () => {
 
 describe("KMP-FRAMEWORK", () => {
   const coreKitTest = "apple/Modules/Core/CoreKit/Tests/EffectQueueTests.swift";
-  const homeTest = `${HOME_MODULE}/Tests/HomeViewModelTests.swift`;
+  const authTest = `${AUTH_MODULE}/Tests/LoginViewModelTests.swift`;
 
   it("allows the Kotlin framework in CoreKit's sources and in CoreKitTests, whose policy entry lists it", () => {
     const root = copyOfTree();
@@ -338,12 +338,12 @@ describe("KMP-FRAMEWORK", () => {
 
   it("fails an import of the Kotlin framework in another target's tests, the UI tests, a feature and the app", () => {
     const root = copyOfTree();
-    replace(root, homeTest, "import XCTest\n", "import SharedSDK\nimport XCTest\n");
-    replace(root, HOME_SCREEN_SWIFT, "import DesignSystem\n", "import DesignSystem\ninternal import SharedSDK\n");
+    replace(root, authTest, "import XCTest\n", "import SharedSDK\nimport XCTest\n");
+    replace(root, LOGIN_SCREEN_SWIFT, "import DesignSystem\n", "import DesignSystem\ninternal import SharedSDK\n");
     write(root, "apple/Projects/App/Sources/ProbeView.swift", "@preconcurrency import SharedSDK\n");
     write(root, `${UI_TESTS}/ImportProbe.swift`, "import XCTest\nimport SharedSDK\n");
     const violations = assertViolations(root, ["KMP-FRAMEWORK"], /imports SharedSDK; only the sources of CoreKit and CoreKitTests \(apple\/Modules\/Core\/CoreKit\/Sources\/, apple\/Modules\/Core\/CoreKit\/Tests\/\) import the Kotlin framework/);
-    assert.deepEqual(violations.map((v) => v.file).sort(), [HOME_SCREEN_SWIFT, homeTest, "apple/Projects/App/Sources/ProbeView.swift", `${UI_TESTS}/ImportProbe.swift`].sort());
+    assert.deepEqual(violations.map((v) => v.file).sort(), [LOGIN_SCREEN_SWIFT, authTest, "apple/Projects/App/Sources/ProbeView.swift", `${UI_TESTS}/ImportProbe.swift`].sort());
   });
 
   it("fails the import in CoreKitTests once its policy entry no longer lists the framework", () => {
@@ -364,32 +364,44 @@ describe("KMP-FRAMEWORK", () => {
 describe("VM-BRIDGE", () => {
   it("fails a bridge whose deinit does not close its lease", () => {
     const root = copyOfTree();
-    replace(root, `${COREKIT_SHARED}/SharedHomeScreenModel.swift`, "deinit {\n        lease.close()\n    }", "deinit {}");
-    assertViolations(root, ["VM-BRIDGE"], /SharedHomeScreenModel does not call lease.close\(\) in deinit/);
+    replace(root, `${COREKIT_SHARED}/SharedLoginScreenModel.swift`, "deinit {\n        lease.close()\n    }", "deinit {}");
+    assertViolations(root, ["VM-BRIDGE"], /SharedLoginScreenModel does not call lease.close\(\) in deinit/);
   });
 
   it("fails a bridge that stores a shared ViewModel without a lease", () => {
     const root = copyOfTree();
-    replace(root, `${COREKIT_SHARED}/SharedSettingsScreenModel.swift`, "let lease: SharedViewModelLease", "let lease: AnyObject");
-    assertViolations(root, ["VM-BRIDGE"], /SharedSettingsScreenModel stores a shared ViewModel but no SharedViewModelLease/);
+    replace(root, `${COREKIT_SHARED}/SharedSessionScreenModel.swift`, "let lease: SharedViewModelLease", "let lease: AnyObject");
+    assertViolations(root, ["VM-BRIDGE"], /SharedSessionScreenModel stores a shared ViewModel but no SharedViewModelLease/);
   });
 
   it("fails a second bridge of the same ViewModel", () => {
     const root = copyOfTree();
-    append(root, `${COREKIT_SHARED}/SharedHomeScreenModel.swift`, "\nfinal class SecondHomeBridge {\n    private let viewModel: SharedSDK.HomeViewModel\n    let lease: SharedViewModelLease\n\n    deinit {\n        lease.close()\n    }\n}\n");
-    assertViolations(root, ["VM-BRIDGE"], /HomeViewModel has 2 CoreKit bridges, exactly one must store it: SharedHomeScreenModel .*, SecondHomeBridge/);
+    append(root, `${COREKIT_SHARED}/SharedLoginScreenModel.swift`, "\nfinal class SecondLoginBridge {\n    private let viewModel: SharedSDK.LoginViewModel\n    let lease: SharedViewModelLease\n\n    deinit {\n        lease.close()\n    }\n}\n");
+    assertViolations(root, ["VM-BRIDGE"], /LoginViewModel has 2 CoreKit bridges, exactly one must store it: SharedLoginScreenModel .*, SecondLoginBridge/);
   });
 
   it("fails a ViewModel without its commonTest test file", () => {
     const root = copyOfTree();
-    remove(root, `shared/presentation/src/commonTest/${KOTLIN}/presentation/HomeViewModelTest.kt`);
-    assertViolations(root, ["VM-BRIDGE"], /HomeViewModel has no HomeViewModelTest.kt in shared\/presentation\/src\/commonTest/);
+    remove(root, `shared/presentation/src/commonTest/${KOTLIN}/presentation/LoginViewModelTest.kt`);
+    assertViolations(root, ["VM-BRIDGE"], /LoginViewModel has no LoginViewModelTest.kt in shared\/presentation\/src\/commonTest/);
   });
 
   it("fails an Apple-only ViewModel once it is no longer listed in viewModels.appleOnly", () => {
     const root = copyOfTree();
-    replace(root, POLICY_FILE, '"appleOnly": ["LoginViewModel", "SessionViewModel"]', '"appleOnly": ["SessionViewModel"]');
+    editPolicy(root, (policy) => (policy.viewModels.appleOnly = policy.viewModels.appleOnly.filter((name) => name !== "LoginViewModel")));
     assertViolations(root, ["VM-BRIDGE"], /no Android \*Screen composable takes LoginViewModel as a parameter/);
+  });
+
+  it("fails a CoreKit bridge of a ViewModel that viewModels.androidOnly lists", () => {
+    const root = copyOfTree();
+    write(root, `${COREKIT_SHARED}/SharedHomeScreenModel.swift`, "final class HomeBridge {\n    private let viewModel: SharedSDK.HomeViewModel\n    let lease: SharedViewModelLease\n\n    deinit {\n        lease.close()\n    }\n}\n");
+    assertViolations(root, ["VM-BRIDGE"], /HomeViewModel is listed in viewModels.androidOnly but HomeBridge bridges it/);
+  });
+
+  it("asks a bridge of a ViewModel once it is no longer listed in viewModels.androidOnly", () => {
+    const root = copyOfTree();
+    editPolicy(root, (policy) => (policy.viewModels.androidOnly = policy.viewModels.androidOnly.filter((name) => name !== "HomeViewModel")));
+    assertViolations(root, ["VM-BRIDGE"], /HomeViewModel has 0 CoreKit bridges, exactly one must store it/);
   });
 
   it("fails a ViewModel no Android screen takes", () => {
@@ -483,10 +495,10 @@ describe("NAV-OWNERSHIP", () => {
 
   it("fails NavigatorUI in an Apple feature even where the policy and the manifest allow the import", () => {
     const root = copyOfTree();
-    editPolicy(root, (policy) => policy.apple.targets.HomeFeature.allowed.push("NavigatorUI"));
-    replace(root, `${HOME_MODULE}/Project.swift`, '.project(target: "DesignSystem", path: "../../Core/DesignSystem"),', '.project(target: "DesignSystem", path: "../../Core/DesignSystem"),\n                .external(name: "NavigatorUI"),');
-    replace(root, HOME_SCREEN_SWIFT, "import DesignSystem\n", "import DesignSystem\nimport NavigatorUI\n");
-    assertViolations(root, ["NAV-OWNERSHIP"], /imports NavigatorUI in HomeFeature, which navigation.appleTargets does not list/);
+    editPolicy(root, (policy) => policy.apple.targets.AuthFeature.allowed.push("NavigatorUI"));
+    replace(root, `${AUTH_MODULE}/Project.swift`, '.project(target: "DesignSystem", path: "../../Core/DesignSystem"),', '.project(target: "DesignSystem", path: "../../Core/DesignSystem"),\n                .external(name: "NavigatorUI"),');
+    replace(root, LOGIN_SCREEN_SWIFT, "import DesignSystem\n", "import DesignSystem\nimport NavigatorUI\n");
+    assertViolations(root, ["NAV-OWNERSHIP"], /imports NavigatorUI in AuthFeature, which navigation.appleTargets does not list/);
   });
 
   it("fails NavigatorUI in a ViewModel of the app target", () => {
@@ -527,9 +539,9 @@ describe("ORG-SCREEN", () => {
 
   it("fails an Apple screen folder with a ViewModel but without the screen's view", () => {
     const root = copyOfTree();
-    remove(root, HOME_SCREEN_SWIFT);
-    const [found] = assertViolations(root, ["ORG-SCREEN"], /has no HomeScreen.swift next to it/);
-    assert.equal(found.file, `${HOME_SWIFT_SCREENS}/HomeScreen/HomeViewModel.swift`);
+    remove(root, LOGIN_SCREEN_SWIFT);
+    const [found] = assertViolations(root, ["ORG-SCREEN"], /has no LoginScreen.swift next to it/);
+    assert.equal(found.file, `${AUTH_SWIFT_SCREENS}/LoginScreen/LoginViewModel.swift`);
   });
 });
 
@@ -628,33 +640,31 @@ describe("COPY-PARITY", () => {
     editPolicy(other, (policy) => policy.copy.find((entry) => entry.android === ":android:feature:home").keys.push("home.count"));
     replace(other, homeValues, "</resources>", '    <plurals name="home_count">\n        <item quantity="one">%d item</item>\n        <item quantity="other">%d items</item>\n    </plurals>\n</resources>');
     replace(other, homeValuesCs, "</resources>", '    <plurals name="home_count">\n        <item quantity="one">%d položka</item>\n        <item quantity="other"> </item>\n    </plurals>\n</resources>');
-    const unit = (value) => ({ stringUnit: { state: "translated", value } });
-    editJson(other, HOME_CATALOG, (catalog) => (catalog.strings["home.count"] = { localizations: { en: unit("%lld items"), cs: unit("%lld položek") } }));
     const [found] = assertViolations(other, ["COPY-PARITY"], /^home_count has an empty Czech translation$/);
     assert.equal(found.file, homeValuesCs);
   });
 
   it("fails an Apple copy key without a translated Czech value", () => {
     const root = copyOfTree();
-    editJson(root, SETTINGS_CATALOG, (catalog) => (catalog.strings["about.done"].localizations.cs.stringUnit.state = "needs_review"));
-    assertViolations(root, ["COPY-PARITY"], /about.done has no translated, non-empty Czech \(cs\) value/);
+    editJson(root, AUTH_CATALOG, (catalog) => (catalog.strings["login.forgot"].localizations.cs.stringUnit.state = "needs_review"));
+    assertViolations(root, ["COPY-PARITY"], /login.forgot has no translated, non-empty Czech \(cs\) value/);
   });
 
   it("fails an Apple copy key without a translated, non-empty English value", () => {
     const root = copyOfTree();
-    editJson(root, HOME_CATALOG, (catalog) => {
-      delete catalog.strings["home.title"].localizations.en;
-      catalog.strings["home.empty"].localizations.en.stringUnit.value = "";
-      catalog.strings["detail.title"].localizations.en.stringUnit.state = "new";
+    editJson(root, AUTH_CATALOG, (catalog) => {
+      delete catalog.strings["login.subtitle"].localizations.en;
+      catalog.strings["login.server"].localizations.en.stringUnit.value = "";
+      catalog.strings["login.email"].localizations.en.stringUnit.state = "new";
     });
-    const violations = assertViolations(root, ["COPY-PARITY"], /^home.title has no translated, non-empty English \(en\) value$/, /^home.empty has no translated, non-empty English \(en\) value$/, /^detail.title has no translated, non-empty English \(en\) value$/);
+    const violations = assertViolations(root, ["COPY-PARITY"], /^login.subtitle has no translated, non-empty English \(en\) value$/, /^login.server has no translated, non-empty English \(en\) value$/, /^login.email has no translated, non-empty English \(en\) value$/);
     assert.equal(violations.length, 3);
   });
 
   it("fails an Apple copy key whose Czech value is only whitespace", () => {
     const root = copyOfTree();
-    editJson(root, SETTINGS_CATALOG, (catalog) => (catalog.strings["about.done"].localizations.cs.stringUnit.value = "  "));
-    assertViolations(root, ["COPY-PARITY"], /^about.done has no translated, non-empty Czech \(cs\) value$/);
+    editJson(root, AUTH_CATALOG, (catalog) => (catalog.strings["login.forgot"].localizations.cs.stringUnit.value = "  "));
+    assertViolations(root, ["COPY-PARITY"], /^login.forgot has no translated, non-empty Czech \(cs\) value$/);
   });
 
   it("fails a String Catalog whose source language is not English", () => {
@@ -666,27 +676,27 @@ describe("COPY-PARITY", () => {
 
   it("fails a missing Apple copy key", () => {
     const root = copyOfTree();
-    editJson(root, APP_CATALOG, (catalog) => delete catalog.strings["tab.settings"]);
-    assertViolations(root, ["COPY-PARITY"], /Semprec lacks the key tab.settings/);
+    editJson(root, APP_CATALOG, (catalog) => delete catalog.strings["tab.journal"]);
+    assertViolations(root, ["COPY-PARITY"], /Semprec lacks the key tab.journal/);
   });
 
   it("fails the Android-only key in a String Catalog, and any other key the policy does not list", () => {
     const root = copyOfTree();
     const unit = (value) => ({ stringUnit: { state: "translated", value } });
-    editJson(root, HOME_CATALOG, (catalog) => {
-      catalog.strings["detail.back"] = { localizations: { en: unit("Back"), cs: unit("Zpět") } };
+    editJson(root, APP_CATALOG, (catalog) => {
+      catalog.strings["tab.home"] = { localizations: { en: unit("Home"), cs: unit("Domů") } };
       catalog.strings["home.subtitle"] = { localizations: { en: unit("Subtitle"), cs: unit("Podtitul") } };
     });
-    assertViolations(root, ["COPY-PARITY"], /has the key detail.back, but it is Android-only/, /has the key home.subtitle, but it is not a copy key of HomeFeature/);
+    assertViolations(root, ["COPY-PARITY"], /has the key tab.home, but it is Android-only/, /has the key home.subtitle, but it is not a copy key of Semprec/);
   });
 
   it("fails a String Catalog that is not valid JSON, and a target without a catalog", () => {
     const root = copyOfTree();
-    write(root, HOME_CATALOG, "{ not json");
+    write(root, AUTH_CATALOG, "{ not json");
     assertViolations(root, ["COPY-PARITY"], /is not valid JSON/);
     const other = copyOfTree();
     remove(other, APP_CATALOG);
-    assertViolations(other, ["COPY-PARITY"], /Semprec has no String Catalog/, /Semprec lacks the key tab.home/);
+    assertViolations(other, ["COPY-PARITY"], /Semprec has no String Catalog/, /Semprec lacks the key tab.overview/);
   });
 
   it("fails a String Catalog of no copy entry, and a copy entry naming no Apple target", () => {

@@ -2,6 +2,7 @@ import AuthFeature
 import DesignSystem
 import NavigatorUI
 import SwiftUI
+import TasksFeature
 
 /// The content of one window: a tab per area of the app, each with its own navigation stack. Each window creates its
 /// own composition, so windows share neither screen models nor navigation.
@@ -88,6 +89,15 @@ private extension AppScene {
         switch destination {
         case .pending(let title):
             PendingScreen(title: title)
+        case .profile:
+            ProfileScreen(viewModel: SessionViewModel(model: composition.models.makeSession()))
+        case .tasks(let start, let tab):
+            TasksScreenFactory.tasks(
+                makeModel: { composition.models.makeTasks(start: start) },
+                router: composition.tasksRouter(in: tab)
+            )
+        case .details(let target):
+            TasksScreenFactory.details { composition.models.makeItemDetails(kind: target.kind, itemId: target.id) }
         }
     }
 }
