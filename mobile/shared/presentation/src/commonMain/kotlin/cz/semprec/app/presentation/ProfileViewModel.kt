@@ -90,6 +90,7 @@ private fun identity(auth: AuthRepository): ProfileState {
     val session = (auth.status.value as? SessionStatus.SignedIn)?.session
     return ProfileState(
         email = session?.user?.email,
+        name = session?.user?.displayName,
         serverUrl = session?.serverUrl,
         locale = session?.user?.locale,
         locales = ACCOUNT_LOCALES,

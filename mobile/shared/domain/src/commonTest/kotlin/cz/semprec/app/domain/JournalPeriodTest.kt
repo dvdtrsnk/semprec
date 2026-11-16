@@ -58,7 +58,12 @@ class JournalPeriodTest {
         assertEquals(13, rows[0].cells.size)
         assertEquals(28, rows[1].cells.size)
         assertEquals(60, rows[2].cells.size)
-        assertTrue(rows[3].cells.first().start <= CalendarDay(2026, 7, 1))
-        assertTrue(rows[3].cells.last().start >= CalendarDay(2027, 1, 31))
+        assertEquals(CalendarDay(2025, 1, 1), rows[3].cells.first().start)
+        assertEquals(CalendarDay(2027, 12, 31), rows[3].cells.last().start)
+        assertEquals(365 + 365 + 365, rows[3].cells.size)
+        rows.dropLast(1).forEach { row ->
+            assertTrue(row.cells.first().start <= rows[3].cells.first().start, row.type.name)
+            assertTrue(row.cells.last().start >= CalendarDay(2027, 10, 1), row.type.name)
+        }
     }
 }

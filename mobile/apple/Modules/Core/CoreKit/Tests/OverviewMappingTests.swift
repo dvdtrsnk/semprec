@@ -19,6 +19,15 @@ final class OverviewMappingTests: XCTestCase {
     }
 
     @MainActor
+    func testOverviewMapsTheDisplayNameOfTheAccount() {
+        guard case .content(let content) = SharedOverviewScreenModel.state(
+            overviewState(.content, accountName: "Jana Dvořák")
+        ) else { return XCTFail("Content expected") }
+        XCTAssertEqual(content.accountName, "Jana Dvořák")
+        XCTAssertEqual(content.accountEmail, "a@b.cz")
+    }
+
+    @MainActor
     func testOverviewMapsContentWithItsRows() {
         let state = overviewState(
             .content,
@@ -249,6 +258,7 @@ private extension OverviewMappingTests {
         _ phase: SharedSDK.OverviewPhase,
         failure: SharedSDK.FailureKind? = nil,
         refreshing: Bool = false,
+        accountName: String? = nil,
         areas: [SharedSDK.OverviewAreaItem] = [],
         projects: [SharedSDK.OverviewProjectItem] = [],
         collections: [SharedSDK.OverviewCollectionItem] = []
@@ -258,6 +268,7 @@ private extension OverviewMappingTests {
             failure: failure,
             refreshing: refreshing,
             accountEmail: "a@b.cz",
+            accountName: accountName,
             inboxPending: 9,
             mailUnread: 5,
             tasksToday: 4,

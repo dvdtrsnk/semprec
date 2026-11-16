@@ -16,8 +16,14 @@ internal data class LoginRequest(
 )
 
 @Serializable
-internal data class UserDto(val id: String, val email: String, val locale: String, val role: String) {
-    fun toDomain(): SessionUser = SessionUser(id, email, locale, role)
+internal data class UserDto(
+    val id: String,
+    val email: String,
+    val locale: String,
+    val role: String,
+    val displayName: String? = null,
+) {
+    fun toDomain(): SessionUser = SessionUser(id, email, locale, role, displayName?.takeIf { it.isNotBlank() })
 }
 
 @Serializable

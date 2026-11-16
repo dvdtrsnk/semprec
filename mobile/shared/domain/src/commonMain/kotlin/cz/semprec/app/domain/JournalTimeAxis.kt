@@ -3,7 +3,7 @@ package cz.semprec.app.domain
 private const val YEARS_AROUND = 6
 private const val QUARTER_YEARS_AROUND = 3
 private const val MONTH_YEARS_AROUND = 2
-private const val DAY_MONTHS_AROUND = 3
+private const val DAY_YEARS_AROUND = 1
 private const val MONTHS_IN_YEAR = 12
 private const val MONTHS_IN_QUARTER = 3
 
@@ -27,13 +27,19 @@ data class JournalAxisCell(
 data class JournalAxisRow(val type: JournalPeriodType, val cells: List<JournalAxisCell>)
 
 /**
- * The four rows of the axis around [selectedStart]. Each row is a window large enough to scroll through without
- * the selection moving, and the windows move with the selection, so a pick on any cell recenters the axis.
+ * The four rows of the axis around [selectedStart]. The rows move together on screen, so each one spans at least the
+ * whole years around the selection that the row of days spans: the year before, the year of the selection and the
+ * year after. The windows lie around [around], the selection unless the person moved the axis away from it.
  */
-fun journalAxis(selectedType: JournalPeriodType, selectedStart: CalendarDay, today: CalendarDay): List<JournalAxisRow> {
+fun journalAxis(
+    selectedType: JournalPeriodType,
+    selectedStart: CalendarDay,
+    today: CalendarDay,
+    around: CalendarDay = selectedStart,
+): List<JournalAxisRow> {
     val depth = JOURNAL_AXIS_LEVELS.indexOf(selectedType)
     return JOURNAL_AXIS_LEVELS.mapIndexed { level, type ->
-        val cells = windowStarts(type, selectedStart).map { start ->
+        val cells = windowStarts(type, around).map { start ->
             val onPath = level <= depth && start.startOf(type) == selectedStart.startOf(type)
             JournalAxisCell(
                 type = type,
@@ -53,9 +59,9 @@ private fun windowStarts(type: JournalPeriodType, anchor: CalendarDay): List<Cal
         .filter { (it.month - 1) % MONTHS_IN_QUARTER == 0 }
     JournalPeriodType.MONTH -> monthStarts(anchor.year - MONTH_YEARS_AROUND, anchor.year + MONTH_YEARS_AROUND)
     JournalPeriodType.DAY -> {
-        val first = anchor.startOfMonth().plusMonths(-DAY_MONTHS_AROUND)
-        val last = anchor.startOfMonth().plusMonths(DAY_MONTHS_AROUND).let { it.plusDays(it.lengthOfMonth() - 1) }
-        (0..(last.epochDay - first.epochDay).toInt()).map { first.plusDays(it) }
+        val first = CalendarDay(anchor.year - DAY_YEARS_AROUND, 1, 1)
+        val next = CalendarDay(anchor.year + DAY_YEARS_AROUND + 1, 1, 1)
+        (0 until (next.epochDay - first.epochDay).toInt()).map { first.plusDays(it) }
     }
     JournalPeriodType.WEEK -> emptyList()
 }

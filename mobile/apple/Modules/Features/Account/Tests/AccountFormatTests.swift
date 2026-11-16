@@ -48,6 +48,12 @@ final class AccountFormatTests: XCTestCase {
         XCTAssertEqual(AccountFormat.initials(email: "@x.cz"), "")
     }
 
+    func testInitialsAreThoseOfTheDisplayNameWhenTheAccountHasOne() {
+        XCTAssertEqual(AccountFormat.initials(name: "David Třešňák", email: "dev@example.cz"), "DT")
+        XCTAssertEqual(AccountFormat.initials(name: "", email: "dev@example.cz"), "D")
+        XCTAssertEqual(AccountFormat.initials(name: nil, email: "dev@example.cz"), "D")
+    }
+
     func testTheHostIsTakenFromAServerAddressOrTheAddressItselfIsKept() {
         XCTAssertEqual(AccountFormat.host(of: "https://semprec.tresnak.cc/app"), "semprec.tresnak.cc")
         XCTAssertEqual(AccountFormat.host(of: "not a url"), "not a url")

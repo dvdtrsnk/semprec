@@ -11,6 +11,7 @@ internal object WorkKeys {
     const val PEOPLE = "people"
     const val NAME = "name"
     const val STATUS = "status"
+    const val SYSTEM_ACTIVE = "systemActive"
     const val DATE = "date"
     const val END_DATE = "endDate"
     const val TIME_FROM = "timeFrom"

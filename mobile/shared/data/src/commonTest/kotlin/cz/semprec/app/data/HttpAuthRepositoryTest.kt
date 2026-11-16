@@ -71,6 +71,22 @@ class HttpAuthRepositoryTest {
     }
 
     @Test
+    fun theDisplayNameOfTheAccountIsKeptAndABlankOrMissingOneIsNone() = runTest {
+        val named = """{"id":"u1","email":"a@b.cz","locale":"cs","role":"member","displayName":"Jana Dvořák"}"""
+        val blank = """{"id":"u1","email":"a@b.cz","locale":"cs","role":"member","displayName":" "}"""
+        val unnamed = """{"id":"u1","email":"a@b.cz","locale":"cs","role":"member","displayName":null}"""
+        val names = listOf(named, blank, unnamed, USER_JSON).map { user ->
+            val repo = repository { json("""{"token":"tok","user":$user}""") }
+            val session = assertIs<RepositoryResult.Content<cz.semprec.app.domain.Session>>(
+                repo.signIn("https://s.example", "a@b.cz", "secret"),
+            ).value
+            session.user.displayName
+        }
+
+        assertEquals(listOf("Jana Dvořák", null, null, null), names)
+    }
+
+    @Test
     fun aRefusedPasswordIsUnauthorizedAndStoresNothing() = runTest {
         val storage = InMemorySessionStorage()
         val repo = repository(storage) { json("""{"error":"no"}""", HttpStatusCode.Unauthorized) }

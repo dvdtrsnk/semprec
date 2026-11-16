@@ -77,20 +77,25 @@ private extension ProfileScreen {
     var identity: some View {
         Section {
             HStack(spacing: Theme.Spacing.medium) {
-                Text(AccountFormat.initials(email: viewModel.state.email))
+                Text(AccountFormat.initials(name: viewModel.state.name, email: viewModel.state.email))
                     .font(.title2.weight(.semibold))
                     .foregroundStyle(.background)
                     .frame(width: 64, height: 64)
                     .background(Theme.Colors.brand, in: Circle())
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(verbatim: viewModel.state.email ?? "").font(.headline)
-                    if let host = AccountFormat.host(of: viewModel.state.serverUrl) {
-                        Text(verbatim: host).font(.subheadline).foregroundStyle(Theme.Colors.secondaryText)
+                    Text(verbatim: viewModel.state.name ?? viewModel.state.email ?? "").font(.headline)
+                    if let detail = identityDetail {
+                        Text(verbatim: detail).font(.subheadline).foregroundStyle(Theme.Colors.secondaryText)
                     }
                 }
             }
         }
+    }
+
+    /// Under the name, the address of the account; without a name the address is the title, and the server is below.
+    var identityDetail: String? {
+        viewModel.state.name == nil ? AccountFormat.host(of: viewModel.state.serverUrl) : viewModel.state.email
     }
 
     var failure: some View {

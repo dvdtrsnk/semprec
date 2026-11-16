@@ -42,6 +42,10 @@ final class JournalViewModel: ObservableObject {
         model.send(.goToday)
     }
 
+    func showAxis(around day: String) {
+        model.send(.showAxisAround(day: day))
+    }
+
     func openEvent(_ event: JournalEvent) {
         model.send(.openEvent(id: event.id))
     }

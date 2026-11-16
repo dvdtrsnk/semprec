@@ -80,6 +80,7 @@ private extension AppScene {
         .sempOverlay(composition)
         .onAppear { composition.currentTab = selectedTab.wrappedValue }
         .onChange(of: selectedTab.wrappedValue) { _, tab in composition.currentTab = tab }
+        .onReceive(composition.navigation.tabRequests) { tab in selectedTab.wrappedValue = tab }
     }
 
     /// One tab's navigation stack around `root`; the stack registers itself with the scene's navigation each time its

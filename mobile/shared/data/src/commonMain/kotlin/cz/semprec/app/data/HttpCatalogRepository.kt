@@ -7,7 +7,11 @@ import cz.semprec.app.domain.RepositoryResult
 import cz.semprec.app.domain.map
 import cz.semprec.app.domain.then
 
-/** The areas, projects and people of the person, read from their databases of the generic item API. */
+/**
+ * The areas, projects and people of the person, read from their databases of the generic item API. The projects are
+ * the ones a person can tie a task or an event to: neither done, archived nor a project a module keeps for itself
+ * (`systemActive`), as the `pickerFilter` of the projects database says.
+ */
 internal class HttpCatalogRepository(private val items: ItemsApi) : CatalogRepository {
     override suspend fun areas(): RepositoryResult<List<EntityRef>> =
         everything(WorkKeys.AREAS, ItemQuery()).map { found ->
@@ -21,6 +25,7 @@ internal class HttpCatalogRepository(private val items: ItemsApi) : CatalogRepos
         everything(WorkKeys.PROJECTS, ItemQuery(relations = mapOf(WorkKeys.AREA to emptyList()))).map { found ->
             found
                 .filterNot { it.properties.text(WorkKeys.STATUS) in CLOSED_PROJECTS }
+                .filterNot { it.properties.flag(WorkKeys.SYSTEM_ACTIVE) }
                 .sortedBy { it.name().lowercase() }
                 .map { project ->
                     val area = project.relations[WorkKeys.AREA]?.firstOrNull { !it.hidden }

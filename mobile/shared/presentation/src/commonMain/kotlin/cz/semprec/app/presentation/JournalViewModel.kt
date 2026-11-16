@@ -46,6 +46,7 @@ class JournalViewModel internal constructor(
         when (action) {
             JournalAction.Retry -> load()
             is JournalAction.Select -> select(action.kind, action.start)
+            is JournalAction.ShowAxisAround -> showAxisAround(action.day)
             JournalAction.GoToday -> select(JournalPeriodKind.DAY, state.value.today)
             is JournalAction.OpenEvent -> emit(JournalEffect.OpenEvent(action.id))
             JournalAction.OpenInbox -> emit(JournalEffect.OpenInbox)
@@ -62,10 +63,20 @@ class JournalViewModel internal constructor(
         val selection = day?.let { JournalSelection(kind, it.toString()) }
         val current = state.value
         val reloads = selection != current.selection || current.phase == JournalPhase.ERROR
-        if (kind != JournalPeriodKind.WEEK && selection != null && reloads) {
+        if (kind == JournalPeriodKind.WEEK || selection == null) return
+        if (reloads) {
             update { it.copy(selection = selection) }
             load()
+        } else {
+            // The same period again: nothing to load, but the axis returns to it from wherever it was moved.
+            update { it.copy(axis = axisFor(it.selection, it.today)) }
         }
+    }
+
+    /** A day that does not parse leaves the axis where it is. */
+    private fun showAxisAround(day: String) {
+        val around = CalendarDay.parse(day) ?: return
+        update { it.copy(axis = axisFor(it.selection, it.today, around)) }
     }
 
     private fun load() {
@@ -189,10 +200,14 @@ private fun JournalSelection.toPeriod(): JournalPeriod {
     return JournalPeriod.containing(kind.toType(), day)
 }
 
-private fun axisFor(selection: JournalSelection, today: String): List<JournalAxisRowState> {
+private fun axisFor(
+    selection: JournalSelection,
+    today: String,
+    around: CalendarDay? = null,
+): List<JournalAxisRowState> {
     val start = CalendarDay.parse(selection.start) ?: FALLBACK_DAY
     val todayDay = CalendarDay.parse(today) ?: start
-    return journalAxis(selection.kind.toType(), start, todayDay).toState()
+    return journalAxis(selection.kind.toType(), start, todayDay, around ?: start).toState()
 }
 
 private fun loading(state: JournalState) = state.copy(

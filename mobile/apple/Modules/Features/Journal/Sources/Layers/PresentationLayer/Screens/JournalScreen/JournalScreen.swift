@@ -37,8 +37,10 @@ struct JournalScreen: View {
                 JournalAxisView(
                     rows: viewModel.state.axis,
                     selectionStart: viewModel.state.selection.start,
+                    selectionKind: viewModel.state.selection.kind,
                     compact: compactAxis,
-                    onSelect: viewModel.select
+                    onSelect: viewModel.select,
+                    onMove: viewModel.showAxis(around:)
                 )
                 .padding(.vertical, 4)
                 .background(.bar)

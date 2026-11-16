@@ -19,6 +19,7 @@ final class AccountMappingTests: XCTestCase {
         let state = SharedProfileScreenModel.state(profileState(phase: .error, failure: .unavailable))
         XCTAssertEqual(state.failure, .unavailable)
         XCTAssertEqual(state.email, "a@b.cz")
+        XCTAssertEqual(state.name, "Jana Dvořák")
         XCTAssertEqual(state.serverUrl, "https://s.example")
         XCTAssertEqual(state.locale, "cs")
         XCTAssertEqual(state.locales, ["cs", "en"])
@@ -253,6 +254,7 @@ private func profileState(
         phase: phase,
         failure: failure,
         email: "a@b.cz",
+        name: "Jana Dvořák",
         serverUrl: "https://s.example",
         locale: "cs",
         locales: ["cs", "en"],

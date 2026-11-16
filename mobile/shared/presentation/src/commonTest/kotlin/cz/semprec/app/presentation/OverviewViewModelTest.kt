@@ -54,6 +54,15 @@ class OverviewViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `the account carries its display name while loading and with content`() = runTest(dispatcher) {
+        val named = testSession.copy(user = testSession.user.copy(displayName = "Jana Dvořák"))
+        val vm = viewModel(ScriptedOverviewRepository({ CONTENT }), FakeAuthRepository(SessionStatus.SignedIn(named)))
+        assertEquals("Jana Dvořák", vm.state.value.accountName)
+        runCurrent()
+        assertEquals(loaded.copy(accountName = "Jana Dvořák"), vm.state.value)
+        vm.close()
+    }
+
     @Test fun `without a signed in session there is no account`() = runTest(dispatcher) {
         val vm = viewModel(ScriptedOverviewRepository({ CONTENT }), FakeAuthRepository())
         runCurrent()

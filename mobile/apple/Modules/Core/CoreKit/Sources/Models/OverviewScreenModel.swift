@@ -65,6 +65,8 @@ public struct OverviewContent: Equatable, Sendable {
 
     public var refreshing: Bool
     public var accountEmail: String?
+    /// The display name of the account, nil when it has none.
+    public var accountName: String?
     public var inboxPending: Int
     public var mailUnread: Int
     public var tasksToday: Int
@@ -77,6 +79,7 @@ public struct OverviewContent: Equatable, Sendable {
     public init(
         refreshing: Bool = false,
         accountEmail: String? = nil,
+        accountName: String? = nil,
         inboxPending: Int = 0,
         mailUnread: Int = 0,
         tasksToday: Int = 0,
@@ -88,6 +91,7 @@ public struct OverviewContent: Equatable, Sendable {
     ) {
         self.refreshing = refreshing
         self.accountEmail = accountEmail
+        self.accountName = accountName
         self.inboxPending = inboxPending
         self.mailUnread = mailUnread
         self.tasksToday = tasksToday

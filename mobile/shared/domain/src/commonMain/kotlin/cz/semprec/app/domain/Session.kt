@@ -1,7 +1,16 @@
 package cz.semprec.app.domain
 
-/** Who is signed in. [role] is `admin` or `member`; [locale] is the language the server answers in. */
-data class SessionUser(val id: String, val email: String, val locale: String, val role: String)
+/**
+ * Who is signed in. [role] is `admin` or `member`; [locale] is the language the server answers in; [displayName] is
+ * the name the person gave their account, `null` when they gave none.
+ */
+data class SessionUser(
+    val id: String,
+    val email: String,
+    val locale: String,
+    val role: String,
+    val displayName: String? = null,
+)
 
 /** A signed-in session: the server it belongs to and the person it belongs to. */
 data class Session(val serverUrl: String, val user: SessionUser)

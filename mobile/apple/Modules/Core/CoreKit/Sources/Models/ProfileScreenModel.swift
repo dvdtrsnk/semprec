@@ -61,6 +61,8 @@ public struct ProfileState: Equatable, Sendable {
     public var phase: ProfilePhase
     public var failure: FailureKind?
     public var email: String?
+    /// The display name of the account, nil when it has none.
+    public var name: String?
     public var serverUrl: String?
     public var locale: String?
     public var locales: [String]
@@ -73,6 +75,7 @@ public struct ProfileState: Equatable, Sendable {
         phase: ProfilePhase = .loading,
         failure: FailureKind? = nil,
         email: String? = nil,
+        name: String? = nil,
         serverUrl: String? = nil,
         locale: String? = nil,
         locales: [String] = [],
@@ -84,6 +87,7 @@ public struct ProfileState: Equatable, Sendable {
         self.phase = phase
         self.failure = failure
         self.email = email
+        self.name = name
         self.serverUrl = serverUrl
         self.locale = locale
         self.locales = locales

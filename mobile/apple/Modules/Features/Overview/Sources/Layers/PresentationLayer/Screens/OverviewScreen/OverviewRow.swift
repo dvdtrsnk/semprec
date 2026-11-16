@@ -2,7 +2,7 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// One row of a card of the overview: a colored tile with a symbol, a title with an optional second line, what the row
+/// One row of the overview list: a colored tile with a symbol, a title with an optional second line, what the row
 /// counts, and the target it opens.
 struct OverviewRow: Identifiable {
 
@@ -29,31 +29,21 @@ struct OverviewRow: Identifiable {
     let identifier: String
 }
 
-/// A card of rows, as the design groups them: rounded, with a hairline between rows that starts at the title.
-struct OverviewCard: View {
+/// A row of the overview list: a button that asks the shared ViewModel to open its target, with a native `Label` and
+/// the value of `LabeledContent` on the trailing side.
+struct OverviewRowButton: View {
 
     // MARK: - Dependencies
-    let rows: [OverviewRow]
+    let row: OverviewRow
     let open: (OverviewTarget) -> Void
 
     // MARK: - Body
     var body: some View {
-        VStack(spacing: 0) {
-            ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                if index > 0 {
-                    Divider().padding(.leading, Self.dividerInset)
-                }
-                Button { open(row.target) } label: { OverviewRowLabel(row: row) }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier(row.identifier)
-            }
-        }
-        .background(Theme.Colors.card, in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+        Button { open(row.target) } label: { OverviewRowLabel(row: row) }
+            .listRowButton()
+            .tint(.primary)
+            .accessibilityIdentifier(row.identifier)
     }
-
-    // MARK: - Layout
-    /// The tile, its padding and the gap before the title.
-    private static let dividerInset: CGFloat = 60
 }
 
 // MARK: - Label
@@ -64,29 +54,27 @@ private struct OverviewRowLabel: View {
 
     // MARK: - Body
     var body: some View {
-        HStack(spacing: Theme.Spacing.medium - 2) {
-            Image(systemName: row.symbol)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 30, height: 30)
-                .background(row.tile, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 1) {
-                row.title.font(.body).foregroundStyle(.primary)
-                if let subtitle = row.subtitle {
-                    subtitle.font(.footnote).foregroundStyle(Theme.Colors.secondaryText)
-                }
+        LabeledContent {
+            HStack(spacing: Theme.Spacing.small) {
+                trailing
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
             }
-            Spacer(minLength: Theme.Spacing.small)
-            trailing
-            Image(systemName: "chevron.right")
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(.tertiary)
-                .accessibilityHidden(true)
+        } label: {
+            Label {
+                row.title
+                if let subtitle = row.subtitle { subtitle }
+            } icon: {
+                Image(systemName: row.symbol)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 30, height: 30)
+                    .background(row.tile, in: .rect(cornerRadius: 8))
+            }
         }
-        .padding(.horizontal, Theme.Spacing.medium)
-        .frame(minHeight: Theme.Layout.rowHeight + 2)
-        .contentShape(Rectangle())
+        .contentShape(.rect)
     }
 
     @ViewBuilder private var trailing: some View {
@@ -94,7 +82,7 @@ private struct OverviewRowLabel: View {
         case .none:
             EmptyView()
         case .count(let count):
-            Text(count, format: .number).foregroundStyle(Theme.Colors.secondaryText)
+            Text(count, format: .number)
         case .badge(let count):
             Text(count, format: .number)
                 .font(.footnote.weight(.semibold))
@@ -103,7 +91,7 @@ private struct OverviewRowLabel: View {
                 .frame(minWidth: 22, minHeight: 22)
                 .background(Theme.Colors.destructive, in: Capsule())
         case .today:
-            Text("overview.row.journal.today", bundle: .module).foregroundStyle(Theme.Colors.secondaryText)
+            Text("overview.row.journal.today", bundle: .module)
         }
     }
 }

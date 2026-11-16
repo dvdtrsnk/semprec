@@ -57,6 +57,7 @@ extension SharedOverviewScreenModel {
         OverviewContent(
             refreshing: state.refreshing,
             accountEmail: state.accountEmail,
+            accountName: state.accountName,
             inboxPending: Int(state.inboxPending),
             mailUnread: Int(state.mailUnread),
             tasksToday: Int(state.tasksToday),

@@ -70,6 +70,14 @@ class ProfileViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `the identity names the account by its display name when it has one`() = runTest(dispatcher) {
+        val named = testSession.copy(user = testSession.user.copy(displayName = "Jana Dvořák"))
+        val vm = viewModel(ScriptedProfileAccount(), FakeAuthRepository(initial = SessionStatus.SignedIn(named)))
+        assertEquals("Jana Dvořák", vm.state.value.name)
+        assertEquals("a@b.cz", vm.state.value.email)
+        vm.close()
+    }
+
     @Test fun `without a session there is no identity and nothing to send`() = runTest(dispatcher) {
         val auth = FakeAuthRepository()
         val vm = viewModel(ScriptedProfileAccount(), auth)

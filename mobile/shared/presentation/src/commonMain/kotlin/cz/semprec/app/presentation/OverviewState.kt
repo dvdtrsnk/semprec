@@ -33,7 +33,8 @@ data class OverviewCollectionItem(
 )
 
 /**
- * The overview. [accountEmail] is who is signed in (the profile button shows their initials); [problemCount] is the
+ * The overview. [accountEmail] and [accountName] are who is signed in (the profile button shows the initials
+ * of the name, or of the e-mail when the account has no name); [problemCount] is the
  * number of problems with Semp (the profile button shows a dot when there are any). [refreshing] is `true` while a
  * pull to refresh reloads the content that is shown; a refresh that fails leaves that content as it was.
  */
@@ -42,6 +43,7 @@ data class OverviewState(
     val failure: FailureKind? = null,
     val refreshing: Boolean = false,
     val accountEmail: String? = null,
+    val accountName: String? = null,
     val inboxPending: Int = 0,
     val mailUnread: Int = 0,
     val tasksToday: Int = 0,

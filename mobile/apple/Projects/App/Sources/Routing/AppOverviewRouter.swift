@@ -27,9 +27,9 @@ extension AppOverviewRouter: OverviewRouting {
         case .recordings: context.push(.recordings(tab: .overview), in: .overview)
         case .tasks: context.showTasks(TasksStart(), in: .overview)
         case .finance: pending(String(localized: "pending.finance"))
-        case .journal: pending(String(localized: "pending.journal"))
+        case .journal: context.select(.journal)
         case .area(let id): context.push(.area(areaId: id, tab: .overview), in: .overview)
-        case .project: pending(String(localized: "pending.project"))
+        case .project(let id): context.push(.collectionItem(itemId: id, databaseKey: "projects"), in: .overview)
         case .collection(_, let databaseId):
             context.push(.collection(.whole(databaseKey: nil, databaseId: databaseId)), in: .overview)
         }
@@ -39,6 +39,17 @@ extension AppOverviewRouter: OverviewRouting {
         switch (link.type, link.itemId) {
         case (.task, let id?): context.showDetails(kind: .task, id: id, from: .overview)
         case (.event, let id?): context.showDetails(kind: .event, id: id, from: .overview)
+        case (.project, let id?): context.push(.collectionItem(itemId: id, databaseKey: "projects"), in: .overview)
+        case (.area, let id?): context.push(.area(areaId: id, tab: .overview), in: .overview)
+        case (.contact, let id?), (.file, let id?):
+            context.push(.collectionItem(itemId: id, databaseKey: link.databaseKey), in: .overview)
+        case (.journal, _): context.select(.journal)
+        case (.mail, _):
+            if let thread = link.threadId {
+                context.push(.mailThread(threadId: thread, tab: .overview), in: .overview)
+            } else {
+                pending(String(localized: "pending.searchResult"))
+            }
         default: pending(String(localized: "pending.searchResult"))
         }
     }

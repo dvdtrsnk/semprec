@@ -156,6 +156,34 @@ class JournalViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
+    @Test fun `moving the axis shifts its windows and keeps the selection and the page`() = runTest(dispatcher) {
+        val vm = loaded()
+        val before = vm.state.value
+        vm.onAction(JournalAction.ShowAxisAround("2029-03-10"))
+        runCurrent()
+        val after = vm.state.value
+        assertEquals(before.selection, after.selection)
+        assertEquals(before.page, after.page)
+        assertEquals(1, repository.periodCalls.size)
+        assertEquals("2028-01-01", after.axis.last().cells.first().start)
+        assertEquals("2030-12-31", after.axis.last().cells.last().start)
+        assertTrue(after.axis.last().cells.none { it.current })
+        assertEquals("2026-01-01", after.axis.first().cells.single { it.onPath }.start)
+        vm.onAction(JournalAction.ShowAxisAround("not a day"))
+        assertEquals(after.axis, vm.state.value.axis)
+        vm.onAction(JournalAction.GoToday)
+        runCurrent()
+        assertEquals(before.axis, vm.state.value.axis)
+        assertEquals(1, repository.periodCalls.size)
+        vm.onAction(JournalAction.ShowAxisAround("2029-03-10"))
+        vm.onAction(JournalAction.Select(JournalPeriodKind.DAY, "2026-10-17"))
+        runCurrent()
+        assertEquals("2025-01-01", vm.state.value.axis.last().cells.first().start)
+        vm.close()
+        vm.onAction(JournalAction.ShowAxisAround("2027-01-01"))
+        assertEquals("2025-01-01", vm.state.value.axis.last().cells.first().start)
+    }
+
     @Test fun `the today action selects the day of the server`() = runTest(dispatcher) {
         val vm = loaded("2026-10-01")
         vm.onAction(JournalAction.Select(JournalPeriodKind.DAY, "2026-10-03"))

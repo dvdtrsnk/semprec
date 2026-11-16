@@ -1,3 +1,4 @@
+import Combine
 import CoreKit
 import NavigatorUI
 import OverviewFeature
@@ -34,23 +35,40 @@ final class OverviewRoutingTests: XCTestCase {
     }
 
     @MainActor
-    func testEveryRowOpensANoticeThatNamesItOnTheOverviewStack() {
-        let targets: [OverviewTarget] = [
-            .finance, .journal(itemId: "j1"), .project(id: "p")
-        ]
+    func testTheFinanceRowOpensANoticeThatNamesItOnTheOverviewStack() {
         let context = NavigationContext()
         let overview = OverviewStackSpy()
         context.register(overview, for: .overview)
-        let router = AppOverviewRouter(context: context)
-        for target in targets { router.show(target) }
-        XCTAssertEqual(overview.pushed.count, targets.count)
-        let titles = overview.pushed.compactMap { destination -> String? in
-            if case .pending(let title) = destination { title } else { nil }
+        AppOverviewRouter(context: context).show(.finance)
+        guard overview.pushed.count == 1, case .pending(let title) = overview.pushed[0] else {
+            return XCTFail("The finance row must open a notice, got \(overview.pushed)")
         }
-        XCTAssertEqual(titles.count, targets.count, "Every row must open a notice")
-        XCTAssertEqual(Set(titles).count, targets.count, "Each notice must name its own row")
-        XCTAssertFalse(titles.contains { $0.hasPrefix("pending.") }, "The titles must be read from the catalog")
+        XCTAssertFalse(title.hasPrefix("pending."), "The title must be read from the catalog")
         XCTAssertTrue(overview.sheets.isEmpty)
+    }
+
+    @MainActor
+    func testTheJournalRowSelectsTheJournalTabAndPushesNothing() {
+        let context = NavigationContext()
+        let overview = OverviewStackSpy()
+        context.register(overview, for: .overview)
+        var selected: [AppTab] = []
+        let subscription = context.tabRequests.sink { selected.append($0) }
+        AppOverviewRouter(context: context).show(.journal(itemId: "j1"))
+        AppOverviewRouter(context: context).show(.journal(itemId: nil))
+        subscription.cancel()
+        XCTAssertEqual(selected, [.journal, .journal])
+        XCTAssertTrue(overview.pushed.isEmpty)
+        XCTAssertTrue(overview.sheets.isEmpty)
+    }
+
+    @MainActor
+    func testAPinnedProjectRowPushesTheProjectOntoTheOverviewStack() {
+        let context = NavigationContext()
+        let overview = OverviewStackSpy()
+        context.register(overview, for: .overview)
+        AppOverviewRouter(context: context).show(.project(id: "p"))
+        XCTAssertEqual(overview.pushed, [.collectionItem(itemId: "p", databaseKey: "projects")])
     }
 
     @MainActor
@@ -101,8 +119,48 @@ final class OverviewRoutingTests: XCTestCase {
     }
 
     @MainActor
-    func testAResultOfAScreenAnotherWaveBuildsOpensANotice() {
-        for result in [link(.project, "p1"), link(.task, nil)] {
+    func testProjectAreaContactFileAndMailResultsOpenTheirScreens() {
+        let context = NavigationContext()
+        let overview = OverviewStackSpy()
+        context.register(overview, for: .overview)
+        let router = AppOverviewRouter(context: context)
+        router.showSearchResult(link(.project, "p1"))
+        router.showSearchResult(link(.area, "a1"))
+        router.showSearchResult(link(.contact, "c1"))
+        router.showSearchResult(link(.file, "f1"))
+        router.showSearchResult(
+            SearchResultLink(
+                type: .mail, itemId: nil, threadId: "t1", databaseKey: nil, journalType: nil, journalPeriod: nil
+            )
+        )
+        XCTAssertEqual(
+            overview.pushed,
+            [
+                .collectionItem(itemId: "p1", databaseKey: "projects"),
+                .area(areaId: "a1", tab: .overview),
+                .collectionItem(itemId: "c1", databaseKey: nil),
+                .collectionItem(itemId: "f1", databaseKey: nil),
+                .mailThread(threadId: "t1", tab: .overview)
+            ]
+        )
+    }
+
+    @MainActor
+    func testAJournalResultSelectsTheJournalTab() {
+        let context = NavigationContext()
+        let overview = OverviewStackSpy()
+        context.register(overview, for: .overview)
+        var selected: [AppTab] = []
+        let subscription = context.tabRequests.sink { selected.append($0) }
+        AppOverviewRouter(context: context).showSearchResult(link(.journal, "j1"))
+        subscription.cancel()
+        XCTAssertEqual(selected, [.journal])
+        XCTAssertTrue(overview.pushed.isEmpty)
+    }
+
+    @MainActor
+    func testAResultWithoutAScreenOpensANotice() {
+        for result in [link(.chat, "c1"), link(.task, nil), link(.mail, nil)] {
             let context = NavigationContext()
             let overview = OverviewStackSpy()
             context.register(overview, for: .overview)

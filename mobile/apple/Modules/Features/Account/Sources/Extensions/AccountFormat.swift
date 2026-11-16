@@ -35,8 +35,17 @@ enum AccountFormat {
     }
 
     // MARK: - Identity
-    /// The first letters of the first two words of the part of the address before the `@`, capitalized.
-    static func initials(email: String?) -> String {
+    /// The initials of the display name as the person's locale abbreviates a name; without a name, the first letters
+    /// of the first two words of the part of the address before the `@`, capitalized.
+    static func initials(name: String? = nil, email: String?) -> String {
+        if let name {
+            let formatter = PersonNameComponentsFormatter()
+            if let parts = formatter.personNameComponents(from: name) {
+                formatter.style = .abbreviated
+                let initials = formatter.string(from: parts)
+                if !initials.isEmpty { return initials }
+            }
+        }
         guard let email else { return "" }
         let words = email.prefix { $0 != "@" }.split { !$0.isLetter && !$0.isNumber }
         return words.prefix(2).compactMap(\.first).map { String($0).uppercased() }.joined()

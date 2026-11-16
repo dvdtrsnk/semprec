@@ -17,22 +17,6 @@
         }
       }
     },
-    "pending.journal" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Deník"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Journal"
-          }
-        }
-      }
-    },
     "pending.message" : {
       "localizations" : {
         "cs" : {
@@ -45,22 +29,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "This screen is not available in the app yet."
-          }
-        }
-      }
-    },
-    "pending.project" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Projekt"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Project"
           }
         }
       }

@@ -5,9 +5,9 @@ import SwiftUI
 /// The overview: what waits for the person, the areas, the pinned projects and the collections, with a search that
 /// opens in place and a profile button. Rows ask the shared ViewModel to open their target; the app shows it.
 ///
-/// The two glass buttons sit in the page, as in the design, and not in a toolbar: a macOS window that has toolbar items
-/// keeps the whole view graph of the window, with the scene's composition in it, alive after the window closed
-/// (`SceneLifetimeTests`).
+/// The page is a native grouped list with a large navigation title. On iOS the search and profile buttons are toolbar
+/// items; on macOS they stay in the page, because a macOS window that has toolbar items keeps the whole view graph of
+/// the window, with the scene's composition in it, alive after the window closed (`SceneLifetimeTests`).
 struct OverviewScreen: View {
 
     // MARK: - Dependencies
@@ -32,9 +32,15 @@ struct OverviewScreen: View {
     // MARK: - Body
     var body: some View {
         content
-            .background(Theme.Colors.groupedBackground)
             .navigationTitle(Text("overview.title", bundle: .module))
-            .hiddenNavigationBar()
+            .navigationSubtitle(Text(Date.now, format: .dateTime.weekday(.wide).day().month(.wide)))
+            .toolbar {
+                #if os(iOS)
+                    if !isSearching {
+                        ToolbarItemGroup(placement: .primaryAction) { searchButton; profileButton }
+                    }
+                #endif
+            }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(OverviewIdentifiers.screen)
             .task { await viewModel.observe() }
@@ -49,7 +55,11 @@ private extension OverviewScreen {
             SearchScreen(viewModel: SearchViewModel(model: makeSearch(), router: router)) { isSearching = false }
         } else {
             VStack(spacing: 0) {
-                buttons
+                #if os(macOS)
+                    HStack(spacing: Theme.Spacing.small) { Spacer(); searchButton; profileButton }
+                        .padding(.horizontal, Theme.Spacing.medium)
+                        .padding(.top, Theme.Spacing.small)
+                #endif
                 switch viewModel.state {
                 case .loading:
                     StatusView(.loading)
@@ -64,53 +74,27 @@ private extension OverviewScreen {
         }
     }
 
-    /// The search and profile buttons, glass circles at the top right of the page.
-    var buttons: some View {
-        HStack(spacing: Theme.Spacing.small + 2) {
-            Spacer()
-            Button { isSearching = true } label: {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .frame(width: Self.buttonSize, height: Self.buttonSize)
-                    .glassEffect(.regular.interactive(), in: .circle)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(Text("overview.search", bundle: .module))
-            .accessibilityIdentifier(OverviewIdentifiers.search)
-            Button { viewModel.open(.profile) } label: {
-                ProfileBadge(state: viewModel.state)
-                    .frame(width: Self.buttonSize, height: Self.buttonSize)
-                    .glassEffect(.regular.interactive(), in: .circle)
-            }
-            .buttonStyle(.plain)
+    var searchButton: some View {
+        Button { isSearching = true } label: {
+            Label { Text("overview.search", bundle: .module) } icon: { Image(systemName: "magnifyingglass") }
+        }
+        .accessibilityIdentifier(OverviewIdentifiers.search)
+    }
+
+    var profileButton: some View {
+        Button { viewModel.open(.profile) } label: { ProfileBadge(state: viewModel.state) }
             .accessibilityLabel(profileLabel)
             .accessibilityIdentifier(OverviewIdentifiers.profile)
-        }
-        .padding(.horizontal, Theme.Spacing.medium)
-        .padding(.top, Theme.Spacing.small)
     }
 
     func overview(_ content: OverviewContent) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("overview.title", bundle: .module)
-                        .font(.largeTitle.weight(.bold))
-                        .accessibilityAddTraits(.isHeader)
-                    Text(Date.now, format: .dateTime.weekday(.wide).day().month(.wide))
-                        .font(.subheadline)
-                        .foregroundStyle(Theme.Colors.secondaryText)
-                }
-                .padding(.horizontal, Theme.Spacing.small)
-                section("overview.section.main", rows: OverviewRows.main(content))
-                section("overview.section.areas", rows: OverviewRows.areas(content))
-                section("overview.section.projects", rows: OverviewRows.projects(content))
-                section("overview.section.collections", rows: OverviewRows.collections(content))
-            }
-            .padding(.horizontal, Theme.Spacing.medium)
-            .padding(.bottom, Theme.Spacing.large)
+        List {
+            section("overview.section.main", rows: OverviewRows.main(content))
+            section("overview.section.areas", rows: OverviewRows.areas(content))
+            section("overview.section.projects", rows: OverviewRows.projects(content))
+            section("overview.section.collections", rows: OverviewRows.collections(content))
         }
+        .groupedListStyle()
         .refreshable { await viewModel.refresh() }
         .accessibilityIdentifier(OverviewIdentifiers.content)
     }
@@ -118,13 +102,12 @@ private extension OverviewScreen {
     @ViewBuilder
     func section(_ title: LocalizedStringKey, rows: [OverviewRow]) -> some View {
         if !rows.isEmpty {
-            Text(title, bundle: .module)
-                .font(.title3.weight(.bold))
-                .padding(.top, Theme.Spacing.large)
-                .padding(.bottom, Theme.Spacing.small)
-                .padding(.horizontal, Theme.Spacing.small)
-                .accessibilityAddTraits(.isHeader)
-            OverviewCard(rows: rows) { viewModel.open($0) }
+            Section {
+                ForEach(rows) { row in OverviewRowButton(row: row) { viewModel.open($0) } }
+            } header: {
+                Text(title, bundle: .module)
+            }
+            .headerProminence(.increased)
         }
     }
 
@@ -136,7 +119,6 @@ private extension OverviewScreen {
         return Text(verbatim: String(format: format, locale: .current, content.problemCount))
     }
 
-    static var buttonSize: CGFloat { 44 }
 }
 
 /// The avatar of the profile button: the initials of the account, with a red dot while Semp has problems.
@@ -168,7 +150,7 @@ private struct ProfileBadge: View {
     }
 
     private var initials: String {
-        ProfileInitials.text(email: content?.accountEmail) ?? "\u{2022}"
+        ProfileInitials.text(name: content?.accountName, email: content?.accountEmail) ?? "\u{2022}"
     }
 
     private var hasProblems: Bool {

@@ -7,6 +7,7 @@ import cz.semprec.app.domain.LoadOverview
 import cz.semprec.app.domain.Overview
 import cz.semprec.app.domain.RepositoryResult
 import cz.semprec.app.domain.SessionStatus
+import cz.semprec.app.domain.SessionUser
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
@@ -38,7 +39,14 @@ class OverviewViewModel internal constructor(
 
     private fun load(showWait: Boolean) {
         loadJob?.cancel()
-        update { if (showWait) OverviewState(accountEmail = accountEmail()) else it.copy(refreshing = true) }
+        val account = account()
+        update {
+            if (showWait) {
+                OverviewState(accountEmail = account?.email, accountName = account?.displayName)
+            } else {
+                it.copy(refreshing = true)
+            }
+        }
         loadJob = viewModelScope.launch {
             val result: RepositoryResult<Overview>? = try {
                 loadOverview()
@@ -48,26 +56,28 @@ class OverviewViewModel internal constructor(
                 null
             }
             ensureActive()
-            update { it.after(result, accountEmail()) }
+            update { it.after(result, account()) }
         }
     }
 
-    private fun accountEmail(): String? = (auth.status.value as? SessionStatus.SignedIn)?.session?.user?.email
+    private fun account(): SessionUser? = (auth.status.value as? SessionStatus.SignedIn)?.session?.user
 }
 
-private fun OverviewState.after(result: RepositoryResult<Overview>?, email: String?): OverviewState = when (result) {
-    is RepositoryResult.Content -> result.value.toState(email)
-    is RepositoryResult.Failure -> failed(result.kind)
-    null -> failed(null)
-}
+private fun OverviewState.after(result: RepositoryResult<Overview>?, account: SessionUser?): OverviewState =
+    when (result) {
+        is RepositoryResult.Content -> result.value.toState(account)
+        is RepositoryResult.Failure -> failed(result.kind)
+        null -> failed(null)
+    }
 
 /** A failed first load is an error; a failed refresh leaves the content that is shown as it was. */
 private fun OverviewState.failed(kind: FailureKind?): OverviewState =
     if (phase == OverviewPhase.CONTENT) copy(refreshing = false) else OverviewState(OverviewPhase.ERROR, kind)
 
-private fun Overview.toState(email: String?) = OverviewState(
+private fun Overview.toState(account: SessionUser?) = OverviewState(
     phase = OverviewPhase.CONTENT,
-    accountEmail = email,
+    accountEmail = account?.email,
+    accountName = account?.displayName,
     inboxPending = summary.inboxPending,
     mailUnread = summary.mailUnread,
     tasksToday = summary.tasksToday,

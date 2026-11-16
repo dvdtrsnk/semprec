@@ -92,7 +92,8 @@ class WorkRepositoriesTest {
                 {"id":"p2","databaseId":"db-projects","properties":{"name":"Zeta","status":"inProgress"}},
                 {"id":"p1","databaseId":"db-projects","properties":{"name":"Alfa","status":"longTerm","color":"#007AFF"},
                   "relations":{"area":[{"id":"a1","title":"Prace"}]}},
-                {"id":"p3","databaseId":"db-projects","properties":{"name":"Hotovy","status":"done"}}]}""",
+                {"id":"p3","databaseId":"db-projects","properties":{"name":"Hotovy","status":"done"}},
+                {"id":"p4","databaseId":"db-projects","properties":{"name":"Kalendar","systemActive":true}}]}""",
             )
             "/api/databases/db-people/query" -> json(
                 """{"items":[{"id":"u2","databaseId":"x","properties":{"name":"Zora"}},
@@ -330,7 +331,7 @@ class WorkRepositoriesTest {
     }
 
     @Test
-    fun theCatalogsAreSortedAndLeaveOutWhatIsHiddenOrClosed() = runTest {
+    fun theCatalogsAreSortedAndLeaveOutWhatIsHiddenClosedOrKeptByAModule() = runTest {
         val data = work { standard(it) }
 
         val areas = assertIs<RepositoryResult.Content<List<EntityRef>>>(data.catalog.areas()).value

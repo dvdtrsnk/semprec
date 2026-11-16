@@ -50,6 +50,7 @@ extension SharedProfileScreenModel {
             phase: phase(state.phase),
             failure: state.failure.map(FailureKind.init),
             email: state.email,
+            name: state.name,
             serverUrl: state.serverUrl,
             locale: state.locale,
             locales: state.locales,

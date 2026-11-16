@@ -120,6 +120,13 @@ final class FormattingTests: XCTestCase {
         XCTAssertNil(ProfileInitials.text(email: ""))
     }
 
+    func testInitialsAreThoseOfTheDisplayNameWhenTheAccountHasOne() {
+        XCTAssertEqual(ProfileInitials.text(name: "David Třešňák", email: "dev@example.cz"), "DT")
+        XCTAssertEqual(ProfileInitials.text(name: "Jana", email: "dev@example.cz"), "J")
+        XCTAssertEqual(ProfileInitials.text(name: "", email: "dev@example.cz"), "DE")
+        XCTAssertEqual(ProfileInitials.text(name: nil, email: "dev@example.cz"), "DE")
+    }
+
     // MARK: - Colors and symbols
     func testStoredHexColorsAreReadAndAnythingElseIsNot() {
         XCTAssertNotNil(Color(hex: "#FF3B30"))

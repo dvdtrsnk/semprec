@@ -27,13 +27,15 @@ data class ProfileFigures(
 
 /**
  * The profile of the signed-in person. The identity is known without the server; [figures] arrive with the summary,
- * whose failure is [failure] and leaves the identity and the sign-out where they are. [locale] is the language of the
+ * whose failure is [failure] and leaves the identity and the sign-out where they are. [name] is the display name of
+ * the account, `null` when it has none. [locale] is the language of the
  * account and [locales] the languages the server offers.
  */
 data class ProfileState(
     val phase: ProfilePhase = ProfilePhase.LOADING,
     val failure: FailureKind? = null,
     val email: String? = null,
+    val name: String? = null,
     val serverUrl: String? = null,
     val locale: String? = null,
     val locales: List<String> = emptyList(),

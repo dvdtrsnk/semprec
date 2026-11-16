@@ -8,6 +8,12 @@ sealed interface JournalAction {
     data class Select(val kind: JournalPeriodKind, val start: String) : JournalAction
 
     data object GoToday : JournalAction
+
+    /**
+     * Moves the windows of the time axis around [day] (`YYYY-MM-DD`), which the person dragged the axis to; the
+     * selection and what the page shows stay as they are.
+     */
+    data class ShowAxisAround(val day: String) : JournalAction
     data class OpenEvent(val id: String) : JournalAction
     data object OpenInbox : JournalAction
     data class OpenPage(val pageId: String, val title: String) : JournalAction

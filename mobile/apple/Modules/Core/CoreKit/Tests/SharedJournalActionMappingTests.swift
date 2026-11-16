@@ -26,6 +26,11 @@ final class SharedJournalActionMappingTests: XCTestCase {
             SharedJournalScreenModel.action(.openEvent(id: "e")) as? SharedSDK.JournalActionOpenEvent
         )
         XCTAssertEqual(event.id, "e")
+        let around = try XCTUnwrap(
+            SharedJournalScreenModel.action(.showAxisAround(day: "2029-03-10"))
+                as? SharedSDK.JournalActionShowAxisAround
+        )
+        XCTAssertEqual(around.day, "2029-03-10")
         let page = try XCTUnwrap(
             SharedJournalScreenModel.action(.openPage(pageId: "p", title: "T")) as? SharedSDK.JournalActionOpenPage
         )

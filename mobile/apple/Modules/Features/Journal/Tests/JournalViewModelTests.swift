@@ -46,6 +46,7 @@ final class JournalViewModelTests: XCTestCase {
         viewModel.retry()
         viewModel.select(cell)
         viewModel.goToday()
+        viewModel.showAxis(around: "2029-03-10")
         viewModel.openEvent(JournalEvent(id: "e1", title: "Standup"))
         viewModel.openInbox()
         viewModel.openPage(pageId: "jv1", title: "Trip")
@@ -57,6 +58,7 @@ final class JournalViewModelTests: XCTestCase {
             .retry,
             .select(kind: .month, start: "2026-10-01"),
             .goToday,
+            .showAxisAround(day: "2029-03-10"),
             .openEvent(id: "e1"),
             .openInbox,
             .openPage(pageId: "jv1", title: "Trip"),
