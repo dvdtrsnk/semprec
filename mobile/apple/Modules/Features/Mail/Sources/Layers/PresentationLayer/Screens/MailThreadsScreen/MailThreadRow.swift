@@ -40,7 +40,7 @@ struct MailTag: View {
     var body: some View {
         HStack(spacing: 4) {
             if let symbol { Image(systemName: symbol).font(.system(size: 9, weight: .semibold)) }
-            text.font(.caption2.weight(.semibold)).lineLimit(1)
+            text.font(.caption2.weight(.semibold)).lineLimit(1).fixedSize(horizontal: style == .draft, vertical: false)
         }
         .foregroundStyle(foreground)
         .padding(.horizontal, 7)
@@ -99,6 +99,7 @@ struct MailThreadRow: View {
                     tags
                 }
             }
+            .foregroundStyle(.primary)
             .contentShape(Rectangle())
         }
         .listRowButton()

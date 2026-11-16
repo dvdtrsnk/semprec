@@ -75,6 +75,7 @@ private extension MailAccountsScreen {
                 Spacer(minLength: 0)
                 MailStatusLabel(status: account.status)
             }
+            .foregroundStyle(.primary)
             .contentShape(Rectangle())
         }
         .listRowButton()

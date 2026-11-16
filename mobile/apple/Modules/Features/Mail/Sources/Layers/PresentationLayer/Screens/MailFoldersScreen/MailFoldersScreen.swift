@@ -90,6 +90,7 @@ private extension MailFoldersScreen {
                 Spacer(minLength: 0)
                 if count > 0 { Text(verbatim: String(count)).foregroundStyle(Theme.Colors.secondaryText) }
             }
+            .foregroundStyle(.primary)
             .contentShape(Rectangle())
         }
         .listRowButton()
@@ -114,6 +115,7 @@ private extension MailFoldersScreen {
                         Text(verbatim: String(folder.unreadCount)).foregroundStyle(Theme.Colors.secondaryText)
                     }
                 }
+                .foregroundStyle(.primary)
                 .contentShape(Rectangle())
             }
             .listRowButton()
