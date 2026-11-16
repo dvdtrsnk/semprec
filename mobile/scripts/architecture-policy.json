@@ -93,7 +93,8 @@
         "profile.email",
         "profile.server",
         "profile.signOut",
-        "profile.done"
+        "profile.done",
+        "semp.grabber.label"
       ],
       "androidUntranslatable": ["app_name"]
     },

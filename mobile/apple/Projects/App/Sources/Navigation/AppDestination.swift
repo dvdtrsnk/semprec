@@ -29,6 +29,22 @@ enum AppDestination: Hashable {
     case newItem(day: String)
     /// A subpage of the diary; `title` is the caption of the link that opened it.
     case journalPage(itemId: String, title: String)
+    /// The agent of a project: its instructions, tools, automatic tasks and runs.
+    case sempProjectAgent(projectId: String)
+    /// The health of Semp. The profile reaches it from its problems count.
+    case sempStatus
+}
+
+// MARK: - Presentation
+extension AppDestination {
+
+    /// Whether the destination is presented as a sheet over a stack, which covers the Semp bubble of the scene.
+    var presentsAsSheet: Bool {
+        switch self {
+        case .profile, .details, .sleepPlan, .sleepNight, .calendars, .invitations, .newItem: true
+        case .pending, .tasks, .collection, .collectionItem, .journalPage, .sempProjectAgent, .sempStatus: false
+        }
+    }
 }
 
 // MARK: - NavigationProvidedDestination

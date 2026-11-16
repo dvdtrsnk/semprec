@@ -4,6 +4,7 @@ import CollectionsFeature
 import DesignSystem
 import JournalFeature
 import NavigatorUI
+import SempFeature
 import SleepFeature
 import SwiftUI
 import TasksFeature
@@ -70,10 +71,14 @@ private extension AppScene {
         // A closure, not a method reference: Swift 6.2.1 crashed reabstracting the actor-isolated opaque view method.
         .onNavigationProvidedView(AppDestination.self) { [weak composition] destination in
             if let composition {
-                Self.destinationView(destination, composition: composition)
+                // Erased: the nested opaque type of the destinations crashed the Swift 6.2.1 compiler reabstracting this closure.
+                AnyView(Self.destinationView(destination, composition: composition))
             }
         }
         .navigationRoot(rootNavigator)
+        .sempOverlay(composition)
+        .onAppear { composition.currentTab = selectedTab.wrappedValue }
+        .onChange(of: selectedTab.wrappedValue) { _, tab in composition.currentTab = tab }
     }
 
     /// One tab's navigation stack around `root`; the stack registers itself with the scene's navigation each time its
@@ -88,8 +93,14 @@ private extension AppScene {
         }
     }
 
-    @ViewBuilder
+    /// The view of `destination`; a sheet gets a Semp bubble of its own, because it covers the one of the scene.
     static func destinationView(_ destination: AppDestination, composition: AppComposition) -> some View {
+        destinationContent(destination, composition: composition)
+            .sempSheetBubble(composition, enabled: destination.presentsAsSheet)
+    }
+
+    @ViewBuilder
+    static func destinationContent(_ destination: AppDestination, composition: AppComposition) -> some View {
         switch destination {
         case .pending(let title):
             PendingScreen(title: title)
@@ -138,6 +149,16 @@ private extension AppScene {
                 title: title,
                 makeModel: { composition.models.makeJournalSubpage(itemId: itemId) },
                 router: composition.journalRouter
+            )
+        case .sempProjectAgent(let projectId):
+            SempScreenFactory.projectAgent(
+                makeModel: { composition.models.makeSempProjectAgent(projectId: projectId) },
+                router: composition.sempRouter
+            )
+        case .sempStatus:
+            SempScreenFactory.status(
+                makeModel: { composition.models.makeSempStatus() },
+                router: composition.sempRouter
             )
         }
     }
