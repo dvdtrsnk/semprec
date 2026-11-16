@@ -68,4 +68,7 @@ class HomeSDK(
     /** The sleep sheet for the evening [night] (`YYYY-MM-DD`, or `null`); [startOnNight] opens it on that night. */
     fun sleepViewModel(night: String?, startOnNight: Boolean): SleepViewModel =
         sleepViewModels.sleepViewModel(night, startOnNight)
+
+    /** The calendar, its calendars list, its invitations and the new item form. */
+    val calendar: CalendarSDK = CalendarSDK(auth.api)
 }

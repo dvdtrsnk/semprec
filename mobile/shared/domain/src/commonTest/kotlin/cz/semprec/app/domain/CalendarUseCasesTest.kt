@@ -101,6 +101,32 @@ class CalendarUseCasesTest {
         assertEquals(2, result.value.pendingInvitations)
     }
 
+    @Test fun `hiding the sleep and tasks calendars hides the entries that follow them`() = runTest {
+        val sleepNight = entry("s", kind = CalendarEntryKind.SLEEP, calendarId = null)
+        val trace = entry("tr", kind = CalendarEntryKind.TRACE, calendarId = null)
+        val kept = entry("k", calendarId = null)
+        val calendars = listOf(
+            calendar("c-sleep", hidden = true, kind = CalendarKind.SYSTEM).copy(systemKey = "sleep"),
+            calendar("c-tasks", hidden = false, kind = CalendarKind.SYSTEM).copy(systemKey = "tasks"),
+        )
+        val window = CalendarWindow(timeline(sleepNight, trace, kept), calendars, 0)
+        val result = LoadCalendarWindow(RecordingCalendarRepository(window))(DAY, DAY)
+        assertEquals(
+            listOf("tr", "k"),
+            assertIs<RepositoryResult.Content<CalendarWindow>>(result).value.timeline.entries.map {
+                it.id
+            }
+        )
+        val tasksHidden = window.copy(calendars = listOf(calendars[1].copy(hidden = true)))
+        val second = LoadCalendarWindow(RecordingCalendarRepository(tasksHidden))(DAY, DAY)
+        assertEquals(
+            listOf("s", "k"),
+            assertIs<RepositoryResult.Content<CalendarWindow>>(second).value.timeline.entries.map {
+                it.id
+            }
+        )
+    }
+
     @Test fun `a range longer than the server serves is refused without a request`() = runTest {
         val repository = RecordingCalendarRepository()
         val result = LoadCalendarWindow(repository)(DAY, DAY.plusDays(CALENDAR_MAX_WINDOW_DAYS))
