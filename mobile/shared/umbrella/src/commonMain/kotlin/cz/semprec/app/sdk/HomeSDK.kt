@@ -3,18 +3,33 @@ package cz.semprec.app.sdk
 import cz.semprec.app.core.AppPlatform
 import cz.semprec.app.core.DeviceInfo
 import cz.semprec.app.core.InMemorySessionStorage
+import cz.semprec.app.core.ItemKind
 import cz.semprec.app.core.SessionStorage
 import cz.semprec.app.data.ApiClient
 import cz.semprec.app.data.HttpAuthRepository
+import cz.semprec.app.data.HttpOverviewRepository
+import cz.semprec.app.data.HttpSearchRepository
 import cz.semprec.app.data.InMemoryPlaceholderRepository
+import cz.semprec.app.data.WorkData
+import cz.semprec.app.domain.InMemoryRecentSearches
+import cz.semprec.app.domain.ItemChanges
+import cz.semprec.app.domain.LoadOverview
 import cz.semprec.app.domain.LoadPlaceholderItem
 import cz.semprec.app.domain.LoadPlaceholderItems
+import cz.semprec.app.domain.SearchEverything
 import cz.semprec.app.presentation.DetailViewModel
 import cz.semprec.app.presentation.HomeViewModel
 import cz.semprec.app.presentation.HomeViewModelFactory
+import cz.semprec.app.presentation.ItemDetailsViewModel
 import cz.semprec.app.presentation.LoginViewModel
+import cz.semprec.app.presentation.OverviewViewModel
+import cz.semprec.app.presentation.OverviewViewModelFactory
+import cz.semprec.app.presentation.SearchViewModel
 import cz.semprec.app.presentation.SessionViewModel
 import cz.semprec.app.presentation.SettingsViewModel
+import cz.semprec.app.presentation.TasksStart
+import cz.semprec.app.presentation.TasksViewModel
+import cz.semprec.app.presentation.WorkViewModelFactory
 
 /**
  * Native SDK and composition root of the screens. Its owner decides which screens share its data:
@@ -37,7 +52,31 @@ class HomeSDK(
     private val viewModels =
         HomeViewModelFactory(LoadPlaceholderItems(repository), LoadPlaceholderItem(repository), auth)
 
+    // The overview and its search; the recent searches live as long as this SDK, that is, as long as the window.
+    private val overviewViewModels = OverviewViewModelFactory(
+        LoadOverview(HttpOverviewRepository(auth.api)),
+        SearchEverything(HttpSearchRepository(auth.api)),
+        InMemoryRecentSearches(),
+        auth,
+    )
+
+    // The task lists and the Podrobnosti sheet; a change made in the sheet reaches the open lists of the same window.
+    private val work = WorkData(auth.api)
+    private val workViewModels = WorkViewModelFactory(work.tasks, work.details, work.catalog, ItemChanges())
+
+    /** The Tasks screen. [today] is `yyyy-MM-dd`, asked again whenever the screen groups its tasks. */
+    fun tasksViewModel(today: () -> String, start: TasksStart): TasksViewModel =
+        workViewModels.tasksViewModel(today, start)
+
+    /** The Podrobnosti sheet of the task or event [itemId]. */
+    fun itemDetailsViewModel(kind: ItemKind, itemId: String): ItemDetailsViewModel =
+        workViewModels.itemDetailsViewModel(kind, itemId)
+
     fun homeViewModel(): HomeViewModel = viewModels.homeViewModel()
+
+    fun overviewViewModel(): OverviewViewModel = overviewViewModels.overviewViewModel()
+
+    fun searchViewModel(): SearchViewModel = overviewViewModels.searchViewModel()
 
     fun detailViewModel(itemId: String): DetailViewModel = viewModels.detailViewModel(itemId)
 
