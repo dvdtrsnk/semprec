@@ -37,6 +37,8 @@
       "HomeFeatureTests": { "project": "Modules/Features/Home", "sources": "Tests", "allowed": ["HomeFeature", "CoreKit"] },
       "SettingsFeature": { "project": "Modules/Features/Settings", "sources": "Sources", "allowed": ["CoreKit", "DesignSystem"] },
       "SettingsFeatureTests": { "project": "Modules/Features/Settings", "sources": "Tests", "allowed": ["SettingsFeature", "CoreKit"] },
+      "CalendarFeature": { "project": "Modules/Features/Calendar", "sources": "Sources", "allowed": ["CoreKit", "DesignSystem"] },
+      "CalendarFeatureTests": { "project": "Modules/Features/Calendar", "sources": "Tests", "allowed": ["CalendarFeature", "CoreKit"] },
       "JournalFeature": { "project": "Modules/Features/Journal", "sources": "Sources", "allowed": ["CoreKit", "DesignSystem"] },
       "JournalFeatureTests": { "project": "Modules/Features/Journal", "sources": "Tests", "allowed": ["JournalFeature", "CoreKit"] },
       "SleepFeature": { "project": "Modules/Features/Sleep", "sources": "Sources", "allowed": ["CoreKit", "DesignSystem"] },
@@ -44,7 +46,7 @@
       "Semprec": {
         "project": "Projects/App",
         "sources": "Sources",
-        "allowed": ["AuthFeature", "CoreKit", "Dependencies", "DesignSystem", "HomeFeature", "SettingsFeature", "JournalFeature", "SleepFeature", "NavigatorUI"]
+        "allowed": ["AuthFeature", "CoreKit", "Dependencies", "DesignSystem", "HomeFeature", "SettingsFeature", "CalendarFeature", "JournalFeature", "SleepFeature", "NavigatorUI"]
       },
       "SemprecTests": { "project": "Projects/App", "sources": "Tests", "allowed": ["Semprec", "CoreKit", "NavigatorUI"] },
       "SemprecUITests": { "project": "Projects/App", "sources": "UITests", "allowed": [], "appUnderTest": "Semprec" }
@@ -54,7 +56,7 @@
     "module": ":shared:presentation",
     "baseClass": "ScreenViewModel",
     "leaseType": "SharedViewModelLease",
-    "appleOnly": ["LoginViewModel", "SessionViewModel", "JournalViewModel", "JournalSubpageViewModel", "SleepViewModel"]
+    "appleOnly": ["LoginViewModel", "SessionViewModel", "JournalViewModel", "JournalSubpageViewModel", "SleepViewModel", "CalendarViewModel", "CalendarListViewModel", "InvitationsViewModel", "NewCalendarItemViewModel"]
   },
   "navigation": {
     "gradleModules": [":android:app"],
@@ -270,6 +272,19 @@
         "sleep.sound.title",
         "sleep.sound.vibrateOnly",
         "sleep.title"
+      ]
+    },
+    {
+      "android": null,
+      "apple": "CalendarFeature",
+      "keys": [],
+      "appleOnly": [
+        "failure.invalidData",
+        "failure.notFound",
+        "failure.rejected",
+        "failure.unauthorized",
+        "failure.unavailable",
+        "failure.unexpected"
       ]
     }
   ]
