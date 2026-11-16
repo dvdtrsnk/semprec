@@ -2,8 +2,8 @@ import SwiftUI
 
 // MARK: - Registry
 /// The objects on the screen that can be dropped onto the Semp bubble, by where they are. One registry belongs to one
-/// presentation (the tab bar's content, or one sheet), so only what is on top of that presentation counts: an item under
-/// a sheet is in the registry of the presentation below, whose bubble the sheet covers.
+/// presentation (the tab bar's content, or one sheet), so only what is on top of that presentation counts: an item
+/// under a sheet is in the registry of the presentation below, whose bubble the sheet covers.
 @MainActor
 public final class DropTargetRegistry {
 

@@ -286,4 +286,5 @@ public enum SempBubbleEffect: Equatable, Sendable {
 public typealias SempBubbleScreenModel = ScreenModel<SempBubbleState, SempBubbleAction, SempBubbleEffect>
 
 /// Bubble screen model for previews and tests; it never starts the Kotlin runtime.
-public typealias ScriptedSempBubbleScreenModel = ScriptedScreenModel<SempBubbleState, SempBubbleAction, SempBubbleEffect>
+public typealias ScriptedSempBubbleScreenModel =
+    ScriptedScreenModel<SempBubbleState, SempBubbleAction, SempBubbleEffect>

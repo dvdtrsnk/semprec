@@ -75,7 +75,7 @@ private extension SempEntryView {
                 SempRunChipView(
                     chip: run,
                     toggle: { send(.toggleRun(messageId: run.messageId)) },
-                    openRun: { send(.openRun(runId: run.runId, messageId: run.messageId)) }
+                    openRun: { send(.open(.run(runId: run.runId, messageId: run.messageId))) }
                 )
             }
             switch entry.replyPhase {
@@ -123,7 +123,7 @@ private extension SempEntryView {
                 }
                 .buttonStyle(.borderedProminent)
                 .accessibilityIdentifier(SempIdentifiers.retryReply)
-                Button { send(.openStatus) } label: { Text("semp.reply.details", bundle: .module) }
+                Button { send(.open(.status)) } label: { Text("semp.reply.details", bundle: .module) }
                     .buttonStyle(.bordered)
             }
             .controlSize(.small)
@@ -160,7 +160,7 @@ private extension SempEntryView {
     }
 
     func changeCard(_ change: SempChangeCard) -> some View {
-        Button { send(.openChange(itemId: change.itemId, databaseKey: change.databaseKey)) } label: {
+        Button { send(.open(.change(itemId: change.itemId, databaseKey: change.databaseKey))) } label: {
             HStack(spacing: 10) {
                 Image(systemName: change.kind.symbol).foregroundStyle(change.kind.color)
                 VStack(alignment: .leading, spacing: 2) {
@@ -219,7 +219,7 @@ private extension SempEntryView {
             send: { _ in }
         )
         SempEntryView(
-            entry: SempEntry(id: "a1", role: .assistant, text: "Dnes tě čeká:\n- **14:00** faktura", canRegenerate: true),
+            entry: SempEntry(id: "a1", role: .assistant, text: "Dnes tě čeká:\n- **14:00**", canRegenerate: true),
             type: .chat,
             send: { _ in }
         )

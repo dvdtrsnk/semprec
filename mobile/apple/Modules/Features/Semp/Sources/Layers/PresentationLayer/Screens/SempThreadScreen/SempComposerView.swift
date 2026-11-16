@@ -62,7 +62,7 @@ private extension SempComposerView {
             HStack {
                 ForEach(state.attachments) { attachment in
                     SempChipView(kind: attachment.kind, label: attachment.title) {
-                        send(.removeAttachment(key: attachment.id))
+                        send(.dismiss(.attachment(key: attachment.id)))
                     }
                     .accessibilityIdentifier(SempIdentifiers.attachmentPrefix + attachment.id)
                 }

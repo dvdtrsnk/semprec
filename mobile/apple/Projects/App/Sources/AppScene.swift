@@ -71,7 +71,7 @@ private extension AppScene {
         // A closure, not a method reference: Swift 6.2.1 crashed reabstracting the actor-isolated opaque view method.
         .onNavigationProvidedView(AppDestination.self) { [weak composition] destination in
             if let composition {
-                // Erased: the nested opaque type of the destinations crashed the Swift 6.2.1 compiler reabstracting this closure.
+                // Erased: the nested opaque type of the destinations crashed the Swift 6.2.1 compiler here.
                 AnyView(Self.destinationView(destination, composition: composition))
             }
         }
@@ -102,10 +102,8 @@ private extension AppScene {
     @ViewBuilder
     static func destinationContent(_ destination: AppDestination, composition: AppComposition) -> some View {
         switch destination {
-        case .pending(let title):
-            PendingScreen(title: title)
-        case .profile:
-            ProfileScreen(viewModel: SessionViewModel(model: composition.models.makeSession()))
+        case .pending, .profile, .sempProjectAgent, .sempStatus:
+            shellDestination(destination, composition: composition)
         case .tasks(let start, let tab):
             TasksScreenFactory.tasks(
                 makeModel: { composition.models.makeTasks(start: start) },
@@ -150,12 +148,23 @@ private extension AppScene {
                 makeModel: { composition.models.makeJournalSubpage(itemId: itemId) },
                 router: composition.journalRouter
             )
+        }
+    }
+
+    /// The destinations of the app's own screens: the notice for a screen that is not built, the profile, and Semp.
+    @ViewBuilder
+    static func shellDestination(_ destination: AppDestination, composition: AppComposition) -> some View {
+        switch destination {
+        case .pending(let title):
+            PendingScreen(title: title)
+        case .profile:
+            ProfileScreen(viewModel: SessionViewModel(model: composition.models.makeSession()))
         case .sempProjectAgent(let projectId):
             SempScreenFactory.projectAgent(
                 makeModel: { composition.models.makeSempProjectAgent(projectId: projectId) },
                 router: composition.sempRouter
             )
-        case .sempStatus:
+        default:
             SempScreenFactory.status(
                 makeModel: { composition.models.makeSempStatus() },
                 router: composition.sempRouter

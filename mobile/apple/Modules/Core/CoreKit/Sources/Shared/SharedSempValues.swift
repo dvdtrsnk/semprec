@@ -55,55 +55,17 @@ extension SempPhase {
 // MARK: - Targets
 extension SempTargetKind {
 
+    /// The kinds are matched by name (`TASK` is `task`), so a kind the app does not know reads as `other`.
     init(_ kind: SharedSDK.SempTargetKind) {
-        switch kind {
-        case .task: self = .task
-        case .event: self = .event
-        case .mail: self = .mail
-        case .inbox: self = .inbox
-        case .journal: self = .journal
-        case .project: self = .project
-        case .area: self = .area
-        case .person: self = .person
-        case .company: self = .company
-        case .file: self = .file
-        case .note: self = .note
-        case .recording: self = .recording
-        case .finance: self = .finance
-        case .health: self = .health
-        case .recipe: self = .recipe
-        case .book: self = .book
-        case .movie: self = .movie
-        case .run: self = .run
-        case .other: self = .other
-        }
+        self = SempTargetKind(rawValue: kind.name.lowercased()) ?? .other
     }
 
     var shared: SharedSDK.SempTargetKind {
-        switch self {
-        case .task: .task
-        case .event: .event
-        case .mail: .mail
-        case .inbox: .inbox
-        case .journal: .journal
-        case .project: .project
-        case .area: .area
-        case .person: .person
-        case .company: .company
-        case .file: .file
-        case .note: .note
-        case .recording: .recording
-        case .finance: .finance
-        case .health: .health
-        case .recipe: .recipe
-        case .book: .book
-        case .movie: .movie
-        case .run: .run
-        case .other: .other
-        }
+        SharedSDK.SempTargetKind.allCases.first { $0.name.lowercased() == rawValue } ?? .other
     }
 }
 
+// MARK: - SempTarget
 extension SempTarget {
 
     var shared: SharedSDK.SempTarget {
@@ -119,6 +81,7 @@ extension SempTarget {
     }
 }
 
+// MARK: - SempAttachment
 extension SempAttachment {
 
     init(_ attachment: SharedSDK.SempAttachment) {
@@ -158,6 +121,7 @@ extension SempApprovalItem {
     }
 }
 
+// MARK: - SempRisk
 extension SempRisk {
 
     init(_ risk: SharedSDK.SempRisk) {
@@ -170,6 +134,7 @@ extension SempRisk {
     }
 }
 
+// MARK: - SempOrigin
 extension SempOrigin {
 
     init(_ origin: SharedSDK.SempOrigin) {
@@ -181,6 +146,7 @@ extension SempOrigin {
     }
 }
 
+// MARK: - SempDecisionState
 extension SempDecisionState {
 
     init(_ state: SharedSDK.SempDecisionState) {
@@ -209,6 +175,7 @@ extension SempLineState {
     }
 }
 
+// MARK: - SempStepsPhase
 extension SempStepsPhase {
 
     init(_ phase: SharedSDK.SempStepsPhase) {
@@ -221,6 +188,7 @@ extension SempStepsPhase {
     }
 }
 
+// MARK: - SempRunDisplay
 extension SempRunDisplay {
 
     init(_ display: SharedSDK.SempRunDisplay) {
@@ -233,6 +201,7 @@ extension SempRunDisplay {
     }
 }
 
+// MARK: - SempRunTriggerKind
 extension SempRunTriggerKind {
 
     init(_ trigger: SharedSDK.SempRunTriggerKind) {

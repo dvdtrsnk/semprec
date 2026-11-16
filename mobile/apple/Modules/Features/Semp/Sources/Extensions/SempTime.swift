@@ -39,14 +39,17 @@ enum SempTime {
         locale: Locale = .current
     ) -> String? {
         guard let value = date(iso) else { return nil }
-        if calendar.isDate(value, inSameDayAs: now) {
-            return value.formatted(.dateTime.hour().minute().locale(locale))
+        func write(_ style: Date.FormatStyle) -> String {
+            var style = style
+            style.locale = locale
+            style.timeZone = calendar.timeZone
+            return value.formatted(style)
         }
-        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: value), to: calendar.startOfDay(for: now))
-        if let gone = days.day, gone > 0, gone < 7 {
-            return value.formatted(.dateTime.weekday(.abbreviated).locale(locale))
-        }
-        return value.formatted(.dateTime.day().month(.defaultDigits).locale(locale))
+        if calendar.isDate(value, inSameDayAs: now) { return write(.dateTime.hour().minute()) }
+        let start = calendar.startOfDay(for: value)
+        let days = calendar.dateComponents([.day], from: start, to: calendar.startOfDay(for: now))
+        if let gone = days.day, gone > 0, gone < 7 { return write(.dateTime.weekday(.abbreviated)) }
+        return write(.dateTime.day().month(.defaultDigits))
     }
 
     /// The start of an instant written in full: `today 13:24`, or the date and the time.
@@ -70,7 +73,8 @@ enum SempTime {
         }
         let minutes = Int(seconds) / 60
         let rest = Int(seconds) % 60
-        return String(format: String(localized: "semp.duration.minutes", bundle: .module), locale: locale, minutes, rest)
+        let format = String(localized: "semp.duration.minutes", bundle: .module)
+        return String(format: format, locale: locale, minutes, rest)
     }
 
     /// The cost of a run in US dollars: `$0.021`.

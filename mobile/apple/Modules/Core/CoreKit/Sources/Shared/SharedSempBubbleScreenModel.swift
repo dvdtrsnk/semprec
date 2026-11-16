@@ -68,6 +68,7 @@ extension SharedSempBubbleScreenModel {
     }
 }
 
+// MARK: - SempBubbleToast
 extension SempBubbleToast {
 
     init(_ toast: SharedSDK.SempBubbleToast) {

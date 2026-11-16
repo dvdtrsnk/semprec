@@ -77,8 +77,8 @@ extension AppSempRouter: SempRouting {
 // MARK: - Private
 private extension AppSempRouter {
 
-    /// Closes the chat and, once its cover is gone, runs `open`: a screen of a tab cannot be shown under a cover that is
-    /// still going away.
+    /// Closes the chat and, once its cover is gone, runs `open`: a screen of a tab cannot be shown under a cover
+    /// that is still going away.
     func afterClosing(_ open: @escaping @MainActor () -> Void) {
         presenter.dismiss()
         Task { @MainActor in

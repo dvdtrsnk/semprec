@@ -3,7 +3,7 @@ import SwiftUI
 // MARK: - Full-screen cover
 extension View {
 
-    /// Presents `content` over the whole screen on iOS. A macOS window has no full-screen cover, so there it is a sheet.
+    /// Presents `content` over the whole screen on iOS; a macOS window has no full-screen cover, so it is a sheet.
     public func fullScreenCoverOrSheet<Content: View>(
         isPresented: Binding<Bool>,
         @ViewBuilder content: @escaping () -> Content

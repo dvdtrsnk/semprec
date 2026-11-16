@@ -119,7 +119,7 @@ private extension SempStatusScreen {
                     Text(issue.title).font(.subheadline.weight(.semibold))
                     Text(issue.text).font(.footnote).foregroundStyle(.secondary)
                     if let since = issue.since, let when = SempTime.started(since) {
-                        Text(String(format: String(localized: "semp.status.since", bundle: .module), locale: .current, when))
+                        Text(sinceText(when))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -172,11 +172,17 @@ private extension SempStatusScreen {
                 Circle()
                     .fill(service.failingSince == nil ? Theme.Colors.sempSuccess : Theme.Colors.destructive)
                     .frame(width: 8, height: 8)
-                Text(service.failingSince == nil ? "semp.status.service.ok" : "semp.status.service.error", bundle: .module)
+                (service.failingSince == nil
+                    ? Text("semp.status.service.ok", bundle: .module)
+                    : Text("semp.status.service.error", bundle: .module))
                     .font(.subheadline)
             }
         }
         .accessibilityElement(children: .combine)
+    }
+
+    func sinceText(_ when: String) -> String {
+        String(format: String(localized: "semp.status.since", bundle: .module), locale: .current, when)
     }
 
     func resolvedRow(_ row: SempResolvedRow) -> some View {
@@ -250,7 +256,9 @@ private extension SempStatusScreen {
                                 fixFailed: false
                             )
                         ],
-                        services: [SempServiceRow(key: "agents", name: "Semp a agenti", failingSince: nil, lastActivityAt: nil)]
+                        services: [
+                            SempServiceRow(key: "agents", name: "Semp a agenti", failingSince: nil, lastActivityAt: nil)
+                        ]
                     )
                 ),
                 router: PreviewSempRouter()

@@ -91,6 +91,7 @@ extension SharedSempProjectAgentScreenModel {
     }
 }
 
+// MARK: - SempSaveState
 extension SempSaveState {
 
     init(_ state: SharedSDK.SempSaveState) {
@@ -104,6 +105,7 @@ extension SempSaveState {
     }
 }
 
+// MARK: - SempSection
 extension SempSection {
 
     var shared: SharedSDK.SempSection {
@@ -116,6 +118,7 @@ extension SempSection {
     }
 }
 
+// MARK: - SempDriftAnswer
 extension SempDriftAnswer {
 
     var shared: SharedSDK.SempDriftAnswer {
@@ -127,6 +130,7 @@ extension SempDriftAnswer {
     }
 }
 
+// MARK: - SempFinding
 extension SempFinding {
 
     init(_ finding: SharedSDK.SempFinding) {
@@ -141,6 +145,7 @@ extension SempFinding {
     }
 }
 
+// MARK: - SempToolServer
 extension SempToolServer {
 
     init(_ server: SharedSDK.SempToolServer) {
@@ -160,6 +165,7 @@ extension SempToolServer {
     }
 }
 
+// MARK: - SempTaskRow
 extension SempTaskRow {
 
     init(_ task: SharedSDK.SempTaskRow) {
@@ -177,6 +183,7 @@ extension SempTaskRow {
     }
 }
 
+// MARK: - SempAgentRunRow
 extension SempAgentRunRow {
 
     init(_ row: SharedSDK.SempAgentRunRow) {

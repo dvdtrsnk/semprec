@@ -49,8 +49,13 @@ extension SharedSempStatusScreenModel {
         SempStatusState(
             phase: SempPhase(state.phase, failure: state.failure),
             issues: state.issues.map(SempIssue.init),
-            services: state.services.map {
-                SempServiceRow(key: $0.key, name: $0.name, failingSince: $0.failingSince, lastActivityAt: $0.lastActivityAt)
+            services: state.services.map { service in
+                SempServiceRow(
+                    key: service.key,
+                    name: service.name,
+                    failingSince: service.failingSince,
+                    lastActivityAt: service.lastActivityAt
+                )
             },
             resolved: state.resolved.map { SempResolvedRow(id: $0.id, title: $0.title, resolvedAt: $0.resolvedAt) },
             historyOpen: state.historyOpen
@@ -75,6 +80,7 @@ extension SharedSempStatusScreenModel {
     }
 }
 
+// MARK: - SempIssue
 extension SempIssue {
 
     init(_ issue: SharedSDK.SempIssue) {
@@ -95,6 +101,7 @@ extension SempIssue {
     }
 }
 
+// MARK: - SempIssueFix
 extension SempIssueFix {
 
     init(_ fix: SharedSDK.SempIssueFix) {
@@ -105,6 +112,7 @@ extension SempIssueFix {
     }
 }
 
+// MARK: - SempIssueLink
 extension SempIssueLink {
 
     init(_ link: SharedSDK.SempIssueLink) {

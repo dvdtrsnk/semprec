@@ -74,6 +74,7 @@ extension SharedSempRunScreenModel {
     }
 }
 
+// MARK: - SempRunView
 extension SempRunView {
 
     init(_ run: SharedSDK.SempRunView) {
@@ -105,6 +106,7 @@ extension SempRunView {
     }
 }
 
+// MARK: - SempRunStepRow
 extension SempRunStepRow {
 
     init(_ step: SharedSDK.SempRunStepRow) {
@@ -114,12 +116,13 @@ extension SempRunStepRow {
             state: SempLineState(step.state),
             title: step.title,
             summary: step.summary,
-            at: step.at,
+            time: step.at,
             durationMs: step.durationMs?.int64Value
         )
     }
 }
 
+// MARK: - SempRunStepKind
 extension SempRunStepKind {
 
     init(_ kind: SharedSDK.SempRunStepKindView) {

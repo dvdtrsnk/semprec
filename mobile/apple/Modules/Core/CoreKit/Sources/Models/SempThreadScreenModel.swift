@@ -331,15 +331,27 @@ public enum SempThreadAction: Equatable, Sendable {
     case decide(approvalId: String, approve: Bool)
     case loadOlder
     case runAgain
-    case dismissNotice
-    case dismissFailure
-    case removeAttachment(key: String)
-    case openRun(runId: String, messageId: String?)
-    case openChange(itemId: String, databaseKey: String?)
-    case openApprovals
-    case openStatus
-    case openHistory
-    case openNewChat
+    case dismiss(SempThreadDismissal)
+    case open(SempThreadOpening)
+}
+
+/// What the person puts away: the notice of a problem, a failure that was shown, or an object staged for the message.
+public enum SempThreadDismissal: Equatable, Sendable {
+
+    case notice
+    case failure
+    case attachment(key: String)
+}
+
+/// What the person opens from the conversation; the answer is an effect that the app carries out.
+public enum SempThreadOpening: Equatable, Sendable {
+
+    case run(runId: String, messageId: String?)
+    case change(itemId: String, databaseKey: String?)
+    case approvals
+    case status
+    case history
+    case newChat
 }
 
 public enum SempThreadEffect: Equatable, Sendable {

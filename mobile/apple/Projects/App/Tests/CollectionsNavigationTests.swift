@@ -59,7 +59,6 @@ final class CollectionsNavigationTests: XCTestCase {
         router.showProjectTasks(projectId: "p1")
         router.showProjectMail(projectId: "p1")
         router.showProjectNotes(projectId: "p1")
-        router.showProjectAgent(projectId: "p1")
         XCTAssertTrue(overview.pushed.isEmpty)
         XCTAssertTrue(overview.sheets.isEmpty)
     }

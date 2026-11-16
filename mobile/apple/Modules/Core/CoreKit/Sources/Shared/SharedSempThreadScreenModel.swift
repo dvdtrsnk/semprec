@@ -77,16 +77,28 @@ extension SharedSempThreadScreenModel {
             SharedSDK.SempThreadActionDecide(approvalId: approvalId, approve: approve)
         case .loadOlder: SharedSDK.SempThreadActionLoadOlder.shared
         case .runAgain: SharedSDK.SempThreadActionRunAgain.shared
-        case .dismissNotice: SharedSDK.SempThreadActionDismissNotice.shared
-        case .dismissFailure: SharedSDK.SempThreadActionDismissFailure.shared
-        case .removeAttachment(let key): SharedSDK.SempThreadActionDismissAttachment(key: key)
-        case .openRun(let runId, let messageId): SharedSDK.SempThreadActionOpenRun(runId: runId, messageId: messageId)
-        case .openChange(let itemId, let databaseKey):
+        case .dismiss(let dismissal): Self.dismissal(dismissal)
+        case .open(let opening): Self.opening(opening)
+        }
+    }
+
+    private static func dismissal(_ dismissal: SempThreadDismissal) -> any SharedSDK.SempThreadAction {
+        switch dismissal {
+        case .notice: SharedSDK.SempThreadActionDismissNotice.shared
+        case .failure: SharedSDK.SempThreadActionDismissFailure.shared
+        case .attachment(let key): SharedSDK.SempThreadActionDismissAttachment(key: key)
+        }
+    }
+
+    private static func opening(_ opening: SempThreadOpening) -> any SharedSDK.SempThreadAction {
+        switch opening {
+        case .run(let runId, let messageId): SharedSDK.SempThreadActionOpenRun(runId: runId, messageId: messageId)
+        case .change(let itemId, let databaseKey):
             SharedSDK.SempThreadActionOpenChange(itemId: itemId, databaseKey: databaseKey)
-        case .openApprovals: SharedSDK.SempThreadActionOpenApprovals.shared
-        case .openStatus: SharedSDK.SempThreadActionOpenStatus.shared
-        case .openHistory: SharedSDK.SempThreadActionOpenHistory.shared
-        case .openNewChat: SharedSDK.SempThreadActionOpenNewChat.shared
+        case .approvals: SharedSDK.SempThreadActionOpenApprovals.shared
+        case .status: SharedSDK.SempThreadActionOpenStatus.shared
+        case .history: SharedSDK.SempThreadActionOpenHistory.shared
+        case .newChat: SharedSDK.SempThreadActionOpenNewChat.shared
         }
     }
 

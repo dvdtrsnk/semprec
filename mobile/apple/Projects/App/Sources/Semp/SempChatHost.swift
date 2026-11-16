@@ -3,8 +3,8 @@ import DesignSystem
 import SempFeature
 import SwiftUI
 
-/// The chat as it is presented over the app: a stack of its own that starts on `presenter.root`, with the grabber at the
-/// bottom that closes it again when it is pulled up.
+/// The chat as it is presented over the app: a stack of its own that starts on `presenter.root`, with the grabber
+/// at the bottom that closes it again when it is pulled up.
 struct SempChatHost: View {
 
     // MARK: - Dependencies
@@ -17,7 +17,7 @@ struct SempChatHost: View {
             page(presenter.root)
                 .navigationDestination(for: SempRoute.self) { page($0) }
         }
-        .overlay(alignment: .bottom) { SempGrabber(close: presenter.dismiss) }
+        .safeAreaInset(edge: .bottom, spacing: 0) { SempGrabber(close: presenter.dismiss) }
         .accessibilityElement(children: .contain)
     }
 }

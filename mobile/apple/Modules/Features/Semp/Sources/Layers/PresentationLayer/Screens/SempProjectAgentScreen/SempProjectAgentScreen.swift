@@ -60,7 +60,11 @@ private extension SempProjectAgentScreen {
             Section { heading }.listRowBackground(Color.clear)
             if state.partialFailure {
                 Section {
-                    Label { Text("semp.agent.partial", bundle: .module) } icon: { Image(systemName: "exclamationmark.triangle") }
+                    Label {
+                        Text("semp.agent.partial", bundle: .module)
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle")
+                    }
                         .foregroundStyle(Theme.Colors.sempWaiting)
                     Button { viewModel.send(.retry) } label: { Text("semp.action.retry", bundle: .module) }
                 }
@@ -135,7 +139,8 @@ private extension SempProjectAgentScreen {
     @ViewBuilder var saveLabel: some View {
         switch state.saveState {
         case .idle: EmptyView()
-        case .saving: Text("semp.agent.save.saving", bundle: .module).font(.footnote).foregroundStyle(Theme.Colors.sempWaiting)
+        case .saving:
+            Text("semp.agent.save.saving", bundle: .module).font(.footnote).foregroundStyle(Theme.Colors.sempWaiting)
         case .saved: Text("semp.agent.save.saved", bundle: .module).font(.footnote).foregroundStyle(.secondary)
         case .failed:
             Button { viewModel.send(.retrySave) } label: { Text("semp.agent.save.failed", bundle: .module) }
@@ -150,21 +155,29 @@ private extension SempProjectAgentScreen {
             Label {
                 Text("semp.agent.drift.title", bundle: .module).font(.subheadline.weight(.semibold))
             } icon: {
-                Circle().fill(finding.blocking ? Theme.Colors.destructive : Theme.Colors.sempWaiting).frame(width: 8, height: 8)
+                Circle()
+                    .fill(finding.blocking ? Theme.Colors.destructive : Theme.Colors.sempWaiting)
+                    .frame(width: 8, height: 8)
             }
             Text(finding.claim).font(.footnote).foregroundStyle(.secondary)
             HStack {
                 if finding.canAllow {
-                    Button { viewModel.send(.resolveDrift(.allow)) } label: { Text("semp.agent.drift.allow", bundle: .module) }
+                    Button { viewModel.send(.resolveDrift(.allow)) } label: {
+                        Text("semp.agent.drift.allow", bundle: .module)
+                    }
                         .buttonStyle(.borderedProminent)
                         .accessibilityIdentifier(SempIdentifiers.driftAllow)
                 }
                 if finding.canForbid {
-                    Button { viewModel.send(.resolveDrift(.forbid)) } label: { Text("semp.agent.drift.forbid", bundle: .module) }
+                    Button { viewModel.send(.resolveDrift(.forbid)) } label: {
+                        Text("semp.agent.drift.forbid", bundle: .module)
+                    }
                         .buttonStyle(.bordered)
                         .accessibilityIdentifier(SempIdentifiers.driftForbid)
                 }
-                Button { viewModel.send(.resolveDrift(.dismiss)) } label: { Text("semp.agent.drift.dismiss", bundle: .module) }
+                Button { viewModel.send(.resolveDrift(.dismiss)) } label: {
+                    Text("semp.agent.drift.dismiss", bundle: .module)
+                }
                     .buttonStyle(.bordered)
                     .accessibilityIdentifier(SempIdentifiers.driftDismiss)
             }
@@ -208,7 +221,9 @@ private extension SempProjectAgentScreen {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(task.name)
                     Text(task.ruleLabel).font(.caption).foregroundStyle(.secondary)
-                    Text(lastText(task)).font(.caption).foregroundStyle(task.lastFailed ? Theme.Colors.destructive : .secondary)
+                    Text(lastText(task))
+                        .font(.caption)
+                        .foregroundStyle(task.lastFailed ? Theme.Colors.destructive : .secondary)
                 }
             }
             .buttonStyle(.plain)
@@ -228,7 +243,7 @@ private extension SempProjectAgentScreen {
     }
 
     func lastText(_ task: SempTaskRow) -> String {
-        guard let at = task.lastAt, let ago = SempTime.started(at) else {
+        guard let last = task.lastAt, let ago = SempTime.started(last) else {
             return String(localized: "semp.agent.task.never", bundle: .module)
         }
         if task.lastFailed {
@@ -254,7 +269,9 @@ private extension SempProjectAgentScreen {
                     .background(color(run), in: Circle())
                 VStack(alignment: .leading, spacing: 2) {
                     Text(run.title)
-                    Text(meta(run)).font(.caption).foregroundStyle(run.display == .error ? Theme.Colors.destructive : .secondary)
+                    Text(meta(run))
+                        .font(.caption)
+                        .foregroundStyle(run.display == .error ? Theme.Colors.destructive : .secondary)
                 }
                 Spacer()
                 Image(systemName: "chevron.right").imageScale(.small).foregroundStyle(.tertiary)
@@ -301,7 +318,12 @@ private extension SempProjectAgentScreen {
                     state: SempProjectAgentState(
                         phase: .ready,
                         projectName: "Semprec iOS",
-                        sections: SempSections(purpose: "Pomáhat s vývojem.", allowed: "- číst úkoly", notAllowed: "", general: "")
+                        sections: SempSections(
+                            purpose: "Pomáhat s vývojem.",
+                            allowed: "- číst úkoly",
+                            notAllowed: "",
+                            general: ""
+                        )
                     )
                 ),
                 router: PreviewSempRouter()

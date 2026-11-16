@@ -101,7 +101,9 @@ private extension SempRunScreen {
             factRow("semp.run.fact.trigger", triggerText(run.trigger))
             if let project = run.projectName { factRow("semp.run.fact.project", project) }
             if let started = SempTime.started(run.startedAt) { factRow("semp.run.fact.started", started) }
-            if let duration = run.durationMs { factRow("semp.run.fact.duration", SempTime.duration(milliseconds: duration)) }
+            if let duration = run.durationMs {
+                factRow("semp.run.fact.duration", SempTime.duration(milliseconds: duration))
+            }
             approvalsRow(run)
         }
     }
@@ -161,7 +163,7 @@ private extension SempRunScreen {
             HStack {
                 Text(step.title).font(.subheadline.weight(.semibold))
                 Spacer()
-                Text(SempTime.clock(step.at) ?? "").font(.caption).foregroundStyle(.secondary)
+                Text(SempTime.clock(step.time) ?? "").font(.caption).foregroundStyle(.secondary)
             }
             if let summary = step.summary { Text(summary).font(.footnote).foregroundStyle(.secondary) }
             if let duration = step.durationMs {
@@ -201,7 +203,11 @@ private extension SempRunScreen {
 
     func approvalsText(_ run: SempRunView) -> String {
         if run.pendingApprovalCount == 0 {
-            return String(format: String(localized: "semp.run.approvals.done", bundle: .module), locale: .current, run.approvalCount)
+            return String(
+                format: String(localized: "semp.run.approvals.done", bundle: .module),
+                locale: .current,
+                run.approvalCount
+            )
         }
         return String(
             format: String(localized: "semp.run.approvals.waiting", bundle: .module),
