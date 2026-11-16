@@ -9,6 +9,7 @@ import cz.semprec.app.data.ApiClient
 import cz.semprec.app.data.HttpAuthRepository
 import cz.semprec.app.data.HttpCollectionReads
 import cz.semprec.app.data.HttpCollectionWrites
+import cz.semprec.app.data.HttpInboxRepository
 import cz.semprec.app.data.HttpOverviewRepository
 import cz.semprec.app.data.HttpSearchRepository
 import cz.semprec.app.data.InMemoryPlaceholderRepository
@@ -25,6 +26,7 @@ import cz.semprec.app.presentation.CollectionViewModelFactory
 import cz.semprec.app.presentation.DetailViewModel
 import cz.semprec.app.presentation.HomeViewModel
 import cz.semprec.app.presentation.HomeViewModelFactory
+import cz.semprec.app.presentation.InboxViewModelFactory
 import cz.semprec.app.presentation.ItemDetailsViewModel
 import cz.semprec.app.presentation.ItemViewModel
 import cz.semprec.app.presentation.LoginViewModel
@@ -62,6 +64,11 @@ class HomeSDK(
     /** The generic collection screens: any database's items, and one item of it. */
     val collections: CollectionSDK =
         CollectionSDK(CollectionViewModelFactory(collectionReads, HttpCollectionWrites(auth.api, collectionReads)))
+
+    private val inboxRepository = HttpInboxRepository(auth.api, collectionReads)
+
+    /** The Inbox screen: the stack of cards the person approves, edits or discards. */
+    val inbox: InboxSDK = InboxSDK(InboxViewModelFactory(inboxRepository, inboxRepository))
 
     // The overview and its search; the recent searches live as long as this SDK, that is, as long as the window.
     private val overviewViewModels = OverviewViewModelFactory(

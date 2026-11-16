@@ -19,9 +19,9 @@ class LoadInbox(private val repository: InboxRepository) {
 
 /** Saves what the person changed on a card: values of the proposal, or a new proposal of the card. */
 class EditInboxCard(private val repository: InboxRepository) {
-    /** `null` content means the change does not apply to the field, so nothing was sent. */
-    suspend operator fun invoke(card: InboxCard, field: InboxField, input: InboxInput): RepositoryResult<InboxCard?> =
-        when (val change = card.change(field, input)) {
+    /** `null` content means the change does not apply to the card, so nothing was sent. */
+    suspend operator fun invoke(card: InboxCard, change: InboxChange): RepositoryResult<InboxCard?> =
+        when (change) {
             InboxChange.None -> RepositoryResult.Content(null)
             is InboxChange.Edit -> repository.edit(card, change.edit)
             is InboxChange.Revise -> repository.revise(card, change.revision)
