@@ -388,7 +388,7 @@ describe("VM-BRIDGE", () => {
 
   it("fails an Apple-only ViewModel once it is no longer listed in viewModels.appleOnly", () => {
     const root = copyOfTree();
-    replace(root, POLICY_FILE, '"appleOnly": ["LoginViewModel", "SessionViewModel"]', '"appleOnly": ["SessionViewModel"]');
+    replace(root, POLICY_FILE, '"appleOnly": ["LoginViewModel", ', '"appleOnly": [');
     assertViolations(root, ["VM-BRIDGE"], /no Android \*Screen composable takes LoginViewModel as a parameter/);
   });
 

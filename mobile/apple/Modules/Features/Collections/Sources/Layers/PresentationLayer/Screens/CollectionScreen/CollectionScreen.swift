@@ -26,6 +26,7 @@ struct CollectionScreen: View {
     var body: some View {
         content
             .navigationTitle(viewModel.state.header?.name ?? "")
+            .inlineNavigationTitle()
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(CollectionsIdentifiers.collectionScreen)
             .task { await viewModel.observe() }

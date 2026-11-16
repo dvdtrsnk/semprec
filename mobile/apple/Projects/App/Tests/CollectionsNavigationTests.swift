@@ -1,4 +1,3 @@
-import CollectionsFeature
 import CoreKit
 import XCTest
 
