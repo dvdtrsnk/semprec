@@ -34,7 +34,7 @@ class TranscriptViewModel internal constructor(
             try {
                 awaitCancellation()
             } finally {
-                playback.release()
+                playback.dispose()
             }
         }
         read(showWait = true)

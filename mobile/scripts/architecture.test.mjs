@@ -696,6 +696,7 @@ describe("COPY-PARITY", () => {
     assertViolations(root, ["COPY-PARITY"], /is not valid JSON/);
     const other = copyOfTree();
     remove(other, APP_CATALOG);
+    remove(other, APP_CATALOG.replace("Localizable.xcstrings", "InfoPlist.xcstrings"));
     assertViolations(other, ["COPY-PARITY"], /Semprec has no String Catalog/, /Semprec lacks the key tab.overview/);
   });
 

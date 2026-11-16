@@ -133,7 +133,7 @@ private class LoggedPlayer : AudioPlayer {
         log += "rate:$rate"
     }
 
-    override fun release() {
+    override fun dispose() {
         log += "release"
     }
 }

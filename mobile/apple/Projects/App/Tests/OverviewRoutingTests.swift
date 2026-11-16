@@ -27,7 +27,7 @@ final class OverviewRoutingTests: XCTestCase {
     @MainActor
     func testEveryRowOpensANoticeThatNamesItOnTheOverviewStack() {
         let targets: [OverviewTarget] = [
-            .inbox, .mail, .recordings, .finance, .journal(itemId: "j1"), .project(id: "p")
+            .inbox, .mail, .finance, .journal(itemId: "j1"), .project(id: "p")
         ]
         let context = NavigationContext()
         let overview = OverviewStackSpy()

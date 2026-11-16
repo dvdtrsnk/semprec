@@ -43,4 +43,11 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
 
     // MARK: - Notes
     func makeNotes(itemId: String) -> any NotesScreenModel
+
+    // MARK: - Recordings
+    func makeRecordings() -> any RecordingsScreenModel
+    /// The recorder of a recording that belongs to the event `eventId`, or to none.
+    func makeRecorder(eventId: String?) -> any RecorderScreenModel
+    func makeTranscript(transcriptId: String) -> any TranscriptScreenModel
+    func makeMeeting(eventId: String) -> any MeetingScreenModel
 }
