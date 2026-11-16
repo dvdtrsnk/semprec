@@ -28,7 +28,7 @@ and host provisioning (#244, #176):
   (`postgres`, `migrate`, `data-role`, `side-role`, `master-key`, `gateway-token`, `ai-gateway`,
   `api`, `agents`, `settings`, `backup`, `monitor`), for `/opt/semprec/shared/env/<group>.env`. Each
   key is in exactly one group and each template's header names the units that load it
-  (`docs/adr/2026-10-03-per-service-secret-groups.md`). `provision.sh` installs a template only
+  (`docs/architecture/delivery-and-operations.md`). `provision.sh` installs a template only
   when its group file does not exist yet.
 - `provision.sh` — idempotently installs the host packages/tree from #244 plus the systemd units,
   timer skeletons, shared timer scripts, and journald retention configuration from #176. Run it as
@@ -68,7 +68,7 @@ uses. Its unit is a long-running worker, not socket-activated.
 
 `deploy.sh <tag>` deploys one release tag (`docs/operations/releases.md`) as an immutable
 directory behind the atomic `current` symlink
-([ADR](../docs/adr/2026-09-24-immutable-releases-behind-an-atomic-current-symlink.md)). Run it as
+([ADR](../docs/architecture/delivery-and-operations.md#deploy)). Run it as
 root from an operator checkout of this repository whose `origin` holds the tags:
 
 ```sh
@@ -115,7 +115,7 @@ rerun first (see "Bootstrap secrets"). `deploy.test.sh` is the hermetic behavior
 ## Rolling back (issue #191)
 
 `deploy.sh --rollback <tag>` moves `current` back to the release before the newest one
-([ADR](../docs/adr/2026-09-24-rollback-one-release-back-with-checked-migrations.md)):
+([ADR](../docs/architecture/delivery-and-operations.md#rollback)):
 
 ```sh
 sudo deploy/deploy.sh --rollback v1.2.2
@@ -526,7 +526,7 @@ journalctl -k | grep semprec-egress-deny                 # shows the denials
 A `stdio` MCP server never runs as `semprec` or as a child of `semprec-api` or `semprec-agents`.
 Those services connect to a UNIX socket, and systemd starts the server for that one connection as
 the dedicated user `semprec-mcp`. See
-`docs/adr/2026-10-17-stdio-mcp-servers-run-in-a-socket-activated-sandbox.md`.
+`docs/architecture/delivery-and-operations.md`.
 
 - **User.** `provision.sh` creates the system user `semprec-mcp`, with its own group, no
   membership in `semprec`, home `/var/lib/semprec-mcp` and shell `/usr/sbin/nologin`. systemd

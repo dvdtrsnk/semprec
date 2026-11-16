@@ -30,7 +30,7 @@ It never prints the connection string.
 The CLI connects with `SEMPREC_MIGRATE_DATABASE_URL` (the table owner) but opens its pool with
 `createPool(url, { role: "semprec_data" })`, so every connection runs as `semprec_data` and
 row-level security applies. `provisionTenant` refuses to run when RLS is not active for its role.
-See [the ADR](../adr/2026-10-08-deploy-time-tenant-work-runs-as-the-runtime-role.md).
+See [the rules](../architecture/migrations-and-seeding.md#deploy-time-tenant-work).
 
 ## Idempotent and lock-protected
 

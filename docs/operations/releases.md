@@ -1,7 +1,7 @@
 # Releases
 
 Issue #189. The monorepo has one version, a `vMAJOR.MINOR.PATCH` git tag on `main`
-([ADR](../adr/2026-09-24-monorepo-release-tag-from-guarded-command.md)). No package carries a
+([rules](../architecture/delivery-and-operations.md#releases)). No package carries a
 version of its own; every `package.json` keeps the `0.0.0` placeholder.
 
 ## Tagging a release

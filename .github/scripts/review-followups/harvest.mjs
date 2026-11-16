@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * The review follow-ups harvest (decision:
- * docs/adr/2026-09-26-merged-review-findings-become-proposed-follow-up-issues.md): the
+ * docs/architecture/delivery-and-operations.md): the
  * script the daily `harvest-review-followups` workflow (added by #583) runs. It collects
  * the code-review bot's open findings from merged pull requests into one harvest issue
  * labelled `followups:ready`, which Relay's `triage-review-followups` workflow then

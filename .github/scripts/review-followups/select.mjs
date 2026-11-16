@@ -1,7 +1,7 @@
 /**
  * The review follow-ups harvest's selection rules: which harvest may run, which merged
  * pull requests it looks at, which of their findings it takes, and where it stops
- * (decision: docs/adr/2026-09-26-merged-review-findings-become-proposed-follow-up-issues.md).
+ * (decision: docs/architecture/delivery-and-operations.md).
  *
  * Every rule is pure given its data, so this module performs no I/O and has no
  * dependencies; the harvest script fetches the data, calls these functions and writes
