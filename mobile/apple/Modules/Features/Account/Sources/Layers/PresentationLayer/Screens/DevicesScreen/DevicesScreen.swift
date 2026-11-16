@@ -32,7 +32,10 @@ struct DevicesScreen: View {
             }
             .alert(
                 Text("devices.failed", bundle: .module),
-                isPresented: Binding(get: { viewModel.state.writeFailure != nil }, set: { _ in viewModel.dismissFailure() })
+                isPresented: Binding(
+                    get: { viewModel.state.writeFailure != nil },
+                    set: { _ in viewModel.dismissFailure() }
+                )
             ) {
                 Button(role: .cancel) {} label: { Text("common.ok", bundle: .module) }
             } message: {

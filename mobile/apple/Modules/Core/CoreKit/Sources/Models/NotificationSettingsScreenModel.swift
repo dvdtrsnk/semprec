@@ -96,7 +96,7 @@ public struct NotificationSettingsState: Equatable, Sendable {
 public enum NotificationSettingsAction: Equatable, Sendable {
 
     case retry
-    case set(AccountNotificationSwitch, on: Bool)
+    case set(AccountNotificationSwitch, enabled: Bool)
     case setProblemsLevel(AccountProblemsLevel)
     case dismissFailure
 }

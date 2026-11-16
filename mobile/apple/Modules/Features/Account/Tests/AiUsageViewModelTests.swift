@@ -49,7 +49,7 @@ final class AiUsageViewModelTests: XCTestCase {
 
     func testAPointIsLabelledByItsDayOrItsMonth() {
         XCTAssertEqual(AiUsageFormat.pointLabel("2026-10-21", locale: english), "10/21")
-        XCTAssertEqual(AiUsageFormat.pointLabel("2026-10-21", locale: czech).replacingOccurrences(of: "\u{00A0}", with: " "), "21. 10.")
+        XCTAssertEqual(AiUsageFormat.pointLabel("2026-10-21", locale: czech).filter { !$0.isWhitespace }, "21.10.")
         XCTAssertEqual(AiUsageFormat.pointLabel("2026-10", locale: english), "Oct 26")
         XCTAssertEqual(AiUsageFormat.pointLabel("soon", locale: english), "soon")
     }

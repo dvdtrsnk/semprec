@@ -60,9 +60,11 @@ final class TrashViewModelTests: XCTestCase {
         let observer = Task { await viewModel.observe() }
         defer { observer.cancel() }
         model.emit(.restored(restored: 1, refused: 0, databaseName: "Tasks"))
-        try await eventually { viewModel.notice == TrashViewModel.notice(restored: 1, refused: 0, databaseName: "Tasks") }
+        let first = TrashViewModel.notice(restored: 1, refused: 0, databaseName: "Tasks")
+        try await eventually { viewModel.notice == first }
         model.emit(.restored(restored: 3, refused: 1, databaseName: nil))
-        try await eventually { viewModel.notice == TrashViewModel.notice(restored: 3, refused: 1, databaseName: nil) }
+        let second = TrashViewModel.notice(restored: 3, refused: 1, databaseName: nil)
+        try await eventually { viewModel.notice == second }
     }
 
     @MainActor

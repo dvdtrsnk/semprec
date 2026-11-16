@@ -106,7 +106,8 @@ extension SharedNotificationSettingsScreenModel {
     static func action(_ action: NotificationSettingsAction) -> any SharedSDK.NotificationSettingsAction {
         switch action {
         case .retry: SharedSDK.NotificationSettingsActionRetry.shared
-        case .set(let choice, let on): SharedSDK.NotificationSettingsActionSet(choice: sharedSwitch(choice), on: on)
+        case .set(let choice, let enabled):
+            SharedSDK.NotificationSettingsActionSet(choice: sharedSwitch(choice), on: enabled)
         case .setProblemsLevel(let level):
             SharedSDK.NotificationSettingsActionSetProblemsLevel(level: sharedLevel(level))
         case .dismissFailure: SharedSDK.NotificationSettingsActionDismissFailure.shared

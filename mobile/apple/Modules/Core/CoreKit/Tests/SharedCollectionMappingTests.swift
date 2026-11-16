@@ -68,7 +68,8 @@ final class SharedCollectionMappingTests: XCTestCase {
             group: FieldOption(key: "inProgress", label: "In progress", color: "#007AFF"),
             date: "2027-01-31",
             subtitle: [.text("t")],
-            fileType: "PDF"
+            fileType: "PDF",
+            rating: 4
         )
         XCTAssertEqual(
             mapped.sections,
@@ -131,7 +132,8 @@ private extension SharedCollectionMappingTests {
             group: option,
             date: "2027-01-31",
             subtitle: [SharedSDK.FieldContentText(text: "t")],
-            fileType: "PDF"
+            fileType: "PDF",
+            rating: KotlinInt(int: 4)
         )
         return SharedSDK.CollectionState(
             phase: .content,

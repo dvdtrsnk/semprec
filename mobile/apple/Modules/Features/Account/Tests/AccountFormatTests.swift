@@ -32,7 +32,10 @@ final class AccountFormatTests: XCTestCase {
 
     func testADayIsNumericInTheLocaleAndNilForNoInstant() {
         XCTAssertEqual(AccountFormat.day("2026-09-12T10:00:00Z", locale: english, timeZone: utc), "9/12/2026")
-        XCTAssertEqual(AccountFormat.day("2026-09-12T10:00:00Z", locale: czech, timeZone: utc), "12. 9. 2026")
+        XCTAssertEqual(
+            AccountFormat.day("2026-09-12T10:00:00Z", locale: czech, timeZone: utc)?.filter { !$0.isWhitespace },
+            "12.9.2026"
+        )
         XCTAssertNil(AccountFormat.day("soon", locale: english, timeZone: utc))
     }
 

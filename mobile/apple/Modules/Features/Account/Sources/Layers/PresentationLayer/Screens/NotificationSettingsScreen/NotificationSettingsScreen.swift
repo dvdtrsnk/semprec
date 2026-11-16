@@ -22,7 +22,10 @@ struct NotificationSettingsScreen: View {
             .inlineNavigationTitle()
             .alert(
                 Text("notifications.failed", bundle: .module),
-                isPresented: Binding(get: { viewModel.state.writeFailure != nil }, set: { _ in viewModel.dismissFailure() })
+                isPresented: Binding(
+                    get: { viewModel.state.writeFailure != nil },
+                    set: { _ in viewModel.dismissFailure() }
+                )
             ) {
                 Button(role: .cancel) {} label: { Text("common.ok", bundle: .module) }
             } message: {
@@ -99,7 +102,7 @@ private extension NotificationSettingsScreen {
         _ choices: NotificationChoices
     ) -> some View {
         Toggle(
-            isOn: Binding(get: { choices.isOn(choice) }, set: { viewModel.set(choice, on: $0) })
+            isOn: Binding(get: { choices.isOn(choice) }, set: { viewModel.set(choice, enabled: $0) })
         ) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title, bundle: .module)

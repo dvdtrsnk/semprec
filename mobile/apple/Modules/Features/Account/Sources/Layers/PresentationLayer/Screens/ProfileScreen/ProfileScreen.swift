@@ -8,7 +8,8 @@ struct ProfileScreen: View {
 
     // MARK: - Dependencies
     @StateObject private var viewModel: ProfileViewModel
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.dismiss)
+    private var dismiss
 
     // MARK: - State
     @State private var confirmsSignOut = false
@@ -63,6 +64,13 @@ struct ProfileScreen: View {
     }
 }
 
+/// The tile of a row: the symbol of what it leads to on a color.
+private struct ProfileTile {
+
+    let symbol: String
+    let color: Color
+}
+
 // MARK: - Subviews
 private extension ProfileScreen {
 
@@ -96,13 +104,21 @@ private extension ProfileScreen {
 
     func rows(_ figures: ProfileFigures) -> some View {
         Section {
-            row(.sempStatus, "waveform.path.ecg", .orange, title: "profile.row.semp", value: nil, subtitle: sempSubtitle(figures))
-            row(.notifications, "bell.fill", .red, title: "profile.row.notifications", value: nil, subtitle: nil)
             row(
-                .aiUsage,
-                "sparkles",
-                .purple,
-                title: "profile.row.aiUsage",
+                .sempStatus,
+                ProfileTile(symbol: "waveform.path.ecg", color: .orange),
+                title: "profile.row.semp",
+                value: nil,
+                subtitle: sempSubtitle(figures)
+            )
+            row(
+                .notifications,
+                ProfileTile(symbol: "bell.fill", color: .red),
+                title: "profile.row.notifications",
+                value: nil,
+                subtitle: nil
+            )
+            row(.aiUsage, ProfileTile(symbol: "sparkles", color: .purple), title: "profile.row.aiUsage",
                 value: AccountFormat.usd(figures.aiCostMonthUsd),
                 subtitle: nil
             )
@@ -122,19 +138,19 @@ private extension ProfileScreen {
                 .disabled(viewModel.state.localeSaving)
                 .accessibilityIdentifier(AccountIdentifiers.profileLanguage)
             } label: {
-                tile("globe", .blue, title: "profile.row.language", subtitle: nil)
+                tile(ProfileTile(symbol: "globe", color: .blue), title: "profile.row.language", subtitle: nil)
             }
             Button { viewModel.requestPasswordReset() } label: {
-                tile("key.fill", .gray, title: "profile.row.password", subtitle: passwordSubtitle)
+                tile(
+                    ProfileTile(symbol: "key.fill", color: .gray),
+                    title: "profile.row.password",
+                    subtitle: passwordSubtitle
+                )
             }
             .listRowButton()
             .disabled(viewModel.state.resetPhase == .sending || viewModel.state.email == nil)
             .accessibilityIdentifier(AccountIdentifiers.profilePassword)
-            row(
-                .devices,
-                "laptopcomputer.and.iphone",
-                .teal,
-                title: "profile.row.devices",
+            row(.devices, ProfileTile(symbol: "laptopcomputer.and.iphone", color: .teal), title: "profile.row.devices",
                 value: viewModel.state.figures.map { String($0.activeSessions) },
                 subtitle: nil
             )
@@ -145,19 +161,11 @@ private extension ProfileScreen {
 
     var data: some View {
         Section {
-            row(
-                .mailAccounts,
-                "envelope.fill",
-                .blue,
-                title: "profile.row.mail",
+            row(.mailAccounts, ProfileTile(symbol: "envelope.fill", color: .blue), title: "profile.row.mail",
                 value: viewModel.state.figures.map { String($0.mailAccountCount) },
                 subtitle: mailSubtitle
             )
-            row(
-                .trash,
-                "trash.fill",
-                .gray,
-                title: "profile.row.trash",
+            row(.trash, ProfileTile(symbol: "trash.fill", color: .gray), title: "profile.row.trash",
                 value: viewModel.state.figures.map { String($0.trashCount) },
                 subtitle: nil
             )
@@ -186,15 +194,14 @@ private extension ProfileScreen {
 
     func row(
         _ page: AccountPage,
-        _ symbol: String,
-        _ color: Color,
+        _ tile: ProfileTile,
         title: LocalizedStringKey,
         value: String?,
         subtitle: String?
     ) -> some View {
         Button { viewModel.open(page) } label: {
             HStack {
-                tile(symbol, color, title: title, subtitle: subtitle)
+                self.tile(tile, title: title, subtitle: subtitle)
                 Spacer(minLength: Theme.Spacing.small)
                 if let value {
                     Text(verbatim: value).foregroundStyle(Theme.Colors.secondaryText)
@@ -208,13 +215,13 @@ private extension ProfileScreen {
         .accessibilityIdentifier(AccountIdentifiers.profileRowPrefix + identifier(page))
     }
 
-    func tile(_ symbol: String, _ color: Color, title: LocalizedStringKey, subtitle: String?) -> some View {
+    func tile(_ tile: ProfileTile, title: LocalizedStringKey, subtitle: String?) -> some View {
         HStack(spacing: Theme.Spacing.medium) {
-            Image(systemName: symbol)
+            Image(systemName: tile.symbol)
                 .font(.callout)
                 .foregroundStyle(.white)
                 .frame(width: 30, height: 30)
-                .background(color, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .background(tile.color, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title, bundle: .module)
@@ -242,7 +249,10 @@ private extension ProfileScreen {
     var passwordSubtitle: String? {
         switch viewModel.state.resetPhase {
         case .idle, .sending: nil
-        case .sent: String(format: String(localized: "profile.password.sent", bundle: .module), viewModel.state.email ?? "")
+        case .sent: String(
+            format: String(localized: "profile.password.sent", bundle: .module),
+            viewModel.state.email ?? ""
+        )
         case .failed: String(localized: "profile.password.failed", bundle: .module)
         }
     }

@@ -97,7 +97,10 @@ private extension TrashScreen {
                     ForEach(viewModel.state.items) { item in
                         row(
                             id: item.id,
-                            title: item.title.isEmpty ? String(localized: "trash.untitled", bundle: .module) : item.title,
+                            title: item.title.isEmpty ? String(
+                                localized: "trash.untitled",
+                                bundle: .module
+                            ) : item.title,
                             meta: Self.meta(of: item)
                         )
                     }

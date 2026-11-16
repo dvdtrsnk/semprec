@@ -210,7 +210,8 @@ extension SharedCollectionScreenModel {
             group: row.group.map(FieldOption.init),
             date: row.date,
             subtitle: row.subtitle.map(FieldContent.init),
-            fileType: row.fileType
+            fileType: row.fileType,
+            rating: row.rating.map { Int(truncating: $0) }
         )
     }
 

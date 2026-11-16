@@ -146,7 +146,10 @@ private extension AiUsageScreen {
             VStack(alignment: .leading, spacing: Theme.Spacing.medium) { rows() }
                 .padding(Theme.Spacing.medium)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Theme.Colors.card, in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+                .background(
+                    Theme.Colors.card,
+                    in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                )
         }
     }
 
@@ -165,7 +168,8 @@ private extension AiUsageScreen {
     }
 
     var budgetText: Text? {
-        guard case .month = viewModel.state.period, let cap = viewModel.state.caps?.monthlyUsd, cap > 0 else { return nil }
+        guard case .month = viewModel.state.period else { return nil }
+        guard let cap = viewModel.state.caps?.monthlyUsd, cap > 0 else { return nil }
         let spent = AiUsageFormat.usd(viewModel.state.totalUsd)
         return Text(
             String(format: String(localized: "usage.budget", bundle: .module), spent, AiUsageFormat.usd(cap))
@@ -183,7 +187,9 @@ private extension AiUsageScreen {
     static func meta(of model: UsageModelItem) -> String {
         var parts = [String(format: String(localized: "usage.calls", bundle: .module), model.callCount)]
         if let input = model.inputTokens, let output = model.outputTokens {
-            parts.append(AiUsageFormat.tokens(input + output) + " " + String(localized: "usage.tokens", bundle: .module))
+            parts.append(
+                AiUsageFormat.tokens(input + output) + " " + String(localized: "usage.tokens", bundle: .module)
+            )
         }
         if let seconds = model.audioSeconds {
             parts.append(AiUsageFormat.minutes(seconds) + " " + String(localized: "usage.minutes", bundle: .module))

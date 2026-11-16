@@ -68,7 +68,11 @@ extension SharedAiUsageScreenModel {
                 UsageOperationItem(label: $0.label, costUsd: $0.costUsd, share: $0.share, callCount: Int($0.callCount))
             },
             caps: state.caps.map {
-                UsageCaps(dailyUsd: $0.dailyUsd?.doubleValue, monthlyUsd: $0.monthlyUsd?.doubleValue, exhausted: $0.exhausted)
+                UsageCaps(
+                    dailyUsd: $0.dailyUsd?.doubleValue,
+                    monthlyUsd: $0.monthlyUsd?.doubleValue,
+                    exhausted: $0.exhausted
+                )
             },
             picked: state.picked.map { Int(truncating: $0) }
         )

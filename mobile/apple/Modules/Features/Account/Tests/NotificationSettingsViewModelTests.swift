@@ -24,12 +24,12 @@ final class NotificationSettingsViewModelTests: XCTestCase {
         let model = ScriptedNotificationSettingsScreenModel(state: NotificationSettingsState())
         let viewModel = NotificationSettingsViewModel(model: model)
         viewModel.retry()
-        viewModel.set(.badgeInbox, on: true)
+        viewModel.set(.badgeInbox, enabled: true)
         viewModel.setProblemsLevel(.all)
         viewModel.dismissFailure()
         XCTAssertEqual(
             model.actions,
-            [.retry, .set(.badgeInbox, on: true), .setProblemsLevel(.all), .dismissFailure]
+            [.retry, .set(.badgeInbox, enabled: true), .setProblemsLevel(.all), .dismissFailure]
         )
     }
 
