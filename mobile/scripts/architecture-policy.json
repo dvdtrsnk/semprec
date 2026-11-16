@@ -95,7 +95,6 @@
         "pending.journal",
         "pending.project",
         "pending.searchResult",
-        "pending.sempStatus",
         "semp.grabber.label"
       ],
       "androidUntranslatable": ["app_name"]

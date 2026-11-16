@@ -86,5 +86,6 @@ private extension CalendarAllDayRow {
         )
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier(CalendarIdentifiers.item(item.id))
+        .sempTarget(of: item, meta: String(localized: "calendar.allDay", bundle: .module))
     }
 }

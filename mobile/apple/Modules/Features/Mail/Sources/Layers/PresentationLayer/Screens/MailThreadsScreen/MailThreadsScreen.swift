@@ -97,6 +97,9 @@ private extension MailThreadsScreen {
     func row(_ thread: MailThreadItem) -> some View {
         MailThreadRow(thread: thread) { viewModel.send(.open(.openThread(threadId: thread.threadId))) }
             .accessibilityIdentifier(MailIdentifiers.threadRowPrefix + thread.threadId)
+            .dropTarget(
+                SempTarget(kind: .mail, title: thread.subject, meta: thread.senderName, mailThreadId: thread.threadId)
+            )
             .swipeActions(edge: .leading) { readToggle(thread) }
             .contextMenu { readToggle(thread) }
     }

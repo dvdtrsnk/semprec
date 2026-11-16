@@ -94,6 +94,20 @@ final class AreasAndAccountNavigationTests: XCTestCase {
         XCTAssertEqual(overview.pushed, [.mailAccounts(tab: .overview)])
         XCTAssertTrue(path.pages.isEmpty, "The accounts are not a page of the sheet's own stack")
     }
+
+    @MainActor
+    func testTheSempStatusRowClosesTheSheetAndOpensTheStatusOnTheOverviewStack() {
+        let context = NavigationContext()
+        let overview = AreaStackSpy()
+        context.register(overview, for: .overview)
+        let path = AccountPath()
+        var dismissals = 0
+        let router = AppAccountRouter(path: path, context: context, dismissSheet: { dismissals += 1 })
+        router.show(.sempStatus)
+        XCTAssertEqual(dismissals, 1)
+        XCTAssertEqual(overview.pushed, [.sempStatus])
+        XCTAssertTrue(path.pages.isEmpty, "The status is not a page of the sheet's own stack")
+    }
 }
 
 // MARK: - Spies

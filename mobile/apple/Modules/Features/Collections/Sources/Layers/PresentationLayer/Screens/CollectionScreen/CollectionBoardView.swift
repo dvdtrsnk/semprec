@@ -63,5 +63,6 @@ private extension CollectionBoardView {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier(CollectionsIdentifiers.rowPrefix + row.id)
+        .dropTarget(appearance.sempTarget(of: row))
     }
 }

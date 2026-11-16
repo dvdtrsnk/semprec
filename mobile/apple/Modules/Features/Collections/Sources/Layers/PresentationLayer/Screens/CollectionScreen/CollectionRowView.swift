@@ -40,6 +40,7 @@ struct CollectionRowView: View {
         .listRowButton()
         .foregroundStyle(.primary)
         .accessibilityIdentifier(CollectionsIdentifiers.rowPrefix + row.id)
+        .dropTarget(appearance.sempTarget(of: row))
     }
 }
 

@@ -65,6 +65,7 @@ struct CalendarTimedItemView: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityText)
         .accessibilityIdentifier(CalendarIdentifiers.item(item.id))
+        .sempTarget(of: item, meta: timeText)
     }
 }
 

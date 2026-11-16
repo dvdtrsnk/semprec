@@ -33,6 +33,7 @@ struct TaskRowView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(TasksIdentifiers.rowPrefix + row.id)
+        .dropTarget(SempTarget(kind: .task, title: row.title, meta: meta.isEmpty ? nil : meta, itemId: row.id))
     }
 }
 

@@ -91,6 +91,7 @@ private extension CalendarMonthCell {
         .onTapGesture { onOpenItem(item.id) }
         .accessibilityLabel(item.title)
         .accessibilityIdentifier(CalendarIdentifiers.item(item.id))
+        .sempTarget(of: item, meta: nil)
         if item.editable {
             label.draggable(item.id)
         } else {

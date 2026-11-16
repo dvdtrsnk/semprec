@@ -97,22 +97,6 @@
         }
       }
     },
-    "pending.sempStatus" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Stav Sempu"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Semp status"
-          }
-        }
-      }
-    },
     "semp.grabber.label" : {
       "localizations" : {
         "cs" : {

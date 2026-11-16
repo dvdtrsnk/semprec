@@ -29,4 +29,23 @@ struct CollectionAppearance {
     func badgeLabel(of row: CollectionRow) -> String? {
         databaseKey == DatabaseKey.files ? row.fileType : nil
     }
+
+    // MARK: - Semp
+    /// What the Semp bubble receives when it is dropped on `row`.
+    func sempTarget(of row: CollectionRow) -> SempTarget {
+        let meta = format.subtitle(row.subtitle)
+        return SempTarget(kind: sempKind, title: row.title, meta: meta.isEmpty ? nil : meta, itemId: row.id)
+    }
+
+    private var sempKind: SempTargetKind {
+        switch databaseKey {
+        case DatabaseKey.projects: .project
+        case DatabaseKey.areas: .area
+        case DatabaseKey.people: .person
+        case DatabaseKey.companies: .company
+        case DatabaseKey.events: .event
+        case DatabaseKey.files: .file
+        default: .other
+        }
+    }
 }
