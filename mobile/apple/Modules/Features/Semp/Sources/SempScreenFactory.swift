@@ -66,12 +66,17 @@ public enum SempScreenFactory {
         makeModel: @escaping @MainActor () -> any SempBubbleScreenModel,
         router: any SempRouting,
         registry: DropTargetRegistry,
+        zoom: Namespace.ID? = nil,
         open: @escaping () -> Void
     ) -> some View {
         SempBubbleScreen(
             viewModel: SempBubbleViewModel(model: makeModel(), router: router),
             registry: registry,
+            zoom: zoom,
             open: open
         )
     }
+
+    /// The id under which the bubble is the source of the chat's zoom transition in the namespace given to `bubble`.
+    public static let bubbleTransitionID = "semp.bubble"
 }

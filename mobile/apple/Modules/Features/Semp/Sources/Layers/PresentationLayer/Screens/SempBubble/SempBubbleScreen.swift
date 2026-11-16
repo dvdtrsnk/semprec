@@ -10,6 +10,7 @@ struct SempBubbleScreen: View {
     // MARK: - Dependencies
     @StateObject private var viewModel: SempBubbleViewModel
     private let registry: DropTargetRegistry
+    private let zoom: Namespace.ID?
     private let open: () -> Void
 
     // MARK: - Properties
@@ -20,14 +21,17 @@ struct SempBubbleScreen: View {
     @State private var drag = SempBubbleDrag()
 
     // MARK: - Init
-    /// `registry` holds the objects of the presentation the bubble floats over; `open` shows the chat.
+    /// `registry` holds the objects of the presentation the bubble floats over; `open` shows the chat; `zoom` is the
+    /// namespace in which the bubble is the source the chat zooms out of (`SempScreenFactory.bubbleTransitionID`).
     init(
         viewModel: @autoclosure @escaping () -> SempBubbleViewModel,
         registry: DropTargetRegistry,
+        zoom: Namespace.ID?,
         open: @escaping () -> Void
     ) {
         _viewModel = StateObject(wrappedValue: viewModel())
         self.registry = registry
+        self.zoom = zoom
         self.open = open
     }
 
@@ -72,6 +76,7 @@ private extension SempBubbleScreen {
         }
         .frame(width: SempBubblePlacement.diameter, height: SempBubblePlacement.diameter)
         .glassEffect(.regular.interactive(), in: Circle())
+        .zoomSource(SempScreenFactory.bubbleTransitionID, in: zoom)
         .overlay(Circle().stroke(Theme.Colors.accent, lineWidth: drag.armed ? 3 : 0))
         .scaleEffect(drag.armed ? 1.1 : (drag.moved ? 1.06 : 1))
         .animation(.spring(duration: 0.3, bounce: 0.4), value: drag.armed)
@@ -236,4 +241,24 @@ private struct SempBubbleHover: Equatable {
 
     let frame: CGRect
     let target: SempTarget
+}
+
+// MARK: - Zoom source
+private extension View {
+
+    /// Makes the view the source a presentation zooms out of and back into, on iOS, where the zoom transition exists.
+    @ViewBuilder
+    func zoomSource(_ id: String, in namespace: Namespace.ID?) -> some View {
+        #if os(iOS)
+        if let namespace {
+            matchedTransitionSource(id: id, in: namespace) { source in
+                source.clipShape(RoundedRectangle(cornerRadius: SempBubblePlacement.diameter / 2))
+            }
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
+    }
 }
