@@ -35,4 +35,14 @@ final class AppComposition: ObservableObject {
     func tasksRouter(in tab: AppTab) -> AppTasksRouter {
         AppTasksRouter(context: navigation, tab: tab)
     }
+
+    /// The router of an area screen that sits on the stack of `tab`.
+    func areasRouter(in tab: AppTab) -> AppAreasRouter {
+        AppAreasRouter(context: navigation, tab: tab)
+    }
+
+    /// The router of a notes screen that sits on the stack of `tab`.
+    func notesRouter(in tab: AppTab) -> AppNotesRouter {
+        AppNotesRouter(context: navigation, tab: tab)
+    }
 }

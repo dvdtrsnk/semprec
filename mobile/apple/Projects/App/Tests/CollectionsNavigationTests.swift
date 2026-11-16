@@ -37,7 +37,7 @@ final class CollectionsNavigationTests: XCTestCase {
     }
 
     @MainActor
-    func testAnEventAndAnAreaOpenAsTheGenericItemUntilTheirOwnScreensAreMapped() {
+    func testAnEventOpensAsTheGenericItemAndAnAreaOpensItsOwnScreen() {
         let context = NavigationContext()
         let overview = StackSpy()
         context.register(overview, for: .overview)
@@ -46,7 +46,7 @@ final class CollectionsNavigationTests: XCTestCase {
         router.showArea(areaId: "a1")
         XCTAssertEqual(
             overview.pushed,
-            [.collectionItem(itemId: "e1", databaseKey: "events"), .collectionItem(itemId: "a1", databaseKey: "areas")]
+            [.collectionItem(itemId: "e1", databaseKey: "events"), .area(areaId: "a1", tab: .overview)]
         )
     }
 
@@ -58,10 +58,18 @@ final class CollectionsNavigationTests: XCTestCase {
         let router = AppCollectionsRouter(context: context, tab: .overview)
         router.showProjectTasks(projectId: "p1")
         router.showProjectMail(projectId: "p1")
-        router.showProjectNotes(projectId: "p1")
         router.showProjectAgent(projectId: "p1")
         XCTAssertTrue(overview.pushed.isEmpty)
         XCTAssertTrue(overview.sheets.isEmpty)
+    }
+
+    @MainActor
+    func testTheNotesOfAProjectOpenTheNotesScreenOnTheStackOfTheCollection() {
+        let context = NavigationContext()
+        let overview = StackSpy()
+        context.register(overview, for: .overview)
+        AppCollectionsRouter(context: context, tab: .overview).showProjectNotes(projectId: "p1")
+        XCTAssertEqual(overview.pushed, [.notes(itemId: "p1", tab: .overview)])
     }
 
     @MainActor

@@ -24,7 +24,14 @@ public struct TrashItemRow: Equatable, Sendable, Identifiable {
     public let deletedAt: String
     public let daysLeft: Int
 
-    public init(id: String, title: String, databaseKey: String?, databaseName: String, deletedAt: String, daysLeft: Int) {
+    public init(
+        id: String,
+        title: String,
+        databaseKey: String?,
+        databaseName: String,
+        deletedAt: String,
+        daysLeft: Int
+    ) {
         self.id = id
         self.title = title
         self.databaseKey = databaseKey

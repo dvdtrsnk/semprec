@@ -3,7 +3,8 @@ import XCTest
 @testable import CoreKit
 
 /// Drives the real Kotlin account ViewModels through their bridges. No server is signed in, so every load ends in the
-/// unauthorized failure the Kotlin layer answers without a request; the actions that need no data work as with a server.
+/// unauthorized failure the Kotlin layer answers without a request; the actions that need no data work as with a
+/// server.
 final class AccountBridgeTests: XCTestCase {
 
     // MARK: - Loads
@@ -85,13 +86,21 @@ final class AccountBridgeTests: XCTestCase {
     // MARK: - Lifetime
     @MainActor
     func testReleasingABridgeClosesItsKotlinViewModel() throws {
-        var profile: SharedProfileScreenModel? = try XCTUnwrap(SharedScreenModelFactory().makeProfile() as? SharedProfileScreenModel)
-        var devices: SharedDevicesScreenModel? = try XCTUnwrap(SharedScreenModelFactory().makeDevices() as? SharedDevicesScreenModel)
+        var profile: SharedProfileScreenModel? = try XCTUnwrap(
+            SharedScreenModelFactory().makeProfile() as? SharedProfileScreenModel
+        )
+        var devices: SharedDevicesScreenModel? = try XCTUnwrap(
+            SharedScreenModelFactory().makeDevices() as? SharedDevicesScreenModel
+        )
         var notifications: SharedNotificationSettingsScreenModel? = try XCTUnwrap(
             SharedScreenModelFactory().makeNotificationSettings() as? SharedNotificationSettingsScreenModel
         )
-        var usage: SharedAiUsageScreenModel? = try XCTUnwrap(SharedScreenModelFactory().makeAiUsage() as? SharedAiUsageScreenModel)
-        var trash: SharedTrashScreenModel? = try XCTUnwrap(SharedScreenModelFactory().makeTrash() as? SharedTrashScreenModel)
+        var usage: SharedAiUsageScreenModel? = try XCTUnwrap(
+            SharedScreenModelFactory().makeAiUsage() as? SharedAiUsageScreenModel
+        )
+        var trash: SharedTrashScreenModel? = try XCTUnwrap(
+            SharedScreenModelFactory().makeTrash() as? SharedTrashScreenModel
+        )
         let leases = try [
             XCTUnwrap(profile?.lease),
             XCTUnwrap(devices?.lease),

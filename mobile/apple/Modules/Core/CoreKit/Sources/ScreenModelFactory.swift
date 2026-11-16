@@ -22,4 +22,10 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
     func makeNotificationSettings() -> any NotificationSettingsScreenModel
     func makeAiUsage() -> any AiUsageScreenModel
     func makeTrash() -> any TrashScreenModel
+
+    // MARK: - Areas
+    func makeArea(areaId: String) -> any AreaScreenModel
+
+    // MARK: - Notes
+    func makeNotes(itemId: String) -> any NotesScreenModel
 }

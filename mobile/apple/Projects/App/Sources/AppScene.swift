@@ -1,7 +1,9 @@
+import AreasFeature
 import AuthFeature
 import CollectionsFeature
 import DesignSystem
 import NavigatorUI
+import NotesFeature
 import SwiftUI
 import TasksFeature
 
@@ -104,6 +106,18 @@ private extension AppScene {
                 target,
                 makeModel: { composition.models.makeCollection(target: $0) },
                 router: composition.collectionsRouter
+            )
+        case .area(let areaId, let tab):
+            AreasScreenFactory.area(
+                areaId: areaId,
+                makeModel: { composition.models.makeArea(areaId: areaId) },
+                router: composition.areasRouter(in: tab)
+            )
+        case .notes(let itemId, let tab):
+            NotesScreenFactory.notes(
+                itemId: itemId,
+                makeModel: { composition.models.makeNotes(itemId: itemId) },
+                router: composition.notesRouter(in: tab)
             )
         case .collectionItem(let itemId, let databaseKey):
             CollectionsScreenFactory.item(

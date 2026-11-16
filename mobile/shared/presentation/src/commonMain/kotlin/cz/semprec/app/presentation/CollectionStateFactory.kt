@@ -22,7 +22,7 @@ internal fun collectionState(
     val database = opened.database
     val rows = loaded.items.map { it.toRow(database) }
     val layouts = database.layouts()
-    val layout = inputs.layout.takeIf { it in layouts } ?: CollectionLayout.LIST
+    val layout = inputs.layout?.takeIf { it in layouts } ?: database.defaultLayout(layouts)
     val first = inputs.sortOf(database).firstOrNull()
     val axis = inputs.axis ?: first?.let(database::axisOf)
     return CollectionState(

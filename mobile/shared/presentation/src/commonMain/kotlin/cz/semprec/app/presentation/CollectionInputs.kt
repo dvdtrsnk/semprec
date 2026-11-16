@@ -19,7 +19,7 @@ internal data class Inputs(
     val quickKey: String? = null,
     val axis: SortAxis? = null,
     val descending: Boolean = false,
-    val layout: CollectionLayout = CollectionLayout.LIST,
+    val layout: CollectionLayout? = null,
     val selections: Selections = Selections(),
     val search: String = "",
 ) {

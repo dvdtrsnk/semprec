@@ -29,8 +29,8 @@ final class NotificationSettingsViewModel: ObservableObject {
         model.send(.retry)
     }
 
-    func set(_ choice: AccountNotificationSwitch, on: Bool) {
-        model.send(.set(choice, on: on))
+    func set(_ choice: AccountNotificationSwitch, enabled: Bool) {
+        model.send(.set(choice, enabled: enabled))
     }
 
     func setProblemsLevel(_ level: AccountProblemsLevel) {

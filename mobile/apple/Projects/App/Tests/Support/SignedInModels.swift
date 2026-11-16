@@ -38,6 +38,12 @@ final class SignedInModels: ScreenModelFactory {
 
     func makeTrash() -> any TrashScreenModel { real.makeTrash() }
 
+    // MARK: - Areas
+    func makeArea(areaId: String) -> any AreaScreenModel { real.makeArea(areaId: areaId) }
+
+    // MARK: - Notes
+    func makeNotes(itemId: String) -> any NotesScreenModel { real.makeNotes(itemId: itemId) }
+
     func makeSession() -> any SessionScreenModel {
         ScriptedSessionScreenModel(
             state: .signedIn(SessionUser(email: "a@b.cz", role: "member", serverUrl: "https://s.example"))
