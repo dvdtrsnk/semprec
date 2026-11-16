@@ -31,4 +31,21 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
     func makeInvitations() -> any InvitationsScreenModel
     /// `day` is the day the new item sheet was opened for, `YYYY-MM-DD`.
     func makeNewItem(day: String) -> any NewItemScreenModel
+
+    // Semp slice
+    /// A conversation. `threadId` names the thread of `.existing`, `inboxItemId` the Inbox item of `.item`; `title`
+    /// and `meta` name what the thread is about, as the screen that opened it knows.
+    func makeSempThread(
+        start: SempThreadStart,
+        threadId: String?,
+        inboxItemId: String?,
+        title: String?,
+        meta: String?
+    ) -> any SempThreadScreenModel
+    func makeSempChats() -> any SempChatsScreenModel
+    func makeSempStatus() -> any SempStatusScreenModel
+    func makeSempRun(runId: String, messageId: String?) -> any SempRunScreenModel
+    func makeSempApprovals() -> any SempApprovalsScreenModel
+    func makeSempProjectAgent(projectId: String) -> any SempProjectAgentScreenModel
+    func makeSempBubble() -> any SempBubbleScreenModel
 }

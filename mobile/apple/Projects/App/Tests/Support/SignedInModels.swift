@@ -45,6 +45,32 @@ final class SignedInModels: ScreenModelFactory {
 
     func makeNewItem(day: String) -> any NewItemScreenModel { real.makeNewItem(day: day) }
 
+    func makeSempThread(
+        start: SempThreadStart,
+        threadId: String?,
+        inboxItemId: String?,
+        title: String?,
+        meta: String?
+    ) -> any SempThreadScreenModel {
+        real.makeSempThread(start: start, threadId: threadId, inboxItemId: inboxItemId, title: title, meta: meta)
+    }
+
+    func makeSempChats() -> any SempChatsScreenModel { real.makeSempChats() }
+
+    func makeSempStatus() -> any SempStatusScreenModel { real.makeSempStatus() }
+
+    func makeSempRun(runId: String, messageId: String?) -> any SempRunScreenModel {
+        real.makeSempRun(runId: runId, messageId: messageId)
+    }
+
+    func makeSempApprovals() -> any SempApprovalsScreenModel { real.makeSempApprovals() }
+
+    func makeSempProjectAgent(projectId: String) -> any SempProjectAgentScreenModel {
+        real.makeSempProjectAgent(projectId: projectId)
+    }
+
+    func makeSempBubble() -> any SempBubbleScreenModel { real.makeSempBubble() }
+
     func makeSession() -> any SessionScreenModel {
         ScriptedSessionScreenModel(
             state: .signedIn(SessionUser(email: "a@b.cz", role: "member", serverUrl: "https://s.example"))
