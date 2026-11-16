@@ -140,7 +140,7 @@ final class NotesMappingTests: XCTestCase {
     // MARK: - The real ViewModel
     @MainActor
     func testWithoutASessionTheNotesEndInTheUnauthorizedFailureAndOpenAsTextNeedsNoData() async {
-        let model = SharedScreenModelFactory().makeNotes(itemId: "i1")
+        let model = isolatedFactory().makeNotes(itemId: "i1")
         model.send(.openAsText)
         var iterator = model.effects().makeAsyncIterator()
         let effect = await iterator.next()
@@ -160,7 +160,7 @@ final class NotesMappingTests: XCTestCase {
     @MainActor
     func testReleasingTheNotesBridgeClosesTheKotlinViewModel() throws {
         var model: SharedNotesScreenModel? = try XCTUnwrap(
-            SharedScreenModelFactory().makeNotes(itemId: "i1") as? SharedNotesScreenModel
+            isolatedFactory().makeNotes(itemId: "i1") as? SharedNotesScreenModel
         )
         let lease = try XCTUnwrap(model?.lease)
         XCTAssertFalse(lease.isClosed)

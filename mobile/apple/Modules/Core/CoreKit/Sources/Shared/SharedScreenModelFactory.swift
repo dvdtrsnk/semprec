@@ -4,16 +4,32 @@
 @MainActor
 public final class SharedScreenModelFactory {
 
+    // MARK: - Types
+    /// Where the session of the signed-in person is kept.
+    public enum SessionStore: Sendable {
+        /// The Keychain of the device, so the person stays signed in across launches.
+        case keychain
+        /// The memory of this process only. Tests use it, so that a session another build stored on the same device
+        /// never reaches them.
+        case memory
+    }
+
     // MARK: - Dependencies
-    let sdk = SharedSDK.HomeSDK(
-        sessionStorage: KeychainSessionStorage(),
-        device: DeviceIdentity.current(),
-        recorder: DeviceAudioRecorder(),
-        player: DeviceAudioPlayer()
-    )
+    let sdk: SharedSDK.HomeSDK
 
     // MARK: - Init
-    public init() {}
+    public init(sessionStore: SessionStore = .keychain) {
+        let storage: any SharedSDK.SessionStorage = switch sessionStore {
+        case .keychain: KeychainSessionStorage()
+        case .memory: SharedSDK.InMemorySessionStorage()
+        }
+        sdk = SharedSDK.HomeSDK(
+            sessionStorage: storage,
+            device: DeviceIdentity.current(),
+            recorder: DeviceAudioRecorder(),
+            player: DeviceAudioPlayer()
+        )
+    }
 }
 
 // MARK: - Protocol conformance

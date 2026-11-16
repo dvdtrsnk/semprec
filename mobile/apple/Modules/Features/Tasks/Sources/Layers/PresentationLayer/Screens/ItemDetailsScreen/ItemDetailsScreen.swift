@@ -17,15 +17,13 @@ struct ItemDetailsScreen: View {
     @Environment(\.dismiss)
     private var dismiss
     @State var path: [ItemDetailsPage] = []
-    @State var picker: TimePicker?
     @State private var titleDraft: String?
     @State private var descriptionDraft: String?
     @State private var placeDraft: String?
     @State private var confirmingDelete = false
     @FocusState private var focus: Field?
 
-    enum TimePicker: Hashable {
-        case date
+    enum TimeField: Hashable {
         case start
         case end
     }

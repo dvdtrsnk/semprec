@@ -48,7 +48,7 @@ final class SharedSempScreenModelTests: XCTestCase {
 
     // MARK: - Real view models
     func testEveryScreenWithoutASessionEndsUnauthorized() async throws {
-        let factory = SharedScreenModelFactory()
+        let factory = isolatedFactory()
         let thread = factory.makeSempThread(start: .existing, threadId: "t1", inboxItemId: nil, title: nil, meta: nil)
         let chats = factory.makeSempChats()
         let status = factory.makeSempStatus()
@@ -68,7 +68,7 @@ final class SharedSempScreenModelTests: XCTestCase {
     }
 
     func testAnObjectDroppedOnTheBubbleIsStagedAndShownByTheThreadOfTheSameWindow() async {
-        let factory = SharedScreenModelFactory()
+        let factory = isolatedFactory()
         let bubble = factory.makeSempBubble()
         let thread = factory.makeSempThread(start: .new, threadId: nil, inboxItemId: nil, title: nil, meta: nil)
 
@@ -78,7 +78,7 @@ final class SharedSempScreenModelTests: XCTestCase {
         XCTAssertTrue(staged)
         let toast = await wait(bubble) { $0.toast == .added && $0.attachments == 1 }
         XCTAssertTrue(toast)
-        let other = SharedScreenModelFactory().makeSempThread(
+        let other = isolatedFactory().makeSempThread(
             start: .new,
             threadId: nil,
             inboxItemId: nil,
@@ -89,7 +89,7 @@ final class SharedSempScreenModelTests: XCTestCase {
     }
 
     func testDroppingAnInboxItemRaisesTheEffectToOpenItsThread() async {
-        let bubble = SharedScreenModelFactory().makeSempBubble()
+        let bubble = isolatedFactory().makeSempBubble()
         bubble.send(.drop(SempTarget(kind: .inbox, title: "Call", meta: "today", itemId: "inbox-1")))
 
         var received: [SempBubbleEffect] = []
@@ -102,7 +102,7 @@ final class SharedSempScreenModelTests: XCTestCase {
     }
 
     func testEffectsOfAThreadAreDeliveredOnceInOrder() async {
-        let thread = SharedScreenModelFactory()
+        let thread = isolatedFactory()
             .makeSempThread(start: .new, threadId: nil, inboxItemId: nil, title: nil, meta: nil)
         thread.send(.open(.history))
         thread.send(.open(.run(runId: "r", messageId: "m")))
@@ -119,7 +119,7 @@ final class SharedSempScreenModelTests: XCTestCase {
 
     func testReleasingABridgeClosesItsKotlinViewModel() throws {
         var model: SharedSempThreadScreenModel? = try XCTUnwrap(
-            SharedScreenModelFactory()
+            isolatedFactory()
                 .makeSempThread(start: .new, threadId: nil, inboxItemId: nil, title: nil, meta: nil)
                 as? SharedSempThreadScreenModel
         )

@@ -10,25 +10,25 @@ final class AccountBridgeTests: XCTestCase {
     // MARK: - Loads
     @MainActor
     func testEveryAccountScreenWithoutASessionEndsInTheUnauthorizedFailure() async throws {
-        let profile = SharedScreenModelFactory().makeProfile()
+        let profile = isolatedFactory().makeProfile()
         let profileState = await firstState(of: profile) { $0.phase != .loading }
         XCTAssertEqual(profileState?.phase, .error)
         XCTAssertEqual(profileState?.failure, .unauthorized)
         XCTAssertNil(profileState?.email, "Without a session there is no identity")
 
-        let devices = SharedScreenModelFactory().makeDevices()
+        let devices = isolatedFactory().makeDevices()
         let devicesState = await firstState(of: devices) { $0.phase != .loading }
         XCTAssertEqual(devicesState, DevicesState(phase: .error, failure: .unauthorized))
 
-        let notifications = SharedScreenModelFactory().makeNotificationSettings()
+        let notifications = isolatedFactory().makeNotificationSettings()
         let notificationState = await firstState(of: notifications) { $0.phase != .loading }
         XCTAssertEqual(notificationState, NotificationSettingsState(phase: .error, failure: .unauthorized))
 
-        let trash = SharedScreenModelFactory().makeTrash()
+        let trash = isolatedFactory().makeTrash()
         let trashState = await firstState(of: trash) { $0.phase != .loading }
         XCTAssertEqual(trashState, TrashState(phase: .error, failure: .unauthorized))
 
-        let usage = SharedScreenModelFactory().makeAiUsage()
+        let usage = isolatedFactory().makeAiUsage()
         let usageState = await firstState(of: usage) { $0.phase != .loading }
         XCTAssertEqual(usageState?.phase, .error)
         XCTAssertEqual(usageState?.failure, .unauthorized)
@@ -39,7 +39,7 @@ final class AccountBridgeTests: XCTestCase {
     // the one before shows that the Kotlin ViewModel loaded again.
     @MainActor
     func testRetryMakesTheKotlinDevicesLoadAgain() async throws {
-        let model = try XCTUnwrap(SharedScreenModelFactory().makeDevices() as? SharedDevicesScreenModel)
+        let model = try XCTUnwrap(isolatedFactory().makeDevices() as? SharedDevicesScreenModel)
         _ = await firstState(of: model) { $0.phase != .loading }
         let loaded = model.viewModel.state.value
         model.send(.retry)
@@ -51,7 +51,7 @@ final class AccountBridgeTests: XCTestCase {
     // MARK: - Actions
     @MainActor
     func testOpeningRowsOfTheProfileDeliversEachPageOnceInOrder() async {
-        let model = SharedScreenModelFactory().makeProfile()
+        let model = isolatedFactory().makeProfile()
         model.send(.open(.devices))
         model.send(.open(.trash))
         let buffered = await effects(of: model, count: 2)
@@ -62,14 +62,14 @@ final class AccountBridgeTests: XCTestCase {
 
     @MainActor
     func testTheProfileChecksTheLanguageBeforeSendingIt() {
-        let model = SharedScreenModelFactory().makeProfile()
+        let model = isolatedFactory().makeProfile()
         model.send(.changeLocale("de"))
         XCTAssertFalse(model.state.localeSaving, "A language the server does not offer must not be sent")
     }
 
     @MainActor
     func testTheTrashSelectionLivesInTheKotlinState() {
-        let model = SharedScreenModelFactory().makeTrash()
+        let model = isolatedFactory().makeTrash()
         model.send(.toggleSelecting)
         XCTAssertTrue(model.state.selecting)
         model.send(.toggleSelecting)
@@ -78,7 +78,7 @@ final class AccountBridgeTests: XCTestCase {
 
     @MainActor
     func testTheUsageScreenIgnoresAPeriodItDoesNotOffer() {
-        let model = SharedScreenModelFactory().makeAiUsage()
+        let model = isolatedFactory().makeAiUsage()
         model.send(.selectPeriod(.month("1999-01")))
         XCTAssertEqual(model.state.period, .week)
     }
@@ -87,19 +87,19 @@ final class AccountBridgeTests: XCTestCase {
     @MainActor
     func testReleasingABridgeClosesItsKotlinViewModel() throws {
         var profile: SharedProfileScreenModel? = try XCTUnwrap(
-            SharedScreenModelFactory().makeProfile() as? SharedProfileScreenModel
+            isolatedFactory().makeProfile() as? SharedProfileScreenModel
         )
         var devices: SharedDevicesScreenModel? = try XCTUnwrap(
-            SharedScreenModelFactory().makeDevices() as? SharedDevicesScreenModel
+            isolatedFactory().makeDevices() as? SharedDevicesScreenModel
         )
         var notifications: SharedNotificationSettingsScreenModel? = try XCTUnwrap(
-            SharedScreenModelFactory().makeNotificationSettings() as? SharedNotificationSettingsScreenModel
+            isolatedFactory().makeNotificationSettings() as? SharedNotificationSettingsScreenModel
         )
         var usage: SharedAiUsageScreenModel? = try XCTUnwrap(
-            SharedScreenModelFactory().makeAiUsage() as? SharedAiUsageScreenModel
+            isolatedFactory().makeAiUsage() as? SharedAiUsageScreenModel
         )
         var trash: SharedTrashScreenModel? = try XCTUnwrap(
-            SharedScreenModelFactory().makeTrash() as? SharedTrashScreenModel
+            isolatedFactory().makeTrash() as? SharedTrashScreenModel
         )
         let leases = try [
             XCTUnwrap(profile?.lease),

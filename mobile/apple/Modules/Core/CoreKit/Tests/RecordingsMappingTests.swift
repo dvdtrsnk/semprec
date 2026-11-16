@@ -131,7 +131,7 @@ final class RecordingsMappingTests: XCTestCase {
     // MARK: - The real ViewModels
     @MainActor
     func testWithoutASessionTheRecordingsEndInTheUnauthorizedFailure() async {
-        let model = SharedScreenModelFactory().makeRecordings()
+        let model = isolatedFactory().makeRecordings()
         let reached = XCTestExpectation(description: "The recordings failed")
         let observer = Task { @MainActor in
             for await state in model.states() where state.phase == .error {
@@ -146,14 +146,14 @@ final class RecordingsMappingTests: XCTestCase {
 
     @MainActor
     func testTheRealRecorderStartsIdleAndNotBusy() {
-        let model = SharedScreenModelFactory().makeRecorder(eventId: "e1")
+        let model = isolatedFactory().makeRecorder(eventId: "e1")
         XCTAssertEqual(model.state.phase, .idle)
         XCTAssertFalse(model.state.busy)
     }
 
     @MainActor
     func testReleasingARecordingsBridgeClosesItsKotlinViewModel() throws {
-        let factory = SharedScreenModelFactory()
+        let factory = isolatedFactory()
         var recordings: SharedRecordingsScreenModel? = try XCTUnwrap(
             factory.makeRecordings() as? SharedRecordingsScreenModel
         )

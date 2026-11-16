@@ -10,7 +10,7 @@ final class OverviewBridgeTests: XCTestCase {
     // MARK: - Overview
     @MainActor
     func testOverviewWithoutASessionEndsInTheUnauthorizedFailure() async {
-        let model = SharedScreenModelFactory().makeOverview()
+        let model = isolatedFactory().makeOverview()
         let state = await firstState(of: model) { $0 != .loading }
         XCTAssertEqual(state, .failure(.unauthorized))
         XCTAssertEqual(model.state, .failure(.unauthorized))
@@ -20,7 +20,7 @@ final class OverviewBridgeTests: XCTestCase {
     // the one before shows that the Kotlin ViewModel loaded again.
     @MainActor
     func testRetryMakesTheKotlinOverviewLoadAgain() async throws {
-        let model = try XCTUnwrap(SharedScreenModelFactory().makeOverview() as? SharedOverviewScreenModel)
+        let model = try XCTUnwrap(isolatedFactory().makeOverview() as? SharedOverviewScreenModel)
         _ = await firstState(of: model) { $0 != .loading }
         let loaded = model.viewModel.state.value
         model.send(.retry)
@@ -31,7 +31,7 @@ final class OverviewBridgeTests: XCTestCase {
 
     @MainActor
     func testOpeningRowsDeliversEachTargetOnceInOrder() async {
-        let model = SharedScreenModelFactory().makeOverview()
+        let model = isolatedFactory().makeOverview()
         model.send(.open(.tasks))
         model.send(.open(.journal(itemId: nil)))
         let buffered = await effects(of: model, count: 2)
@@ -45,7 +45,7 @@ final class OverviewBridgeTests: XCTestCase {
 
     @MainActor
     func testAnObserverCancelledBeforeTakingATargetLeavesItToTheNextObserver() async throws {
-        let model = SharedScreenModelFactory().makeOverview()
+        let model = isolatedFactory().makeOverview()
         model.send(.open(.inbox))
         try await Task.sleep(for: .milliseconds(200))
         let ended = expectation(description: "The cancelled observer's stream ended")
@@ -64,7 +64,7 @@ final class OverviewBridgeTests: XCTestCase {
     @MainActor
     func testReleasingTheOverviewBridgeClosesTheKotlinViewModel() async throws {
         var model: SharedOverviewScreenModel? = try XCTUnwrap(
-            SharedScreenModelFactory().makeOverview() as? SharedOverviewScreenModel
+            isolatedFactory().makeOverview() as? SharedOverviewScreenModel
         )
         let lease = try XCTUnwrap(model?.lease)
         let effects = try XCTUnwrap(model?.effects())
@@ -78,7 +78,7 @@ final class OverviewBridgeTests: XCTestCase {
     // MARK: - Search
     @MainActor
     func testSearchStartsOnTheRecentSearchesAndRemembersASubmittedText() async {
-        let model = SharedScreenModelFactory().makeSearch()
+        let model = isolatedFactory().makeSearch()
         XCTAssertEqual(model.state, SearchState())
         model.send(.submit("faktura"))
         XCTAssertEqual(model.state.recents, ["faktura"])
@@ -88,7 +88,7 @@ final class OverviewBridgeTests: XCTestCase {
 
     @MainActor
     func testSearchWaitsForThePauseThenEndsInTheUnauthorizedFailureWithoutASession() async {
-        let model = SharedScreenModelFactory().makeSearch()
+        let model = isolatedFactory().makeSearch()
         model.send(.queryChanged("fakt"))
         XCTAssertEqual(model.state.phase, .searching)
         let state = await firstState(of: model) { $0.phase != .searching }
@@ -100,7 +100,7 @@ final class OverviewBridgeTests: XCTestCase {
     @MainActor
     func testReleasingTheSearchBridgeClosesTheKotlinViewModel() async throws {
         var model: SharedSearchScreenModel? = try XCTUnwrap(
-            SharedScreenModelFactory().makeSearch() as? SharedSearchScreenModel
+            isolatedFactory().makeSearch() as? SharedSearchScreenModel
         )
         let lease = try XCTUnwrap(model?.lease)
         XCTAssertFalse(lease.isClosed)

@@ -10,7 +10,7 @@ final class SharedJournalScreenModelTests: XCTestCase {
     // MARK: - Tests
     @MainActor
     func testTheDiaryOpensOnTheGivenDayAndWithoutASessionEndsUnauthorized() async {
-        let model = SharedScreenModelFactory().makeJournal(initialDay: "2026-10-14")
+        let model = isolatedFactory().makeJournal(initialDay: "2026-10-14")
         XCTAssertEqual(model.state.selection, JournalSelection(kind: .day, start: "2026-10-14"))
         XCTAssertEqual(model.state.axis.map(\.kind), [.year, .quarter, .month, .day])
         let failed = await waitForState(model) { $0.phase == .failure(.unauthorized) }
@@ -19,7 +19,7 @@ final class SharedJournalScreenModelTests: XCTestCase {
 
     @MainActor
     func testSelectingAPeriodReachesTheKotlinViewModel() async {
-        let model = SharedScreenModelFactory().makeJournal(initialDay: "2026-10-14")
+        let model = isolatedFactory().makeJournal(initialDay: "2026-10-14")
         model.send(.select(kind: .month, start: "2026-09-20"))
         let target = JournalSelection(kind: .month, start: "2026-09-01")
         let selected = await waitForState(model) { $0.selection == target }
@@ -29,7 +29,7 @@ final class SharedJournalScreenModelTests: XCTestCase {
     @MainActor
     func testRetryMakesTheKotlinDiaryLoadAgain() async throws {
         let model = try XCTUnwrap(
-            SharedScreenModelFactory().makeJournal(initialDay: "2026-10-14") as? SharedJournalScreenModel
+            isolatedFactory().makeJournal(initialDay: "2026-10-14") as? SharedJournalScreenModel
         )
         _ = await waitForState(model) { $0.phase == .failure(.unauthorized) }
         let failed = model.viewModel.state.value
@@ -41,7 +41,7 @@ final class SharedJournalScreenModelTests: XCTestCase {
 
     @MainActor
     func testEffectsAreDeliveredOnceInOrder() async {
-        let model = SharedScreenModelFactory().makeJournal(initialDay: "2026-10-14")
+        let model = isolatedFactory().makeJournal(initialDay: "2026-10-14")
         model.send(.openEvent(id: "e1"))
         model.send(.openInbox)
         model.send(.openPage(pageId: "p", title: "T"))
@@ -54,7 +54,7 @@ final class SharedJournalScreenModelTests: XCTestCase {
     @MainActor
     func testReleasingTheDiaryBridgeClosesTheKotlinViewModel() async throws {
         var model: SharedJournalScreenModel? = try XCTUnwrap(
-            SharedScreenModelFactory().makeJournal(initialDay: "2026-10-14") as? SharedJournalScreenModel
+            isolatedFactory().makeJournal(initialDay: "2026-10-14") as? SharedJournalScreenModel
         )
         let lease = try XCTUnwrap(model?.lease)
         let effects = try XCTUnwrap(model?.effects())
@@ -67,7 +67,7 @@ final class SharedJournalScreenModelTests: XCTestCase {
 
     @MainActor
     func testASubpageWithoutASessionEndsUnauthorizedAndDeliversItsEffect() async {
-        let model = SharedScreenModelFactory().makeJournalSubpage(itemId: "jv1")
+        let model = isolatedFactory().makeJournalSubpage(itemId: "jv1")
         let failed = await waitForState(model) { $0.phase == .failure(.unauthorized) }
         XCTAssertNotNil(failed)
         model.send(.openPage(pageId: "jv2", title: "Deeper"))
@@ -78,7 +78,7 @@ final class SharedJournalScreenModelTests: XCTestCase {
     @MainActor
     func testReleasingTheSubpageBridgeClosesTheKotlinViewModel() async throws {
         var model: SharedJournalSubpageScreenModel? = try XCTUnwrap(
-            SharedScreenModelFactory().makeJournalSubpage(itemId: "jv1") as? SharedJournalSubpageScreenModel
+            isolatedFactory().makeJournalSubpage(itemId: "jv1") as? SharedJournalSubpageScreenModel
         )
         let lease = try XCTUnwrap(model?.lease)
         let effects = try XCTUnwrap(model?.effects())

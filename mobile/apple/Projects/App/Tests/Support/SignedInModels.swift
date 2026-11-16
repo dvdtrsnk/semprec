@@ -6,7 +6,7 @@ import CoreKit
 final class SignedInModels: ScreenModelFactory {
 
     // MARK: - Dependencies
-    private let real = SharedScreenModelFactory()
+    private let real = SharedScreenModelFactory(sessionStore: .memory)
 
     // MARK: - Protocol conformance
     func makeLogin() -> any LoginScreenModel { real.makeLogin() }

@@ -10,7 +10,7 @@ final class InboxBridgeTests: XCTestCase {
     // MARK: - Tests
     @MainActor
     func testInboxWithoutASessionEndsInTheUnauthorizedFailure() async {
-        let model = SharedScreenModelFactory().makeInbox()
+        let model = isolatedFactory().makeInbox()
         let state = await firstState(of: model) { $0 != .loading }
         XCTAssertEqual(state, .failure(.unauthorized))
         XCTAssertEqual(model.state, .failure(.unauthorized))
@@ -20,7 +20,7 @@ final class InboxBridgeTests: XCTestCase {
     // the one before shows that the Kotlin ViewModel loaded again.
     @MainActor
     func testRetryMakesTheKotlinInboxLoadAgain() async throws {
-        let model = try XCTUnwrap(SharedScreenModelFactory().makeInbox() as? SharedInboxScreenModel)
+        let model = try XCTUnwrap(isolatedFactory().makeInbox() as? SharedInboxScreenModel)
         _ = await firstState(of: model) { $0 != .loading }
         let loaded = model.viewModel.state.value
         model.send(.retry)
@@ -31,7 +31,7 @@ final class InboxBridgeTests: XCTestCase {
 
     @MainActor
     func testOpeningAResultThatIsNotThereRaisesNothing() async {
-        let model = SharedScreenModelFactory().makeInbox()
+        let model = isolatedFactory().makeInbox()
         model.send(.openResult)
         model.send(.dismissResult)
         model.send(.dismissProblem)
@@ -42,7 +42,7 @@ final class InboxBridgeTests: XCTestCase {
     @MainActor
     func testReleasingTheInboxBridgeClosesTheKotlinViewModel() async throws {
         var model: SharedInboxScreenModel? = try XCTUnwrap(
-            SharedScreenModelFactory().makeInbox() as? SharedInboxScreenModel
+            isolatedFactory().makeInbox() as? SharedInboxScreenModel
         )
         let lease = try XCTUnwrap(model?.lease)
         let effects = try XCTUnwrap(model?.effects())

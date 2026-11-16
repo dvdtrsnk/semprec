@@ -86,7 +86,8 @@ final class AreaViewModelTests: XCTestCase {
         }
         defer { refresh.cancel() }
         try await eventually { model.actions == [.refresh] }
-        XCTAssertEqual(finished.values, [true], "The content stays on screen, so the refresh ends at once")
+        try await eventually { finished.values == [true] }
+        XCTAssertEqual(finished.values, [true], "The content stays on screen, so the refresh ends without new state")
         model.publish(AreaState(phase: .loading))
         let second = Task { @MainActor in
             await viewModel.refresh()

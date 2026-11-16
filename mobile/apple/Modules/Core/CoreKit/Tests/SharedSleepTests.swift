@@ -160,7 +160,7 @@ final class SharedSleepTests: XCTestCase {
     // Without a session the repository answers "unauthorized" without a request, so the bridge shows that failure.
     @MainActor
     func testTheRealViewModelFailsAsUnauthorizedWithoutASessionAndOpensOnTheNight() async throws {
-        let model = SharedScreenModelFactory().makeSleep(night: "2026-10-16", startOnNight: true)
+        let model = isolatedFactory().makeSleep(night: "2026-10-16", startOnNight: true)
 
         let state = await waitForState(model) { $0.phase != .loading }
 
@@ -172,7 +172,7 @@ final class SharedSleepTests: XCTestCase {
     @MainActor
     func testRetryMakesTheKotlinSleepViewModelLoadAgain() async throws {
         let model = try XCTUnwrap(
-            SharedScreenModelFactory().makeSleep(night: nil, startOnNight: false) as? SharedSleepScreenModel
+            isolatedFactory().makeSleep(night: nil, startOnNight: false) as? SharedSleepScreenModel
         )
         _ = await waitForState(model) { $0.phase != .loading }
         let loaded = model.viewModel.state.value
@@ -187,7 +187,7 @@ final class SharedSleepTests: XCTestCase {
     @MainActor
     func testReleasingTheBridgeClosesTheKotlinSleepViewModel() throws {
         var model: SharedSleepScreenModel? = try XCTUnwrap(
-            SharedScreenModelFactory().makeSleep(night: nil, startOnNight: false) as? SharedSleepScreenModel
+            isolatedFactory().makeSleep(night: nil, startOnNight: false) as? SharedSleepScreenModel
         )
         let viewModel = try XCTUnwrap(model?.viewModel)
         XCTAssertFalse(viewModel.isClosed)

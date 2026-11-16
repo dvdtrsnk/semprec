@@ -13,7 +13,7 @@ final class SharedCollectionScreenModelTests: XCTestCase {
     // MARK: - Tests
     @MainActor
     func testACollectionWithoutASessionIsUnauthorized() async {
-        let model = SharedScreenModelFactory().makeCollection(target: target)
+        let model = isolatedFactory().makeCollection(target: target)
         let state = await waitForState(model) { $0.phase != .loading }
         XCTAssertEqual(state, CollectionState(phase: .error, failure: .unauthorized))
         XCTAssertEqual(model.state.phase, .error)
@@ -21,7 +21,7 @@ final class SharedCollectionScreenModelTests: XCTestCase {
 
     @MainActor
     func testAnItemWithoutASessionIsUnauthorized() async {
-        let model = SharedScreenModelFactory().makeItem(itemId: "i1", databaseKey: "projects")
+        let model = isolatedFactory().makeItem(itemId: "i1", databaseKey: "projects")
         let state = await waitForState(model) { $0.phase != .loading }
         XCTAssertEqual(state, ItemState(phase: .error, failure: .unauthorized))
     }
@@ -31,7 +31,7 @@ final class SharedCollectionScreenModelTests: XCTestCase {
     @MainActor
     func testRetryMakesTheKotlinCollectionViewModelLoadAgain() async throws {
         let model = try XCTUnwrap(
-            SharedScreenModelFactory().makeCollection(target: target) as? SharedCollectionScreenModel
+            isolatedFactory().makeCollection(target: target) as? SharedCollectionScreenModel
         )
         _ = await waitForState(model) { $0.phase != .loading }
         let failed = model.viewModel.state.value
@@ -44,7 +44,7 @@ final class SharedCollectionScreenModelTests: XCTestCase {
     @MainActor
     func testRetryMakesTheKotlinItemViewModelLoadAgain() async throws {
         let model = try XCTUnwrap(
-            SharedScreenModelFactory().makeItem(itemId: "i1", databaseKey: nil) as? SharedItemScreenModel
+            isolatedFactory().makeItem(itemId: "i1", databaseKey: nil) as? SharedItemScreenModel
         )
         _ = await waitForState(model) { $0.phase != .loading }
         let failed = model.viewModel.state.value
@@ -56,7 +56,7 @@ final class SharedCollectionScreenModelTests: XCTestCase {
 
     @MainActor
     func testOpeningItemsDeliversEachEffectOnceInOrder() async {
-        let model = SharedScreenModelFactory().makeCollection(target: target)
+        let model = isolatedFactory().makeCollection(target: target)
         model.send(.openItem(id: "p1"))
         model.send(.openItem(id: "p2"))
         let received = await effects(of: model, count: 2)
@@ -68,7 +68,7 @@ final class SharedCollectionScreenModelTests: XCTestCase {
 
     @MainActor
     func testOpeningATargetOfAnItemDeliversItsEffect() async {
-        let model = SharedScreenModelFactory().makeItem(itemId: "i1", databaseKey: nil)
+        let model = isolatedFactory().makeItem(itemId: "i1", databaseKey: nil)
         model.send(.navigate(.openTarget(id: "a1", databaseKey: "areas")))
         let received = await effects(of: model, count: 1)
         XCTAssertEqual(received, [.openItem(itemId: "a1", databaseKey: "areas")])
@@ -77,10 +77,10 @@ final class SharedCollectionScreenModelTests: XCTestCase {
     @MainActor
     func testReleasingTheBridgesClosesTheKotlinViewModels() async throws {
         var collection: SharedCollectionScreenModel? = try XCTUnwrap(
-            SharedScreenModelFactory().makeCollection(target: target) as? SharedCollectionScreenModel
+            isolatedFactory().makeCollection(target: target) as? SharedCollectionScreenModel
         )
         var item: SharedItemScreenModel? = try XCTUnwrap(
-            SharedScreenModelFactory().makeItem(itemId: "i1", databaseKey: nil) as? SharedItemScreenModel
+            isolatedFactory().makeItem(itemId: "i1", databaseKey: nil) as? SharedItemScreenModel
         )
         let collectionLease = try XCTUnwrap(collection?.lease)
         let itemLease = try XCTUnwrap(item?.lease)

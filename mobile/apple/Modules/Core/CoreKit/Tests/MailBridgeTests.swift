@@ -10,7 +10,7 @@ final class MailBridgeTests: XCTestCase {
     // MARK: - Loads without a session
     @MainActor
     func testEveryMailScreenWithoutASessionEndsInTheUnauthorizedFailure() async {
-        let factory = SharedScreenModelFactory()
+        let factory = isolatedFactory()
         let threads = factory.makeMailThreads(start: MailListStart())
         let thread = factory.makeMailThread(threadId: "t1")
         let compose = factory.makeMailCompose(start: .draft(draftId: "d1"))
@@ -35,7 +35,7 @@ final class MailBridgeTests: XCTestCase {
     func testTheStartOfTheListReachesTheKotlinViewModel() async throws {
         let start = MailListStart(areaId: "a1", projectId: "p1", box: .flagged, mailboxId: "m1", folderId: "f1")
         let model = try XCTUnwrap(
-            SharedScreenModelFactory().makeMailThreads(start: start) as? SharedMailThreadsScreenModel
+            isolatedFactory().makeMailThreads(start: start) as? SharedMailThreadsScreenModel
         )
         let state = model.state
         XCTAssertEqual(state.areaId, "a1")
@@ -50,7 +50,7 @@ final class MailBridgeTests: XCTestCase {
     @MainActor
     func testRetryMakesTheKotlinThreadListLoadAgain() async throws {
         let model = try XCTUnwrap(
-            SharedScreenModelFactory().makeMailThreads(start: MailListStart()) as? SharedMailThreadsScreenModel
+            isolatedFactory().makeMailThreads(start: MailListStart()) as? SharedMailThreadsScreenModel
         )
         _ = await firstState(of: model) { $0.phase != .loading }
         let loaded = model.viewModel.state.value
@@ -63,7 +63,7 @@ final class MailBridgeTests: XCTestCase {
     // MARK: - Effects
     @MainActor
     func testOpeningDeliversEachEffectOnceInOrder() async {
-        let model = SharedScreenModelFactory().makeMailThreads(start: MailListStart())
+        let model = isolatedFactory().makeMailThreads(start: MailListStart())
         model.send(.open(.openThread(threadId: "t1")))
         model.send(.open(.compose))
         let buffered = await effects(of: model, count: 2)
@@ -77,7 +77,7 @@ final class MailBridgeTests: XCTestCase {
 
     @MainActor
     func testTheFoldersScreenRaisesTheListEachRowStandsFor() async {
-        let model = SharedScreenModelFactory().makeMailFolders()
+        let model = isolatedFactory().makeMailFolders()
         model.send(.openBox(.sempDrafts))
         model.send(.openAccounts)
         let raised = await effects(of: model, count: 2)
@@ -86,7 +86,7 @@ final class MailBridgeTests: XCTestCase {
 
     @MainActor
     func testTheThreadScreenRaisesNothingForARefusedReplyAndTheTaskItWasAskedFor() async {
-        let model = SharedScreenModelFactory().makeMailThread(threadId: "t1")
+        let model = isolatedFactory().makeMailThread(threadId: "t1")
         model.send(.open(.task(taskId: "k1")))
         model.send(.open(.reply(.reply)))
         let raised = await effects(of: model, count: 1)
@@ -97,7 +97,7 @@ final class MailBridgeTests: XCTestCase {
 
     @MainActor
     func testLeavingAComposeScreenWithoutADraftClosesAtOnce() async {
-        let model = SharedScreenModelFactory().makeMailCompose(start: .new)
+        let model = isolatedFactory().makeMailCompose(start: .new)
         _ = await firstState(of: model) { $0.phase != .loading }
         model.send(.cancel)
         let closed = await effects(of: model, count: 1)
@@ -108,7 +108,7 @@ final class MailBridgeTests: XCTestCase {
     @MainActor
     func testReleasingAMailBridgeClosesItsKotlinViewModel() async throws {
         var model: SharedMailThreadsScreenModel? = try XCTUnwrap(
-            SharedScreenModelFactory().makeMailThreads(start: MailListStart()) as? SharedMailThreadsScreenModel
+            isolatedFactory().makeMailThreads(start: MailListStart()) as? SharedMailThreadsScreenModel
         )
         let lease = try XCTUnwrap(model?.lease)
         let effects = try XCTUnwrap(model?.effects())
@@ -121,7 +121,7 @@ final class MailBridgeTests: XCTestCase {
 
     @MainActor
     func testReleasingTheOtherMailBridgesClosesTheirKotlinViewModels() throws {
-        let factory = SharedScreenModelFactory()
+        let factory = isolatedFactory()
         var models: [any AnyObject] = [
             factory.makeMailThread(threadId: "t1"),
             factory.makeMailCompose(start: .new),

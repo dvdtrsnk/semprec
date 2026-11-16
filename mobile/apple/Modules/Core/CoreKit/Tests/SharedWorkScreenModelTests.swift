@@ -10,7 +10,7 @@ final class SharedWorkScreenModelTests: XCTestCase {
     @MainActor
     func testTasksStartWhereTheStartSaysAndFailAsUnauthorizedWithoutASession() async throws {
         let start = TasksStart(tab: .all, hideDone: true, areaId: "a1", projectId: "p1")
-        let model = SharedScreenModelFactory().makeTasks(start: start)
+        let model = isolatedFactory().makeTasks(start: start)
         XCTAssertEqual(model.state.tab, .all)
         XCTAssertTrue(model.state.hideDone)
         XCTAssertEqual(model.state.areaId, "a1")
@@ -23,7 +23,7 @@ final class SharedWorkScreenModelTests: XCTestCase {
     // value: a load replaces it (through LOADING) with a new value.
     @MainActor
     func testRetryMakesTheKotlinTasksViewModelLoadAgain() async throws {
-        let model = try XCTUnwrap(SharedScreenModelFactory().makeTasks(start: TasksStart()) as? SharedTasksScreenModel)
+        let model = try XCTUnwrap(isolatedFactory().makeTasks(start: TasksStart()) as? SharedTasksScreenModel)
         _ = await waitForState(model) { $0.phase != .loading }
         let loaded = model.viewModel.state.value
         model.send(.retry)
@@ -34,7 +34,7 @@ final class SharedWorkScreenModelTests: XCTestCase {
 
     @MainActor
     func testFilterActionsReachTheKotlinViewModel() async throws {
-        let model = SharedScreenModelFactory().makeTasks(start: TasksStart())
+        let model = isolatedFactory().makeTasks(start: TasksStart())
         model.send(.toggleHideDone)
         model.send(.setFlaggedOnly(true))
         let state = await waitForState(model) { $0.hideDone && $0.flaggedOnly }
@@ -46,7 +46,7 @@ final class SharedWorkScreenModelTests: XCTestCase {
 
     @MainActor
     func testOpeningDetailsDeliversEachEffectOnce() async {
-        let model = SharedScreenModelFactory().makeTasks(start: TasksStart())
+        let model = isolatedFactory().makeTasks(start: TasksStart())
         model.send(.openDetails(taskId: "t2"))
         model.send(.openDetails(taskId: "t4"))
         let buffered = await effects(of: model, count: 2)
@@ -58,7 +58,7 @@ final class SharedWorkScreenModelTests: XCTestCase {
 
     @MainActor
     func testAnObserverCancelledBeforeTakingAnEffectLeavesItToTheNextObserver() async throws {
-        let model = SharedScreenModelFactory().makeTasks(start: TasksStart())
+        let model = isolatedFactory().makeTasks(start: TasksStart())
         model.send(.openDetails(taskId: "t2"))
         try await letEffectsReachTheBridge()
         let receivedByCancelled = Received<TasksEffect>()
@@ -76,7 +76,7 @@ final class SharedWorkScreenModelTests: XCTestCase {
 
     @MainActor
     func testAnObserverThatStopsLeavesTheEffectsItDidNotTakeToTheNextObserver() async throws {
-        let model = SharedScreenModelFactory().makeTasks(start: TasksStart())
+        let model = isolatedFactory().makeTasks(start: TasksStart())
         model.send(.openDetails(taskId: "t2"))
         model.send(.openDetails(taskId: "t4"))
         try await letEffectsReachTheBridge()
@@ -88,7 +88,7 @@ final class SharedWorkScreenModelTests: XCTestCase {
 
     @MainActor
     func testObservingAgainAfterCancellationDeliversEveryEffectOnceInOrder() async throws {
-        let model = SharedScreenModelFactory().makeTasks(start: TasksStart())
+        let model = isolatedFactory().makeTasks(start: TasksStart())
         let log = DeliveryLog()
         let firstEnded = expectation(description: "The first observation ended")
         let first = Task {
@@ -122,7 +122,7 @@ final class SharedWorkScreenModelTests: XCTestCase {
 
     @MainActor
     func testCancellingTheObserverEndsTheStateStream() async {
-        let model = SharedScreenModelFactory().makeTasks(start: TasksStart())
+        let model = isolatedFactory().makeTasks(start: TasksStart())
         let entered = expectation(description: "Observer received a state")
         entered.assertForOverFulfill = false
         let exited = expectation(description: "Observer ended")
@@ -138,7 +138,7 @@ final class SharedWorkScreenModelTests: XCTestCase {
     @MainActor
     func testReleasingTheTasksBridgeClosesTheKotlinViewModel() async throws {
         var model: SharedTasksScreenModel? = try XCTUnwrap(
-            SharedScreenModelFactory().makeTasks(start: TasksStart()) as? SharedTasksScreenModel
+            isolatedFactory().makeTasks(start: TasksStart()) as? SharedTasksScreenModel
         )
         let lease = try XCTUnwrap(model?.lease)
         let effects = try XCTUnwrap(model?.effects())
@@ -154,7 +154,7 @@ final class SharedWorkScreenModelTests: XCTestCase {
     @MainActor
     func testDetailsOfAnEventFailAsUnauthorizedWithoutASessionAndRetryLoadsAgain() async throws {
         let model = try XCTUnwrap(
-            SharedScreenModelFactory().makeItemDetails(kind: .event, itemId: "e1") as? SharedItemDetailsScreenModel
+            isolatedFactory().makeItemDetails(kind: .event, itemId: "e1") as? SharedItemDetailsScreenModel
         )
         XCTAssertEqual(model.state.kind, .event)
         let state = await waitForState(model) { $0.phase != .loading }
@@ -169,7 +169,7 @@ final class SharedWorkScreenModelTests: XCTestCase {
     @MainActor
     func testReleasingTheDetailsBridgeClosesTheKotlinViewModelAndEndsItsEffects() async throws {
         var model: SharedItemDetailsScreenModel? = try XCTUnwrap(
-            SharedScreenModelFactory().makeItemDetails(kind: .task, itemId: "t1") as? SharedItemDetailsScreenModel
+            isolatedFactory().makeItemDetails(kind: .task, itemId: "t1") as? SharedItemDetailsScreenModel
         )
         let lease = try XCTUnwrap(model?.lease)
         let effects = try XCTUnwrap(model?.effects())

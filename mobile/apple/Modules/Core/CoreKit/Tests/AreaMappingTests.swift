@@ -143,7 +143,7 @@ final class AreaMappingTests: XCTestCase {
     // MARK: - The real ViewModel
     @MainActor
     func testWithoutASessionTheAreaEndsInTheUnauthorizedFailureAndNotesOpenWithoutData() async throws {
-        let model = SharedScreenModelFactory().makeArea(areaId: "a1")
+        let model = isolatedFactory().makeArea(areaId: "a1")
         model.send(.openNotes)
         var iterator = model.effects().makeAsyncIterator()
         let effect = await iterator.next()
@@ -163,7 +163,7 @@ final class AreaMappingTests: XCTestCase {
     @MainActor
     func testReleasingTheAreaBridgeClosesTheKotlinViewModel() throws {
         var model: SharedAreaScreenModel? = try XCTUnwrap(
-            SharedScreenModelFactory().makeArea(areaId: "a1") as? SharedAreaScreenModel
+            isolatedFactory().makeArea(areaId: "a1") as? SharedAreaScreenModel
         )
         let lease = try XCTUnwrap(model?.lease)
         XCTAssertFalse(lease.isClosed)

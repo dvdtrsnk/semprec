@@ -21,24 +21,25 @@ struct ProjectPickerPage: View {
     // MARK: - Body
     var body: some View {
         ChoicesContent(phase: state.choices, retry: { send(.loadChoices) }, content: {
-            List {
+            Form {
                 Section {
-                    row(
-                        title: String(localized: "details.noProject", bundle: .module),
-                        subtitle: nil,
-                        color: nil,
-                        selected: state.project == nil,
-                        action: { send(.selectProject(nil)) }
-                    )
-                    ForEach(state.projectChoices) { project in
-                        row(
-                            title: project.title,
-                            subtitle: project.areaTitle,
-                            color: project.color,
-                            selected: state.project?.id == project.id,
-                            action: { send(.selectProject(project.id)) }
-                        )
+                    Picker(selection: selection) {
+                        Text("details.noProject", bundle: .module).tag(String?.none)
+                        ForEach(state.projectChoices) { project in
+                            Label {
+                                Text(project.title)
+                                if let area = project.areaTitle { Text(area) }
+                            } icon: {
+                                Image(systemName: "square.fill")
+                                    .foregroundStyle(Color(hex: project.color) ?? Color.secondary.opacity(0.4))
+                            }
+                            .tag(String?.some(project.id))
+                        }
+                    } label: {
+                        Text("details.project", bundle: .module)
                     }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
                 } footer: {
                     Text(footerKey, bundle: .module)
                 }
@@ -57,30 +58,15 @@ private extension ProjectPickerPage {
         state.projectLink?.state == .inherited ? "details.project.hintLinked" : "details.project.hint"
     }
 
-    func row(
-        title: String,
-        subtitle: String?,
-        color: String?,
-        selected: Bool,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button {
-            action()
-            pick()
-        } label: {
-            HStack(spacing: Theme.Spacing.small) {
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .fill(Color(hex: color) ?? Color.secondary.opacity(0.4))
-                    .frame(width: 14, height: 14)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title).foregroundStyle(Color.primary)
-                    if let subtitle { Text(subtitle).font(.footnote).foregroundStyle(Theme.Colors.secondaryText) }
-                }
-                Spacer()
-                if selected { Image(systemName: "checkmark").foregroundStyle(Theme.Colors.accent) }
+    /// Picking a project writes it and returns to the sheet.
+    var selection: Binding<String?> {
+        Binding(
+            get: { state.project?.id },
+            set: { id in
+                send(.selectProject(id))
+                pick()
             }
-        }
-        .accessibilityAddTraits(selected ? .isSelected : [])
+        )
     }
 }
 
@@ -141,30 +127,25 @@ struct RepeatPickerPage: View {
 
     // MARK: - Body
     var body: some View {
-        List {
+        Form {
             Section {
-                ForEach(options, id: \.self) { option in
-                    Button {
-                        send(.setRepeat(option))
-                        pick()
-                    } label: {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(WorkFormatting.repeatTitle(option)).foregroundStyle(Color.primary)
-                                if option == .never {
-                                    Text("details.repeat.neverHint", bundle: .module)
-                                        .font(.footnote)
-                                        .foregroundStyle(Theme.Colors.secondaryText)
-                                }
-                            }
-                            Spacer()
-                            if state.repeats == option {
-                                Image(systemName: "checkmark").foregroundStyle(Theme.Colors.accent)
+                Picker(selection: selection) {
+                    ForEach(options, id: \.self) { option in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(WorkFormatting.repeatTitle(option))
+                            if option == .never {
+                                Text("details.repeat.neverHint", bundle: .module)
+                                    .font(.footnote)
+                                    .foregroundStyle(Theme.Colors.secondaryText)
                             }
                         }
+                        .tag(option)
                     }
-                    .accessibilityAddTraits(state.repeats == option ? .isSelected : [])
+                } label: {
+                    Text("details.repeat", bundle: .module)
                 }
+                .pickerStyle(.inline)
+                .labelsHidden()
             } footer: {
                 Text("details.repeat.hint", bundle: .module)
             }
@@ -176,6 +157,17 @@ struct RepeatPickerPage: View {
 
 // MARK: - Private
 private extension RepeatPickerPage {
+
+    /// Picking a repeat writes it and returns to the sheet.
+    var selection: Binding<TaskRepeat> {
+        Binding(
+            get: { state.repeats },
+            set: { option in
+                send(.setRepeat(option))
+                pick()
+            }
+        )
+    }
 
     /// A repeat the app does not set (a custom rule) is shown while it is the current one, and is kept until another
     /// is picked.

@@ -12,93 +12,84 @@ extension ItemDetailsScreen {
             } else {
                 taskRows
             }
+        } footer: {
+            if !isEvent, state.timeFrom != nil, state.timeTo == nil {
+                Text("details.noEnd", bundle: .module)
+            }
         }
     }
 
     @ViewBuilder private var taskRows: some View {
-        ScheduleRow(
-            symbol: "calendar",
-            tint: .red,
-            title: "details.date",
-            subtitle: state.date.map { WorkFormatting.longDayLabel($0, today: today) },
-            isOn: Binding(
-                get: { state.date != nil },
-                set: { viewModel.send(.setDate($0 ? today : nil)) }
-            ),
-            identifier: TasksIdentifiers.detailsDate,
-            action: { if state.date != nil { picker = .date } }
-        )
-        .glassPopover(isPresented: shown(.date)) { datePanel }
+        LabeledContent {
+            HStack(spacing: Theme.Spacing.small) {
+                if state.date != nil { datePicker }
+                Toggle(isOn: Binding(get: { state.date != nil }, set: { viewModel.send(.setDate($0 ? today : nil)) })) {
+                    Text("details.date", bundle: .module)
+                }
+                .labelsHidden()
+            }
+        } label: {
+            rowLabel("details.date", symbol: "calendar", tint: .red)
+        }
+        .accessibilityIdentifier(TasksIdentifiers.detailsDate)
         if state.date != nil {
-            ScheduleRow(
-                symbol: "clock",
-                tint: .blue,
-                title: "details.time",
-                subtitle: state.timeFrom.map(WorkFormatting.clock),
-                isOn: Binding(get: { state.timeFrom != nil }, set: { viewModel.send(.setTimed($0)) }),
-                action: { if state.timeFrom != nil { picker = .start } }
-            )
-            .glassPopover(isPresented: shown(.start)) { timePanel(.start) }
+            LabeledContent {
+                HStack(spacing: Theme.Spacing.small) {
+                    if state.timeFrom != nil { timePicker(.start) }
+                    Toggle(isOn: Binding(get: { state.timeFrom != nil }, set: { viewModel.send(.setTimed($0)) })) {
+                        Text("details.time", bundle: .module)
+                    }
+                    .labelsHidden()
+                }
+            } label: {
+                rowLabel("details.time", symbol: "clock", tint: .blue)
+            }
         }
         if state.timeFrom != nil {
-            ScheduleRow(
-                symbol: "clock.badge.checkmark",
-                tint: .indigo,
-                title: "details.timeEnd",
-                subtitle: endText,
-                subtitleStyle: state.timeTo == nil ? Theme.Colors.secondaryText : Theme.Colors.accent,
-                isOn: Binding(get: { state.timeTo != nil }, set: { viewModel.send(.setEnded($0)) }),
-                action: { if state.timeTo != nil { picker = .end } }
-            )
-            .glassPopover(isPresented: shown(.end)) { timePanel(.end) }
+            LabeledContent {
+                HStack(spacing: Theme.Spacing.small) {
+                    if state.timeTo != nil { timePicker(.end) }
+                    Toggle(isOn: Binding(get: { state.timeTo != nil }, set: { viewModel.send(.setEnded($0)) })) {
+                        Text("details.timeEnd", bundle: .module)
+                    }
+                    .labelsHidden()
+                }
+            } label: {
+                rowLabel("details.timeEnd", symbol: "clock.badge.checkmark", tint: .indigo, detail: lastsText)
+            }
         }
         if state.date != nil {
-            ScheduleRow(
-                symbol: "repeat",
-                tint: .gray,
-                title: "details.repeat",
-                subtitle: WorkFormatting.repeatTitle(state.repeats),
-                subtitleStyle: state.repeats == .never ? Theme.Colors.secondaryText : Theme.Colors.accent,
-                showsChevron: true,
-                action: { path.append(.repeats) }
-            )
+            NavigationLink(value: ItemDetailsPage.repeats) {
+                LabeledContent {
+                    Text(WorkFormatting.repeatTitle(state.repeats))
+                } label: {
+                    rowLabel("details.repeat", symbol: "repeat", tint: .gray)
+                }
+            }
         }
     }
 
     @ViewBuilder private var eventRows: some View {
-        ScheduleRow(
-            symbol: "calendar",
-            tint: .red,
-            title: "details.date",
-            subtitle: state.date.map { WorkFormatting.longDayLabel($0, today: today) },
-            identifier: TasksIdentifiers.detailsDate,
-            action: { picker = .date }
-        )
-        .glassPopover(isPresented: shown(.date)) { datePanel }
-        ScheduleRow(
-            symbol: "sun.max",
-            tint: .orange,
-            title: "details.allDay",
-            isOn: Binding(get: { state.allDay }, set: { viewModel.send(.setAllDay($0)) }),
-            action: { viewModel.send(.setAllDay(!state.allDay)) }
-        )
+        LabeledContent {
+            datePicker
+        } label: {
+            rowLabel("details.date", symbol: "calendar", tint: .red)
+        }
+        .accessibilityIdentifier(TasksIdentifiers.detailsDate)
+        Toggle(isOn: Binding(get: { state.allDay }, set: { viewModel.send(.setAllDay($0)) })) {
+            rowLabel("details.allDay", symbol: "sun.max", tint: .orange)
+        }
         if !state.allDay {
-            ScheduleRow(
-                symbol: "clock",
-                tint: .blue,
-                title: "details.start",
-                subtitle: state.timeFrom.map(WorkFormatting.clock),
-                action: { picker = .start }
-            )
-            .glassPopover(isPresented: shown(.start)) { timePanel(.start) }
-            ScheduleRow(
-                symbol: "clock.badge.checkmark",
-                tint: .indigo,
-                title: "details.end",
-                subtitle: endText,
-                action: { picker = .end }
-            )
-            .glassPopover(isPresented: shown(.end)) { timePanel(.end) }
+            LabeledContent {
+                timePicker(.start)
+            } label: {
+                rowLabel("details.start", symbol: "clock", tint: .blue)
+            }
+            LabeledContent {
+                timePicker(.end)
+            } label: {
+                rowLabel("details.end", symbol: "clock.badge.checkmark", tint: .indigo, detail: lastsText)
+            }
         }
     }
 }
@@ -108,42 +99,38 @@ extension ItemDetailsScreen {
 
     var relationsSection: some View {
         Section {
-            linked(
-                ScheduleRow(
-                    symbol: "folder",
-                    tint: .purple,
-                    title: "details.project",
-                    subtitle: state.project?.title ?? String(localized: "details.none", bundle: .module),
-                    subtitleStyle: state.project == nil ? Theme.Colors.secondaryText : Theme.Colors.accent,
-                    showsChevron: true,
-                    identifier: TasksIdentifiers.detailsProject,
-                    action: { path.append(.project) }
-                ),
-                subject: .project,
-                link: state.projectLink
-            )
-            linked(
-                ScheduleRow(
-                    symbol: "person.2",
-                    tint: .teal,
-                    title: isEvent ? "details.attendees" : "details.people",
-                    subtitle: peopleText,
-                    subtitleStyle: state.people.isEmpty ? Theme.Colors.secondaryText : Theme.Colors.accent,
-                    showsChevron: true,
-                    identifier: TasksIdentifiers.detailsPeople,
-                    action: { path.append(.people) }
-                ),
-                subject: .people,
-                link: state.peopleLink
-            )
+            linked(subject: .project, link: state.projectLink) {
+                NavigationLink(value: ItemDetailsPage.project) {
+                    LabeledContent {
+                        Text(state.project?.title ?? String(localized: "details.none", bundle: .module))
+                    } label: {
+                        rowLabel("details.project", symbol: "folder", tint: .purple)
+                    }
+                }
+                .accessibilityIdentifier(TasksIdentifiers.detailsProject)
+            }
+            linked(subject: .people, link: state.peopleLink) {
+                NavigationLink(value: ItemDetailsPage.people) {
+                    LabeledContent {
+                        Text(peopleText).lineLimit(1)
+                    } label: {
+                        rowLabel(isEvent ? "details.attendees" : "details.people", symbol: "person.2", tint: .teal)
+                    }
+                }
+                .accessibilityIdentifier(TasksIdentifiers.detailsPeople)
+            }
             if isEvent { companyRow }
             if !isEvent { flagRow }
         }
     }
 
-    private func linked(_ row: ScheduleRow, subject: LinkSubject, link: ValueLink?) -> some View {
+    private func linked(
+        subject: LinkSubject,
+        link: ValueLink?,
+        @ViewBuilder row: () -> some View
+    ) -> some View {
         HStack(spacing: Theme.Spacing.small) {
-            row
+            row()
             if let link, let value = subject.linkedValue, link.state != .derived {
                 LinkPill(
                     subject: subject,
@@ -157,26 +144,29 @@ extension ItemDetailsScreen {
 
     private var companyRow: some View {
         HStack(spacing: Theme.Spacing.small) {
-            ScheduleRow(
-                symbol: "building.2",
-                tint: .indigo,
-                title: "details.company",
-                subtitle: state.company?.title ?? String(localized: "details.noCompany", bundle: .module),
-                subtitleStyle: Theme.Colors.secondaryText,
-                action: {}
-            )
+            LabeledContent {
+                Text(state.company?.title ?? String(localized: "details.noCompany", bundle: .module))
+            } label: {
+                rowLabel("details.company", symbol: "building.2", tint: .indigo)
+            }
             LinkPill(subject: .company, link: ValueLink(state: .derived), unlink: {}, relink: {})
         }
     }
 
     private var flagRow: some View {
-        ScheduleRow(
-            symbol: "flag.fill",
-            tint: .orange,
-            title: "details.flag",
-            isOn: Binding(get: { state.flagged }, set: { viewModel.send(.setFlagged($0)) }),
-            action: { viewModel.send(.setFlagged(!state.flagged)) }
-        )
+        Toggle(isOn: Binding(get: { state.flagged }, set: { viewModel.send(.setFlagged($0)) })) {
+            rowLabel("details.flag", symbol: "flag.fill", tint: .orange)
+        }
+    }
+
+    /// The label of a row: the icon tile, the title and, under it, a line of detail.
+    func rowLabel(_ title: LocalizedStringKey, symbol: String, tint: Color, detail: String? = nil) -> some View {
+        Label {
+            Text(title, bundle: .module)
+            if let detail { Text(detail) }
+        } icon: {
+            IconTile(symbol: symbol, tint: tint)
+        }
     }
 }
 
@@ -185,42 +175,49 @@ extension ItemDetailsScreen {
 
     var today: String { IsoDay.today() }
 
-    func shown(_ target: TimePicker) -> Binding<Bool> {
-        Binding(get: { picker == target }, set: { if !$0, picker == target { picker = nil } })
-    }
+    /// Where a new start time begins when the item has none.
+    static var defaultTime: String { "09:00" }
 
-    var datePanel: some View {
-        DatePickerPanel(
-            value: state.date,
-            today: today,
-            onPick: { day in
-                viewModel.send(.setDate(day))
-                picker = nil
-            }
-        )
-    }
-
-    func timePanel(_ target: TimePicker) -> some View {
-        let value = (target == .start ? state.timeFrom : state.timeTo) ?? state.timeFrom ?? "09:00"
-        return TimePickerPanel(
-            value: value,
-            onPick: { time in viewModel.send(target == .start ? .setTimeFrom(time) : .setTimeTo(time)) },
-            onDone: { picker = nil }
-        )
-    }
-
-    /// `14:30 · trvá 1 h 30 min`, or the explanation of a task without an end.
-    var endText: String {
-        guard let end = state.timeTo else {
-            return String(localized: "details.noEnd", bundle: .module)
+    /// The native compact date picker of the item's day.
+    var datePicker: some View {
+        DatePicker(
+            selection: Binding(
+                get: { IsoDay.date(from: state.date ?? today) ?? .now },
+                set: { viewModel.send(.setDate(IsoDay.string(from: $0))) }
+            ),
+            displayedComponents: .date
+        ) {
+            Text("details.date", bundle: .module)
         }
-        guard let length = state.lengthMinutes else { return WorkFormatting.clock(end) }
-        let lasts = String(
+        .labelsHidden()
+    }
+
+    /// The native compact time picker of the start or the end; an end without a value starts at the start.
+    func timePicker(_ target: TimeField) -> some View {
+        let value = (target == .start ? state.timeFrom : state.timeTo) ?? state.timeFrom ?? Self.defaultTime
+        return DatePicker(
+            selection: Binding(
+                get: { ClockTime.date(from: value) ?? .now },
+                set: { time in
+                    let text = ClockTime.string(from: time)
+                    viewModel.send(target == .start ? .setTimeFrom(text) : .setTimeTo(text))
+                }
+            ),
+            displayedComponents: .hourAndMinute
+        ) {
+            Text(target == .start ? "details.start" : "details.end", bundle: .module)
+        }
+        .labelsHidden()
+    }
+
+    /// `trvá 1 h 30 min` once the item has an end; the picker beside it shows the end itself.
+    var lastsText: String? {
+        guard state.timeTo != nil, let length = state.lengthMinutes else { return nil }
+        return String(
             format: String(localized: "details.lasts", bundle: .module),
             locale: .current,
             WorkFormatting.length(minutes: length)
         )
-        return "\(WorkFormatting.clock(end)) · \(lasts)"
     }
 
     var peopleText: String {

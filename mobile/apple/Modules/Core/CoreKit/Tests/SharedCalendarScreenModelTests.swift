@@ -10,7 +10,7 @@ final class SharedCalendarScreenModelTests: XCTestCase {
     // MARK: - Calendar
     @MainActor
     func testTheCalendarOpensOnTheGivenDayAndWithoutASessionEndsUnauthorized() async {
-        let model = SharedScreenModelFactory().makeCalendar(initialDay: "2026-10-14")
+        let model = isolatedFactory().makeCalendar(initialDay: "2026-10-14")
         XCTAssertEqual(model.state.selectedDay, "2026-10-14")
         XCTAssertEqual(model.state.zoom, .day)
         XCTAssertEqual(model.state.monthGrid.count, 42)
@@ -21,7 +21,7 @@ final class SharedCalendarScreenModelTests: XCTestCase {
 
     @MainActor
     func testZoomingAndPagingReachTheKotlinViewModel() async {
-        let model = SharedScreenModelFactory().makeCalendar(initialDay: "2026-10-14")
+        let model = isolatedFactory().makeCalendar(initialDay: "2026-10-14")
         model.send(.navigation(.show(zoom: .month, day: "2026-11-02")))
         let shown = await waitForState(model) { $0.zoom == .month && $0.selectedDay == "2026-11-02" }
         XCTAssertNotNil(shown)
@@ -33,7 +33,7 @@ final class SharedCalendarScreenModelTests: XCTestCase {
     @MainActor
     func testRetryMakesTheKotlinCalendarLoadAgain() async throws {
         let model = try XCTUnwrap(
-            SharedScreenModelFactory().makeCalendar(initialDay: "2026-10-14") as? SharedCalendarScreenModel
+            isolatedFactory().makeCalendar(initialDay: "2026-10-14") as? SharedCalendarScreenModel
         )
         _ = await waitForState(model) { $0.phase == .failure(.unauthorized) }
         let failed = model.viewModel.state.value
@@ -45,7 +45,7 @@ final class SharedCalendarScreenModelTests: XCTestCase {
 
     @MainActor
     func testCalendarEffectsAreDeliveredOnceInOrder() async {
-        let model = SharedScreenModelFactory().makeCalendar(initialDay: "2026-10-14")
+        let model = isolatedFactory().makeCalendar(initialDay: "2026-10-14")
         model.send(.open(.calendars))
         model.send(.open(.invitations))
         model.send(.open(.newItem(day: "2026-10-15")))
@@ -62,7 +62,7 @@ final class SharedCalendarScreenModelTests: XCTestCase {
     @MainActor
     func testReleasingTheCalendarBridgeClosesTheKotlinViewModel() async throws {
         var model: SharedCalendarScreenModel? = try XCTUnwrap(
-            SharedScreenModelFactory().makeCalendar(initialDay: "2026-10-14") as? SharedCalendarScreenModel
+            isolatedFactory().makeCalendar(initialDay: "2026-10-14") as? SharedCalendarScreenModel
         )
         let lease = try XCTUnwrap(model?.lease)
         let effects = try XCTUnwrap(model?.effects())
@@ -76,7 +76,7 @@ final class SharedCalendarScreenModelTests: XCTestCase {
     // MARK: - Calendars list
     @MainActor
     func testTheCalendarsListWithoutASessionEndsUnauthorizedAndDeliversItsEffect() async {
-        let model = SharedScreenModelFactory().makeCalendarList()
+        let model = isolatedFactory().makeCalendarList()
         let failed = await waitForState(model) { $0.phase == .failure(.unauthorized) }
         XCTAssertNotNil(failed)
         model.send(.openSleep)
@@ -87,7 +87,7 @@ final class SharedCalendarScreenModelTests: XCTestCase {
     @MainActor
     func testReleasingTheCalendarsListBridgeClosesTheKotlinViewModel() async throws {
         var model: SharedCalendarListScreenModel? = try XCTUnwrap(
-            SharedScreenModelFactory().makeCalendarList() as? SharedCalendarListScreenModel
+            isolatedFactory().makeCalendarList() as? SharedCalendarListScreenModel
         )
         let lease = try XCTUnwrap(model?.lease)
         model = nil
@@ -97,7 +97,7 @@ final class SharedCalendarScreenModelTests: XCTestCase {
     // MARK: - Invitations
     @MainActor
     func testTheInvitationsWithoutASessionEndUnauthorizedAndHaveNoEffects() async throws {
-        let model = SharedScreenModelFactory().makeInvitations()
+        let model = isolatedFactory().makeInvitations()
         let failed = await waitForState(model) { $0.phase == .failure(.unauthorized) }
         XCTAssertNotNil(failed)
         let finished = await finishes(model.effects(), within: 5)
@@ -110,7 +110,7 @@ final class SharedCalendarScreenModelTests: XCTestCase {
     @MainActor
     func testReleasingTheInvitationsBridgeClosesTheKotlinViewModel() async throws {
         var model: SharedInvitationsScreenModel? = try XCTUnwrap(
-            SharedScreenModelFactory().makeInvitations() as? SharedInvitationsScreenModel
+            isolatedFactory().makeInvitations() as? SharedInvitationsScreenModel
         )
         let lease = try XCTUnwrap(model?.lease)
         model = nil
@@ -120,7 +120,7 @@ final class SharedCalendarScreenModelTests: XCTestCase {
     // MARK: - New item
     @MainActor
     func testTheNewItemFormOpensOnTheGivenDayAndAFormThatCannotWorkFails() async {
-        let model = SharedScreenModelFactory().makeNewItem(day: "2026-10-17")
+        let model = isolatedFactory().makeNewItem(day: "2026-10-17")
         XCTAssertEqual(model.state.defaultDay, "2026-10-17")
         let editing = await waitForState(model) { $0.phase == .editing }
         XCTAssertNotNil(editing)
@@ -139,7 +139,7 @@ final class SharedCalendarScreenModelTests: XCTestCase {
     @MainActor
     func testReleasingTheNewItemBridgeClosesTheKotlinViewModel() async throws {
         var model: SharedNewItemScreenModel? = try XCTUnwrap(
-            SharedScreenModelFactory().makeNewItem(day: "2026-10-17") as? SharedNewItemScreenModel
+            isolatedFactory().makeNewItem(day: "2026-10-17") as? SharedNewItemScreenModel
         )
         let lease = try XCTUnwrap(model?.lease)
         let effects = try XCTUnwrap(model?.effects())
