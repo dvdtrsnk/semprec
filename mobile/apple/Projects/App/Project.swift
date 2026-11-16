@@ -50,6 +50,7 @@ let project = Project(
                 .project(target: "Dependencies", path: "../../Modules/Core/Dependencies"),
                 .project(target: "DesignSystem", path: "../../Modules/Core/DesignSystem"),
                 .project(target: "AuthFeature", path: "../../Modules/Features/Auth"),
+                .project(target: "CalendarFeature", path: "../../Modules/Features/Calendar"),
                 .project(target: "HomeFeature", path: "../../Modules/Features/Home"),
                 .project(target: "JournalFeature", path: "../../Modules/Features/Journal"),
                 .project(target: "SettingsFeature", path: "../../Modules/Features/Settings"),
