@@ -132,7 +132,7 @@ private extension MailComposeScreen {
             Text("mail.compose.from", bundle: .module).foregroundStyle(Theme.Colors.secondaryText)
             Picker(selection: senderSelection) {
                 ForEach(viewModel.state.senders) { sender in
-                    Text(verbatim: "\(sender.name) \u{00B7} \(sender.address)").tag(Optional(sender.mailboxId))
+                    Text(verbatim: sender.address).tag(Optional(sender.mailboxId))
                 }
             } label: {
                 Text("mail.compose.from", bundle: .module)
