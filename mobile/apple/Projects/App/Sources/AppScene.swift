@@ -5,6 +5,8 @@ import DesignSystem
 import JournalFeature
 import MailFeature
 import NavigatorUI
+import SempFeature
+import SleepFeature
 import SwiftUI
 import TasksFeature
 
@@ -70,10 +72,14 @@ private extension AppScene {
         // A closure, not a method reference: Swift 6.2.1 crashed reabstracting the actor-isolated opaque view method.
         .onNavigationProvidedView(AppDestination.self) { [weak composition] destination in
             if let composition {
-                Self.destinationView(destination, composition: composition)
+                // Erased: the nested opaque type of the destinations crashed the Swift 6.2.1 compiler here.
+                AnyView(Self.destinationView(destination, composition: composition))
             }
         }
         .navigationRoot(rootNavigator)
+        .sempOverlay(composition)
+        .onAppear { composition.currentTab = selectedTab.wrappedValue }
+        .onChange(of: selectedTab.wrappedValue) { _, tab in composition.currentTab = tab }
     }
 
     /// One tab's navigation stack around `root`; the stack registers itself with the scene's navigation each time its
@@ -88,13 +94,17 @@ private extension AppScene {
         }
     }
 
-    @ViewBuilder
+    /// The view of `destination`; a sheet gets a Semp bubble of its own, because it covers the one of the scene.
     static func destinationView(_ destination: AppDestination, composition: AppComposition) -> some View {
+        destinationContent(destination, composition: composition)
+            .sempSheetBubble(composition, enabled: destination.presentsAsSheet)
+    }
+
+    @ViewBuilder
+    static func destinationContent(_ destination: AppDestination, composition: AppComposition) -> some View {
         switch destination {
-        case .pending(let title):
-            PendingScreen(title: title)
-        case .profile:
-            ProfileSheet(models: composition.models, navigation: composition.navigation)
+        case .pending, .profile, .sempProjectAgent, .sempStatus:
+            ShellDestination(destination: destination, composition: composition)
         case .tasks(let start, let tab):
             TasksScreenFactory.tasks(
                 makeModel: { composition.models.makeTasks(start: start) },

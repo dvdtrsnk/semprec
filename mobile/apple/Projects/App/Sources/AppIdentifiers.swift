@@ -8,4 +8,6 @@ enum AppIdentifiers {
     static let sessionGate = "app.sessionGate"
     /// The notice that stands in for a screen a later wave builds.
     static let pendingScreen = "app.pending"
+    /// The handle that closes the Semp chat; Apple-only until Android has the chat.
+    static let sempGrabber = "semp.grabber"
 }

@@ -124,6 +124,9 @@ class HomeSDK(
 
     /** The calendar, its calendars list, its invitations and the new item form. */
     val calendar: CalendarSDK = CalendarSDK(auth.api)
+
+    /** The assistant: the chat and its history, the status of Semp, runs, approvals, a project's agent and the bubble. */
+    val semp: SempSDK = SempSDK(auth.api)
 }
 
 /** The screens of the generic collection engine; [HomeSDK.collections] hands it out. */
