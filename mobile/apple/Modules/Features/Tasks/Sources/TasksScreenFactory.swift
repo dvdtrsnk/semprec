@@ -16,8 +16,12 @@ public enum TasksScreenFactory {
         TasksScreen(viewModel: TasksViewModel(model: makeModel(), router: router))
     }
 
-    /// The Podrobnosti sheet of a task or an event: the content of the sheet, which the app presents.
-    public static func details(makeModel: @escaping @MainActor () -> any ItemDetailsScreenModel) -> some View {
-        ItemDetailsScreen(viewModel: ItemDetailsViewModel(model: makeModel()))
+    /// The Podrobnosti sheet of a task or an event: the content of the sheet, which the app presents. An event with a
+    /// page of its own shows a row that closes the sheet and calls `openEventPage`.
+    public static func details(
+        makeModel: @escaping @MainActor () -> any ItemDetailsScreenModel,
+        openEventPage: (@MainActor () -> Void)? = nil
+    ) -> some View {
+        ItemDetailsScreen(viewModel: ItemDetailsViewModel(model: makeModel()), openEventPage: openEventPage)
     }
 }

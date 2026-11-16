@@ -33,6 +33,12 @@ enum AppDestination: Hashable {
     case area(areaId: String, tab: AppTab)
     /// The page of notes of an item (a project, an area or a subpage), on the stack of `tab`.
     case notes(itemId: String, tab: AppTab)
+    /// The recordings, on the stack of `tab`: the list and the recorder of a recording without an event.
+    case recordings(tab: AppTab)
+    /// The transcript of the recording `recordingId`, on the stack of `tab`.
+    case transcript(recordingId: String, tab: AppTab)
+    /// The page of the event `eventId`: its tasks, notes, recordings and people, on the stack of `tab`.
+    case meeting(eventId: String, tab: AppTab)
 }
 
 // MARK: - NavigationProvidedDestination

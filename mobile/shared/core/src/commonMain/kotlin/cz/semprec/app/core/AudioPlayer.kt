@@ -32,7 +32,7 @@ interface AudioPlayer {
     fun setRate(rate: Float)
 
     /** Stops playback and forgets the source and the listener. */
-    fun release()
+    fun dispose()
 }
 
 /** The player of a device that has none (tests, previews): it reports a failure at once. */
@@ -47,5 +47,5 @@ class UnavailableAudioPlayer : AudioPlayer {
 
     override fun setRate(rate: Float) = Unit
 
-    override fun release() = Unit
+    override fun dispose() = Unit
 }

@@ -10,6 +10,8 @@ struct ItemDetailsScreen: View {
 
     // MARK: - Dependencies
     @StateObject var viewModel: ItemDetailsViewModel
+    /// Opens the page of the event this sheet edits; nil where the app has no such page. The sheet closes first.
+    let openEventPage: (@MainActor () -> Void)?
 
     // MARK: - State
     @Environment(\.dismiss)
@@ -35,8 +37,9 @@ struct ItemDetailsScreen: View {
     }
 
     // MARK: - Init
-    init(viewModel: @autoclosure @escaping () -> ItemDetailsViewModel) {
+    init(viewModel: @autoclosure @escaping () -> ItemDetailsViewModel, openEventPage: (@MainActor () -> Void)? = nil) {
         _viewModel = StateObject(wrappedValue: viewModel())
+        self.openEventPage = openEventPage
     }
 
     // MARK: - Body
@@ -94,6 +97,7 @@ private extension ItemDetailsScreen {
     var form: some View {
         List {
             titleSection
+            if isEvent, let openEventPage { eventPageSection(openEventPage) }
             scheduleSection
             relationsSection
             if !state.hostEvents.isEmpty { hostSection }
@@ -140,6 +144,19 @@ private extension ItemDetailsScreen {
             .focused($focus, equals: .description)
         }
         .onChange(of: focus) { old, _ in commit(old) }
+    }
+
+    func eventPageSection(_ open: @escaping @MainActor () -> Void) -> some View {
+        Section {
+            Button {
+                dismiss()
+                open()
+            } label: {
+                Label { Text("details.eventPage", bundle: .module) } icon: { Image(systemName: "doc.text") }
+            }
+            .listRowButton()
+            .accessibilityIdentifier(TasksIdentifiers.detailsEventPage)
+        }
     }
 
     var doneButton: some View {

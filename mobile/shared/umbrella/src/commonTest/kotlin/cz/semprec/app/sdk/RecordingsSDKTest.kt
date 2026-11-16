@@ -67,7 +67,7 @@ private class SilentPlayer : AudioPlayer {
 
     override fun setRate(rate: Float) = Unit
 
-    override fun release() {
+    override fun dispose() {
         released += 1
     }
 }

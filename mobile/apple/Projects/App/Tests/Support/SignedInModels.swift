@@ -60,6 +60,12 @@ final class SignedInModels: ScreenModelFactory {
 
     // MARK: - Notes
     func makeNotes(itemId: String) -> any NotesScreenModel { real.makeNotes(itemId: itemId) }
+    func makeRecordings() -> any RecordingsScreenModel { real.makeRecordings() }
+    func makeRecorder(eventId: String?) -> any RecorderScreenModel { real.makeRecorder(eventId: eventId) }
+    func makeTranscript(transcriptId: String) -> any TranscriptScreenModel {
+        real.makeTranscript(transcriptId: transcriptId)
+    }
+    func makeMeeting(eventId: String) -> any MeetingScreenModel { real.makeMeeting(eventId: eventId) }
 
     func makeSession() -> any SessionScreenModel {
         ScriptedSessionScreenModel(

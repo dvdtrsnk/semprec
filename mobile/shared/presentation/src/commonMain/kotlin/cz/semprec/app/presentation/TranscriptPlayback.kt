@@ -45,7 +45,7 @@ internal class TranscriptPlayback(
         change { it.copy(rate = next) }
     }
 
-    fun release() = player.release()
+    fun dispose() = player.dispose()
 
     override fun onPosition(seconds: Double) = change { it.copy(position = seconds) }
 
