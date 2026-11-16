@@ -28,23 +28,21 @@ Tenancy: Semprec is multi-tenant. Each user has one tenant, which holds all of t
 user's data and agents, and nothing is shared between tenants. Isolation is enforced
 twice: by Postgres row-level security on every table classified
 `semprec:tenancy=tenant`, and by an explicit tenant scope (`app.tenant_id`) on every
-code path. A missing scope fails closed: nothing visible, writes refused. `users.tenant_id`
-is NOT NULL (#1067), and `app_tenant_default()` is strict: it returns the tenant of the
-current scope and never a sole-tenant fallback. Code written before tenant scoping is moved onto
-the scope by dedicated issues: do not report a pre-existing scope-less query that the
-pull request neither adds nor changes. Earlier ADRs that rest on a single human account
-(`docs/adr/2026-09-12-per-process-agent-run-watch-registry.md`,
-`docs/adr/2026-09-12-thin-user-scoped-realtime-invalidations.md`) describe code that is
-being replaced; they justify no new single-account code. Cross-tenant access is this
-platform's most severe defect class; the rules are in `rules.md` and
-`tasks/security.md`, and the decision is `docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`.
+code path. A missing scope fails closed: nothing visible, writes refused.
+`app_tenant_default()` is strict: it returns the tenant of the current scope and never
+a sole-tenant fallback. Do not report a pre-existing scope-less query that the pull
+request neither adds nor changes. Cross-tenant access is this platform's most severe
+defect class; the rules are in `rules.md`, `tasks/security.md` and
+`docs/architecture/tenancy-and-security.md`.
+
+The architecture rules are in `docs/architecture/` (index `docs/architecture/README.md`),
+current and normative; judge code against them, not against removed ADRs.
 
 Actor type is the second authorization boundary, alongside tenant. `Actor.type` is
 `'user' | 'ai_agent' | 'system'` (e.g. `createdBy` on a view,
 `packages/data/src/chokePoint/authorization.ts`'s `assertViewWritable`), and it gates
-what an AI agent may read, write, or adopt, per
-`docs/adr/2026-09-10-single-writer-ownership-model.md` and
-`docs/adr/2026-09-10-agent-writes-are-proposals-not-direct-writes.md`. A missing or
+what an AI agent may read, write, or adopt (`docs/architecture/agents-approvals-and-ai.md`).
+A missing or
 bypassable `actor.type === 'ai_agent'` check is the real privilege-escalation shape
 to flag here.
 

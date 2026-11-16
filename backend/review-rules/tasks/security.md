@@ -28,12 +28,12 @@ Check for security vulnerabilities:
    tenancy rules in `rules.md`: tenant identity from an untrusted source, a scope-less
    query that reaches other tenants' rows, an unconfined `SECURITY DEFINER` function, a
    response that differs for a foreign id versus a random id, a unique key that is an
-   existence oracle. (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`)
+   existence oracle.
 10. A change that weakens enforcement — critical: a runtime role gaining `BYPASSRLS`,
     superuser or table ownership; RLS disabled, or a tenant policy dropped or loosened,
     on a tenant table; a tenant-classified table reclassified global without the linked
     issue calling for it. These remove the database-level layer that holds even when
-    application code is wrong. (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`)
+    application code is wrong.
 11. User content reaching a log call or an error returned to a client — high: item
     properties, mail content and prompts must not leave their tenant through
-    diagnostics. (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`)
+    diagnostics.

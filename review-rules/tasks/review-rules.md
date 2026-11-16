@@ -28,7 +28,7 @@ files outside a `review-rules/` directory.
    task ran, so every pull request matching that platform fails its
    `code-review` check.
 5. A rule, task item or severity level that contradicts another one in the
-   same platform's `review-rules/`, or an ADR under `docs/adr/` — medium: a
+   same platform's `review-rules/`, `docs/architecture/` or an ADR — medium: a
    reviewer handed both sides cannot tell which applies, so the same change
    can be judged differently from one run to the next. Name both sides.
 6. A checkable claim about this repository that is wrong — a path, file,

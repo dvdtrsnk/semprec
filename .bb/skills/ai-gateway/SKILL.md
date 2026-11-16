@@ -5,7 +5,7 @@ description: "Every model call in this backend goes through semprec-ai-gateway, 
 
 # AI calls go through semprec-ai-gateway. All of them.
 
-Recorded as ADR: `docs/adr/2026-09-10-ai-gateway-monopoly-on-provider-calls.md`.
+Rules: `docs/architecture/agents-approvals-and-ai.md`.
 
 `semprec-ai-gateway` is the single process allowed to talk to AI providers. Every
 other package, service, module, and script makes AI calls only through the
@@ -16,8 +16,7 @@ Why one door:
   `tenant_ai_budgets` row) and the operator-wide `AI_GLOBAL_*_CAP_USD` caps
   *before* the call and refuses, with one identical message, when either is
   reached — and refuses every call of a tenant that has no `tenant_ai_budgets`
-  row (fail closed). A direct provider call is an uncapped spend. Recorded in
-  `docs/adr/2026-10-16-per-tenant-ai-budgets-with-a-global-safety-cap.md`.
+  row (fail closed). A direct provider call is an uncapped spend.
 - **Observability.** Every call is logged to `ai_gateway_calls` (tokens, cost,
   caller, purpose) — this feeds `GET /api/ai-usage` and the utilization graph.
   A bypassed call is invisible money.

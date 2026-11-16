@@ -27,9 +27,8 @@ worktree based on `develop`. Your input is `.followups/input.json`, whose format
 defined in the header of `.github/scripts/review-followups/input-file.mjs`. Your only
 output is `.followups/proposal.json`, whose format and every mechanical rule on it are
 defined in the header of `.github/scripts/review-followups/validate.mjs`; the workflow
-runs that validator on your proposal before any proposed records reach the canonical repository. Why the pipeline
-exists is recorded in
-`docs/adr/2026-09-26-merged-review-findings-become-proposed-follow-up-issues.md`.
+runs that validator on your proposal before any proposed records reach the canonical repository. The pipeline's
+rules are in `docs/architecture/delivery-and-operations.md`.
 
 ## Rules for every step
 
@@ -58,7 +57,7 @@ verdict, checked against the code on `develop` HEAD in this worktree:
 - **`invalid`** — the bot was wrong when it reported it. Evidence: the `path:line`, the
   test or the reasoning that shows the finding never held.
 - **`not-worth`** — the defect is real and is deliberately not fixed. Evidence: the
-  reason, such as an ADR or rule that accepts the behavior, or the code being
+  reason, such as an architecture document or rule that accepts the behavior, or the code being
   scheduled for removal. Low severity or small size is **never** a reason: batching
   small fixes is what this pipeline is for.
 - **`already-tracked`** — an open issue covers the fix. Evidence: that issue's number
