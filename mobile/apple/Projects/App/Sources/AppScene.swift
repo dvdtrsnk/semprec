@@ -1,9 +1,11 @@
+import AreasFeature
 import AuthFeature
 import CalendarFeature
 import CollectionsFeature
 import DesignSystem
 import JournalFeature
 import NavigatorUI
+import NotesFeature
 import SleepFeature
 import SwiftUI
 import TasksFeature
@@ -94,7 +96,7 @@ private extension AppScene {
         case .pending(let title):
             PendingScreen(title: title)
         case .profile:
-            ProfileScreen(viewModel: SessionViewModel(model: composition.models.makeSession()))
+            ProfileSheet(models: composition.models)
         case .tasks(let start, let tab):
             TasksScreenFactory.tasks(
                 makeModel: { composition.models.makeTasks(start: start) },
@@ -108,6 +110,18 @@ private extension AppScene {
                 makeModel: { composition.models.makeCollection(target: $0) },
                 router: composition.collectionsRouter
             )
+        case .area(let areaId, let tab):
+            AreasScreenFactory.area(
+                areaId: areaId,
+                makeModel: { composition.models.makeArea(areaId: areaId) },
+                router: composition.areasRouter(in: tab)
+            )
+        case .notes(let itemId, let tab):
+            NotesScreenFactory.notes(
+                itemId: itemId,
+                makeModel: { composition.models.makeNotes(itemId: itemId) },
+                router: composition.notesRouter(in: tab)
+            )
         case .collectionItem(let itemId, let databaseKey):
             CollectionsScreenFactory.item(
                 itemId: itemId,
@@ -119,26 +133,13 @@ private extension AppScene {
         case .sleepNight(let night):
             SleepScreenFactory.night { composition.models.makeSleep(night: night, startOnNight: true) }
         case .calendars:
-            NavigationStack {
-                CalendarScreenFactory.calendars(
-                    makeModel: { composition.models.makeCalendarList() },
-                    router: composition.calendarRouter
-                )
-            }
+            CalendarsSheet(composition: composition)
         case .invitations:
-            NavigationStack {
-                CalendarScreenFactory.invitations(makeModel: { composition.models.makeInvitations() })
-            }
+            InvitationsSheet(composition: composition)
         case .newItem(let day):
-            NavigationStack {
-                CalendarScreenFactory.newItem(day: day, makeModel: { composition.models.makeNewItem(day: $0) })
-            }
+            NewItemSheet(day: day, composition: composition)
         case .journalPage(let itemId, let title):
-            JournalScreenFactory.subpage(
-                title: title,
-                makeModel: { composition.models.makeJournalSubpage(itemId: itemId) },
-                router: composition.journalRouter
-            )
+            JournalSubpageScreen(itemId: itemId, title: title, composition: composition)
         }
     }
 }

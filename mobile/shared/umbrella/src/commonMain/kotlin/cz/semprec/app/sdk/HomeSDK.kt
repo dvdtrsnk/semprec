@@ -59,6 +59,9 @@ class HomeSDK(
         HomeViewModelFactory(LoadPlaceholderItems(repository), LoadPlaceholderItem(repository), auth)
     private val collectionReads = HttpCollectionReads(auth.api)
 
+    /** The profile and the account screens below it. */
+    val account: AccountSDK = AccountSDK.create(auth.api, auth, collectionReads)
+
     /** The generic collection screens: any database's items, and one item of it. */
     val collections: CollectionSDK =
         CollectionSDK(CollectionViewModelFactory(collectionReads, HttpCollectionWrites(auth.api, collectionReads)))
@@ -74,6 +77,12 @@ class HomeSDK(
     // The task lists and the Podrobnosti sheet; a change made in the sheet reaches the open lists of the same window.
     private val work = WorkData(auth.api)
     private val workViewModels = WorkViewModelFactory(work.tasks, work.details, work.catalog, ItemChanges())
+
+    /** The area screen. */
+    val areas: AreasSDK = AreasSDK.create(collectionReads, HttpCollectionWrites(auth.api, collectionReads), work.tasks)
+
+    /** The notes screen over the page API. */
+    val notes: NotesSDK = NotesSDK.create(auth.api)
 
     /** The Tasks screen. [today] is `yyyy-MM-dd`, asked again whenever the screen groups its tasks. */
     fun tasksViewModel(today: () -> String, start: TasksStart): TasksViewModel =

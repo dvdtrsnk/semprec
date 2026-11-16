@@ -26,7 +26,17 @@ internal fun CollectionItem.toRow(database: CollectionDatabase): CollectionRow {
         date = date,
         subtitle = subtitleOf(database),
         fileType = fileType,
+        rating = ratingOf(database),
     )
+}
+
+private const val RATING_KEY = "rating"
+private const val MAX_RATING = 5
+
+/** The stars of the item, from a number property `rating`; no value, 0 and anything above the stars are none. */
+private fun CollectionItem.ratingOf(database: CollectionDatabase): Int? {
+    val property = database.property(RATING_KEY)?.takeIf { it.kind == PropertyKind.NUMBER } ?: return null
+    return (values[property.key] as? FieldValue.Number)?.number?.toInt()?.takeIf { it in 1..MAX_RATING }
 }
 
 /** Time, context relations and one plain text or link, in this order, the empty ones left out. */

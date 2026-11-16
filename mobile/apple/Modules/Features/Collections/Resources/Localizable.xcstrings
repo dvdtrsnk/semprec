@@ -177,6 +177,22 @@
         }
       }
     },
+    "collection.rating" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld z %lld hvězd"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld of %lld stars"
+          }
+        }
+      }
+    },
     "collection.sort" : {
       "localizations" : {
         "cs" : {

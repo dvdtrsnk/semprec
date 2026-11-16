@@ -30,6 +30,16 @@ internal fun CollectionDatabase.layouts(): List<CollectionLayout> = buildList {
     if (groupProperty() != null) add(CollectionLayout.BOARD)
 }
 
+private val GALLERY_FIRST_KEYS = setOf("books", "movies", "recipes")
+
+/** The layout a collection opens in: tiles for what is browsed by its cover or photo, rows for everything else. */
+internal fun CollectionDatabase.defaultLayout(layouts: List<CollectionLayout>): CollectionLayout =
+    if (key in GALLERY_FIRST_KEYS && CollectionLayout.GALLERY in layouts) {
+        CollectionLayout.GALLERY
+    } else {
+        CollectionLayout.LIST
+    }
+
 internal fun CollectionDatabase.sorts(): List<SortChoice> = buildList {
     title?.let { add(SortChoice(SortAxis.TITLE, it.name)) }
     dateProperty()?.let { add(SortChoice(SortAxis.DATE, it.name)) }

@@ -53,6 +53,9 @@ private extension CollectionGalleryView {
                 if let subtitle = subtitle(row) {
                     Text(subtitle).font(.caption2).foregroundStyle(Theme.Colors.secondaryText).lineLimit(1)
                 }
+                if let rating = row.rating {
+                    RatingStars(rating: rating)
+                }
             }
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())

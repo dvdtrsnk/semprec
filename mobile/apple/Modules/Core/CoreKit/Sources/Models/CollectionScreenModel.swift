@@ -99,6 +99,8 @@ public struct CollectionRow: Equatable, Sendable, Identifiable {
     public let date: String?
     public let subtitle: [FieldContent]
     public let fileType: String?
+    /// The person's own stars (1 to 5) of a book, a film or the like; nil without any.
+    public let rating: Int?
 
     public init(
         id: String,
@@ -106,7 +108,8 @@ public struct CollectionRow: Equatable, Sendable, Identifiable {
         group: FieldOption?,
         date: String?,
         subtitle: [FieldContent],
-        fileType: String?
+        fileType: String?,
+        rating: Int? = nil
     ) {
         self.id = id
         self.title = title
@@ -114,6 +117,7 @@ public struct CollectionRow: Equatable, Sendable, Identifiable {
         self.date = date
         self.subtitle = subtitle
         self.fileType = fileType
+        self.rating = rating
     }
 }
 
