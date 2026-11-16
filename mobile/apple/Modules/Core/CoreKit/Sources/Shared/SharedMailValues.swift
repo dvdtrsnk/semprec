@@ -20,6 +20,7 @@ extension MailListBox {
     }
 }
 
+// MARK: - List starts
 extension MailListStart {
 
     init(_ start: SharedSDK.MailListStart) {
@@ -63,6 +64,7 @@ extension MailReplyMode {
     }
 }
 
+// MARK: - Compose starts
 extension MailComposeStart {
 
     init(_ start: any SharedSDK.MailComposeStart) {
@@ -101,6 +103,7 @@ extension MailSendPhase {
     }
 }
 
+// MARK: - Account status
 extension MailAccountStatus {
 
     init(_ status: SharedSDK.MailAccountStatus) {
@@ -127,6 +130,7 @@ extension MailLinkInfo {
     }
 }
 
+// MARK: - Linked values
 extension MailLinkedValue {
 
     init(_ value: SharedSDK.MailLinkedValue) {

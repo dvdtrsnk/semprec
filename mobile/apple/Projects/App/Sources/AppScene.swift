@@ -1,6 +1,7 @@
 import AuthFeature
 import CollectionsFeature
 import DesignSystem
+import MailFeature
 import NavigatorUI
 import SwiftUI
 import TasksFeature
@@ -111,6 +112,51 @@ private extension AppScene {
                 makeModel: { composition.models.makeItem(itemId: itemId, databaseKey: databaseKey) },
                 router: composition.collectionsRouter
             )
+        case .mailList, .mailThread, .mailFolders, .mailCompose, .mailAccounts, .mailAccount:
+            mailView(destination, composition: composition)
+        }
+    }
+
+    /// The Mail screens, type-erased: with their six cases inline the destination provider's result type grows so deep
+    /// that the Swift compiler crashes lowering the closure that `tabs` hands to NavigatorUI (the crash `tabs` already
+    /// notes for method references).
+    static func mailView(_ destination: AppDestination, composition: AppComposition) -> AnyView {
+        switch destination {
+        case .mailList(let start, let title, let tab):
+            AnyView(
+                MailScreenFactory.threads(
+                    title: title,
+                    makeModel: { composition.models.makeMailThreads(start: start) },
+                    router: composition.mailRouter(in: tab)
+                )
+            )
+        case .mailThread(let threadId, let tab):
+            AnyView(
+                MailScreenFactory.thread(
+                    makeModel: { composition.models.makeMailThread(threadId: threadId) },
+                    router: composition.mailRouter(in: tab)
+                )
+            )
+        case .mailFolders(let tab):
+            AnyView(
+                MailScreenFactory.folders(
+                    makeModel: { composition.models.makeMailFolders() },
+                    router: composition.mailRouter(in: tab)
+                )
+            )
+        case .mailCompose(let start):
+            AnyView(MailScreenFactory.compose { composition.models.makeMailCompose(start: start) })
+        case .mailAccounts(let tab):
+            AnyView(
+                MailScreenFactory.accounts(
+                    makeModel: { composition.models.makeMailAccounts() },
+                    router: composition.mailRouter(in: tab)
+                )
+            )
+        case .mailAccount(let mailboxId, _):
+            AnyView(MailScreenFactory.account { composition.models.makeMailAccount(mailboxId: mailboxId) })
+        default:
+            AnyView(EmptyView())
         }
     }
 }
