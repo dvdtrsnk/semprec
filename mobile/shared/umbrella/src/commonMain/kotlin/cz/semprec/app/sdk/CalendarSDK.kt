@@ -33,5 +33,5 @@ class CalendarSDK internal constructor(api: AuthenticatedApi) {
     fun invitationsViewModel(): InvitationsViewModel = viewModels.invitationsViewModel()
 
     /** [day] is the day the sheet was opened for, `YYYY-MM-DD`. */
-    fun newCalendarItemViewModel(day: String): NewCalendarItemViewModel = viewModels.newCalendarItemViewModel(day)
+    fun itemFormViewModel(day: String): NewCalendarItemViewModel = viewModels.newCalendarItemViewModel(day)
 }

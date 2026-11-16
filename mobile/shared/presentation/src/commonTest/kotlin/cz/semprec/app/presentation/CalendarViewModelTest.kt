@@ -489,7 +489,7 @@ class CalendarViewModelTest : MainDispatcherTest() {
         act(vm, CalendarAction.Edit.Paste("2026-10-19", 0, true))
         assertEquals(2, repository.calls.count { it == "duplicate meeting" })
         assertEquals(schedule(null, null, DAY_ZERO.plusDays(3)), repository.lastSchedule)
-        assertEquals(CalendarClipboardMode.COPY, vm.state.value.clipboard?.mode)
+        assertEquals(CalendarClipboardMode.COPIED, vm.state.value.clipboard?.mode)
         vm.close()
     }
 

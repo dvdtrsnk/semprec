@@ -27,6 +27,14 @@ final class SignedInModels: ScreenModelFactory {
         real.makeSleep(night: night, startOnNight: startOnNight)
     }
 
+    func makeCalendar(initialDay: String) -> any CalendarScreenModel { real.makeCalendar(initialDay: initialDay) }
+
+    func makeCalendarList() -> any CalendarListScreenModel { real.makeCalendarList() }
+
+    func makeInvitations() -> any InvitationsScreenModel { real.makeInvitations() }
+
+    func makeNewItem(day: String) -> any NewItemScreenModel { real.makeNewItem(day: day) }
+
     func makeSession() -> any SessionScreenModel {
         ScriptedSessionScreenModel(
             state: .signedIn(SessionUser(email: "a@b.cz", role: "member", serverUrl: "https://s.example"))
