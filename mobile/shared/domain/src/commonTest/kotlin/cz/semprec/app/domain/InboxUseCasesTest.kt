@@ -73,11 +73,11 @@ class InboxUseCasesTest {
         val edit = EditInboxCard(repository)
         val card = inboxCard(InboxCardKind.TASK)
 
-        val none = edit(card, InboxField("followupTask", InboxControl.TOGGLE), InboxInput.Flag(true))
+        val none = edit(card, InboxChange.None)
         assertEquals(RepositoryResult.Content(null), none)
         assertEquals(emptyList(), repository.calls)
 
-        val saved = edit(card, card.schema!!.fields.first(), InboxInput.Text("B"))
+        val saved = edit(card, card.change(card.schema!!.fields.first(), InboxInput.Text("B")))
         assertEquals(RepositoryResult.Content(card), saved)
         assertEquals(listOf("edit"), repository.calls)
     }
@@ -88,7 +88,7 @@ class InboxUseCasesTest {
             envelope = InboxEnvelope(InboxEntityKind.PAGE_CONTENT, "p1", emptyMap(), emptyMap()),
         )
         val field = InboxField("page", InboxControl.SELECT)
-        EditInboxCard(repository)(page, field, InboxInput.Pick(InboxChoice("p2", "Two")))
+        EditInboxCard(repository)(page, page.change(field, InboxInput.Pick(InboxChoice("p2", "Two"))))
         assertEquals(1, repository.calls.size)
         assertEquals(true, repository.calls.single().startsWith("revise"))
     }
