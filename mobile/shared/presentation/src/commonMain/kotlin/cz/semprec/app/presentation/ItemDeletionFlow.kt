@@ -53,7 +53,9 @@ internal class ItemDeletionFlow(
             ensureActive()
             when (deleted) {
                 is Answer.Rejected ->
-                    host.update { it.copy(deletion = it.deletion?.copy(deleting = false, failure = Failed(deleted.kind))) }
+                    host.update {
+                        it.copy(deletion = it.deletion?.copy(deleting = false, failure = Failed(deleted.kind)))
+                    }
                 is Answer.Done -> {
                     host.update { it.copy(deleted = true, deletion = null) }
                     host.emit(ItemEffect.Close)

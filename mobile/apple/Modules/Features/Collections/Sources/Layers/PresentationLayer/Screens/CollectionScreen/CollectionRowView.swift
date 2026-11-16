@@ -35,6 +35,7 @@ struct CollectionRowView: View {
             .contentShape(Rectangle())
         }
         .listRowButton()
+        .foregroundStyle(.primary)
         .accessibilityIdentifier(CollectionsIdentifiers.rowPrefix + row.id)
     }
 }

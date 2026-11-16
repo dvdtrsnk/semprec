@@ -154,7 +154,8 @@ class CollectionViewModel internal constructor(
             ensureActive()
             if (state.value.filterSheet == null) return@launch
             when (answered) {
-                is Answer.Rejected -> update { it.copy(filterSheet = FilterSheet(false, Failed(answered.kind), emptyList())) }
+                is Answer.Rejected ->
+                    update { it.copy(filterSheet = FilterSheet(false, Failed(answered.kind), emptyList())) }
                 is Answer.Done -> {
                     facets = answered.value
                     val groups = filterGroups(database, facets, inputs.selections)
