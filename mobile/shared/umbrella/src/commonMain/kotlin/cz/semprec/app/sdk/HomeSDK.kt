@@ -1,10 +1,14 @@
 package cz.semprec.app.sdk
 
 import cz.semprec.app.core.AppPlatform
+import cz.semprec.app.core.AudioPlayer
+import cz.semprec.app.core.AudioRecorder
 import cz.semprec.app.core.DeviceInfo
 import cz.semprec.app.core.InMemorySessionStorage
 import cz.semprec.app.core.ItemKind
 import cz.semprec.app.core.SessionStorage
+import cz.semprec.app.core.UnavailableAudioPlayer
+import cz.semprec.app.core.UnavailableAudioRecorder
 import cz.semprec.app.data.ApiClient
 import cz.semprec.app.data.HttpAuthRepository
 import cz.semprec.app.data.HttpCollectionReads
@@ -46,12 +50,15 @@ import cz.semprec.app.presentation.WorkViewModelFactory
  * through `close()` when the screen is gone.
  *
  * [sessionStorage] is where the signed-in session survives a restart (the Keychain on Apple); the default forgets
- * it with the process. [device] is recorded by the server at sign-in.
+ * it with the process. [device] is recorded by the server at sign-in. [recorder] and [player] are the device's
+ * microphone and speaker; the defaults have neither.
  */
 class HomeSDK(
     sessionStorage: SessionStorage = InMemorySessionStorage(),
     device: DeviceInfo =
         DeviceInfo(AppPlatform.IOS, "00000000-0000-4000-8000-000000000000", "Device", "iphone", "0", "0"),
+    recorder: AudioRecorder = UnavailableAudioRecorder(),
+    player: AudioPlayer = UnavailableAudioPlayer(),
 ) {
     private val repository = InMemoryPlaceholderRepository()
     private val auth = HttpAuthRepository(ApiClient(), sessionStorage, device)
@@ -114,6 +121,9 @@ class HomeSDK(
 
     /** The calendar, its calendars list, its invitations and the new item form. */
     val calendar: CalendarSDK = CalendarSDK(auth.api)
+
+    /** The recordings, the recorder, the transcript and the page of an event. */
+    val recordings: RecordingsSDK = RecordingsSDK.create(auth.api, work.details, recorder, player)
 }
 
 /** The screens of the generic collection engine; [HomeSDK.collections] hands it out. */
