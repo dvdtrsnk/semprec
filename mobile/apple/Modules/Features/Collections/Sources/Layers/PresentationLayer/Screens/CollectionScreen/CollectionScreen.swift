@@ -25,6 +25,7 @@ struct CollectionScreen: View {
     var body: some View {
         content
             .navigationTitle(viewModel.state.header?.name ?? "")
+            .navigationSubtitle(selectedQuickFilterLabel)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(CollectionsIdentifiers.collectionScreen)
             .task { await viewModel.observe() }
@@ -52,11 +53,6 @@ private extension CollectionScreen {
     var loaded: some View {
         let state = viewModel.state
         return items(state)
-            .safeAreaBar(edge: .top, spacing: 0) {
-                if state.header != nil || !state.quickFilters.isEmpty {
-                    quickFilterBar(state)
-                }
-            }
             .searchable(
                 text: $query,
                 placement: Self.searchPlacement,
@@ -91,17 +87,6 @@ private extension CollectionScreen {
             } message: { failure in
                 Text(FailureKind.message(for: failure.kind))
             }
-    }
-
-    func quickFilterBar(_ state: CollectionState) -> some View {
-        QuickFilterBar(
-            chips: state.quickFilters,
-            selected: state.selectedQuickFilter,
-            activeFilterCount: state.activeFilterCount,
-            canFilter: state.header != nil,
-            tint: appearance(state).baseTint,
-            send: viewModel.send
-        )
     }
 
     @ViewBuilder
@@ -149,6 +134,11 @@ private extension CollectionScreen {
 
     @ToolbarContentBuilder
     func toolbar(_ state: CollectionState) -> some ToolbarContent {
+        if state.header != nil || !state.quickFilters.isEmpty {
+            ToolbarItem(placement: .primaryAction) {
+                CollectionFilterMenu(state: state, send: viewModel.send)
+            }
+        }
         ToolbarItem(placement: .primaryAction) {
             Menu {
                 if state.layouts.count > 1 {
@@ -230,6 +220,12 @@ private extension CollectionScreen {
                 )
             }
         }
+    }
+
+    /// The quick filter the collection is narrowed by, shown under the title.
+    var selectedQuickFilterLabel: String {
+        let state = viewModel.state
+        return state.quickFilters.first { $0.key == state.selectedQuickFilter }?.label ?? ""
     }
 
     var filterSheetBinding: Binding<Bool> {

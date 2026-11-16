@@ -145,6 +145,38 @@
         }
       }
     },
+    "collection.filters.more" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Další filtry…"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "More filters…"
+          }
+        }
+      }
+    },
+    "collection.filters.moreCount" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Další filtry (%lld)…"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "More filters (%lld)…"
+          }
+        }
+      }
+    },
     "collection.layout" : {
       "localizations" : {
         "cs" : {
@@ -253,6 +285,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Layout and order"
+          }
+        }
+      }
+    },
+    "collection.quickFilters" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zobrazit"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Show"
           }
         }
       }

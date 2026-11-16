@@ -5,9 +5,8 @@ enum CollectionsIdentifiers {
     static let collectionScreen = "collection.screen"
     /// Followed by the item id, e.g. `collection.row.p1`.
     static let rowPrefix = "collection.row."
-    /// Followed by the quick filter key.
-    static let quickFilterPrefix = "collection.quickFilter."
     static let filterButton = "collection.filter"
+    static let filterMenu = "collection.filterMenu"
     static let filterSheet = "collection.filterSheet"
     static let layoutMenu = "collection.layoutMenu"
     static let addButton = "collection.add"
