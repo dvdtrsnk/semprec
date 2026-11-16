@@ -15,4 +15,7 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
     // MARK: - Collections
     func makeCollection(target: CollectionTarget) -> any CollectionScreenModel
     func makeItem(itemId: String, databaseKey: String?) -> any ItemScreenModel
+
+    // MARK: - Inbox
+    func makeInbox() -> any InboxScreenModel
 }

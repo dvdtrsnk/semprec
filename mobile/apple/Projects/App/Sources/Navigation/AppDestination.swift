@@ -17,6 +17,8 @@ enum AppDestination: Hashable {
     case collection(CollectionTarget)
     /// The detail of an item of any database; `databaseKey` is its database's canonical key, if the caller knows it.
     case collectionItem(itemId: String, databaseKey: String?)
+    /// The Inbox, on the stack of `tab`.
+    case inbox(tab: AppTab)
 }
 
 // MARK: - NavigationProvidedDestination

@@ -25,9 +25,18 @@ final class OverviewRoutingTests: XCTestCase {
     }
 
     @MainActor
+    func testTheInboxRowOpensTheInboxOnTheOverviewStack() {
+        let context = NavigationContext()
+        let overview = OverviewStackSpy()
+        context.register(overview, for: .overview)
+        AppOverviewRouter(context: context).show(.inbox)
+        XCTAssertEqual(overview.pushed, [.inbox(tab: .overview)])
+    }
+
+    @MainActor
     func testEveryRowOpensANoticeThatNamesItOnTheOverviewStack() {
         let targets: [OverviewTarget] = [
-            .inbox, .mail, .recordings, .finance, .journal(itemId: "j1"),
+            .mail, .recordings, .finance, .journal(itemId: "j1"),
             .area(id: "a"), .project(id: "p"), .collection(ownerModuleId: "events", databaseId: "d")
         ]
         let context = NavigationContext()
@@ -108,7 +117,7 @@ final class OverviewRoutingTests: XCTestCase {
     }
 
     @MainActor
-    func testTheRealSceneOpensARowOnTheOverviewStack() async throws {
+    func testTheRealSceneOpensTheInboxRowOnTheOverviewStack() async throws {
         let window = try SceneWindow()
         let scene = AppComposition(models: SignedInModels())
         try await window.show(AppScene(composition: scene))
@@ -116,10 +125,9 @@ final class OverviewRoutingTests: XCTestCase {
         let overview = try XCTUnwrap(scene.navigation.stack(for: .overview) as? NavigatorStackAdapter)
 
         scene.overviewRouter.show(.inbox)
-        XCTAssertEqual(overview.navigator.count, 1, "The notice must be pushed onto the Overview stack")
-        let title = String(localized: "pending.inbox")
-        try await eventually { window.stackTitle == title }
-        XCTAssertEqual(window.stackTitle, title)
+        XCTAssertEqual(overview.navigator.count, 1, "The Inbox must be pushed onto the Overview stack")
+        try await eventually { window.stackTitle == "Inbox" }
+        XCTAssertEqual(window.stackTitle, "Inbox")
         window.close()
     }
 }

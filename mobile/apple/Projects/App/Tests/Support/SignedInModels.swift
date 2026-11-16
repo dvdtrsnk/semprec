@@ -27,6 +27,8 @@ final class SignedInModels: ScreenModelFactory {
         real.makeItem(itemId: itemId, databaseKey: databaseKey)
     }
 
+    func makeInbox() -> any InboxScreenModel { real.makeInbox() }
+
     func makeSession() -> any SessionScreenModel {
         ScriptedSessionScreenModel(
             state: .signedIn(SessionUser(email: "a@b.cz", role: "member", serverUrl: "https://s.example"))

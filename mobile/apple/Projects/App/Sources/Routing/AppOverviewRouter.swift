@@ -22,7 +22,7 @@ extension AppOverviewRouter: OverviewRouting {
     func show(_ target: OverviewTarget) {
         switch target {
         case .profile: context.presentSheet(.profile, from: .overview)
-        case .inbox: pending(String(localized: "pending.inbox"))
+        case .inbox: context.showInbox(in: .overview)
         case .mail: pending(String(localized: "pending.mail"))
         case .recordings: pending(String(localized: "pending.recordings"))
         case .tasks: context.showTasks(TasksStart(), in: .overview)

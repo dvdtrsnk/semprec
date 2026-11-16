@@ -1,6 +1,7 @@
 import AuthFeature
 import CollectionsFeature
 import DesignSystem
+import InboxFeature
 import NavigatorUI
 import SwiftUI
 import TasksFeature
@@ -104,6 +105,11 @@ private extension AppScene {
                 target,
                 makeModel: { composition.models.makeCollection(target: $0) },
                 router: composition.collectionsRouter
+            )
+        case .inbox(let tab):
+            InboxScreenFactory.inbox(
+                makeModel: { composition.models.makeInbox() },
+                router: composition.inboxRouter(in: tab)
             )
         case .collectionItem(let itemId, let databaseKey):
             CollectionsScreenFactory.item(
