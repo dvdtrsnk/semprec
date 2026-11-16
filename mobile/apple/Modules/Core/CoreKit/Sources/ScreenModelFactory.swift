@@ -43,4 +43,6 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
 
     // MARK: - Notes
     func makeNotes(itemId: String) -> any NotesScreenModel
+    // MARK: - Inbox
+    func makeInbox() -> any InboxScreenModel
 }

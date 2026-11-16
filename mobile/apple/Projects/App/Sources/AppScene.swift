@@ -1,11 +1,9 @@
-import AreasFeature
 import AuthFeature
 import CalendarFeature
 import CollectionsFeature
 import DesignSystem
 import JournalFeature
 import NavigatorUI
-import NotesFeature
 import SleepFeature
 import SwiftUI
 import TasksFeature
@@ -111,17 +109,11 @@ private extension AppScene {
                 router: composition.collectionsRouter
             )
         case .area(let areaId, let tab):
-            AreasScreenFactory.area(
-                areaId: areaId,
-                makeModel: { composition.models.makeArea(areaId: areaId) },
-                router: composition.areasRouter(in: tab)
-            )
+            AreaDestination(areaId: areaId, tab: tab, composition: composition)
         case .notes(let itemId, let tab):
-            NotesScreenFactory.notes(
-                itemId: itemId,
-                makeModel: { composition.models.makeNotes(itemId: itemId) },
-                router: composition.notesRouter(in: tab)
-            )
+            NotesDestination(itemId: itemId, tab: tab, composition: composition)
+        case .inbox(let tab):
+            InboxDestination(tab: tab, composition: composition)
         case .collectionItem(let itemId, let databaseKey):
             CollectionsScreenFactory.item(
                 itemId: itemId,

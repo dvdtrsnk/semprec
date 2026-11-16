@@ -17,22 +17,6 @@
         }
       }
     },
-    "pending.inbox" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Inbox"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Inbox"
-          }
-        }
-      }
-    },
     "pending.journal" : {
       "localizations" : {
         "cs" : {

@@ -60,6 +60,7 @@ final class SignedInModels: ScreenModelFactory {
 
     // MARK: - Notes
     func makeNotes(itemId: String) -> any NotesScreenModel { real.makeNotes(itemId: itemId) }
+    func makeInbox() -> any InboxScreenModel { real.makeInbox() }
 
     func makeSession() -> any SessionScreenModel {
         ScriptedSessionScreenModel(
