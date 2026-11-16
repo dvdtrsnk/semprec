@@ -21,6 +21,12 @@ final class SignedInModels: ScreenModelFactory {
         real.makeItemDetails(kind: kind, itemId: itemId)
     }
 
+    func makeCollection(target: CollectionTarget) -> any CollectionScreenModel { real.makeCollection(target: target) }
+
+    func makeItem(itemId: String, databaseKey: String?) -> any ItemScreenModel {
+        real.makeItem(itemId: itemId, databaseKey: databaseKey)
+    }
+
     func makeSession() -> any SessionScreenModel {
         ScriptedSessionScreenModel(
             state: .signedIn(SessionUser(email: "a@b.cz", role: "member", serverUrl: "https://s.example"))

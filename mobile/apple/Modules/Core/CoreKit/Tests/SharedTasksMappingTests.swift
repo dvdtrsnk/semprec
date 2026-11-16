@@ -109,13 +109,13 @@ final class SharedTasksMappingTests: XCTestCase {
             tasksState(
                 .content,
                 areaOptions: [
-                    SharedSDK.FilterOption(id: "a1", title: "Práce", color: "#5856D6", count: 3, areaId: nil)
+                    SharedSDK.TaskFilterOption(id: "a1", title: "Práce", color: "#5856D6", count: 3, areaId: nil)
                 ],
-                projectOptions: [SharedSDK.FilterOption(id: "p1", title: "iOS", color: nil, count: 2, areaId: "a1")]
+                projectOptions: [SharedSDK.TaskFilterOption(id: "p1", title: "iOS", color: nil, count: 2, areaId: "a1")]
             )
         )
-        XCTAssertEqual(state.areaOptions, [CoreKit.FilterOption(id: "a1", title: "Práce", color: "#5856D6", count: 3)])
-        XCTAssertEqual(state.projectOptions, [CoreKit.FilterOption(id: "p1", title: "iOS", count: 2, areaId: "a1")])
+        XCTAssertEqual(state.areaOptions, [CoreKit.TaskFilterOption(id: "a1", title: "Práce", color: "#5856D6", count: 3)])
+        XCTAssertEqual(state.projectOptions, [CoreKit.TaskFilterOption(id: "p1", title: "iOS", count: 2, areaId: "a1")])
     }
 
     // MARK: - Tasks actions and effects
@@ -182,8 +182,8 @@ private extension SharedTasksMappingTests {
         flaggedOnly: Bool = false,
         groups: [SharedSDK.TaskGroup] = [],
         openCount: Int32 = 0,
-        areaOptions: [SharedSDK.FilterOption] = [],
-        projectOptions: [SharedSDK.FilterOption] = [],
+        areaOptions: [SharedSDK.TaskFilterOption] = [],
+        projectOptions: [SharedSDK.TaskFilterOption] = [],
         matchesNothing: Bool = false,
         notice: SharedSDK.FailureKind? = nil
     ) -> SharedSDK.TasksState {

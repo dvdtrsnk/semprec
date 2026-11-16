@@ -7,6 +7,8 @@ import cz.semprec.app.core.ItemKind
 import cz.semprec.app.core.SessionStorage
 import cz.semprec.app.data.ApiClient
 import cz.semprec.app.data.HttpAuthRepository
+import cz.semprec.app.data.HttpCollectionReads
+import cz.semprec.app.data.HttpCollectionWrites
 import cz.semprec.app.data.HttpOverviewRepository
 import cz.semprec.app.data.HttpSearchRepository
 import cz.semprec.app.data.InMemoryPlaceholderRepository
@@ -17,10 +19,14 @@ import cz.semprec.app.domain.LoadOverview
 import cz.semprec.app.domain.LoadPlaceholderItem
 import cz.semprec.app.domain.LoadPlaceholderItems
 import cz.semprec.app.domain.SearchEverything
+import cz.semprec.app.presentation.CollectionTarget
+import cz.semprec.app.presentation.CollectionViewModel
+import cz.semprec.app.presentation.CollectionViewModelFactory
 import cz.semprec.app.presentation.DetailViewModel
 import cz.semprec.app.presentation.HomeViewModel
 import cz.semprec.app.presentation.HomeViewModelFactory
 import cz.semprec.app.presentation.ItemDetailsViewModel
+import cz.semprec.app.presentation.ItemViewModel
 import cz.semprec.app.presentation.LoginViewModel
 import cz.semprec.app.presentation.OverviewViewModel
 import cz.semprec.app.presentation.OverviewViewModelFactory
@@ -51,6 +57,11 @@ class HomeSDK(
     private val auth = HttpAuthRepository(ApiClient(), sessionStorage, device)
     private val viewModels =
         HomeViewModelFactory(LoadPlaceholderItems(repository), LoadPlaceholderItem(repository), auth)
+    private val collectionReads = HttpCollectionReads(auth.api)
+
+    /** The generic collection screens: any database's items, and one item of it. */
+    val collections: CollectionSDK =
+        CollectionSDK(CollectionViewModelFactory(collectionReads, HttpCollectionWrites(auth.api, collectionReads)))
 
     // The overview and its search; the recent searches live as long as this SDK, that is, as long as the window.
     private val overviewViewModels = OverviewViewModelFactory(
@@ -85,4 +96,15 @@ class HomeSDK(
     fun sessionViewModel(): SessionViewModel = viewModels.sessionViewModel()
 
     fun loginViewModel(): LoginViewModel = viewModels.loginViewModel()
+}
+
+/** The screens of the generic collection engine; [HomeSDK.collections] hands it out. */
+class CollectionSDK internal constructor(private val factory: CollectionViewModelFactory) {
+
+    /** A collection of the items of one database that [target] selects. */
+    fun collectionViewModel(target: CollectionTarget): CollectionViewModel = factory.collectionViewModel(target)
+
+    /** The detail of one item; [databaseKeyHint] is the canonical key of its database, if the caller knows it. */
+    fun itemViewModel(itemId: String, databaseKeyHint: String?): ItemViewModel =
+        factory.itemViewModel(itemId, databaseKeyHint)
 }

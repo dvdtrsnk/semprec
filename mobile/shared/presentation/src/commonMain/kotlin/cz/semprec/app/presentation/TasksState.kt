@@ -30,7 +30,7 @@ data class TaskRow(
 data class TaskGroup(val kind: TaskSectionKind, val rows: List<TaskRow>)
 
 /** One choice of the filter sheet and the number of tasks it leaves. [areaId] is the area of a project choice. */
-data class FilterOption(
+data class TaskFilterOption(
     val id: String,
     val title: String,
     val color: String?,
@@ -53,8 +53,8 @@ data class TasksState(
     val flaggedOnly: Boolean = false,
     val groups: List<TaskGroup> = emptyList(),
     val openCount: Int = 0,
-    val areaOptions: List<FilterOption> = emptyList(),
-    val projectOptions: List<FilterOption> = emptyList(),
+    val areaOptions: List<TaskFilterOption> = emptyList(),
+    val projectOptions: List<TaskFilterOption> = emptyList(),
     val areaAllCount: Int = 0,
     val projectAllCount: Int = 0,
     val matchesNothing: Boolean = false,

@@ -20,7 +20,7 @@ struct TasksFilterSheet: View {
     fileprivate struct Choice {
         let title: LocalizedStringKey
         let selected: String?
-        let options: [FilterOption]
+        let options: [TaskFilterOption]
         let allCount: Int
         let pick: (String?) -> Void
     }
@@ -129,10 +129,10 @@ private extension TasksFilterSheet {
             phase: .content,
             areaId: "work",
             areaOptions: [
-                FilterOption(id: "work", title: "Práce", color: "#5856D6", count: 5),
-                FilterOption(id: "home", title: "Domácnost", color: "#FF9500", count: 3)
+                TaskFilterOption(id: "work", title: "Práce", color: "#5856D6", count: 5),
+                TaskFilterOption(id: "home", title: "Domácnost", color: "#FF9500", count: 3)
             ],
-            projectOptions: [FilterOption(id: "ios", title: "Semprec iOS", color: "#007AFF", count: 2, areaId: "work")],
+            projectOptions: [TaskFilterOption(id: "ios", title: "Semprec iOS", color: "#007AFF", count: 2, areaId: "work")],
             areaAllCount: 8,
             projectAllCount: 5
         ),

@@ -25,8 +25,8 @@ import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-private const val AREAS_ID = "aaaaaaaa-0000-4000-8000-000000000001"
-private const val PROJECTS_ID = "aaaaaaaa-0000-4000-8000-000000000002"
+private const val OVERVIEW_AREAS_ID = "aaaaaaaa-0000-4000-8000-000000000001"
+private const val OVERVIEW_PROJECTS_ID = "aaaaaaaa-0000-4000-8000-000000000002"
 private const val EVENTS_ID = "aaaaaaaa-0000-4000-8000-000000000003"
 private const val GONE_ID = "aaaaaaaa-0000-4000-8000-000000000004"
 
@@ -37,17 +37,17 @@ private const val OVERVIEW = """{"inboxPending":9,"mailUnread":5,"tasksToday":4,
     {"databaseId":"$GONE_ID","ownerModuleId":"people","itemCount":3}]}"""
 
 private const val DATABASES = """{"databases":[
-    {"id":"$AREAS_ID","key":"areas","name":"Areas"},
-    {"id":"$PROJECTS_ID","key":"projects","name":"Projects"},
+    {"id":"$OVERVIEW_AREAS_ID","key":"areas","name":"Areas"},
+    {"id":"$OVERVIEW_PROJECTS_ID","key":"projects","name":"Projects"},
     {"id":"$EVENTS_ID","key":"events","name":"Events","icon":"calendar","color":"#FF3B30","overviewOrder":2,
     "clientVisible":true,"overviewHidden":false}]}"""
 
 private const val AREAS = """{"items":[
-    {"id":"area-work","databaseId":"$AREAS_ID","properties":{"name":"Work","color":"#5856D6","icon":"briefcase","position":1}},
-    {"id":"area-old","databaseId":"$AREAS_ID","properties":{"name":"Old","active":false}}]}"""
+    {"id":"area-work","databaseId":"$OVERVIEW_AREAS_ID","properties":{"name":"Work","color":"#5856D6","icon":"briefcase","position":1}},
+    {"id":"area-old","databaseId":"$OVERVIEW_AREAS_ID","properties":{"name":"Old","active":false}}]}"""
 
 private const val PROJECTS = """{"items":[
-    {"id":"p1","databaseId":"$PROJECTS_ID","properties":{"name":"Semprec iOS","pinned":true,"pinnedOrder":1,
+    {"id":"p1","databaseId":"$OVERVIEW_PROJECTS_ID","properties":{"name":"Semprec iOS","pinned":true,"pinnedOrder":1,
     "status":"inProgress","color":"#007AFF"},"relations":{"area":[{"id":"area-work","title":"Work"}]}}]}"""
 
 class HttpOverviewRepositoryTest {
@@ -65,8 +65,8 @@ class HttpOverviewRepositoryTest {
             when (request.url.encodedPath) {
                 "/api/overview" -> json(overview)
                 "/api/databases" -> json(DATABASES)
-                "/api/databases/$AREAS_ID/query" -> json(AREAS)
-                "/api/databases/$PROJECTS_ID/query" -> json(PROJECTS)
+                "/api/databases/$OVERVIEW_AREAS_ID/query" -> json(AREAS)
+                "/api/databases/$OVERVIEW_PROJECTS_ID/query" -> json(PROJECTS)
                 else -> json("{}", HttpStatusCode.NotFound)
             }
         }
@@ -121,7 +121,8 @@ class HttpOverviewRepositoryTest {
     fun theProjectsAreQueriedForPinnedOnesWithTheirArea() = runTest {
         repository().load()
 
-        val sent = Json.parseToJsonElement(bodies[paths.indexOf("/api/databases/$PROJECTS_ID/query")]).jsonObject
+        val queryIndex = paths.indexOf("/api/databases/$OVERVIEW_PROJECTS_ID/query")
+        val sent = Json.parseToJsonElement(bodies[queryIndex]).jsonObject
         val filter = sent.getValue("filter").jsonObject
         assertEquals("equals", filter.getValue("type").jsonPrimitive.content)
         assertEquals("pinned", filter.getValue("property").jsonPrimitive.content)
@@ -136,7 +137,7 @@ class HttpOverviewRepositoryTest {
             when (request.url.encodedPath) {
                 "/api/overview" -> json(OVERVIEW)
                 "/api/databases" -> json(DATABASES)
-                "/api/databases/$AREAS_ID/query" -> json(AREAS)
+                "/api/databases/$OVERVIEW_AREAS_ID/query" -> json(AREAS)
                 else -> json(noArea)
             }
         }
@@ -157,7 +158,8 @@ class HttpOverviewRepositoryTest {
 
     @Test
     fun aFailureOfTheAreasIsThatFailure() = runTest {
-        val repo = repository { request -> "{}".takeIf { request.url.encodedPath.endsWith("$AREAS_ID/query") } }
+        val repo =
+            repository { request -> "{}".takeIf { request.url.encodedPath.endsWith("$OVERVIEW_AREAS_ID/query") } }
 
         assertEquals(FailureKind.UNAVAILABLE, assertIs<RepositoryResult.Failure>(repo.load()).kind)
     }
@@ -171,7 +173,8 @@ class HttpOverviewRepositoryTest {
 
     @Test
     fun aFailureOfTheProjectsIsThatFailure() = runTest {
-        val repo = repository { request -> "{}".takeIf { request.url.encodedPath.endsWith("$PROJECTS_ID/query") } }
+        val repo =
+            repository { request -> "{}".takeIf { request.url.encodedPath.endsWith("$OVERVIEW_PROJECTS_ID/query") } }
 
         assertEquals(FailureKind.UNAVAILABLE, assertIs<RepositoryResult.Failure>(repo.load()).kind)
     }
