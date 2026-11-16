@@ -13,6 +13,9 @@ const platformAreas = {
   ios: ["mobile", "apple", "cross-cutting"],
   macos: ["mobile", "apple", "cross-cutting"],
 };
+// Backend and cross-cutting rules live in current architecture documents, not ADRs.
+export const architectureIndex = "docs/architecture/README.md";
+const architecturePlatforms = new Set(["backend", "web"]);
 const areas = new Set(["backend", "web", "mobile", "apple", "cross-cutting"]);
 const statuses = new Set(["proposed", "accepted", "superseded", "deprecated"]);
 
@@ -70,7 +73,9 @@ export async function main(argv = process.argv.slice(2)) {
     else throw new Error("Usage: node .github/scripts/adr.mjs [--platform backend|web|mobile|shared|android|apple|ios|macos] [--all] [--json]");
   }
   const result = await listAdrs(process.cwd(), options);
-  console.log(json ? JSON.stringify(result, null, 2) : result.map(adr => `docs/adr/${adr.filename} [${adr.status}; ${adr.area.join(", ")}]`).join("\n"));
+  const architecture = options.platform === undefined || architecturePlatforms.has(options.platform);
+  if (json) console.log(JSON.stringify(result, null, 2));
+  else console.log([...(architecture ? [`${architectureIndex} [current architecture; backend, cross-cutting]`] : []), ...result.map(adr => `docs/adr/${adr.filename} [${adr.status}; ${adr.area.join(", ")}]`)].join("\n"));
 }
 
 if (isEntryScript(import.meta.url)) main().catch(error => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; });

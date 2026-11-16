@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listAdrs, parseAdr } from "./adr.mjs";
+import { architectureIndex, listAdrs, main, parseAdr } from "./adr.mjs";
 
 function text(area, status = "accepted", date = "2026-09-10") {
   return `---\nstatus: ${status}\ndate: ${date}\narea: [${area}]\nsupersedes: []\nsuperseded-by: null\n---\n\n# Decision\n`;
@@ -26,4 +26,15 @@ test("ADR parser rejects missing, ambiguous and unknown metadata and newly intro
   assert.equal(parseAdr(text("backend, web"), "2026-09-10-example.md").area.length, 2);
   for (const content of ["no frontmatter", text("unknown"), text("backend, backend"), text("backend", "unknown"), text("backend").replace("status: accepted", "status: accepted\nstatus: accepted"), text("backend").replace("# Decision", "Decision"), text("apple", "accepted", "2026-10-24")])
     assert.throws(() => parseAdr(content, "2026-09-10-example.md"));
+});
+test("backend and web output points at the architecture documents; mobile output does not", async t => {
+  const root = await mkdtemp(join(tmpdir(), "semprec-adr-")); t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, "docs/adr"), { recursive: true });
+  await writeFile(join(root, "docs/adr/2026-09-10-mobile.md"), text("mobile"));
+  const cwd = process.cwd(); process.chdir(root); t.after(() => process.chdir(cwd));
+  const lines = []; t.mock.method(console, "log", line => lines.push(line));
+  for (const [platform, expected] of [["backend", true], ["web", true], ["android", false]]) {
+    lines.length = 0; await main(["--platform", platform]);
+    assert.equal(lines[0].startsWith(architectureIndex), expected, platform);
+  }
 });
