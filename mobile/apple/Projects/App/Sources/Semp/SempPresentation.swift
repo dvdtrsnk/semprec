@@ -5,14 +5,14 @@ import SwiftUI
 
 extension View {
 
-    /// Floats the Semp bubble over this view, which is the content of a scene, and presents the chat over it. The bubble
-    /// is hidden while the chat is open.
+    /// Floats the Semp bubble over this view, which is the content of a scene, and presents the chat over it. The
+    /// bubble is hidden while the chat is open.
     func sempOverlay(_ composition: AppComposition) -> some View {
         modifier(SempOverlayModifier(composition: composition, presenter: composition.sempChat))
     }
 
-    /// Floats a bubble of its own over this view, the content of a sheet, because a sheet covers the bubble of the scene.
-    /// What the bubble is given is the same: they share the Kotlin session of the scene.
+    /// Floats a bubble of its own over this view, the content of a sheet, because a sheet covers the bubble of the
+    /// scene. What the bubble is given is the same: they share the Kotlin session of the scene.
     func sempSheetBubble(_ composition: AppComposition, enabled: Bool) -> some View {
         modifier(SempSheetBubbleModifier(composition: composition, presenter: composition.sempChat, enabled: enabled))
     }

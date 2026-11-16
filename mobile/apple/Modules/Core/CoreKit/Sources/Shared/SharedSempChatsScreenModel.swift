@@ -81,6 +81,7 @@ extension SharedSempChatsScreenModel {
     }
 }
 
+// MARK: - SempChatsFilter
 extension SempChatsFilter {
 
     init(_ filter: SharedSDK.SempChatsFilter) {
@@ -100,6 +101,7 @@ extension SempChatsFilter {
     }
 }
 
+// MARK: - SempChatRow
 extension SempChatRow {
 
     init(_ row: SharedSDK.SempChatRow) {

@@ -27,7 +27,9 @@ struct SempThreadScreen: View {
                 Text("semp.action.failed", bundle: .module),
                 isPresented: actionFailed,
                 actions: {
-                    Button { viewModel.send(.dismissFailure) } label: { Text("semp.action.dismiss", bundle: .module) }
+                    Button { viewModel.send(.dismiss(.failure)) } label: {
+                        Text("semp.action.dismiss", bundle: .module)
+                    }
                 },
                 message: { Text(FailureKind.sempMessage(for: state.actionFailure?.kind)) }
             )
@@ -51,7 +53,7 @@ private extension SempThreadScreen {
     }
 
     var actionFailed: Binding<Bool> {
-        Binding(get: { state.actionFailure != nil }, set: { _ in viewModel.send(.dismissFailure) })
+        Binding(get: { state.actionFailure != nil }, set: { _ in viewModel.send(.dismiss(.failure)) })
     }
 
     @ViewBuilder var content: some View {
@@ -120,7 +122,7 @@ private extension SempThreadScreen {
 
     func noticeBanner(_ notice: SempNotice) -> some View {
         HStack(spacing: 10) {
-            Button { viewModel.send(.openStatus) } label: {
+            Button { viewModel.send(.open(.status)) } label: {
                 HStack(spacing: 10) {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.Colors.sempWaiting)
                     VStack(alignment: .leading, spacing: 2) {
@@ -132,7 +134,9 @@ private extension SempThreadScreen {
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier(SempIdentifiers.notice)
-            Button { viewModel.send(.dismissNotice) } label: { Image(systemName: "xmark").foregroundStyle(.secondary) }
+            Button { viewModel.send(.dismiss(.notice)) } label: {
+                Image(systemName: "xmark").foregroundStyle(.secondary)
+            }
                 .buttonStyle(.plain)
                 .accessibilityLabel(Text("semp.notice.hide", bundle: .module))
                 .accessibilityIdentifier(SempIdentifiers.noticeClose)
@@ -145,12 +149,12 @@ private extension SempThreadScreen {
     @ToolbarContentBuilder var toolbar: some ToolbarContent {
         if state.type != .tick {
             ToolbarItem(placement: .navigation) {
-                Button { viewModel.send(.openHistory) } label: { Image(systemName: "text.alignleft") }
+                Button { viewModel.send(.open(.history)) } label: { Image(systemName: "text.alignleft") }
                     .accessibilityLabel(Text("semp.history.open", bundle: .module))
                     .accessibilityIdentifier(SempIdentifiers.history)
             }
             ToolbarItem(placement: .primaryAction) {
-                Button { viewModel.send(.openNewChat) } label: { Image(systemName: "square.and.pencil") }
+                Button { viewModel.send(.open(.newChat)) } label: { Image(systemName: "square.and.pencil") }
                     .accessibilityLabel(Text("semp.newChat.open", bundle: .module))
                     .accessibilityIdentifier(SempIdentifiers.newChat)
             }

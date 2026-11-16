@@ -132,7 +132,8 @@ public enum SempStatusEffect: Equatable, Sendable {
 public typealias SempStatusScreenModel = ScreenModel<SempStatusState, SempStatusAction, SempStatusEffect>
 
 /// Status screen model for previews and tests; it never starts the Kotlin runtime.
-public typealias ScriptedSempStatusScreenModel = ScriptedScreenModel<SempStatusState, SempStatusAction, SempStatusEffect>
+public typealias ScriptedSempStatusScreenModel =
+    ScriptedScreenModel<SempStatusState, SempStatusAction, SempStatusEffect>
 
 // MARK: - Run
 /// What a client shows as the state of a run.
@@ -243,7 +244,7 @@ public struct SempRunStepRow: Equatable, Identifiable, Sendable {
     public let state: SempLineState
     public let title: String
     public let summary: String?
-    public let at: String
+    public let time: String
     public let durationMs: Int64?
 
     public init(
@@ -252,7 +253,7 @@ public struct SempRunStepRow: Equatable, Identifiable, Sendable {
         state: SempLineState,
         title: String,
         summary: String?,
-        at: String,
+        time: String,
         durationMs: Int64?
     ) {
         self.id = id
@@ -260,7 +261,7 @@ public struct SempRunStepRow: Equatable, Identifiable, Sendable {
         self.state = state
         self.title = title
         self.summary = summary
-        self.at = at
+        self.time = time
         self.durationMs = durationMs
     }
 }

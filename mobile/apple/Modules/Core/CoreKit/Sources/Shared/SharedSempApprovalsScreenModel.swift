@@ -78,6 +78,7 @@ extension SharedSempApprovalsScreenModel {
     }
 }
 
+// MARK: - SempApprovalsTab
 extension SempApprovalsTab {
 
     init(_ tab: SharedSDK.SempApprovalsTab) {

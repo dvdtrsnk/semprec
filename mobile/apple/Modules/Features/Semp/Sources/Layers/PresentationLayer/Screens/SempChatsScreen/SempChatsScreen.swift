@@ -129,6 +129,7 @@ private extension SempChatsScreen {
                     Text(preview).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
+            .foregroundStyle(.primary)
         }
         .listRowButton()
         .accessibilityIdentifier(SempIdentifiers.chatRowPrefix + row.id)

@@ -12,6 +12,7 @@ extension SempThreadStart {
     }
 }
 
+// MARK: - SempThreadType
 extension SempThreadType {
 
     init(_ type: SharedSDK.SempThreadType) {
@@ -23,6 +24,7 @@ extension SempThreadType {
     }
 }
 
+// MARK: - SempEntryRole
 extension SempEntryRole {
 
     init(_ role: SharedSDK.SempEntryRole) {
@@ -34,6 +36,7 @@ extension SempEntryRole {
     }
 }
 
+// MARK: - SempDelivery
 extension SempDelivery {
 
     init(_ delivery: SharedSDK.SempDelivery) {
@@ -44,6 +47,7 @@ extension SempDelivery {
     }
 }
 
+// MARK: - SempReplyPhase
 extension SempReplyPhase {
 
     init(_ phase: SharedSDK.SempReplyPhase) {
@@ -56,6 +60,7 @@ extension SempReplyPhase {
     }
 }
 
+// MARK: - SempChip
 extension SempChip {
 
     init(_ chip: SharedSDK.SempChip) {
@@ -63,6 +68,7 @@ extension SempChip {
     }
 }
 
+// MARK: - SempChangeType
 extension SempChangeType {
 
     init(_ type: SharedSDK.SempChangeType) {
@@ -76,6 +82,7 @@ extension SempChangeType {
     }
 }
 
+// MARK: - SempChangeCard
 extension SempChangeCard {
 
     init(_ card: SharedSDK.SempChangeCard) {
@@ -91,6 +98,7 @@ extension SempChangeCard {
     }
 }
 
+// MARK: - SempStepLine
 extension SempStepLine {
 
     init(_ line: SharedSDK.SempStepLine) {
@@ -104,6 +112,7 @@ extension SempStepLine {
     }
 }
 
+// MARK: - SempRunChipState
 extension SempRunChipState {
 
     init(_ state: SharedSDK.SempRunChipState) {
@@ -115,6 +124,7 @@ extension SempRunChipState {
     }
 }
 
+// MARK: - SempRunChip
 extension SempRunChip {
 
     init(_ chip: SharedSDK.SempRunChip) {
@@ -131,6 +141,7 @@ extension SempRunChip {
     }
 }
 
+// MARK: - SempEntry
 extension SempEntry {
 
     init(_ entry: SharedSDK.SempEntry) {
@@ -153,6 +164,7 @@ extension SempEntry {
     }
 }
 
+// MARK: - SempTickInfo
 extension SempTickInfo {
 
     init(_ info: SharedSDK.SempTickInfo) {

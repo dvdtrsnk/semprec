@@ -41,7 +41,7 @@ final class AppComposition: ObservableObject {
     }
 
     // MARK: - Semp
-    /// The router of the bubble and of the Semp pages that sit on a tab's stack: it opens the chat on the page it is asked for.
+    /// The router of the bubble and of the Semp pages on a tab's stack: it opens the chat on the page it is asked for.
     private(set) lazy var sempRouter = AppSempRouter(
         presenter: sempChat,
         context: navigation,

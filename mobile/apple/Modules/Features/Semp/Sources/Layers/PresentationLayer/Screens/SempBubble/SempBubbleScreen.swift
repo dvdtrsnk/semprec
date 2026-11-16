@@ -60,8 +60,8 @@ private extension SempBubbleScreen {
     func center(_ placement: SempBubblePlacement) -> CGPoint {
         let radius = SempBubblePlacement.diameter / 2
         if let point = drag.center { return CGPoint(x: point.x, y: point.y) }
-        let y = restingY < 0 ? placement.yRange.upperBound : placement.rest(y: restingY)
-        return CGPoint(x: placement.x(for: side) + radius, y: y + radius)
+        let top = restingY < 0 ? placement.yRange.upperBound : placement.rest(top: restingY)
+        return CGPoint(x: placement.x(for: side) + radius, y: top + radius)
     }
 
     func bubble(_ placement: SempBubblePlacement) -> some View {
@@ -140,7 +140,11 @@ private extension SempBubbleScreen {
     var accessibilityLabel: String {
         let state = viewModel.state
         var text = state.badge > 0
-            ? String(format: String(localized: "semp.bubble.label.waiting", bundle: .module), locale: .current, state.badge)
+            ? String(
+                format: String(localized: "semp.bubble.label.waiting", bundle: .module),
+                locale: .current,
+                state.badge
+            )
             : String(localized: "semp.bubble.label", bundle: .module)
         if state.attachments > 0 {
             text += " " + String(
@@ -179,7 +183,9 @@ private extension SempBubbleScreen {
 
     func hover(at point: CGPoint) {
         let found = registry.target(at: point)
-        let target = found.flatMap { entry in (entry.payload as? SempTarget).map { SempBubbleHover(frame: entry.frame, target: $0) } }
+        let target = found.flatMap { entry in
+            (entry.payload as? SempTarget).map { SempBubbleHover(frame: entry.frame, target: $0) }
+        }
         guard target != drag.hover else { return }
         drag.hover = target
         drag.armed = false
@@ -202,7 +208,7 @@ private extension SempBubbleScreen {
             if moved, armedTarget == nil, let last {
                 let velocityX = (value.predictedEndLocation.x - value.location.x) / SempBubblePlacement.throwSeconds
                 sideName = placement.side(centerX: last.x, velocityX: velocityX).rawValue
-                restingY = Double(placement.rest(y: last.y - SempBubblePlacement.diameter / 2))
+                restingY = Double(placement.rest(top: last.y - SempBubblePlacement.diameter / 2))
             }
         }
         if let armedTarget {

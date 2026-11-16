@@ -10,7 +10,7 @@ public enum SempPhase: Equatable, Sendable {
 
 /// What kind of object a person drops on the Semp bubble or an object a message is about; each has its own icon and
 /// colour on screen.
-public enum SempTargetKind: Equatable, Hashable, Sendable {
+public enum SempTargetKind: String, CaseIterable, Equatable, Hashable, Sendable {
 
     case task
     case event

@@ -42,10 +42,10 @@ struct SempBubblePlacement: Equatable {
         centerX + velocityX * Self.throwSeconds < size.width / 2 ? .left : .right
     }
 
-    /// The resting height for a top edge at `y`: kept in the band, and pulled into the corner when it is near one.
-    func rest(y: CGFloat) -> CGFloat {
+    /// The resting height for a top edge at `top`: kept in the band, and pulled into the corner when it is near one.
+    func rest(top: CGFloat) -> CGFloat {
         let range = yRange
-        let clamped = min(max(y, range.lowerBound), range.upperBound)
+        let clamped = min(max(top, range.lowerBound), range.upperBound)
         if clamped - range.lowerBound < Self.magnet { return range.lowerBound }
         if range.upperBound - clamped < Self.magnet { return range.upperBound }
         return clamped.rounded()

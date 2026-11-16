@@ -87,15 +87,26 @@ private extension SempApprovalsScreen {
     var empty: some View {
         VStack(spacing: 6) {
             Image(systemName: "checkmark.circle").font(.largeTitle).foregroundStyle(.secondary)
-            Text(state.tab == .pending ? "semp.approvals.empty.pending" : "semp.approvals.empty.decided", bundle: .module)
-                .font(.headline)
-            Text(state.tab == .pending ? "semp.approvals.empty.pending.hint" : "semp.approvals.empty.decided.hint", bundle: .module)
+            emptyTitle.font(.headline)
+            emptyHint
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
         .padding(.top, Theme.Spacing.large)
+    }
+
+    var emptyTitle: Text {
+        state.tab == .pending
+            ? Text("semp.approvals.empty.pending", bundle: .module)
+            : Text("semp.approvals.empty.decided", bundle: .module)
+    }
+
+    var emptyHint: Text {
+        state.tab == .pending
+            ? Text("semp.approvals.empty.pending.hint", bundle: .module)
+            : Text("semp.approvals.empty.decided.hint", bundle: .module)
     }
 
     func card(_ item: SempApprovalItem) -> some View {
@@ -107,17 +118,25 @@ private extension SempApprovalsScreen {
         )
     }
 
+    func detailsLabel(open: Bool) -> Text {
+        open
+            ? Text("semp.approvals.details.hide", bundle: .module)
+            : Text("semp.approvals.details.show", bundle: .module)
+    }
+
     func details(_ item: SempApprovalItem, open: Bool) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Button { viewModel.send(.toggleDetails(approvalId: item.id)) } label: {
-                Text(open ? "semp.approvals.details.hide" : "semp.approvals.details.show", bundle: .module).font(.footnote)
+                detailsLabel(open: open).font(.footnote)
             }
             .buttonStyle(.plain)
             .foregroundStyle(Theme.Colors.accent)
             .accessibilityIdentifier(SempIdentifiers.approvalDetails)
             if open {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("semp.approvals.parameters", bundle: .module).font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+                    Text("semp.approvals.parameters", bundle: .module)
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.secondary)
                     ForEach(item.argumentKeys, id: \.self) { key in
                         Text(key + " = \u{2022}\u{2022}\u{2022}").font(.footnote.monospaced())
                     }
