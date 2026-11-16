@@ -11,7 +11,10 @@ struct JournalScreen: View {
     @StateObject private var viewModel: JournalViewModel
 
     // MARK: - State
-    @State private var compactAxis = false
+    /// How far the page is scrolled, which folds the rows of the axis away.
+    @State private var scrolled: CGFloat = 0
+    /// The visible height of the page between its margins; the axis does not change it.
+    @State private var viewportHeight: CGFloat = 0
     /// Weeks whose open state the person flipped from what the screen shows by default.
     @State private var flippedWeeks: Set<Int> = []
 
@@ -33,16 +36,18 @@ struct JournalScreen: View {
                         .accessibilityIdentifier(JournalIdentifiers.today)
                 }
             }
-            .safeAreaInset(edge: .top, spacing: 0) {
+            // An overlay, not a safe area inset: the axis folds while the page scrolls, and an inset that changed with
+            // it would move the page and the fold again, without end. The page keeps room for the whole axis instead.
+            .overlay(alignment: .top) {
                 JournalAxisView(
                     rows: viewModel.state.axis,
                     selectionStart: viewModel.state.selection.start,
                     selectionKind: viewModel.state.selection.kind,
-                    compact: compactAxis,
+                    scrolled: scrolled,
                     onSelect: viewModel.select,
                     onMove: viewModel.showAxis(around:)
                 )
-                .padding(.vertical, 4)
+                .padding(.vertical, Self.axisPadding)
                 .background(.bar)
             }
             .safeAreaInset(edge: .bottom) {
@@ -78,12 +83,29 @@ private extension JournalScreen {
                     }
                 }
                 .padding(Theme.Spacing.medium)
+                // Taller than the visible page by the rows that fold, so even a short page scrolls far enough to fold
+                // the axis away.
+                .frame(minHeight: viewportHeight + JournalAxisView.foldingHeight(
+                    of: viewModel.state.axis,
+                    selected: viewModel.state.selection.kind
+                ), alignment: .top)
             }
             .background(Theme.Colors.groupedBackground)
+            .contentMargins(.bottom, bottomRoom, for: .scrollContent)
+            .contentMargins(
+                .top,
+                JournalAxisView.height(of: viewModel.state.axis) + Self.axisPadding * 2,
+                for: .scrollContent
+            )
             .onScrollGeometryChange(
-                for: Bool.self,
-                of: { $0.contentOffset.y > Self.collapseOffset },
-                action: { _, scrolled in compactAxis = scrolled }
+                for: CGFloat.self,
+                of: { min(max($0.contentOffset.y + $0.contentInsets.top, 0), Self.foldDistance) },
+                action: { _, offset in scrolled = offset }
+            )
+            .onScrollGeometryChange(
+                for: CGFloat.self,
+                of: { $0.containerSize.height },
+                action: { _, height in viewportHeight = height }
             )
         }
     }
@@ -250,7 +272,16 @@ private extension JournalScreen {
             .background(Theme.Colors.card, in: .rect(cornerRadius: 16))
     }
 
-    static var collapseOffset: CGFloat { 40 }
+    /// Room under the page, as in the design, so that even a short page scrolls far enough to fold the axis away.
+    var bottomRoom: CGFloat {
+        viewModel.state.selection.kind == .day ? 140 : 520
+    }
+
+    /// The space above and below the rows of the axis.
+    static var axisPadding: CGFloat { 4 }
+
+    /// Scrolling beyond this no longer changes the axis, so the page stops updating it there.
+    static var foldDistance: CGFloat { 200 }
 }
 
 // MARK: - Titles

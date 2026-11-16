@@ -5,8 +5,10 @@ import SwiftUI
 /// The time axis of the diary: a row of years, quarters, months and days that move together. All rows show the same
 /// moment in their middle, each at its own scale, so a day sits under its month, the month under its quarter and the
 /// quarter under its year. Dragging any row moves the moment, and every row with it; a tap selects a period. The
-/// selection and the periods that contain it are marked, today is orange. While the page below is scrolled
-/// (`compact`), only the row of the selected level stays. The rows hold a window of periods around the selection; a
+/// selection and the periods that contain it are marked, today is orange. As the page below scrolls by `scrolled`
+/// points, the rows above and below the selected level fold away step by step, as in the design: the whole fold takes
+/// as many points as those rows are tall, and the row of the selected level stays. The rows hold a window of periods
+/// around the selection; a
 /// drag that ends near the edge of the days asks for the windows around the day it reached (`onMove`).
 struct JournalAxisView: View {
 
@@ -14,7 +16,7 @@ struct JournalAxisView: View {
     let rows: [JournalAxisRow]
     let selectionStart: String
     let selectionKind: JournalPeriodKind
-    let compact: Bool
+    let scrolled: CGFloat
     let onSelect: (JournalAxisCell) -> Void
     let onMove: (String) -> Void
 
@@ -29,21 +31,12 @@ struct JournalAxisView: View {
 
     // MARK: - Body
     var body: some View {
-        VStack(spacing: 2) {
-            ForEach(visibleRows) { row in
-                JournalAxisRowView(
-                    row: row,
-                    track: JournalAxisTrack(row: row),
-                    cursor: currentCursor,
-                    onSelect: { cell in
-                        guard !dragged else { return }
-                        onSelect(cell)
-                        glide(to: cell.start, kind: cell.kind)
-                    }
-                )
-                .highPriorityGesture(drag(scale: row.kind.daysPerPoint))
-                .accessibilityAdjustableAction { direction in adjust(row: row, direction: direction) }
-            }
+        let levels = split
+        let fold = foldProgress(upper: levels.upper, lower: levels.lower)
+        VStack(spacing: Self.rowSpacing) {
+            folding(levels.upper, progress: fold)
+            ForEach(levels.pinned) { row in rowView(row) }
+            folding(levels.lower, progress: fold)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(Text("journal.axis.label", bundle: .module))
@@ -52,8 +45,58 @@ struct JournalAxisView: View {
         .onAppear { follow(animated: false) }
     }
 
-    private var visibleRows: [JournalAxisRow] {
-        compact ? rows.filter { row in row.cells.contains(where: \.current) } : rows
+    private func rowView(_ row: JournalAxisRow) -> some View {
+        JournalAxisRowView(
+            row: row,
+            track: JournalAxisTrack(row: row),
+            cursor: currentCursor,
+            onSelect: { cell in
+                guard !dragged else { return }
+                onSelect(cell)
+                glide(to: cell.start, kind: cell.kind)
+            }
+        )
+        .highPriorityGesture(drag(scale: row.kind.daysPerPoint))
+        .accessibilityAdjustableAction { direction in adjust(row: row, direction: direction) }
+    }
+
+    /// The rows of a group that folds away: their height shrinks from the top and they fade, while the part still
+    /// shown keeps its place above the selected row.
+    @ViewBuilder
+    private func folding(_ group: [JournalAxisRow], progress: CGFloat) -> some View {
+        if !group.isEmpty {
+            let full = Self.height(of: group)
+            VStack(spacing: Self.rowSpacing) {
+                ForEach(group) { row in rowView(row) }
+            }
+            .frame(height: full * (1 - progress), alignment: .bottom)
+            .clipped()
+            .opacity(1 - progress)
+            .accessibilityHidden(progress >= 1)
+        }
+    }
+
+    /// The rows above the selected level, its own row and the rows below it.
+    private var split: (upper: [JournalAxisRow], pinned: [JournalAxisRow], lower: [JournalAxisRow]) {
+        guard let index = rows.firstIndex(where: { $0.kind == selectionKind }) else { return ([], rows, []) }
+        return (Array(rows[..<index]), [rows[index]], Array(rows[(index + 1)...]))
+    }
+
+    /// How far the folding rows are gone, 0 to 1: the fold takes as many points of scrolling as they are tall.
+    private func foldProgress(upper: [JournalAxisRow], lower: [JournalAxisRow]) -> CGFloat {
+        let total = Self.height(of: upper) + Self.height(of: lower)
+        guard total > 0 else { return 0 }
+        return min(max(scrolled / total, 0), 1)
+    }
+
+    /// How tall the rows that fold away are: every row but the one of the `selected` level.
+    static func foldingHeight(of rows: [JournalAxisRow], selected: JournalPeriodKind) -> CGFloat {
+        height(of: rows.filter { $0.kind != selected })
+    }
+
+    /// How tall `group`'s rows are with the space between them; for every row of the axis, how tall the whole axis is.
+    static func height(of group: [JournalAxisRow]) -> CGFloat {
+        group.reduce(0) { $0 + $1.kind.height + rowSpacing }
     }
 
     private var currentCursor: Double {
@@ -142,6 +185,7 @@ private extension JournalAxisView {
     }
 
     static let dragThreshold: CGFloat = 6
+    static let rowSpacing: CGFloat = 2
     /// About half the width of the row of days, so the row never shows empty space at an edge.
     static let margin: Double = 6
     /// How close to the edge of the days a drag may end before the windows move: about a quarter of a year.
@@ -253,114 +297,4 @@ private struct JournalAxisRowView: View {
 
     /// The share of the width at each edge where the cells fade out, as in the design.
     private static let fade: CGFloat = 0.14
-}
-
-// MARK: - Cell
-private struct JournalAxisCellLabel: View {
-
-    // MARK: - Dependencies
-    let cell: JournalAxisCell
-
-    // MARK: - Body
-    var body: some View {
-        VStack(spacing: 0) {
-            if cell.kind == .day {
-                Text(JournalDates.weekdayShort(cell.weekday)).font(.caption2).foregroundStyle(subColor)
-            }
-            Text(cell.title).font(font).fontWeight(emphasized ? .bold : .medium).foregroundStyle(color)
-        }
-        .frame(width: cell.kind.width - 4, height: cell.kind.height - 4)
-        .background(cell.current ? fill : .clear, in: .rect(cornerRadius: 10))
-        .overlay {
-            if cell.onPath && !cell.current {
-                RoundedRectangle(cornerRadius: 10).strokeBorder(cell.today ? Color.orange : ring, lineWidth: 1.5)
-            }
-        }
-        .padding(2)
-        .contentShape(.rect)
-    }
-
-    private var emphasized: Bool { cell.current || cell.today }
-    private var weekend: Bool { cell.kind == .day && cell.weekday > 5 }
-    private var color: Color {
-        if cell.today { return .orange }
-        return weekend ? Theme.Colors.secondaryText : .primary
-    }
-    private var subColor: Color { cell.today ? .orange : Theme.Colors.secondaryText }
-    private var fill: Color { cell.today ? Color.orange.opacity(0.15) : Color.secondary.opacity(0.15) }
-    private var ring: Color { Color.secondary.opacity(0.5) }
-    private var font: Font { cell.kind == .year ? .body : .subheadline }
-}
-
-// MARK: - Labels
-@MainActor
-private extension JournalAxisCell {
-
-    var title: String {
-        switch kind {
-        case .year: String(year)
-        case .quarter: "Q\(quarter) \(String(format: "%02d", year % 100))"
-        case .month: "\(JournalDates.monthShort(month)) \(String(format: "%02d", year % 100))"
-        case .day, .week: String(format: "%02d", day)
-        }
-    }
-
-    var identifier: String {
-        "\(JournalIdentifiers.axisCellPrefix)\(kind.name).\(start)"
-    }
-
-    var accessibilityTitle: String {
-        switch kind {
-        case .year: String(year)
-        case .quarter: "Q\(quarter) \(year)"
-        case .month: JournalDates.monthTitle(start)
-        case .day, .week: "\(JournalDates.dayTitle(start)) \(year)"
-        }
-    }
-}
-
-private extension JournalPeriodKind {
-
-    var name: String {
-        switch self {
-        case .year: "year"
-        case .quarter: "quarter"
-        case .month: "month"
-        case .week: "week"
-        case .day: "day"
-        }
-    }
-
-    var width: CGFloat {
-        switch self {
-        case .year: 92
-        case .quarter: 74
-        case .month: 62
-        case .week, .day: 38
-        }
-    }
-
-    var height: CGFloat {
-        switch self {
-        case .year: 34
-        case .quarter, .month, .week: 28
-        case .day: 42
-        }
-    }
-
-    /// The average length of the period, in days.
-    var typicalSpan: Double {
-        switch self {
-        case .year: 365.25
-        case .quarter: 91.31
-        case .month: 30.44
-        case .week: 7
-        case .day: 1
-        }
-    }
-
-    /// How many days one point of the row stands for: dragging a row by a point moves the axis this far.
-    var daysPerPoint: Double {
-        typicalSpan / Double(width)
-    }
 }
