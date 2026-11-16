@@ -48,7 +48,9 @@ public struct OverviewCollection: Equatable, Sendable, Identifiable {
 
     public var id: String { databaseId }
 
-    public init(databaseId: String, ownerModuleId: String, name: String, icon: String?, color: String?, itemCount: Int) {
+    public init(
+        databaseId: String, ownerModuleId: String, name: String, icon: String?, color: String?, itemCount: Int
+    ) {
         self.databaseId = databaseId
         self.ownerModuleId = ownerModuleId
         self.name = name

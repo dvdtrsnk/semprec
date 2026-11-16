@@ -23,11 +23,20 @@ final class OverviewMappingTests: XCTestCase {
         let state = overviewState(
             .content,
             refreshing: true,
-            areas: [SharedSDK.OverviewAreaItem(id: "a", name: "Work", color: "#5856D6", icon: "briefcase", activeProjectCount: 6)],
-            projects: [SharedSDK.OverviewProjectItem(id: "p", name: "Semprec", color: nil, areaName: "Work", status: "inProgress")],
+            areas: [
+                SharedSDK.OverviewAreaItem(
+                    id: "a", name: "Work", color: "#5856D6", icon: "briefcase", activeProjectCount: 6
+                )
+            ],
+            projects: [
+                SharedSDK.OverviewProjectItem(
+                    id: "p", name: "Semprec", color: nil, areaName: "Work", status: "inProgress"
+                )
+            ],
             collections: [
                 SharedSDK.OverviewCollectionItem(
-                    databaseId: "d", ownerModuleId: "events", name: "Events", icon: nil, color: "#FF3B30", itemCount: 214
+                    databaseId: "d", ownerModuleId: "events", name: "Events",
+                    icon: nil, color: "#FF3B30", itemCount: 214
                 )
             ]
         )
@@ -42,11 +51,20 @@ final class OverviewMappingTests: XCTestCase {
                     tasksToday: 4,
                     problemCount: 2,
                     journalTodayItemId: "j1",
-                    areas: [OverviewArea(id: "a", name: "Work", color: "#5856D6", icon: "briefcase", activeProjectCount: 6)],
-                    projects: [OverviewProject(id: "p", name: "Semprec", color: nil, areaName: "Work", status: "inProgress")],
+                    areas: [
+                        OverviewArea(
+                            id: "a", name: "Work", color: "#5856D6", icon: "briefcase", activeProjectCount: 6
+                        )
+                    ],
+                    projects: [
+                        OverviewProject(
+                            id: "p", name: "Semprec", color: nil, areaName: "Work", status: "inProgress"
+                        )
+                    ],
                     collections: [
                         OverviewCollection(
-                            databaseId: "d", ownerModuleId: "events", name: "Events", icon: nil, color: "#FF3B30", itemCount: 214
+                            databaseId: "d", ownerModuleId: "events", name: "Events",
+                            icon: nil, color: "#FF3B30", itemCount: 214
                         )
                     ]
                 )
@@ -84,7 +102,9 @@ final class OverviewMappingTests: XCTestCase {
         XCTAssertEqual(SharedOverviewScreenModel.target(SharedSDK.OverviewTargetFinance.shared), .finance)
         XCTAssertEqual(SharedOverviewScreenModel.target(SharedSDK.OverviewTargetProfile.shared), .profile)
         XCTAssertEqual(
-            SharedOverviewScreenModel.target(SharedSDK.OverviewTargetCollection(ownerModuleId: "people", databaseId: "d2")),
+            SharedOverviewScreenModel.target(
+                SharedSDK.OverviewTargetCollection(ownerModuleId: "people", databaseId: "d2")
+            ),
             .collection(ownerModuleId: "people", databaseId: "d2")
         )
     }
@@ -220,9 +240,12 @@ final class OverviewMappingTests: XCTestCase {
             )
         )
     }
+}
 
-    // MARK: - Builders
-    private func overviewState(
+// MARK: - Builders
+private extension OverviewMappingTests {
+
+    func overviewState(
         _ phase: SharedSDK.OverviewPhase,
         failure: SharedSDK.FailureKind? = nil,
         refreshing: Bool = false,
@@ -246,7 +269,7 @@ final class OverviewMappingTests: XCTestCase {
         )
     }
 
-    private func searchState(
+    func searchState(
         _ phase: SharedSDK.SearchPhase,
         failure: SharedSDK.FailureKind? = nil,
         scope: SharedSDK.SearchGroupType? = nil,

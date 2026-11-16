@@ -10,7 +10,8 @@ struct LoginScreen: View {
     @StateObject private var viewModel: LoginViewModel
 
     // MARK: - State
-    @AppStorage("cz.semprec.lastServer") private var server = ""
+    @AppStorage("cz.semprec.lastServer")
+    private var server = ""
     @State private var email = ""
     @State private var password = ""
     @FocusState private var focus: Field?

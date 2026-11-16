@@ -50,7 +50,10 @@ final class OverviewRowsTests: XCTestCase {
             OverviewProject(id: "p2", name: "Loose", color: nil, areaName: nil, status: nil),
             OverviewProject(id: "p3", name: "Odd", color: nil, areaName: "Home", status: "unheard")
         ])
-        XCTAssertEqual(OverviewRows.projects(content).map(\.target), [.project(id: "p1"), .project(id: "p2"), .project(id: "p3")])
+        XCTAssertEqual(
+            OverviewRows.projects(content).map(\.target),
+            [.project(id: "p1"), .project(id: "p2"), .project(id: "p3")]
+        )
         XCTAssertEqual(OverviewRows.subtitle(of: content.projects[0]), "Work \u{00B7} In progress")
         XCTAssertNil(OverviewRows.subtitle(of: content.projects[1]))
         XCTAssertEqual(OverviewRows.subtitle(of: content.projects[2]), "Home")
@@ -68,7 +71,8 @@ final class OverviewRowsTests: XCTestCase {
         let rows = OverviewRows.collections(
             OverviewContent(collections: [
                 OverviewCollection(
-                    databaseId: "d1", ownerModuleId: "events", name: "Events", icon: "calendar", color: "#FF3B30", itemCount: 214
+                    databaseId: "d1", ownerModuleId: "events", name: "Events",
+                    icon: "calendar", color: "#FF3B30", itemCount: 214
                 )
             ])
         )

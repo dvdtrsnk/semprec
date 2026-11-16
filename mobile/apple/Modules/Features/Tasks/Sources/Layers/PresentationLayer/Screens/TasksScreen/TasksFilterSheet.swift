@@ -11,7 +11,8 @@ struct TasksFilterSheet: View {
     let send: (TasksAction) -> Void
 
     // MARK: - State
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.dismiss)
+    private var dismiss
     @State private var expanded: Field?
 
     fileprivate enum Field { case area, project }
@@ -132,7 +133,9 @@ private extension TasksFilterSheet {
                 TaskFilterOption(id: "work", title: "Práce", color: "#5856D6", count: 5),
                 TaskFilterOption(id: "home", title: "Domácnost", color: "#FF9500", count: 3)
             ],
-            projectOptions: [TaskFilterOption(id: "ios", title: "Semprec iOS", color: "#007AFF", count: 2, areaId: "work")],
+            projectOptions: [
+                TaskFilterOption(id: "ios", title: "Semprec iOS", color: "#007AFF", count: 2, areaId: "work")
+            ],
             areaAllCount: 8,
             projectAllCount: 5
         ),

@@ -59,7 +59,10 @@ final class SharedMappingTests: XCTestCase {
             .editing(resetRequested: true)
         )
         XCTAssertEqual(SharedLoginScreenModel.state(loginState(.signingIn)), .signingIn)
-        XCTAssertEqual(SharedLoginScreenModel.state(loginState(.failed, failure: .unauthorized)), .failed(.unauthorized))
+        XCTAssertEqual(
+            SharedLoginScreenModel.state(loginState(.failed, failure: .unauthorized)),
+            .failed(.unauthorized)
+        )
         XCTAssertEqual(SharedLoginScreenModel.state(loginState(.failed)), .failed(nil))
     }
 
@@ -71,7 +74,8 @@ final class SharedMappingTests: XCTestCase {
         )
         XCTAssertEqual([signIn.server, signIn.email, signIn.password], ["s", "e", "p"])
         let forgot = try XCTUnwrap(
-            SharedLoginScreenModel.action(.forgotPassword(server: "s", email: "e")) as? SharedSDK.LoginActionForgotPassword
+            SharedLoginScreenModel.action(.forgotPassword(server: "s", email: "e"))
+                as? SharedSDK.LoginActionForgotPassword
         )
         XCTAssertEqual([forgot.server, forgot.email], ["s", "e"])
         XCTAssertTrue(SharedLoginScreenModel.action(.edited) is SharedSDK.LoginActionEdited)

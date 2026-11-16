@@ -43,7 +43,10 @@ final class OverviewViewModelTests: XCTestCase {
         model.emit(.journal(itemId: "j1"))
         model.emit(.collection(ownerModuleId: "events", databaseId: "d1"))
         try await eventually { router.targets.count == 3 }
-        XCTAssertEqual(router.targets, [.inbox, .journal(itemId: "j1"), .collection(ownerModuleId: "events", databaseId: "d1")])
+        XCTAssertEqual(
+            router.targets,
+            [.inbox, .journal(itemId: "j1"), .collection(ownerModuleId: "events", databaseId: "d1")]
+        )
     }
 
     @MainActor
