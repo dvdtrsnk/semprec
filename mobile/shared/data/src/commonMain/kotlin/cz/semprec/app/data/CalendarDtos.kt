@@ -102,7 +102,7 @@ internal data class BadgeCountsResponse(val pendingInvites: Int = 0)
 
 /** A body that patches the user properties of an item the caller has read, so the version is the one it read. */
 @Serializable
-internal data class CalendarPatchRequest(val properties: JsonObject, val ifVersion: String)
+internal data class CalendarPatchRequest(val properties: JsonObject, val ifVersion: String? = null)
 
 @Serializable
 internal data class CalendarCreateRequest(val properties: JsonObject)

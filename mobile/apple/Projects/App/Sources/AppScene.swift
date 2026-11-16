@@ -1,4 +1,5 @@
 import AuthFeature
+import CalendarFeature
 import HomeFeature
 import NavigatorUI
 import SettingsFeature
@@ -92,6 +93,21 @@ private extension AppScene {
             SleepScreenFactory.plan { composition.models.makeSleep(night: night, startOnNight: false) }
         case .sleepNight(let night):
             SleepScreenFactory.night { composition.models.makeSleep(night: night, startOnNight: true) }
+        case .calendars:
+            NavigationStack {
+                CalendarScreenFactory.calendars(
+                    makeModel: { composition.models.makeCalendarList() },
+                    router: composition.calendarRouter
+                )
+            }
+        case .invitations:
+            NavigationStack {
+                CalendarScreenFactory.invitations(makeModel: { composition.models.makeInvitations() })
+            }
+        case .newItem(let day):
+            NavigationStack {
+                CalendarScreenFactory.newItem(day: day, makeModel: { composition.models.makeNewItem(day: $0) })
+            }
         }
     }
 }

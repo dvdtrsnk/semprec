@@ -15,6 +15,7 @@ enum CalendarIdentifiers {
     static let monthGrid = "calendar.monthGrid"
     static let yearGrid = "calendar.yearGrid"
     static let menu = "calendar.menu"
+    static let clipboard = "calendar.clipboard"
 
     /// A day of the week strip, the month grid or the year grid.
     static func day(_ date: String) -> String { "calendar.day.\(date)" }
