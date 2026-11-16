@@ -29,7 +29,7 @@ data class NotificationSettingsState(
 sealed interface NotificationSettingsAction {
     data object Retry : NotificationSettingsAction
 
-    data class Set(val switch: AccountNotificationSwitch, val on: Boolean) : NotificationSettingsAction
+    data class Set(val choice: AccountNotificationSwitch, val on: Boolean) : NotificationSettingsAction
 
     data class SetProblemsLevel(val level: AccountProblemsLevel) : NotificationSettingsAction
 

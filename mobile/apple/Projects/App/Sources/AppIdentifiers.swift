@@ -8,8 +8,4 @@ enum AppIdentifiers {
     static let sessionGate = "app.sessionGate"
     /// The notice that stands in for a screen a later wave builds.
     static let pendingScreen = "app.pending"
-    /// The profile sheet and its elements; Apple-only until Android has a profile.
-    static let profileScreen = "profile.screen"
-    static let profileSignOut = "profile.signOut"
-    static let profileDone = "profile.done"
 }

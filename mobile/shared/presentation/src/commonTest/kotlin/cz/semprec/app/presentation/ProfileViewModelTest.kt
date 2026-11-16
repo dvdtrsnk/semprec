@@ -133,15 +133,15 @@ class ProfileViewModelTest : MainDispatcherTest() {
     @Test fun `opening a row raises its page exactly once`() = runTest(dispatcher) {
         val vm = viewModel(ScriptedProfileAccount())
         AccountPage.entries.forEach { vm.onAction(ProfileAction.Open(it)) }
-        val first = mutableListOf<AccountPage>()
+        val first = mutableListOf<ProfileEffect>()
         val collector = launch { vm.effects.collect { first += it } }
         runCurrent()
         collector.cancel()
-        val again = mutableListOf<AccountPage>()
+        val again = mutableListOf<ProfileEffect>()
         val second = launch { vm.effects.collect { again += it } }
         runCurrent()
         second.cancel()
-        assertEquals(AccountPage.entries.toList(), first)
+        assertEquals(AccountPage.entries.map<AccountPage, ProfileEffect> { ProfileEffect.Open(it) }, first)
         assertTrue(again.isEmpty())
         vm.close()
     }

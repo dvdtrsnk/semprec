@@ -15,4 +15,11 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
     // MARK: - Collections
     func makeCollection(target: CollectionTarget) -> any CollectionScreenModel
     func makeItem(itemId: String, databaseKey: String?) -> any ItemScreenModel
+
+    // MARK: - Account
+    func makeProfile() -> any ProfileScreenModel
+    func makeDevices() -> any DevicesScreenModel
+    func makeNotificationSettings() -> any NotificationSettingsScreenModel
+    func makeAiUsage() -> any AiUsageScreenModel
+    func makeTrash() -> any TrashScreenModel
 }
