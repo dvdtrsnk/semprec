@@ -20,7 +20,7 @@ enum class CalendarTraceOutcome { CARRIED, DONE, MOVED_TO_EVENT, MISSED }
 enum class CalendarEdge { START, END }
 
 /** What the clipboard of the calendar does when it is pasted: moves the item (cut) or copies it. */
-enum class CalendarClipboardMode { CUT, COPY }
+enum class CalendarClipboardMode { CUT, COPIED }
 
 /** A task that sits in an event; [note] is the day or the event a state refers to (`YYYY-MM-DD` or a name). */
 data class CalendarEventTask(

@@ -17,7 +17,7 @@ import kotlinx.coroutines.launch
 private fun initialInvitationsState() = InvitationsState(
     phase = InvitationsPhase.LOADING,
     failure = null,
-    tab = InvitationsTab.NEW,
+    tab = InvitationsTab.PENDING,
     items = emptyList(),
     pending = 0,
     answering = null,
@@ -69,7 +69,7 @@ class InvitationsViewModel internal constructor(
     private fun show(loaded: List<CalendarInvitation>) {
         invitations = loaded
         val pending = loaded.count { it.needsAnswer }
-        val tab = if (loadedOnce) state.value.tab else if (pending > 0) InvitationsTab.NEW else InvitationsTab.DONE
+        val tab = if (loadedOnce) state.value.tab else if (pending > 0) InvitationsTab.PENDING else InvitationsTab.ANSWERED
         loadedOnce = true
         update {
             it.copy(
@@ -110,7 +110,7 @@ class InvitationsViewModel internal constructor(
     }
 
     private fun itemsOf(tab: InvitationsTab): List<InvitationItem> {
-        val shown = invitations.filter { (tab == InvitationsTab.NEW) == it.needsAnswer }
+        val shown = invitations.filter { (tab == InvitationsTab.PENDING) == it.needsAnswer }
         return shown.map { it.toItem() }
     }
 }

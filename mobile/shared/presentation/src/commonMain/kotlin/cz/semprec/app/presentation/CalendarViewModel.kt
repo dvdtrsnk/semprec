@@ -65,7 +65,7 @@ class CalendarViewModel internal constructor(
     private fun editing(action: CalendarAction.Edit) {
         when (action) {
             is CalendarAction.Edit.Cut -> hold(action.itemId, CalendarClipboardMode.CUT)
-            is CalendarAction.Edit.Copy -> hold(action.itemId, CalendarClipboardMode.COPY)
+            is CalendarAction.Edit.Copy -> hold(action.itemId, CalendarClipboardMode.COPIED)
             is CalendarAction.Edit.Duplicate -> duplicate(action.itemId)
             is CalendarAction.Edit.Paste -> paste(action)
             is CalendarAction.Edit.RequestDelete -> requestDelete(action.itemId)
@@ -117,7 +117,7 @@ class CalendarViewModel internal constructor(
         if (entry == null || mode == null || day == null) return
         val schedule = pasteSchedule(entry, day, action)
         when (mode) {
-            CalendarClipboardMode.COPY -> write { edit.duplicate(entry, schedule) }
+            CalendarClipboardMode.COPIED -> write { edit.duplicate(entry, schedule) }
             CalendarClipboardMode.CUT -> {
                 write { edit.reschedule(entry, schedule) }
                 copied = null

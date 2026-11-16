@@ -4,8 +4,8 @@ import cz.semprec.app.core.FailureKind
 
 enum class InvitationsPhase { LOADING, CONTENT, ERROR }
 
-/** Which of the two lists the sheet shows: the invitations that wait for an answer, or the ones that were answered. */
-enum class InvitationsTab { NEW, DONE }
+/** Which of the two lists the sheet shows: the invitations that wait for an answer, or the answered ones. */
+enum class InvitationsTab { PENDING, ANSWERED }
 
 enum class InvitationItemKind { INVITE, SHARED_CALENDAR_NOTICE }
 

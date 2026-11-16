@@ -37,7 +37,7 @@ class InvitationsViewModelTest : MainDispatcherTest() {
         runCurrent()
         val state = vm.state.value
         assertEquals(InvitationsPhase.CONTENT, state.phase)
-        assertEquals(InvitationsTab.NEW, state.tab)
+        assertEquals(InvitationsTab.PENDING, state.tab)
         assertEquals(listOf("i1", "i2"), state.items.map { it.id })
         assertEquals(2, state.pending)
         assertEquals(InvitationItemKind.SHARED_CALENDAR_NOTICE, state.items[1].kind)
@@ -49,7 +49,7 @@ class InvitationsViewModelTest : MainDispatcherTest() {
     @Test fun `opens on the answered ones when nothing waits`() = runTest(dispatcher) {
         repository.items = repository.items.map { it.copy(status = InvitationStatus.DECLINED) }
         val vm = loaded()
-        assertEquals(InvitationsTab.DONE, vm.state.value.tab)
+        assertEquals(InvitationsTab.ANSWERED, vm.state.value.tab)
         assertEquals(3, vm.state.value.items.size)
         assertEquals(0, vm.state.value.pending)
         assertEquals(InvitationItemStatus.DECLINED, vm.state.value.items.first().status)
@@ -58,10 +58,10 @@ class InvitationsViewModelTest : MainDispatcherTest() {
 
     @Test fun `the tabs show the pending and the answered invitations`() = runTest(dispatcher) {
         val vm = loaded()
-        act(vm, InvitationsAction.ShowTab(InvitationsTab.DONE))
+        act(vm, InvitationsAction.ShowTab(InvitationsTab.ANSWERED))
         assertEquals(listOf("i3"), vm.state.value.items.map { it.id })
         assertEquals(InvitationItemStatus.ACCEPTED, vm.state.value.items.single().status)
-        act(vm, InvitationsAction.ShowTab(InvitationsTab.NEW))
+        act(vm, InvitationsAction.ShowTab(InvitationsTab.PENDING))
         assertEquals(2, vm.state.value.items.size)
         vm.close()
     }
@@ -73,7 +73,7 @@ class InvitationsViewModelTest : MainDispatcherTest() {
         assertEquals(listOf("i2"), vm.state.value.items.map { it.id })
         assertEquals(1, vm.state.value.pending)
         assertNull(vm.state.value.answering)
-        act(vm, InvitationsAction.ShowTab(InvitationsTab.DONE))
+        act(vm, InvitationsAction.ShowTab(InvitationsTab.ANSWERED))
         assertEquals(InvitationItemStatus.TENTATIVE, vm.state.value.items.first { it.id == "i1" }.status)
         vm.close()
     }

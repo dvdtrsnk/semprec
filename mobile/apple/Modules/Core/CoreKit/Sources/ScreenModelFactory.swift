@@ -18,4 +18,12 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
 
     /// The sleep sheet for the evening `night` (`YYYY-MM-DD`, or nil); `startOnNight` opens it on that night.
     func makeSleep(night: String?, startOnNight: Bool) -> any SleepScreenModel
+
+    // Calendar slice
+    /// `initialDay` is the device's current day, `YYYY-MM-DD`; the server's answer names today.
+    func makeCalendar(initialDay: String) -> any CalendarScreenModel
+    func makeCalendarList() -> any CalendarListScreenModel
+    func makeInvitations() -> any InvitationsScreenModel
+    /// `day` is the day the new item sheet was opened for, `YYYY-MM-DD`.
+    func makeNewItem(day: String) -> any NewItemScreenModel
 }

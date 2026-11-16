@@ -56,7 +56,7 @@ abstract class CalendarWindowViewModel internal constructor(
     private var seenRevision = changes.revision.value
     private var entries: Map<String, CalendarEntry> = emptyMap()
 
-    protected fun start() {
+    internal fun start() {
         load(showLoading = true)
         viewModelScope.launch {
             changes.revision.collect { revision ->
@@ -68,14 +68,14 @@ abstract class CalendarWindowViewModel internal constructor(
         }
     }
 
-    protected fun entryOf(id: String): CalendarEntry? = entries[id]
+    internal fun entryOf(id: String): CalendarEntry? = entries[id]
 
-    protected fun reload() = load(showLoading = false)
+    internal fun reload() = load(showLoading = false)
 
-    protected fun retry() = load(showLoading = true)
+    internal fun retry() = load(showLoading = true)
 
     /** Shows [zoom] around [day]; a day in another month than the loaded one loads that month's window. */
-    protected fun navigate(zoom: CalendarZoom, day: CalendarDay) {
+    internal fun navigate(zoom: CalendarZoom, day: CalendarDay) {
         update {
             it.copy(
                 zoom = zoom,
@@ -88,7 +88,7 @@ abstract class CalendarWindowViewModel internal constructor(
         if (loadedMonth != day.year to day.month) load(showLoading = false)
     }
 
-    protected fun page(steps: Int) {
+    internal fun page(steps: Int) {
         val current = CalendarDay.parse(state.value.selectedDay) ?: return
         val next = when (state.value.zoom) {
             CalendarZoom.DAY -> current.plusDays(steps)

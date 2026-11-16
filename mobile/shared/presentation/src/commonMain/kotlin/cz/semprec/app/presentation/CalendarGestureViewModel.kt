@@ -25,12 +25,12 @@ abstract class CalendarGestureViewModel internal constructor(
     initialDay: String,
     loadWindow: LoadCalendarWindow,
     changes: CalendarChanges,
-    protected val edit: EditCalendarEntry,
+    internal val edit: EditCalendarEntry,
 ) : CalendarWindowViewModel(initialDay, loadWindow, changes) {
     private var writeJob: Job? = null
     private var dragSchedule: Schedule? = null
 
-    protected fun tap(itemId: String) {
+    internal fun tap(itemId: String) {
         val selected = state.value.selectedItemId
         if (selected != null && selected != itemId) {
             update { it.copy(selectedItemId = null) }
@@ -40,11 +40,11 @@ abstract class CalendarGestureViewModel internal constructor(
         entryOf(itemId)?.let { emit(CalendarEffect.OpenDetails(itemId, it.kind.toItemKind(), it.date.toString())) }
     }
 
-    protected fun select(itemId: String) {
+    internal fun select(itemId: String) {
         if (entryOf(itemId)?.isEditable == true) update { it.copy(selectedItemId = itemId) }
     }
 
-    protected fun dragMove(action: CalendarAction.Gesture.DragMove) {
+    internal fun dragMove(action: CalendarAction.Gesture.DragMove) {
         val entry = entryOf(action.itemId)
         val day = CalendarDay.parse(action.day)
         if (entry == null || day == null || !canDrag(entry)) return
@@ -57,7 +57,7 @@ abstract class CalendarGestureViewModel internal constructor(
         preview(entry, schedule, host?.id)
     }
 
-    protected fun dragResize(action: CalendarAction.Gesture.DragResize) {
+    internal fun dragResize(action: CalendarAction.Gesture.DragResize) {
         val entry = entryOf(action.itemId)
         if (entry == null || !canDrag(entry)) return
         val schedule = when (action.edge) {
@@ -68,7 +68,7 @@ abstract class CalendarGestureViewModel internal constructor(
     }
 
     /** The finger lifted: write the previewed move, or drop it. */
-    protected fun endDrag(commit: Boolean) {
+    internal fun endDrag(commit: Boolean) {
         val drag = state.value.drag
         val entry = drag?.let { entryOf(it.itemId) }
         val schedule = dragSchedule
@@ -85,12 +85,12 @@ abstract class CalendarGestureViewModel internal constructor(
         }
     }
 
-    protected fun toggleDone(itemId: String) {
+    internal fun toggleDone(itemId: String) {
         entryOf(itemId)?.let { entry -> write { edit.toggleDone(entry) } }
     }
 
     /** Runs a write; the window reloads when it is done, which also takes the preview of a drag away. */
-    protected fun <T> write(operation: suspend () -> RepositoryResult<T>) {
+    internal fun <T> write(operation: suspend () -> RepositoryResult<T>) {
         if (state.value.busy) return
         update { it.copy(busy = true, problem = false, problemFailure = null) }
         writeJob?.cancel()
