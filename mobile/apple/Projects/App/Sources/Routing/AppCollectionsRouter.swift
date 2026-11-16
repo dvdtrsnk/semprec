@@ -42,5 +42,8 @@ extension AppCollectionsRouter: CollectionsRouting {
     func showProjectTasks(projectId: String) {}
     func showProjectMail(projectId: String) {}
     func showProjectNotes(projectId: String) {}
-    func showProjectAgent(projectId: String) {}
+
+    func showProjectAgent(projectId: String) {
+        context.push(.sempProjectAgent(projectId: projectId), in: tab)
+    }
 }

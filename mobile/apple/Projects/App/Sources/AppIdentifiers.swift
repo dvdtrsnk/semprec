@@ -12,4 +12,6 @@ enum AppIdentifiers {
     static let profileScreen = "profile.screen"
     static let profileSignOut = "profile.signOut"
     static let profileDone = "profile.done"
+    /// The handle that closes the Semp chat; Apple-only until Android has the chat.
+    static let sempGrabber = "semp.grabber"
 }
