@@ -14,6 +14,7 @@ final class AppComposition: ObservableObject {
     let models: any ScreenModelFactory
     let navigation: NavigationContext
     let overviewRouter: AppOverviewRouter
+    let collectionsRouter: AppCollectionsRouter
 
     // MARK: - Init
     convenience init() {
@@ -26,6 +27,7 @@ final class AppComposition: ObservableObject {
         self.models = models
         self.navigation = navigation
         overviewRouter = AppOverviewRouter(context: navigation)
+        collectionsRouter = AppCollectionsRouter(context: navigation, tab: .overview)
     }
 
     // MARK: - Routers

@@ -117,8 +117,8 @@ extension SharedTasksScreenModel {
         )
     }
 
-    private static func option(_ option: SharedSDK.FilterOption) -> FilterOption {
-        FilterOption(
+    private static func option(_ option: SharedSDK.TaskFilterOption) -> TaskFilterOption {
+        TaskFilterOption(
             id: option.id,
             title: option.title,
             color: option.color,

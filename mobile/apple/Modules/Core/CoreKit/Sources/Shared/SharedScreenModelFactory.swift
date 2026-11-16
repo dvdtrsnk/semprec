@@ -5,7 +5,7 @@
 public final class SharedScreenModelFactory {
 
     // MARK: - Dependencies
-    private let sdk = SharedSDK.HomeSDK(sessionStorage: KeychainSessionStorage(), device: DeviceIdentity.current())
+    let sdk = SharedSDK.HomeSDK(sessionStorage: KeychainSessionStorage(), device: DeviceIdentity.current())
 
     // MARK: - Init
     public init() {}

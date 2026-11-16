@@ -13,6 +13,10 @@ enum AppDestination: Hashable {
     case tasks(TasksStart, tab: AppTab)
     /// The Podrobnosti sheet of a task or an event; it is presented over the stack that asked for it.
     case details(ItemDetailsTarget)
+    /// A collection of any database (Projects, People, Companies, Events, Files), narrowed by its target.
+    case collection(CollectionTarget)
+    /// The detail of an item of any database; `databaseKey` is its database's canonical key, if the caller knows it.
+    case collectionItem(itemId: String, databaseKey: String?)
 }
 
 // MARK: - NavigationProvidedDestination

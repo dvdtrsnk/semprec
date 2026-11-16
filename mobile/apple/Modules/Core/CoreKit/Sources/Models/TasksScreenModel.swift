@@ -94,7 +94,7 @@ public struct TaskGroup: Equatable, Sendable, Identifiable {
 }
 
 /// One choice of the filter sheet and the number of tasks it leaves.
-public struct FilterOption: Equatable, Sendable, Identifiable {
+public struct TaskFilterOption: Equatable, Sendable, Identifiable {
 
     public let id: String
     public let title: String
@@ -130,8 +130,8 @@ public struct TasksState: Equatable, Sendable {
     public var flaggedOnly: Bool
     public var groups: [TaskGroup]
     public var openCount: Int
-    public var areaOptions: [FilterOption]
-    public var projectOptions: [FilterOption]
+    public var areaOptions: [TaskFilterOption]
+    public var projectOptions: [TaskFilterOption]
     public var areaAllCount: Int
     public var projectAllCount: Int
     public var matchesNothing: Bool
@@ -149,8 +149,8 @@ public struct TasksState: Equatable, Sendable {
         flaggedOnly: Bool = false,
         groups: [TaskGroup] = [],
         openCount: Int = 0,
-        areaOptions: [FilterOption] = [],
-        projectOptions: [FilterOption] = [],
+        areaOptions: [TaskFilterOption] = [],
+        projectOptions: [TaskFilterOption] = [],
         areaAllCount: Int = 0,
         projectAllCount: Int = 0,
         matchesNothing: Bool = false,

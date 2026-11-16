@@ -11,4 +11,8 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
     func makeSearch() -> any SearchScreenModel
     func makeTasks(start: TasksStart) -> any TasksScreenModel
     func makeItemDetails(kind: ItemKind, itemId: String) -> any ItemDetailsScreenModel
+
+    // MARK: - Collections
+    func makeCollection(target: CollectionTarget) -> any CollectionScreenModel
+    func makeItem(itemId: String, databaseKey: String?) -> any ItemScreenModel
 }

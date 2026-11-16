@@ -44,11 +44,11 @@ internal fun TasksState.shaped(loaded: List<WorkItem>, catalog: TasksCatalog, to
         groups = groups,
         openCount = matching.count { it.status != TaskStatus.DONE },
         areaOptions = catalog.areas.map { area ->
-            FilterOption(area.id, area.title, area.color, count(filter.copy(areaId = area.id)))
+            TaskFilterOption(area.id, area.title, area.color, count(filter.copy(areaId = area.id)))
         },
         projectOptions = catalog.projects.filter { areaId == null || it.areaId == areaId }.map { project ->
             val narrowed = filter.copy(projectId = project.id)
-            FilterOption(project.id, project.title, project.color, count(narrowed), project.areaId)
+            TaskFilterOption(project.id, project.title, project.color, count(narrowed), project.areaId)
         },
         areaAllCount = count(filter.copy(areaId = null)),
         projectAllCount = count(filter.copy(projectId = null)),

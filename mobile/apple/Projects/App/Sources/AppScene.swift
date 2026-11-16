@@ -1,4 +1,5 @@
 import AuthFeature
+import CollectionsFeature
 import DesignSystem
 import NavigatorUI
 import SwiftUI
@@ -98,6 +99,18 @@ private extension AppScene {
             )
         case .details(let target):
             TasksScreenFactory.details { composition.models.makeItemDetails(kind: target.kind, itemId: target.id) }
+        case .collection(let target):
+            CollectionsScreenFactory.collection(
+                target,
+                makeModel: { composition.models.makeCollection(target: $0) },
+                router: composition.collectionsRouter
+            )
+        case .collectionItem(let itemId, let databaseKey):
+            CollectionsScreenFactory.item(
+                itemId: itemId,
+                makeModel: { composition.models.makeItem(itemId: itemId, databaseKey: databaseKey) },
+                router: composition.collectionsRouter
+            )
         }
     }
 }
