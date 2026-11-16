@@ -54,6 +54,7 @@ let project = Project(
                 .project(target: "CollectionsFeature", path: "../../Modules/Features/Collections"),
                 .project(target: "JournalFeature", path: "../../Modules/Features/Journal"),
                 .project(target: "OverviewFeature", path: "../../Modules/Features/Overview"),
+                .project(target: "SempFeature", path: "../../Modules/Features/Semp"),
                 .project(target: "SleepFeature", path: "../../Modules/Features/Sleep"),
                 .project(target: "TasksFeature", path: "../../Modules/Features/Tasks"),
                 .external(name: "NavigatorUI"),
