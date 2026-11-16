@@ -43,4 +43,34 @@ extension SharedScreenModelFactory: ScreenModelFactory {
     public func makeItemDetails(kind: ItemKind, itemId: String) -> any ItemDetailsScreenModel {
         SharedItemDetailsScreenModel(sdk.itemDetailsViewModel(kind: kind.shared, itemId: itemId))
     }
+
+    // Journal slice
+    public func makeJournal(initialDay: String) -> any JournalScreenModel {
+        SharedJournalScreenModel(sdk.journal.journalViewModel(initialDay: initialDay))
+    }
+
+    public func makeJournalSubpage(itemId: String) -> any JournalSubpageScreenModel {
+        SharedJournalSubpageScreenModel(sdk.journal.journalSubpageViewModel(itemId: itemId))
+    }
+
+    public func makeSleep(night: String?, startOnNight: Bool) -> any SleepScreenModel {
+        SharedSleepScreenModel(sdk.sleep.sleepViewModel(night: night, startOnNight: startOnNight))
+    }
+
+    // Calendar slice
+    public func makeCalendar(initialDay: String) -> any CalendarScreenModel {
+        SharedCalendarScreenModel(sdk.calendar.calendarViewModel(initialDay: initialDay))
+    }
+
+    public func makeCalendarList() -> any CalendarListScreenModel {
+        SharedCalendarListScreenModel(sdk.calendar.calendarListViewModel())
+    }
+
+    public func makeInvitations() -> any InvitationsScreenModel {
+        SharedInvitationsScreenModel(sdk.calendar.invitationsViewModel())
+    }
+
+    public func makeNewItem(day: String) -> any NewItemScreenModel {
+        SharedNewItemScreenModel(sdk.calendar.itemFormViewModel(day: day))
+    }
 }

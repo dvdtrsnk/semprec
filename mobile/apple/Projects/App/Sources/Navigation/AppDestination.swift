@@ -17,6 +17,18 @@ enum AppDestination: Hashable {
     case collection(CollectionTarget)
     /// The detail of an item of any database; `databaseKey` is its database's canonical key, if the caller knows it.
     case collectionItem(itemId: String, databaseKey: String?)
+    /// The sleep plan sheet; `night` is the evening (`YYYY-MM-DD`) whose ring it shows, or nil.
+    case sleepPlan(night: String?)
+    /// The sheet of one night (`YYYY-MM-DD`), which opens on that night.
+    case sleepNight(night: String)
+    /// The calendars sheet: which calendars show, their colours and notifications.
+    case calendars
+    /// The invitations sheet.
+    case invitations
+    /// The new item sheet, opened for the day `YYYY-MM-DD`.
+    case newItem(day: String)
+    /// A subpage of the diary; `title` is the caption of the link that opened it.
+    case journalPage(itemId: String, title: String)
 }
 
 // MARK: - NavigationProvidedDestination

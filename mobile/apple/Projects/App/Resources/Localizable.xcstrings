@@ -273,22 +273,6 @@
         }
       }
     },
-    "tab.calendar.placeholder" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Kalendář se připravuje."
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "The calendar is on its way."
-          }
-        }
-      }
-    },
     "tab.journal" : {
       "localizations" : {
         "cs" : {
@@ -301,22 +285,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Journal"
-          }
-        }
-      }
-    },
-    "tab.journal.placeholder" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Deník se připravuje."
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "The journal is on its way."
           }
         }
       }
