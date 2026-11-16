@@ -20,7 +20,7 @@ struct ProjectContent: View {
     // MARK: - Body
     var body: some View {
         List {
-            Section { titleBlock }
+            Section { titleBlock.listRowBackground(Color.clear) }
             Section(header: Text("project.notes", bundle: .module)) {
                 PagePanel(page: state.page, placeholder: "project.notes.placeholder", send: send)
                 destination("project.notes.open", symbol: "doc.text", to: .notes)

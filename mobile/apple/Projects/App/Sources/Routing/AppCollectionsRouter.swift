@@ -3,8 +3,7 @@ import CoreKit
 
 /// Routes of the Collections feature, on the stack of the tab it was created for. An item opens the way
 /// `NavigationContext.showItem` says for its database. The router of an item shown in a sheet (`closesSheet`) first
-/// dismisses that sheet, so that what the item opens appears on the stack under it. The tasks of a project belong to
-/// the Tasks feature and are not mapped here yet.
+/// dismisses that sheet, so that what the item opens appears on the stack under it.
 @MainActor
 final class AppCollectionsRouter {
 
@@ -49,8 +48,11 @@ extension AppCollectionsRouter: CollectionsRouting {
         context.showMail(MailListStart(projectId: projectId), in: tab)
     }
 
-    // The tasks of a project belong to the Tasks feature; the integrator maps the request to its screen.
-    func showProjectTasks(projectId: String) {}
+    func showProjectTasks(projectId: String) {
+        leaveSheet()
+        context.showTasks(TasksStart(tab: .all, projectId: projectId), in: tab)
+    }
+
     func showProjectNotes(projectId: String) {
         leaveSheet()
         context.push(.notes(itemId: projectId, tab: tab), in: tab)

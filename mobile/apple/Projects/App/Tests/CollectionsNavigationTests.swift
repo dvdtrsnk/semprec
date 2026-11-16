@@ -96,18 +96,18 @@ final class CollectionsNavigationTests: XCTestCase {
         router.showProjectMail(projectId: "p1")
         router.showProjectNotes(projectId: "p1")
         router.showProjectAgent(projectId: "p1")
-        XCTAssertEqual(overview.dismissals, 7)
-        XCTAssertEqual(overview.pushed.count, 7)
+        router.showProjectTasks(projectId: "p1")
+        XCTAssertEqual(overview.dismissals, 8)
+        XCTAssertEqual(overview.pushed.count, 8)
     }
 
     @MainActor
-    func testTheScreensOfOtherFeaturesAreNotRoutedYet() {
+    func testTheTasksOfAProjectOpenAllItsTasksOnTheStackOfTheCollection() {
         let context = NavigationContext()
         let overview = StackSpy()
         context.register(overview, for: .overview)
-        let router = AppCollectionsRouter(context: context, tab: .overview)
-        router.showProjectTasks(projectId: "p1")
-        XCTAssertTrue(overview.pushed.isEmpty)
+        AppCollectionsRouter(context: context, tab: .overview).showProjectTasks(projectId: "p1")
+        XCTAssertEqual(overview.pushed, [.tasks(TasksStart(tab: .all, projectId: "p1"), tab: .overview)])
         XCTAssertTrue(overview.sheets.isEmpty)
     }
 
