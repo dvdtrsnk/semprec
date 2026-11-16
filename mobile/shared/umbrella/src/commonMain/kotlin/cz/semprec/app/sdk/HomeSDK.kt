@@ -59,6 +59,9 @@ class HomeSDK(
         HomeViewModelFactory(LoadPlaceholderItems(repository), LoadPlaceholderItem(repository), auth)
     private val collectionReads = HttpCollectionReads(auth.api)
 
+    /** The profile and the account screens below it. */
+    val account: AccountSDK = AccountSDK.create(auth.api, auth, collectionReads)
+
     /** The generic collection screens: any database's items, and one item of it. */
     val collections: CollectionSDK =
         CollectionSDK(CollectionViewModelFactory(collectionReads, HttpCollectionWrites(auth.api, collectionReads)))
