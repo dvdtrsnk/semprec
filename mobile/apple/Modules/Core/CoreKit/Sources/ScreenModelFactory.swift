@@ -7,4 +7,8 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
 
     func makeSession() -> any SessionScreenModel
     func makeLogin() -> any LoginScreenModel
+    func makeOverview() -> any OverviewScreenModel
+    func makeSearch() -> any SearchScreenModel
+    func makeTasks(start: TasksStart) -> any TasksScreenModel
+    func makeItemDetails(kind: ItemKind, itemId: String) -> any ItemDetailsScreenModel
 }
