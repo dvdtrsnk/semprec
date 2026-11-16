@@ -30,7 +30,8 @@ data class SortChoice(val axis: SortAxis, val name: String)
 
 /**
  * One item of a list. [group] is the value of the status-like select property, [date] the item's date property,
- * [subtitle] up to three values worth showing under the title.
+ * [subtitle] up to three values worth showing under the title, [rating] the person's own stars (1 to 5) of a book,
+ * a film or the like.
  */
 data class CollectionRow(
     val id: String,
@@ -39,6 +40,7 @@ data class CollectionRow(
     val date: String?,
     val subtitle: List<FieldContent>,
     val fileType: String?,
+    val rating: Int? = null,
 )
 
 /** A group of rows under one heading; [label] is empty for a heading the app words itself (a day, a month). */

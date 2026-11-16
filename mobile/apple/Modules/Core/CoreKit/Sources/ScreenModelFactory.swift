@@ -31,4 +31,16 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
     func makeInvitations() -> any InvitationsScreenModel
     /// `day` is the day the new item sheet was opened for, `YYYY-MM-DD`.
     func makeNewItem(day: String) -> any NewItemScreenModel
+    // MARK: - Account
+    func makeProfile() -> any ProfileScreenModel
+    func makeDevices() -> any DevicesScreenModel
+    func makeNotificationSettings() -> any NotificationSettingsScreenModel
+    func makeAiUsage() -> any AiUsageScreenModel
+    func makeTrash() -> any TrashScreenModel
+
+    // MARK: - Areas
+    func makeArea(areaId: String) -> any AreaScreenModel
+
+    // MARK: - Notes
+    func makeNotes(itemId: String) -> any NotesScreenModel
 }

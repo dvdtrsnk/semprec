@@ -29,6 +29,10 @@ enum AppDestination: Hashable {
     case newItem(day: String)
     /// A subpage of the diary; `title` is the caption of the link that opened it.
     case journalPage(itemId: String, title: String)
+    /// One area, on the stack of `tab`: what is coming up in it and what is connected to it.
+    case area(areaId: String, tab: AppTab)
+    /// The page of notes of an item (a project, an area or a subpage), on the stack of `tab`.
+    case notes(itemId: String, tab: AppTab)
 }
 
 // MARK: - NavigationProvidedDestination

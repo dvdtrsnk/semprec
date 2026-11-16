@@ -412,8 +412,8 @@ describe("VM-BRIDGE", () => {
 
   it("fails a new ViewModel without test, bridge and screen once for each", () => {
     const root = copyOfTree();
-    write(root, `${PRESENTATION}/ProfileViewModel.kt`, "package cz.semprec.app.presentation\n\nclass ProfileViewModel internal constructor() :\n    ScreenViewModel<SettingsState, SettingsAction, SettingsEffect>(SettingsState())\n");
-    const violations = assertViolations(root, ["VM-BRIDGE"], /no ProfileViewModelTest.kt/, /ProfileViewModel has 0 CoreKit bridges/, /takes ProfileViewModel as a parameter/);
+    write(root, `${PRESENTATION}/FixtureViewModel.kt`, "package cz.semprec.app.presentation\n\nclass FixtureViewModel internal constructor() :\n    ScreenViewModel<SettingsState, SettingsAction, SettingsEffect>(SettingsState())\n");
+    const violations = assertViolations(root, ["VM-BRIDGE"], /no FixtureViewModelTest.kt/, /FixtureViewModel has 0 CoreKit bridges/, /takes FixtureViewModel as a parameter/);
     assert.equal(violations.length, 3);
   });
 
@@ -426,10 +426,10 @@ describe("VM-BRIDGE", () => {
   it("fails a concrete ViewModel that extends ScreenViewModel through an abstract one, once for each requirement", () => {
     const root = copyOfTree();
     write(root, `${PRESENTATION}/ListViewModel.kt`, LIST_VIEW_MODEL);
-    write(root, `${PRESENTATION}/ProfileViewModel.kt`, "package cz.semprec.app.presentation\n\nclass ProfileViewModel internal constructor() : ListViewModel()\n");
-    const violations = assertViolations(root, ["VM-BRIDGE"], /no ProfileViewModelTest.kt/, /ProfileViewModel has 0 CoreKit bridges/, /takes ProfileViewModel as a parameter/);
+    write(root, `${PRESENTATION}/FixtureViewModel.kt`, "package cz.semprec.app.presentation\n\nclass FixtureViewModel internal constructor() : ListViewModel()\n");
+    const violations = assertViolations(root, ["VM-BRIDGE"], /no FixtureViewModelTest.kt/, /FixtureViewModel has 0 CoreKit bridges/, /takes FixtureViewModel as a parameter/);
     assert.equal(violations.length, 3);
-    assert.ok(violations.every((v) => v.file === `${PRESENTATION}/ProfileViewModel.kt` && v.line === 3));
+    assert.ok(violations.every((v) => v.file === `${PRESENTATION}/FixtureViewModel.kt` && v.line === 3));
   });
 
   it("follows the inheritance through several classes, and ends a cycle instead of following it", { timeout: 20_000 }, () => {
@@ -443,10 +443,10 @@ describe("VM-BRIDGE", () => {
   it("fails a CoreKit class that stores an indirect, an abstract or the base ViewModel type without a lease", () => {
     const root = copyOfTree();
     write(root, `${PRESENTATION}/ListViewModel.kt`, LIST_VIEW_MODEL);
-    write(root, `${PRESENTATION}/ProfileViewModel.kt`, "package cz.semprec.app.presentation\n\nclass ProfileViewModel internal constructor() : ListViewModel()\n");
-    write(root, `${COREKIT_SHARED}/LeaselessBridges.swift`, "final class ProfileBridge {\n    private let viewModel: SharedSDK.ProfileViewModel\n}\n\nfinal class ListBridge {\n    private let viewModel: SharedSDK.ListViewModel\n}\n\nfinal class BaseBridge {\n    private let viewModel: ScreenViewModel<AnyObject, AnyObject, AnyObject>\n}\n");
+    write(root, `${PRESENTATION}/FixtureViewModel.kt`, "package cz.semprec.app.presentation\n\nclass FixtureViewModel internal constructor() : ListViewModel()\n");
+    write(root, `${COREKIT_SHARED}/LeaselessBridges.swift`, "final class FixtureBridge {\n    private let viewModel: SharedSDK.FixtureViewModel\n}\n\nfinal class ListBridge {\n    private let viewModel: SharedSDK.ListViewModel\n}\n\nfinal class BaseBridge {\n    private let viewModel: ScreenViewModel<AnyObject, AnyObject, AnyObject>\n}\n");
     const violations = assertViolations(root, ["VM-BRIDGE"]);
-    for (const bridge of ["ProfileBridge", "ListBridge", "BaseBridge"]) {
+    for (const bridge of ["FixtureBridge", "ListBridge", "BaseBridge"]) {
       assert.ok(violations.some((v) => v.message === `${bridge} stores a shared ViewModel but no SharedViewModelLease`), bridge);
     }
   });

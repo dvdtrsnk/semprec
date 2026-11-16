@@ -40,6 +40,10 @@ enum CollectionIcon {
         case "threads": "envelope"
         case "transcripts": "waveform"
         case "areas": "safari"
+        case "healthRecords": "cross.case"
+        case "books": "books.vertical"
+        case "movies": "film"
+        case "recipes": "fork.knife"
         default: "square.grid.2x2"
         }
     }

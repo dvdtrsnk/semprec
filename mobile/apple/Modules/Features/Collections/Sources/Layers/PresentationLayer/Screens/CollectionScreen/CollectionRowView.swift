@@ -26,6 +26,9 @@ struct CollectionRowView: View {
                     if !subtitle.isEmpty {
                         Text(subtitle).font(.footnote).foregroundStyle(Theme.Colors.secondaryText).lineLimit(1)
                     }
+                    if let rating = row.rating {
+                        RatingStars(rating: rating)
+                    }
                 }
                 Spacer(minLength: Theme.Spacing.small)
                 if showsStatus, let group = row.group {
