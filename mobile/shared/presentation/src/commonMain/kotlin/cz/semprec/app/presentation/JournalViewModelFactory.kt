@@ -1,6 +1,7 @@
 package cz.semprec.app.presentation
 
 import cz.semprec.app.domain.EditJournalPage
+import cz.semprec.app.domain.InboxCaptureRepository
 import cz.semprec.app.domain.JournalRepository
 import cz.semprec.app.domain.LoadJournalPage
 import cz.semprec.app.domain.LoadJournalPeriod
@@ -13,7 +14,10 @@ import kotlin.native.HiddenFromObjC
  */
 @OptIn(ExperimentalObjCRefinement::class)
 @HiddenFromObjC
-class JournalViewModelFactory(private val repository: JournalRepository) {
+class JournalViewModelFactory(
+    private val repository: JournalRepository,
+    private val captures: InboxCaptureRepository,
+) {
     /** One new ViewModel per call; the caller owns it (see [ScreenViewModel]). [initialDay] is `YYYY-MM-DD`. */
     fun journalViewModel(initialDay: String): JournalViewModel =
         JournalViewModel(initialDay, LoadJournalPeriod(repository), EditJournalPage(repository))
@@ -21,4 +25,7 @@ class JournalViewModelFactory(private val repository: JournalRepository) {
     /** One new ViewModel per call; the caller owns it (see [ScreenViewModel]). */
     fun journalSubpageViewModel(itemId: String): JournalSubpageViewModel =
         JournalSubpageViewModel(itemId, LoadJournalPage(repository), EditJournalPage(repository))
+
+    /** One new ViewModel per call; the caller owns it. The capture row of the diary's Inbox. */
+    fun inboxCaptureViewModel(): InboxCaptureViewModel = InboxCaptureViewModel(captures)
 }

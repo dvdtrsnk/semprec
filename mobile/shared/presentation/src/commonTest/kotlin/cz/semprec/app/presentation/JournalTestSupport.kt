@@ -152,3 +152,12 @@ fun inboxEntry() = JournalInboxEntry(
     attachmentName = "scan.pdf",
     attachmentCount = 2,
 )
+
+/** The captures of the diary's Inbox row, which the diary's own tests never reach. */
+internal object UnusedInboxCaptures : cz.semprec.app.domain.InboxCaptureRepository {
+    override suspend fun types(): RepositoryResult<List<cz.semprec.app.domain.InboxType>> =
+        error("The diary's tests do not read Inbox types")
+
+    override suspend fun capture(capture: cz.semprec.app.domain.InboxCapture): RepositoryResult<Unit> =
+        error("The diary's tests do not capture")
+}

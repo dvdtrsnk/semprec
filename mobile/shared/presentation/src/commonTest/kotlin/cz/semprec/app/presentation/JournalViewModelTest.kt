@@ -25,7 +25,8 @@ private val DAY_REF = JournalPageRef(JournalPeriodKind.DAY, "2026-10-16")
 class JournalViewModelTest : MainDispatcherTest() {
     private val repository = FakeJournalRepository()
 
-    private fun viewModel(day: String = "2026-10-16") = JournalViewModelFactory(repository).journalViewModel(day)
+    private fun viewModel(day: String = "2026-10-16") =
+        JournalViewModelFactory(repository, UnusedInboxCaptures).journalViewModel(day)
 
     private fun TestScope.loaded(day: String = "2026-10-16"): JournalViewModel =
         viewModel(day).also { runCurrent() }

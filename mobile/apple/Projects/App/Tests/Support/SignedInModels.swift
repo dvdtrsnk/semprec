@@ -33,6 +33,8 @@ final class SignedInModels: ScreenModelFactory {
         real.makeJournalSubpage(itemId: itemId)
     }
 
+    func makeInboxCapture() -> any InboxCaptureScreenModel { real.makeInboxCapture() }
+
     func makeSleep(night: String?, startOnNight: Bool) -> any SleepScreenModel {
         real.makeSleep(night: night, startOnNight: startOnNight)
     }

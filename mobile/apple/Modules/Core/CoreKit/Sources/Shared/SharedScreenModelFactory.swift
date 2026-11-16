@@ -74,6 +74,10 @@ extension SharedScreenModelFactory: ScreenModelFactory {
         SharedJournalSubpageScreenModel(sdk.journal.journalSubpageViewModel(itemId: itemId))
     }
 
+    public func makeInboxCapture() -> any InboxCaptureScreenModel {
+        SharedInboxCaptureScreenModel(sdk.journal.inboxCaptureViewModel())
+    }
+
     public func makeSleep(night: String?, startOnNight: Bool) -> any SleepScreenModel {
         SharedSleepScreenModel(sdk.sleep.sleepViewModel(night: night, startOnNight: startOnNight))
     }

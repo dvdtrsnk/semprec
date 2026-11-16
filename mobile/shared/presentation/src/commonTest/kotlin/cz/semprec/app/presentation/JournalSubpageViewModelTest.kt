@@ -22,7 +22,7 @@ private const val SUBPAGE = "## Clothes\n\n- [x] Jacket\n- [ ] Boots\n\n[Deeper]
 class JournalSubpageViewModelTest : MainDispatcherTest() {
     private val repository = FakeJournalRepository().apply { onPage = { content(PageDocument(SUBPAGE, "\"v1\"")) } }
 
-    private fun viewModel() = JournalViewModelFactory(repository).journalSubpageViewModel("jv1")
+    private fun viewModel() = JournalViewModelFactory(repository, UnusedInboxCaptures).journalSubpageViewModel("jv1")
 
     private fun TestScope.loaded(): JournalSubpageViewModel = viewModel().also { runCurrent() }
 

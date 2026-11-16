@@ -19,4 +19,9 @@ enum JournalIdentifiers {
     static let blockPrefix = "journal.block."
     static let newBlockField = "journal.newBlock.field"
     static let newBlockAdd = "journal.newBlock.add"
+    static let captureText = "journal.capture.text"
+    static let captureSend = "journal.capture.send"
+    static let captureType = "journal.capture.type"
+    static let captureAttach = "journal.capture.attach"
+    static let captureRemove = "journal.capture.remove"
 }

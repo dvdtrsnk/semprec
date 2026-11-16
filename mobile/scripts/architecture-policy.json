@@ -23,7 +23,7 @@
     "allowedImports": ["androidx.lifecycle.ViewModel", "androidx.lifecycle.viewModelScope"]
   },
   "apple": {
-    "systemModules": ["AVFoundation", "Combine", "CoreGraphics", "Foundation", "ImageIO", "Security", "SwiftUI", "Synchronization", "UniformTypeIdentifiers", "XCTest"],
+    "systemModules": ["AVFoundation", "Combine", "CoreGraphics", "Foundation", "ImageIO", "PhotosUI", "Security", "SwiftUI", "Synchronization", "UniformTypeIdentifiers", "XCTest"],
     "externalModules": ["FactoryKit", "NavigatorUI"],
     "kotlinFrameworkTarget": "CoreKit",
     "targets": {
@@ -73,7 +73,7 @@
     "module": ":shared:presentation",
     "baseClass": "ScreenViewModel",
     "leaseType": "SharedViewModelLease",
-    "appleOnly": ["LoginViewModel", "SessionViewModel", "TasksViewModel", "ItemDetailsViewModel", "OverviewViewModel", "SearchViewModel", "CollectionViewModel", "ItemViewModel", "JournalViewModel", "JournalSubpageViewModel", "SleepViewModel", "SempThreadViewModel", "SempChatsViewModel", "SempStatusViewModel", "SempRunViewModel", "SempApprovalsViewModel", "SempProjectAgentViewModel", "SempBubbleViewModel", "CalendarViewModel", "CalendarListViewModel", "InvitationsViewModel", "NewCalendarItemViewModel", "ProfileViewModel", "DevicesViewModel", "NotificationSettingsViewModel", "AiUsageViewModel", "TrashViewModel", "AreaViewModel", "NotesViewModel", "InboxViewModel", "MailThreadsViewModel", "MailThreadViewModel", "MailComposeViewModel", "MailFoldersViewModel", "MailAccountsViewModel", "MailAccountViewModel", "RecordingsViewModel", "RecorderViewModel", "TranscriptViewModel", "MeetingViewModel"],
+    "appleOnly": ["LoginViewModel", "SessionViewModel", "TasksViewModel", "ItemDetailsViewModel", "OverviewViewModel", "SearchViewModel", "CollectionViewModel", "ItemViewModel", "JournalViewModel", "JournalSubpageViewModel", "SleepViewModel", "SempThreadViewModel", "SempChatsViewModel", "SempStatusViewModel", "SempRunViewModel", "SempApprovalsViewModel", "SempProjectAgentViewModel", "SempBubbleViewModel", "CalendarViewModel", "CalendarListViewModel", "InvitationsViewModel", "NewCalendarItemViewModel", "ProfileViewModel", "DevicesViewModel", "NotificationSettingsViewModel", "AiUsageViewModel", "TrashViewModel", "AreaViewModel", "NotesViewModel", "InboxViewModel", "MailThreadsViewModel", "MailThreadViewModel", "MailComposeViewModel", "MailFoldersViewModel", "MailAccountsViewModel", "MailAccountViewModel", "RecordingsViewModel", "RecorderViewModel", "TranscriptViewModel", "MeetingViewModel", "InboxCaptureViewModel"],
     "androidOnly": ["HomeViewModel", "DetailViewModel", "SettingsViewModel"]
   },
   "navigation": {
@@ -1032,6 +1032,16 @@
         "journal.inbox",
         "journal.inbox.attachment",
         "journal.inbox.process",
+        "journal.capture.attach",
+        "journal.capture.failed",
+        "journal.capture.file",
+        "journal.capture.noType",
+        "journal.capture.photo",
+        "journal.capture.photoName",
+        "journal.capture.placeholder",
+        "journal.capture.remove",
+        "journal.capture.send",
+        "journal.capture.type",
         "journal.inbox.status.confirmed",
         "journal.inbox.status.failed",
         "journal.inbox.status.invalid",

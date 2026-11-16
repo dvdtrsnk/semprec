@@ -9,6 +9,7 @@ struct JournalScreen: View {
 
     // MARK: - Dependencies
     @StateObject private var viewModel: JournalViewModel
+    @StateObject private var capture: JournalCaptureViewModel
 
     // MARK: - State
     /// How far the page is scrolled, which folds the rows of the axis away.
@@ -19,8 +20,12 @@ struct JournalScreen: View {
     @State private var flippedWeeks: Set<Int> = []
 
     // MARK: - Init
-    init(viewModel: @autoclosure @escaping () -> JournalViewModel) {
+    init(
+        viewModel: @autoclosure @escaping () -> JournalViewModel,
+        capture: @autoclosure @escaping () -> JournalCaptureViewModel
+    ) {
         _viewModel = StateObject(wrappedValue: viewModel())
+        _capture = StateObject(wrappedValue: capture())
     }
 
     // MARK: - Body
@@ -158,7 +163,9 @@ private extension JournalScreen {
 
     @ViewBuilder var inboxSection: some View {
         let items = viewModel.state.inbox
-        if !items.isEmpty {
+        // Today always has the Inbox, because that is where something new is written down.
+        let isToday = viewModel.state.selection.start == viewModel.state.today
+        if !items.isEmpty || isToday {
             section(Text("journal.inbox", bundle: .module), count: items.count, trailing: {
                 Button(action: viewModel.openInbox) { Text("journal.inbox.process", bundle: .module) }
                     .accessibilityIdentifier(JournalIdentifiers.inboxProcess)
@@ -166,10 +173,14 @@ private extension JournalScreen {
                 card {
                     ForEach(items) { item in
                         JournalInboxRow(item: item)
-                        if item.id != items.last?.id { Divider() }
+                        if item.id != items.last?.id || isToday { Divider() }
+                    }
+                    if isToday {
+                        JournalCaptureRow(viewModel: capture, day: viewModel.state.today)
                     }
                 }
             })
+            .onChange(of: capture.captured) { _, _ in viewModel.retry() }
         }
     }
 
@@ -329,7 +340,7 @@ private extension JournalWeek {
         JournalScreen(viewModel: JournalViewModel(
             model: ScriptedJournalScreenModel(state: .previewDay),
             router: PreviewJournalRouter()
-        ))
+        ), capture: .preview)
     }
 }
 
@@ -340,7 +351,7 @@ private extension JournalWeek {
                 phase: .loading, selection: .previewDay, today: "2026-10-16", axis: .previewAxis
             )),
             router: PreviewJournalRouter()
-        ))
+        ), capture: .preview)
     }
 }
 
@@ -351,6 +362,13 @@ private extension JournalWeek {
                 phase: .failure(.unavailable), selection: .previewDay, today: "2026-10-16", axis: .previewAxis
             )),
             router: PreviewJournalRouter()
-        ))
+        ), capture: .preview)
+    }
+}
+
+private extension JournalCaptureViewModel {
+
+    static var preview: JournalCaptureViewModel {
+        JournalCaptureViewModel(model: ScriptedInboxCaptureScreenModel(state: InboxCaptureState()))
     }
 }

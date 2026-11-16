@@ -9,6 +9,7 @@ enum JournalTab {
     static func root(_ composition: AppComposition) -> some View {
         JournalScreenFactory.journal(
             makeModel: { composition.models.makeJournal(initialDay: $0) },
+            makeCapture: { composition.models.makeInboxCapture() },
             router: composition.journalRouter
         )
     }
