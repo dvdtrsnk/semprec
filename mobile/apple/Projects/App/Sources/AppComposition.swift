@@ -13,6 +13,7 @@ final class AppComposition: ObservableObject {
     // MARK: - Dependencies
     let models: any ScreenModelFactory
     let navigation: NavigationContext
+    let overviewRouter: AppOverviewRouter
 
     // MARK: - Init
     convenience init() {
@@ -21,7 +22,15 @@ final class AppComposition: ObservableObject {
 
     /// A composition over the given screen models; tests pass a factory whose session is already signed in.
     init(models: any ScreenModelFactory) {
+        let navigation = NavigationContext()
         self.models = models
-        navigation = NavigationContext()
+        self.navigation = navigation
+        overviewRouter = AppOverviewRouter(context: navigation)
+    }
+
+    // MARK: - Routers
+    /// The router of a Tasks screen that sits on the stack of `tab`; it opens Podrobnosti over that stack.
+    func tasksRouter(in tab: AppTab) -> AppTasksRouter {
+        AppTasksRouter(context: navigation, tab: tab)
     }
 }

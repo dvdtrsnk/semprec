@@ -11,6 +11,16 @@ final class SignedInModels: ScreenModelFactory {
     // MARK: - Protocol conformance
     func makeLogin() -> any LoginScreenModel { real.makeLogin() }
 
+    func makeOverview() -> any OverviewScreenModel { real.makeOverview() }
+
+    func makeSearch() -> any SearchScreenModel { real.makeSearch() }
+
+    func makeTasks(start: TasksStart) -> any TasksScreenModel { real.makeTasks(start: start) }
+
+    func makeItemDetails(kind: ItemKind, itemId: String) -> any ItemDetailsScreenModel {
+        real.makeItemDetails(kind: kind, itemId: itemId)
+    }
+
     func makeSession() -> any SessionScreenModel {
         ScriptedSessionScreenModel(
             state: .signedIn(SessionUser(email: "a@b.cz", role: "member", serverUrl: "https://s.example"))

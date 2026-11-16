@@ -11,6 +11,8 @@ let workspace = Workspace(
         "Modules/Core/Dependencies",
         "Modules/Core/DesignSystem",
         "Modules/Features/Auth",
+        "Modules/Features/Overview",
+        "Modules/Features/Tasks",
     ],
     schemes: [
         .scheme(
@@ -20,7 +22,10 @@ let workspace = Workspace(
             testAction: .targets(
                 [
                     .testableTarget(target: .project(path: "Modules/Core/CoreKit", target: "CoreKitTests")),
+                    .testableTarget(target: .project(path: "Modules/Core/DesignSystem", target: "DesignSystemTests")),
                     .testableTarget(target: .project(path: "Modules/Features/Auth", target: "AuthFeatureTests")),
+                    .testableTarget(target: .project(path: "Modules/Features/Overview", target: "OverviewFeatureTests")),
+                    .testableTarget(target: .project(path: "Modules/Features/Tasks", target: "TasksFeatureTests")),
                     .testableTarget(target: .project(path: "Projects/App", target: "\(app)Tests")),
                 ],
                 options: .options(language: "en", region: "US")

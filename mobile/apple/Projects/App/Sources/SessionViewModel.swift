@@ -28,4 +28,8 @@ final class SessionViewModel: ObservableObject {
     func retry() {
         model.send(.retry)
     }
+
+    func signOut() {
+        model.send(.signOut)
+    }
 }
