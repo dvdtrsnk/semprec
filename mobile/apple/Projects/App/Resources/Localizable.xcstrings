@@ -33,38 +33,6 @@
         }
       }
     },
-    "pending.mail" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pošta"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Mail"
-          }
-        }
-      }
-    },
-    "pending.mailAccounts" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "E-mailové účty"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Email accounts"
-          }
-        }
-      }
-    },
     "pending.message" : {
       "localizations" : {
         "cs" : {

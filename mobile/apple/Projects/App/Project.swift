@@ -56,6 +56,7 @@ let project = Project(
                 .project(target: "CollectionsFeature", path: "../../Modules/Features/Collections"),
                 .project(target: "JournalFeature", path: "../../Modules/Features/Journal"),
                 .project(target: "NotesFeature", path: "../../Modules/Features/Notes"),
+                .project(target: "MailFeature", path: "../../Modules/Features/Mail"),
                 .project(target: "OverviewFeature", path: "../../Modules/Features/Overview"),
                 .project(target: "SleepFeature", path: "../../Modules/Features/Sleep"),
                 .project(target: "InboxFeature", path: "../../Modules/Features/Inbox"),

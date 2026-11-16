@@ -61,6 +61,18 @@ final class SignedInModels: ScreenModelFactory {
     // MARK: - Notes
     func makeNotes(itemId: String) -> any NotesScreenModel { real.makeNotes(itemId: itemId) }
     func makeInbox() -> any InboxScreenModel { real.makeInbox() }
+    // MARK: - Mail
+    func makeMailThreads(start: MailListStart) -> any MailThreadsScreenModel { real.makeMailThreads(start: start) }
+
+    func makeMailThread(threadId: String) -> any MailThreadScreenModel { real.makeMailThread(threadId: threadId) }
+
+    func makeMailCompose(start: MailComposeStart) -> any MailComposeScreenModel { real.makeMailCompose(start: start) }
+
+    func makeMailFolders() -> any MailFoldersScreenModel { real.makeMailFolders() }
+
+    func makeMailAccounts() -> any MailAccountsScreenModel { real.makeMailAccounts() }
+
+    func makeMailAccount(mailboxId: String) -> any MailAccountScreenModel { real.makeMailAccount(mailboxId: mailboxId) }
 
     func makeSession() -> any SessionScreenModel {
         ScriptedSessionScreenModel(

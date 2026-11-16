@@ -3,6 +3,7 @@ import CalendarFeature
 import InboxFeature
 import JournalFeature
 import NotesFeature
+import SleepFeature
 import SwiftUI
 
 // Concrete views for destinations of `AppScene.destinationView`: opaque helper functions inside its large
@@ -107,5 +108,23 @@ struct InboxDestination: View {
             makeModel: { composition.models.makeInbox() },
             router: composition.inboxRouter(in: tab)
         )
+    }
+}
+
+/// The sleep sheet: the plan, or one night (`sleepPlan` and `sleepNight` destinations).
+struct SleepDestination: View {
+
+    let destination: AppDestination
+    let composition: AppComposition
+
+    var body: some View {
+        switch destination {
+        case .sleepPlan(let night):
+            SleepScreenFactory.plan { composition.models.makeSleep(night: night, startOnNight: false) }
+        case .sleepNight(let night):
+            SleepScreenFactory.night { composition.models.makeSleep(night: night, startOnNight: true) }
+        default:
+            EmptyView()
+        }
     }
 }

@@ -45,4 +45,11 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
     func makeNotes(itemId: String) -> any NotesScreenModel
     // MARK: - Inbox
     func makeInbox() -> any InboxScreenModel
+    // MARK: - Mail
+    func makeMailThreads(start: MailListStart) -> any MailThreadsScreenModel
+    func makeMailThread(threadId: String) -> any MailThreadScreenModel
+    func makeMailCompose(start: MailComposeStart) -> any MailComposeScreenModel
+    func makeMailFolders() -> any MailFoldersScreenModel
+    func makeMailAccounts() -> any MailAccountsScreenModel
+    func makeMailAccount(mailboxId: String) -> any MailAccountScreenModel
 }

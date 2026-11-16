@@ -99,6 +99,9 @@ class HomeSDK(
     fun itemDetailsViewModel(kind: ItemKind, itemId: String): ItemDetailsViewModel =
         workViewModels.itemDetailsViewModel(kind, itemId)
 
+    /** The mail screens: the thread list, a thread, writing a message, the mailboxes and the accounts. */
+    val mail: MailSDK = MailSDK(auth.api)
+
     fun homeViewModel(): HomeViewModel = viewModels.homeViewModel()
 
     fun overviewViewModel(): OverviewViewModel = overviewViewModels.overviewViewModel()

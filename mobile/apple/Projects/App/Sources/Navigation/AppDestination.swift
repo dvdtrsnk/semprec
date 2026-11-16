@@ -35,6 +35,16 @@ enum AppDestination: Hashable {
     case notes(itemId: String, tab: AppTab)
     /// The Inbox, on the stack of `tab`.
     case inbox(tab: AppTab)
+
+    // MARK: - Mail
+    /// A thread list on the stack of `tab`: all mail, an area, a project, a folder or a mailbox.
+    case mailList(MailListStart, title: String?, tab: AppTab)
+    case mailThread(threadId: String, tab: AppTab)
+    case mailFolders(tab: AppTab)
+    /// The editor of a message, presented as a sheet.
+    case mailCompose(MailComposeStart)
+    case mailAccounts(tab: AppTab)
+    case mailAccount(mailboxId: String, tab: AppTab)
 }
 
 // MARK: - NavigationProvidedDestination

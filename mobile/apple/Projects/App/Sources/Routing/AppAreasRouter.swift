@@ -37,7 +37,7 @@ extension AppAreasRouter: AreasRouting {
     }
 
     func showMail(areaId: String) {
-        context.push(.pending(title: String(localized: "pending.mail")), in: tab)
+        context.showMail(MailListStart(areaId: areaId), in: tab)
     }
 
     func showNotes(areaId: String) {
