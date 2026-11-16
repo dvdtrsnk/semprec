@@ -128,4 +128,6 @@ private final class AreaStackSpy: StackNavigating {
     func presentSheet(_ destination: AppDestination) {
         sheets.append(destination)
     }
+
+    func dismissPresented() {}
 }

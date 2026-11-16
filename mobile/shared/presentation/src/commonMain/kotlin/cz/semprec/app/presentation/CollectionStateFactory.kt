@@ -40,8 +40,8 @@ internal fun collectionState(
         filterSheet = previous.filterSheet?.copy(groups = filterGroups(database, facets, inputs.selections)),
         activeFilterCount = inputs.selections.count,
         hasMore = loaded.nextCursor != null,
-        canCreate = database.title != null && database.fileProperty() == null,
-        canUpload = database.fileProperty() != null,
+        canCreate = database.title != null && database.uploadProperty() == null,
+        canUpload = database.uploadProperty() != null,
         creating = previous.creating,
         writeFailure = previous.writeFailure,
     )

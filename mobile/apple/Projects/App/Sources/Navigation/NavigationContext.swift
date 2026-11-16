@@ -47,4 +47,9 @@ extension NavigationContext {
     func presentSheet(_ destination: AppDestination, from tab: AppTab) {
         stacks[tab]?.presentSheet(destination)
     }
+
+    /// Dismisses the sheets presented over the stack of `tab`.
+    func dismissSheets(in tab: AppTab) {
+        stacks[tab]?.dismissPresented()
+    }
 }

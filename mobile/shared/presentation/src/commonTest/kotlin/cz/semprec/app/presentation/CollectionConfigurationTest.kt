@@ -15,6 +15,9 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 private const val BOOKS = "db-books"
 
@@ -93,6 +96,24 @@ class CollectionConfigurationTest : MainDispatcherTest() {
                 assertEquals(layout, vm.state.value.layout, key)
                 vm.close()
             }
+        }
+
+    @Test fun `a collection with a cover creates an item by its name and one made of a file uploads it`() =
+        runTest(dispatcher) {
+            val books = viewModel(booksDatabase("books", rating), book("a", FieldValue.Number(4.0)))
+            runCurrent()
+            assertTrue(books.state.value.canCreate)
+            assertFalse(books.state.value.canUpload)
+            assertNull(books.state.value.sections.single().rows.single().fileType)
+            books.close()
+            val documents = booksDatabase("files")
+            val files = viewModel(
+                documents.copy(properties = documents.properties + bookProperty("file", PropertyKind.FILE)),
+            )
+            runCurrent()
+            assertFalse(files.state.value.canCreate)
+            assertTrue(files.state.value.canUpload)
+            files.close()
         }
 
     @Test fun `a media collection without a cover or photo opens as rows`() = runTest(dispatcher) {

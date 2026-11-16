@@ -9,4 +9,11 @@ enum DatabaseKey {
     static let files = "files"
     static let people = "people"
     static let companies = "companies"
+    static let books = "books"
+    static let movies = "movies"
+
+    /// Books and films, whose items have a cover, a status, stars and notes.
+    static func isMedia(_ key: String?) -> Bool {
+        key == books || key == movies
+    }
 }

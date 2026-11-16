@@ -17,6 +17,9 @@ enum AppDestination: Hashable {
     case collection(CollectionTarget)
     /// The detail of an item of any database; `databaseKey` is its database's canonical key, if the caller knows it.
     case collectionItem(itemId: String, databaseKey: String?)
+    /// The detail of an item presented as a sheet over the stack of `tab`, for the databases whose items the design
+    /// opens in place (companies, files, books, films, recipes, health records); what it opens goes onto that stack.
+    case itemSheet(itemId: String, databaseKey: String?, tab: AppTab)
     /// The sleep plan sheet; `night` is the evening (`YYYY-MM-DD`) whose ring it shows, or nil.
     case sleepPlan(night: String?)
     /// The sheet of one night (`YYYY-MM-DD`), which opens on that night.
@@ -67,7 +70,8 @@ extension AppDestination {
     /// Whether the destination is presented as a sheet over a stack, which covers the Semp bubble of the scene.
     var presentsAsSheet: Bool {
         switch self {
-        case .profile, .details, .sleepPlan, .sleepNight, .calendars, .invitations, .newItem, .mailCompose: true
+        case .profile, .details, .sleepPlan, .sleepNight, .calendars, .invitations, .newItem, .mailCompose,
+             .itemSheet: true
         case .pending, .tasks, .collection, .collectionItem, .journalPage, .area, .notes, .inbox, .mailList,
              .mailThread, .mailFolders, .mailAccounts, .mailAccount, .sempProjectAgent, .sempStatus,
              .recordings, .transcript, .meeting, .calendarAgenda: false

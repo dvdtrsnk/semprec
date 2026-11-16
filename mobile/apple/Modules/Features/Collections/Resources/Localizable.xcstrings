@@ -1,6 +1,134 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "collection.add.book" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přidat knihu"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add a book"
+          }
+        }
+      }
+    },
+    "collection.add.book.hint" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stačí název. Autora, rok, obálku a hodnocení zdroje dohledá Semp – když se mu to nepovede, zkusí to znovu v noci."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The title is enough. Semp looks up the author, year, cover and source rating; when it cannot find them, it tries again at night."
+          }
+        }
+      }
+    },
+    "collection.add.book.placeholder" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Název knihy"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Book title"
+          }
+        }
+      }
+    },
+    "collection.add.item" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nová položka · %@"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "New item · %@"
+          }
+        }
+      }
+    },
+    "collection.add.item.hint" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ostatní vlastnosti vyplníš v položce, která se po vytvoření otevře."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The other properties are filled in on the item, which opens once it is created."
+          }
+        }
+      }
+    },
+    "collection.add.movie" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přidat film nebo seriál"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add a film or series"
+          }
+        }
+      }
+    },
+    "collection.add.movie.hint" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stačí název. Rok, obálku a hodnocení zdroje dohledá Semp – když se mu to nepovede, zkusí to znovu v noci."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The title is enough. Semp looks up the year, cover and source rating; when it cannot find them, it tries again at night."
+          }
+        }
+      }
+    },
+    "collection.add.movie.placeholder" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Název filmu nebo seriálu"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Film or series title"
+          }
+        }
+      }
+    },
     "collection.empty" : {
       "localizations" : {
         "cs" : {
@@ -97,38 +225,6 @@
         }
       }
     },
-    "collection.new.cancel" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zrušit"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Cancel"
-          }
-        }
-      }
-    },
-    "collection.new.create" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Vytvořit"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Create"
-          }
-        }
-      }
-    },
     "collection.new.placeholder" : {
       "localizations" : {
         "cs" : {
@@ -141,22 +237,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Name"
-          }
-        }
-      }
-    },
-    "collection.new.title" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nová položka"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "New item"
           }
         }
       }
@@ -893,6 +973,118 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Delete"
+          }
+        }
+      }
+    },
+    "item.media.details" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Podrobnosti"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Details"
+          }
+        }
+      }
+    },
+    "item.media.notes" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poznámky"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Notes"
+          }
+        }
+      }
+    },
+    "item.media.notes.placeholder" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Co si chceš zapamatovat…"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "What do you want to remember…"
+          }
+        }
+      }
+    },
+    "item.media.rating" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Moje hodnocení"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "My rating"
+          }
+        }
+      }
+    },
+    "item.media.sourceRating" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hodnocení zdroje %lld %%"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Source rating %lld %%"
+          }
+        }
+      }
+    },
+    "item.media.watchedWith" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Viděl jsem s"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Watched with"
+          }
+        }
+      }
+    },
+    "item.media.watchedWith.hint" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Do filmu můžeš přidat kohokoli z Lidí."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Anyone from People can be added to the film."
           }
         }
       }

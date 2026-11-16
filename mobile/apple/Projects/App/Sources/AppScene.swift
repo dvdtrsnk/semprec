@@ -132,6 +132,12 @@ private extension AppScene {
                 makeModel: { composition.models.makeItem(itemId: itemId, databaseKey: databaseKey) },
                 router: composition.collectionsRouter
             )
+        case .itemSheet(let itemId, let databaseKey, let tab):
+            CollectionsScreenFactory.itemSheet(
+                itemId: itemId,
+                makeModel: { composition.models.makeItem(itemId: itemId, databaseKey: databaseKey) },
+                router: AppCollectionsRouter(context: composition.navigation, tab: tab, closesSheet: true)
+            )
         case .sleepPlan, .sleepNight:
             SleepDestination(destination: destination, composition: composition)
         case .calendars, .invitations, .newItem, .calendarAgenda:

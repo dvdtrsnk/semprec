@@ -17,7 +17,7 @@ internal fun CollectionItem.toRow(database: CollectionDatabase): CollectionRow {
     val group = database.groupProperty()
     val groupContent = group?.let { contentOf(it, values[it.key]) } as? FieldContent.Choices
     val date = database.dateProperty()?.let { (contentOf(it, values[it.key]) as? FieldContent.Day)?.iso }
-    val type = database.property("type")?.takeIf { database.fileProperty() != null }
+    val type = database.property("type")?.takeIf { database.uploadProperty() != null }
     val fileType = type?.let { (contentOf(it, values[it.key]) as? FieldContent.Choices)?.options?.firstOrNull()?.label }
     return CollectionRow(
         id = id,

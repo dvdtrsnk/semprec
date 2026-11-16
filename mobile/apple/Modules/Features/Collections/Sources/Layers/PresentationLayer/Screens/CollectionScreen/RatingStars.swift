@@ -9,13 +9,14 @@ struct RatingStars: View {
 
     // MARK: - Dependencies
     let rating: Int
+    var size: CGFloat = 11
 
     // MARK: - Body
     var body: some View {
         HStack(spacing: 1) {
             ForEach(1...Self.maximum, id: \.self) { star in
                 Image(systemName: star <= rating ? "star.fill" : "star")
-                    .font(.caption2)
+                    .font(.system(size: size))
                     .foregroundStyle(star <= rating ? Color.orange : Theme.Colors.secondaryText.opacity(0.5))
             }
         }

@@ -58,7 +58,7 @@ extension AppSempRouter: SempRouting {
             switch databaseKey {
             case "tasks": context.showDetails(kind: .task, id: itemId, from: tab())
             case "events": context.showDetails(kind: .event, id: itemId, from: tab())
-            default: context.push(.collectionItem(itemId: itemId, databaseKey: databaseKey), in: tab())
+            default: context.showItem(itemId: itemId, databaseKey: databaseKey, from: tab())
             }
         }
     }

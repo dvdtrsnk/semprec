@@ -1,21 +1,23 @@
 import CollectionsFeature
 import CoreKit
 
-/// Routes of the Collections feature, on the stack of the tab it was created for. The screens of other features that
-/// a collection or an item reaches (the tasks, mail, notes and agent of a project, the sheet of an event, an area) are
-/// not built here: an event and an area open as the generic item until the app maps them to their own screens, and
-/// the requests for the others are accepted and dropped until it does.
+/// Routes of the Collections feature, on the stack of the tab it was created for. An item opens the way
+/// `NavigationContext.showItem` says for its database. The router of an item shown in a sheet (`closesSheet`) first
+/// dismisses that sheet, so that what the item opens appears on the stack under it. The tasks of a project belong to
+/// the Tasks feature and are not mapped here yet.
 @MainActor
 final class AppCollectionsRouter {
 
     // MARK: - Dependencies
     private let context: NavigationContext
     private let tab: AppTab
+    private let closesSheet: Bool
 
     // MARK: - Init
-    init(context: NavigationContext, tab: AppTab) {
+    init(context: NavigationContext, tab: AppTab, closesSheet: Bool = false) {
         self.context = context
         self.tab = tab
+        self.closesSheet = closesSheet
     }
 }
 
@@ -23,32 +25,47 @@ final class AppCollectionsRouter {
 extension AppCollectionsRouter: CollectionsRouting {
 
     func showItem(itemId: String, databaseKey: String?) {
-        context.push(.collectionItem(itemId: itemId, databaseKey: databaseKey), in: tab)
+        leaveSheet()
+        context.showItem(itemId: itemId, databaseKey: databaseKey, from: tab)
     }
 
     func showCollection(_ target: CollectionTarget) {
+        leaveSheet()
         context.push(.collection(target), in: tab)
     }
 
     func showEvent(itemId: String) {
-        context.push(.collectionItem(itemId: itemId, databaseKey: "events"), in: tab)
+        leaveSheet()
+        context.showItem(itemId: itemId, databaseKey: "events", from: tab)
     }
 
     func showArea(areaId: String) {
+        leaveSheet()
         context.push(.area(areaId: areaId, tab: tab), in: tab)
     }
 
     func showProjectMail(projectId: String) {
+        leaveSheet()
         context.showMail(MailListStart(projectId: projectId), in: tab)
     }
 
-    // The requests below belong to features that are built elsewhere; the integrator maps each to its screen.
+    // The tasks of a project belong to the Tasks feature; the integrator maps the request to its screen.
     func showProjectTasks(projectId: String) {}
     func showProjectNotes(projectId: String) {
+        leaveSheet()
         context.push(.notes(itemId: projectId, tab: tab), in: tab)
     }
 
     func showProjectAgent(projectId: String) {
+        leaveSheet()
         context.push(.sempProjectAgent(projectId: projectId), in: tab)
+    }
+}
+
+// MARK: - Private
+private extension AppCollectionsRouter {
+
+    func leaveSheet() {
+        if closesSheet { context.dismissSheets(in: tab) }
     }
 }

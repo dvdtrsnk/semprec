@@ -12,6 +12,8 @@ enum CollectionsIdentifiers {
     static let layoutMenu = "collection.layoutMenu"
     static let addButton = "collection.add"
     static let newItemField = "collection.newItemField"
+    static let newItemSheet = "collection.newItemSheet"
+    static let newItemSave = "collection.newItemSave"
     static let loadMore = "collection.loadMore"
 
     // MARK: - Item
@@ -25,6 +27,9 @@ enum CollectionsIdentifiers {
     static let previewSheet = "item.preview"
     static let pageEditor = "item.pageEditor"
     static let deleteButton = "item.delete"
+    static let closeItem = "item.close"
+    static let mediaStatus = "item.media.status"
+    static let mediaRating = "item.media.rating"
     /// Followed by the database id.
     static let relatedPrefix = "item.related."
     static let projectSettings = "project.settings"

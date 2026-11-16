@@ -58,6 +58,8 @@ private extension ItemScreen {
         Group {
             if header.databaseKey == DatabaseKey.projects {
                 ProjectContent(state: state, header: header, send: viewModel.send, show: viewModel.showProject)
+            } else if DatabaseKey.isMedia(header.databaseKey) {
+                MediaItemContent(state: state, header: header, send: viewModel.send)
             } else {
                 ItemContent(state: state, header: header, send: viewModel.send)
             }

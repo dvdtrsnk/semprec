@@ -245,4 +245,6 @@ extension OverviewStackSpy: StackNavigating {
     func presentSheet(_ destination: AppDestination) {
         sheets.append(destination)
     }
+
+    func dismissPresented() {}
 }

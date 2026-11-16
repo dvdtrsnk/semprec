@@ -16,6 +16,11 @@ struct CollectionAppearance {
         databaseKey == DatabaseKey.people || databaseKey == DatabaseKey.projects
     }
 
+    /// Books and films are drawn as covers.
+    var isMedia: Bool {
+        DatabaseKey.isMedia(databaseKey)
+    }
+
     var baseTint: Color {
         Color(hex: color) ?? .accentColor
     }

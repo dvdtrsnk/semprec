@@ -42,7 +42,7 @@ extension AppOverviewRouter: OverviewRouting {
         case (.project, let id?): context.push(.collectionItem(itemId: id, databaseKey: "projects"), in: .overview)
         case (.area, let id?): context.push(.area(areaId: id, tab: .overview), in: .overview)
         case (.contact, let id?), (.file, let id?):
-            context.push(.collectionItem(itemId: id, databaseKey: link.databaseKey), in: .overview)
+            context.showItem(itemId: id, databaseKey: link.databaseKey, from: .overview)
         case (.journal, _): context.select(.journal)
         case (.mail, _):
             if let thread = link.threadId {

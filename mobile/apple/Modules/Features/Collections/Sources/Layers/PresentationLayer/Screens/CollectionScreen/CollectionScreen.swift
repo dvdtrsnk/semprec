@@ -13,7 +13,6 @@ struct CollectionScreen: View {
     // MARK: - State
     @State private var query = ""
     @State private var isNaming = false
-    @State private var newTitle = ""
     @State private var isImporting = false
     @State private var hasAppeared = false
 
@@ -26,7 +25,6 @@ struct CollectionScreen: View {
     var body: some View {
         content
             .navigationTitle(viewModel.state.header?.name ?? "")
-            .inlineNavigationTitle()
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(CollectionsIdentifiers.collectionScreen)
             .task { await viewModel.observe() }
@@ -54,7 +52,7 @@ private extension CollectionScreen {
     var loaded: some View {
         let state = viewModel.state
         return items(state)
-            .safeAreaInset(edge: .top, spacing: 0) {
+            .safeAreaBar(edge: .top, spacing: 0) {
                 QuickFilterBar(
                     chips: state.quickFilters,
                     selected: state.selectedQuickFilter,
@@ -63,9 +61,12 @@ private extension CollectionScreen {
                     tint: appearance(state).baseTint,
                     send: viewModel.send
                 )
-                .background(.bar)
             }
-            .searchable(text: $query, prompt: Text(state.header?.searchPlaceholder ?? ""))
+            .searchable(
+                text: $query,
+                placement: Self.searchPlacement,
+                prompt: Text(state.header?.searchPlaceholder ?? "")
+            )
             .onSubmit(of: .search) { viewModel.send(.search(query)) }
             .onChange(of: query) { _, text in
                 if text.isEmpty { viewModel.send(.search("")) }
@@ -78,13 +79,10 @@ private extension CollectionScreen {
                         .presentationDetents([.medium, .large])
                 }
             }
-            .alert(Text("collection.new.title", bundle: .module), isPresented: $isNaming) {
-                TextField(text: $newTitle) { Text("collection.new.placeholder", bundle: .module) }
-                    .accessibilityIdentifier(CollectionsIdentifiers.newItemField)
-                Button { viewModel.send(.write(.create(title: newTitle))) } label: {
-                    Text("collection.new.create", bundle: .module)
+            .sheet(isPresented: $isNaming) {
+                NewItemSheet(databaseKey: state.header?.key, databaseName: state.header?.name ?? "") { title in
+                    viewModel.send(.write(.create(title: title)))
                 }
-                Button(role: .cancel) {} label: { Text("collection.new.cancel", bundle: .module) }
             }
             .fileImporter(isPresented: $isImporting, allowedContentTypes: [.item], onCompletion: upload)
             .alert(
@@ -181,7 +179,7 @@ private extension CollectionScreen {
     @ViewBuilder
     func addButton(_ state: CollectionState) -> some View {
         Button {
-            if state.canUpload { isImporting = true } else { beginNaming() }
+            if state.canUpload { isImporting = true } else { isNaming = true }
         } label: {
             if state.creating { ProgressView() } else { Image(systemName: "plus") }
         }
@@ -194,17 +192,21 @@ private extension CollectionScreen {
 // MARK: - Actions
 private extension CollectionScreen {
 
+    /// On iPhone the search field stays under the title, as the design draws it, instead of hiding until a pull.
+    static var searchPlacement: SearchFieldPlacement {
+        #if os(iOS)
+        .navigationBarDrawer(displayMode: .always)
+        #else
+        .automatic
+        #endif
+    }
+
     func appearance(_ state: CollectionState) -> CollectionAppearance {
         CollectionAppearance(databaseKey: state.header?.key, color: state.header?.color)
     }
 
     func open(_ row: CollectionRow) {
         viewModel.send(.openItem(id: row.id))
-    }
-
-    func beginNaming() {
-        newTitle = ""
-        isNaming = true
     }
 
     /// The screen shows the collection as it is now when it comes back from an item, which may have changed it.

@@ -21,8 +21,16 @@ internal fun CollectionDatabase.dateProperty(): CollectionProperty? {
     return dates.firstOrNull { !it.system } ?: dates.firstOrNull()
 }
 
+/** The picture or document of an item, which makes its collection worth showing as tiles. */
 internal fun CollectionDatabase.fileProperty(): CollectionProperty? =
     properties.firstOrNull { it.kind == PropertyKind.FILE || it.kind == PropertyKind.IMAGE }
+
+/**
+ * The document an item is made of, as a file of Files is: a new item of its collection is an uploaded file. A picture
+ * (the cover of a book, the photo of a recipe) only describes an item that is created by its name.
+ */
+internal fun CollectionDatabase.uploadProperty(): CollectionProperty? =
+    properties.firstOrNull { it.kind == PropertyKind.FILE }
 
 internal fun CollectionDatabase.layouts(): List<CollectionLayout> = buildList {
     add(CollectionLayout.LIST)

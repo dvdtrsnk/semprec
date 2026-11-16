@@ -57,6 +57,18 @@ public enum CollectionsScreenFactory {
     ) -> some View {
         ItemScreen(viewModel: ItemViewModel(itemId: itemId, model: makeModel(), router: router))
     }
+
+    /// The same detail in a sheet of its own, with a button that closes it: how the items of companies, files, books,
+    /// films, recipes and health records open.
+    public static func itemSheet(
+        itemId: String,
+        makeModel: @escaping @MainActor () -> any ItemScreenModel,
+        router: any CollectionsRouting
+    ) -> some View {
+        ItemSheet {
+            ItemScreen(viewModel: ItemViewModel(itemId: itemId, model: makeModel(), router: router))
+        }
+    }
 }
 
 // MARK: - Private

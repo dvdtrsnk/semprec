@@ -121,18 +121,21 @@ class ItemViewModel internal constructor(
         }
     }
 
-    /** Runs a write, then reads the item again so its values, origins and version are the server's. */
+    /**
+     * Runs a write, then reads the item again so its values, origins and version are the server's. A refused write
+     * reads it again too: the usual refusal is a version another writer (Semp filling in a new book) moved on, and the
+     * person's next attempt must carry the version the server has now.
+     */
     private fun mutate(propertyKey: String?, call: suspend () -> RepositoryResult<Any?>) {
         if (writeJob?.isActive == true) return
         update { it.copy(saving = true, writeFailure = null) }
         writeJob = viewModelScope.launch {
             val result = answer(call)
             ensureActive()
-            when (result) {
-                is Answer.Rejected ->
-                    update { it.copy(saving = false, writeFailure = ItemWriteFailure(propertyKey, result.kind)) }
-                is Answer.Done -> load(quiet = true)
+            if (result is Answer.Rejected) {
+                update { it.copy(saving = false, writeFailure = ItemWriteFailure(propertyKey, result.kind)) }
             }
+            load(quiet = true)
         }
     }
 }

@@ -272,7 +272,7 @@ class ItemViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
-    @Test fun `a failed write is reported with its kind and leaves the item as it was`() = runTest(dispatcher) {
+    @Test fun `a failed write is reported with its kind and the item is read again`() = runTest(dispatcher) {
         arrange()
         val vm = open()
         fake.updateAnswer = { failure(FailureKind.REJECTED) }
@@ -280,13 +280,30 @@ class ItemViewModelTest : MainDispatcherTest() {
         runCurrent()
         assertEquals(ItemWriteFailure("pinned", FailureKind.REJECTED), vm.state.value.writeFailure)
         assertFalse(vm.state.value.saving)
-        assertEquals(1, fake.itemReads)
+        assertEquals(2, fake.itemReads)
         fake.updateAnswer = { throw IllegalStateException("boom") }
         vm.onAction(ItemAction.Edit.SetFlag("pinned", true))
         runCurrent()
         assertEquals(ItemWriteFailure("pinned", null), vm.state.value.writeFailure)
         vm.close()
     }
+
+    @Test fun `a write refused for an old version is retried by the person with the version read after it`() =
+        runTest(dispatcher) {
+            arrange()
+            val vm = open()
+            fake.updateAnswer = { failure(FailureKind.REJECTED) }
+            fake.itemAnswer = { RepositoryResult.Content(project.copy(version = "v2")) }
+            vm.onAction(ItemAction.Edit.SetNumber("budget", 2000.0))
+            runCurrent()
+            assertEquals(ItemWriteFailure("budget", FailureKind.REJECTED), vm.state.value.writeFailure)
+            fake.updateAnswer = { RepositoryResult.Content(project.copy(version = "v3")) }
+            vm.onAction(ItemAction.Edit.SetNumber("budget", 2000.0))
+            runCurrent()
+            assertEquals(listOf(project.version, "v2"), fake.updates.map { it.second })
+            assertNull(vm.state.value.writeFailure)
+            vm.close()
+        }
 
     @Test fun `a second write while one runs is ignored`() = runTest(dispatcher) {
         arrange()

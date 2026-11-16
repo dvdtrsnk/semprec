@@ -37,7 +37,7 @@ final class CollectionsNavigationTests: XCTestCase {
     }
 
     @MainActor
-    func testAnEventOpensAsTheGenericItemAndAnAreaOpensItsOwnScreen() {
+    func testAnEventOpensItsMeetingPageAndAnAreaOpensItsOwnScreen() {
         let context = NavigationContext()
         let overview = StackSpy()
         context.register(overview, for: .overview)
@@ -46,8 +46,58 @@ final class CollectionsNavigationTests: XCTestCase {
         router.showArea(areaId: "a1")
         XCTAssertEqual(
             overview.pushed,
-            [.collectionItem(itemId: "e1", databaseKey: "events"), .area(areaId: "a1", tab: .overview)]
+            [.meeting(eventId: "e1", tab: .overview), .area(areaId: "a1", tab: .overview)]
         )
+    }
+
+    @MainActor
+    func testEachDatabaseOpensItsItemTheWayTheDesignDoes() {
+        let context = NavigationContext()
+        let overview = StackSpy()
+        context.register(overview, for: .overview)
+        let router = AppCollectionsRouter(context: context, tab: .overview)
+        router.showItem(itemId: "t1", databaseKey: "tasks")
+        router.showItem(itemId: "e1", databaseKey: "events")
+        router.showItem(itemId: "pe1", databaseKey: "people")
+        router.showItem(itemId: "j1", databaseKey: "journal")
+        router.showItem(itemId: "a1", databaseKey: "areas")
+        router.showItem(itemId: "b1", databaseKey: "books")
+        router.showItem(itemId: "c1", databaseKey: "companies")
+        XCTAssertEqual(
+            overview.pushed,
+            [
+                .meeting(eventId: "e1", tab: .overview),
+                .collectionItem(itemId: "pe1", databaseKey: "people"),
+                .collectionItem(itemId: "j1", databaseKey: "journal"),
+                .collectionItem(itemId: "a1", databaseKey: "areas")
+            ]
+        )
+        XCTAssertEqual(
+            overview.sheets,
+            [
+                .details(ItemDetailsTarget(kind: .task, id: "t1", tab: .overview)),
+                .itemSheet(itemId: "b1", databaseKey: "books", tab: .overview),
+                .itemSheet(itemId: "c1", databaseKey: "companies", tab: .overview)
+            ]
+        )
+        XCTAssertEqual(overview.dismissals, 0)
+    }
+
+    @MainActor
+    func testTheRouterOfAnItemSheetClosesTheSheetBeforeEachRoute() {
+        let context = NavigationContext()
+        let overview = StackSpy()
+        context.register(overview, for: .overview)
+        let router = AppCollectionsRouter(context: context, tab: .overview, closesSheet: true)
+        router.showItem(itemId: "p1", databaseKey: "projects")
+        router.showCollection(projects)
+        router.showEvent(itemId: "e1")
+        router.showArea(areaId: "a1")
+        router.showProjectMail(projectId: "p1")
+        router.showProjectNotes(projectId: "p1")
+        router.showProjectAgent(projectId: "p1")
+        XCTAssertEqual(overview.dismissals, 7)
+        XCTAssertEqual(overview.pushed.count, 7)
     }
 
     @MainActor
@@ -115,6 +165,7 @@ private final class StackSpy: StackNavigating {
     // MARK: - Properties
     var pushed: [AppDestination] = []
     var sheets: [AppDestination] = []
+    var dismissals = 0
 
     // MARK: - Protocol conformance
     var top: AppDestination? { pushed.last }
@@ -125,5 +176,9 @@ private final class StackSpy: StackNavigating {
 
     func presentSheet(_ destination: AppDestination) {
         sheets.append(destination)
+    }
+
+    func dismissPresented() {
+        dismissals += 1
     }
 }
