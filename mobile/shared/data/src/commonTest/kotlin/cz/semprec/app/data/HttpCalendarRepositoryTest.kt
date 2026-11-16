@@ -224,6 +224,13 @@ class HttpCalendarRepositoryTest {
         assertTrue("endDate" !in properties)
     }
 
+    @Test fun `an entry without a version is patched without the check`() = runTest {
+        val listed = entryOf(id = "t1", kind = CalendarEntryKind.TASK).copy(updatedAt = null)
+        repository { reads(it) }.setTaskDone(listed, true)
+        assertTrue("ifVersion" !in sent(0))
+        assertEquals("done", sent(0)["properties"]!!.jsonObject["status"]?.jsonPrimitive?.content)
+    }
+
     @Test fun `a series occurrence is stored first and the patch goes to the stored item`() = runTest {
         val repo = repository { reads(it) }
         val occurrence = entryOf(id = "series1@2026-10-16", seriesId = "series1", readOnly = true)

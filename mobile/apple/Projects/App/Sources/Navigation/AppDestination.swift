@@ -10,6 +10,12 @@ enum AppDestination: Hashable {
     case sleepPlan(night: String?)
     /// The sheet of one night (`YYYY-MM-DD`), which opens on that night.
     case sleepNight(night: String)
+    /// The calendars sheet: which calendars show, their colours and notifications.
+    case calendars
+    /// The invitations sheet.
+    case invitations
+    /// The new item sheet, opened for the day `YYYY-MM-DD`.
+    case newItem(day: String)
 }
 
 // MARK: - NavigationProvidedDestination

@@ -182,7 +182,12 @@ public struct CalendarDayState: Equatable, Sendable, Identifiable {
 
     public var id: String { date }
 
-    public init(date: String, items: [CalendarItem] = [], sleepEvening: CalendarSleep? = nil, sleepMorning: CalendarSleep? = nil) {
+    public init(
+        date: String,
+        items: [CalendarItem] = [],
+        sleepEvening: CalendarSleep? = nil,
+        sleepMorning: CalendarSleep? = nil
+    ) {
         self.date = date
         self.items = items
         self.sleepEvening = sleepEvening

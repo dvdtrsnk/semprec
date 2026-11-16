@@ -129,12 +129,16 @@ class HttpCalendarRepository(
         }
     }
 
-    /** Patches the stored item of [entry] with [properties], against the version the timeline gave. */
+    /**
+     * Patches the stored item of [entry] with [properties], against the version the timeline gave; an entry that
+     * came without a version (a task listed inside an event) is patched without the check.
+     */
     private suspend fun patch(entry: CalendarEntry, properties: JsonObject): RepositoryResult<Unit> =
         when (val item = stored(entry)) {
             is RepositoryResult.Failure -> item
             is RepositoryResult.Content -> {
-                val body = ApiJson.encodeToString(CalendarPatchRequest(properties, item.value.updatedAt))
+                val version = item.value.updatedAt.takeIf { it.isNotEmpty() }
+                val body = ApiJson.encodeToString(CalendarPatchRequest(properties, version))
                 api.send(HttpMethod.Patch, "/api/items/${item.value.id}", body = body).ignoreBody().alsoChanged()
             }
         }

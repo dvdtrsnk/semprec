@@ -69,7 +69,8 @@ class InvitationsViewModel internal constructor(
     private fun show(loaded: List<CalendarInvitation>) {
         invitations = loaded
         val pending = loaded.count { it.needsAnswer }
-        val tab = if (loadedOnce) state.value.tab else if (pending > 0) InvitationsTab.PENDING else InvitationsTab.ANSWERED
+        val firstTab = if (pending > 0) InvitationsTab.PENDING else InvitationsTab.ANSWERED
+        val tab = if (loadedOnce) state.value.tab else firstTab
         loadedOnce = true
         update {
             it.copy(

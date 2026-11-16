@@ -55,6 +55,7 @@ abstract class CalendarWindowViewModel internal constructor(
     private var loadedMonth: Pair<Int, Int>? = null
     private var seenRevision = changes.revision.value
     private var entries: Map<String, CalendarEntry> = emptyMap()
+    private var hosted: Map<String, CalendarEntry> = emptyMap()
 
     internal fun start() {
         load(showLoading = true)
@@ -68,7 +69,8 @@ abstract class CalendarWindowViewModel internal constructor(
         }
     }
 
-    internal fun entryOf(id: String): CalendarEntry? = entries[id]
+    /** The entry with [id]: one of the window, or a task that is listed inside one of its events. */
+    internal fun entryOf(id: String): CalendarEntry? = entries[id] ?: hosted[id]
 
     internal fun reload() = load(showLoading = false)
 
@@ -117,6 +119,7 @@ abstract class CalendarWindowViewModel internal constructor(
     private fun show(window: CalendarWindow, day: CalendarDay, from: CalendarDay, to: CalendarDay) {
         val timeline = window.timeline
         entries = timeline.entries.associateBy { it.id }
+        hosted = hostedTasks(timeline.entries).filterKeys { it !in entries }
         loadedMonth = day.year to day.month
         val days = dayStatesOf(timeline.entries, from, to, CalendarColors(window.calendars))
         update {

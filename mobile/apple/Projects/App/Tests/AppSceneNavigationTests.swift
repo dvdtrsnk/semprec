@@ -1,5 +1,5 @@
-import NavigatorUI
 import CoreKit
+import NavigatorUI
 import SwiftUI
 import XCTest
 

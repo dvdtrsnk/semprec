@@ -15,6 +15,7 @@ final class AppComposition: ObservableObject {
     let navigation: NavigationContext
     let homeRouter: AppHomeRouter
     let settingsRouter: AppSettingsRouter
+    let calendarRouter: AppCalendarRouter
 
     // MARK: - Properties
     let version: String
@@ -32,6 +33,7 @@ final class AppComposition: ObservableObject {
         self.navigation = navigation
         homeRouter = AppHomeRouter(context: navigation)
         settingsRouter = AppSettingsRouter(context: navigation)
+        calendarRouter = AppCalendarRouter(context: navigation)
         version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
         build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
     }

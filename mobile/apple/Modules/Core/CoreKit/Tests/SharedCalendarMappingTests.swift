@@ -53,7 +53,14 @@ final class SharedCalendarMappingTests: XCTestCase {
         XCTAssertEqual(mapped?.date, "2026-10-16")
         XCTAssertEqual(
             mapped?.sleepEvening,
-            CoreKit.CalendarSleep(night: "2026-10-15", bedMinutes: 1380, wakeMinutes: 405, alarm: true, changed: true, prepMinutes: 1350)
+            CoreKit.CalendarSleep(
+                night: "2026-10-15",
+                bedMinutes: 1380,
+                wakeMinutes: 405,
+                alarm: true,
+                changed: true,
+                prepMinutes: 1350
+            )
         )
         XCTAssertNil(mapped?.sleepMorning)
         let item = mapped?.items.first
@@ -69,8 +76,14 @@ final class SharedCalendarMappingTests: XCTestCase {
         XCTAssertEqual(item?.carriedFrom, "2026-10-14")
         XCTAssertEqual(item?.traceNote, "2026-10-15")
         XCTAssertEqual(item?.trace, .movedToEvent)
-        XCTAssertEqual(item?.tasks, [CoreKit.CalendarEventTask(id: "t1", title: "Agenda", state: .doneElsewhere, note: "Review")])
-        XCTAssertEqual([item?.hasEnd, item?.done, item?.missed, item?.tentative, item?.editable], [true, true, true, true, false])
+        XCTAssertEqual(
+            item?.tasks,
+            [CoreKit.CalendarEventTask(id: "t1", title: "Agenda", state: .doneElsewhere, note: "Review")]
+        )
+        XCTAssertEqual(
+            [item?.hasEnd, item?.done, item?.missed, item?.tentative, item?.editable],
+            [true, true, true, true, false]
+        )
     }
 
     func testAnAllDayItemHasNoTimes() {
@@ -136,8 +149,12 @@ final class SharedCalendarMappingTests: XCTestCase {
     // MARK: - Actions
     func testNavigationActionsMapEveryCase() throws {
         XCTAssertTrue(SharedCalendarScreenModel.action(.navigation(.retry)) is SharedSDK.CalendarActionNavigationRetry)
-        XCTAssertTrue(SharedCalendarScreenModel.action(.navigation(.refresh)) is SharedSDK.CalendarActionNavigationRefresh)
-        XCTAssertTrue(SharedCalendarScreenModel.action(.navigation(.goToday)) is SharedSDK.CalendarActionNavigationGoToday)
+        XCTAssertTrue(
+            SharedCalendarScreenModel.action(.navigation(.refresh)) is SharedSDK.CalendarActionNavigationRefresh
+        )
+        XCTAssertTrue(
+            SharedCalendarScreenModel.action(.navigation(.goToday)) is SharedSDK.CalendarActionNavigationGoToday
+        )
         let show = try XCTUnwrap(
             SharedCalendarScreenModel.action(.navigation(.show(zoom: .month, day: "2026-10-16")))
                 as? SharedSDK.CalendarActionNavigationShow
@@ -160,29 +177,47 @@ final class SharedCalendarMappingTests: XCTestCase {
         typealias Model = SharedCalendarScreenModel
         XCTAssertEqual((Model.action(.gesture(.tap(itemId: "a"))) as? SharedSDK.CalendarActionGestureTap)?.itemId, "a")
         XCTAssertTrue(Model.action(.gesture(.tapBackground)) is SharedSDK.CalendarActionGestureTapBackground)
-        XCTAssertEqual((Model.action(.gesture(.select(itemId: "b"))) as? SharedSDK.CalendarActionGestureSelect)?.itemId, "b")
         XCTAssertEqual(
-            (Model.action(.gesture(.toggleDone(itemId: "c"))) as? SharedSDK.CalendarActionGestureToggleDone)?.itemId, "c"
+            (Model.action(.gesture(.select(itemId: "b"))) as? SharedSDK.CalendarActionGestureSelect)?.itemId,
+            "b"
+        )
+        XCTAssertEqual(
+            (
+                Model.action(.gesture(.toggleDone(itemId: "c"))) as? SharedSDK.CalendarActionGestureToggleDone
+            )?.itemId, "c"
         )
         let move = try XCTUnwrap(
-            Model.action(.gesture(.dragMove(itemId: "d", day: "2026-10-17", rawStart: 905, overAllDayRow: true, overEventId: "e")))
+            Model.action(
+                .gesture(
+                    .dragMove(itemId: "d", day: "2026-10-17", rawStart: 905, overAllDayRow: true, overEventId: "e")
+                )
+            )
                 as? SharedSDK.CalendarActionGestureDragMove
         )
         XCTAssertEqual([move.itemId, move.day, move.overEventId], ["d", "2026-10-17", "e"])
         XCTAssertEqual(move.rawStart, 905)
         XCTAssertTrue(move.overAllDayRow)
         let resize = try XCTUnwrap(
-            Model.action(.gesture(.dragResize(itemId: "f", edge: .end, rawMinutes: 700))) as? SharedSDK.CalendarActionGestureDragResize
+            Model.action(
+                .gesture(.dragResize(itemId: "f", edge: .end, rawMinutes: 700))
+            ) as? SharedSDK.CalendarActionGestureDragResize
         )
         XCTAssertEqual(resize.edge, .end)
         XCTAssertEqual(resize.rawMinutes, 700)
         let start = try XCTUnwrap(
-            Model.action(.gesture(.dragResize(itemId: "f", edge: .start, rawMinutes: 1))) as? SharedSDK.CalendarActionGestureDragResize
+            Model.action(
+                .gesture(.dragResize(itemId: "f", edge: .start, rawMinutes: 1))
+            ) as? SharedSDK.CalendarActionGestureDragResize
         )
         XCTAssertEqual(start.edge, .start)
-        XCTAssertEqual((Model.action(.gesture(.endDrag(commit: true))) as? SharedSDK.CalendarActionGestureEndDrag)?.commit, true)
+        XCTAssertEqual(
+            (Model.action(.gesture(.endDrag(commit: true))) as? SharedSDK.CalendarActionGestureEndDrag)?.commit,
+            true
+        )
         let toDay = try XCTUnwrap(
-            Model.action(.gesture(.moveToDay(itemId: "g", day: "2026-10-20"))) as? SharedSDK.CalendarActionGestureMoveToDay
+            Model.action(
+                .gesture(.moveToDay(itemId: "g", day: "2026-10-20"))
+            ) as? SharedSDK.CalendarActionGestureMoveToDay
         )
         XCTAssertEqual([toDay.itemId, toDay.day], ["g", "2026-10-20"])
     }
@@ -191,15 +226,22 @@ final class SharedCalendarMappingTests: XCTestCase {
         typealias Model = SharedCalendarScreenModel
         XCTAssertEqual((Model.action(.edit(.cut(itemId: "a"))) as? SharedSDK.CalendarActionEditCut)?.itemId, "a")
         XCTAssertEqual((Model.action(.edit(.copy(itemId: "b"))) as? SharedSDK.CalendarActionEditCopy)?.itemId, "b")
-        XCTAssertEqual((Model.action(.edit(.duplicate(itemId: "c"))) as? SharedSDK.CalendarActionEditDuplicate)?.itemId, "c")
+        XCTAssertEqual(
+            (Model.action(.edit(.duplicate(itemId: "c"))) as? SharedSDK.CalendarActionEditDuplicate)?.itemId,
+            "c"
+        )
         let paste = try XCTUnwrap(
-            Model.action(.edit(.paste(day: "2026-10-17", rawStart: 540, allDay: true))) as? SharedSDK.CalendarActionEditPaste
+            Model.action(
+                .edit(.paste(day: "2026-10-17", rawStart: 540, allDay: true))
+            ) as? SharedSDK.CalendarActionEditPaste
         )
         XCTAssertEqual([paste.day], ["2026-10-17"])
         XCTAssertEqual(paste.rawStart, 540)
         XCTAssertTrue(paste.allDay)
         XCTAssertEqual(
-            (Model.action(.edit(.requestDelete(itemId: "d"))) as? SharedSDK.CalendarActionEditRequestDelete)?.itemId, "d"
+            (
+                Model.action(.edit(.requestDelete(itemId: "d"))) as? SharedSDK.CalendarActionEditRequestDelete
+            )?.itemId, "d"
         )
         XCTAssertTrue(Model.action(.edit(.confirmDelete)) is SharedSDK.CalendarActionEditConfirmDelete)
         XCTAssertTrue(Model.action(.edit(.cancelDelete)) is SharedSDK.CalendarActionEditCancelDelete)

@@ -20,6 +20,7 @@ extension CalendarZoom {
     }
 }
 
+// MARK: - CalendarPhase
 extension CalendarPhase {
 
     init(_ phase: SharedSDK.CalendarPhase, failure: SharedSDK.FailureKind?) {
@@ -31,6 +32,7 @@ extension CalendarPhase {
     }
 }
 
+// MARK: - CalendarItemKind
 extension CalendarItemKind {
 
     init(_ kind: SharedSDK.CalendarItemKind) {
@@ -45,6 +47,7 @@ extension CalendarItemKind {
     }
 }
 
+// MARK: - CalendarTaskInEvent
 extension CalendarTaskInEvent {
 
     init(_ state: SharedSDK.CalendarTaskInEvent) {
@@ -58,6 +61,7 @@ extension CalendarTaskInEvent {
     }
 }
 
+// MARK: - CalendarTraceOutcome
 extension CalendarTraceOutcome {
 
     init(_ outcome: SharedSDK.CalendarTraceOutcome) {
@@ -70,6 +74,7 @@ extension CalendarTraceOutcome {
     }
 }
 
+// MARK: - CalendarEdge
 extension CalendarEdge {
 
     var shared: SharedSDK.CalendarEdge {
@@ -80,6 +85,7 @@ extension CalendarEdge {
     }
 }
 
+// MARK: - CalendarClipboardMode
 extension CalendarClipboardMode {
 
     init(_ mode: SharedSDK.CalendarClipboardMode) {
@@ -98,6 +104,7 @@ extension CalendarEventTask {
     }
 }
 
+// MARK: - CalendarSleep
 extension CalendarSleep {
 
     init(_ sleep: SharedSDK.CalendarSleep) {
@@ -112,6 +119,7 @@ extension CalendarSleep {
     }
 }
 
+// MARK: - CalendarItem
 extension CalendarItem {
 
     init(_ item: SharedSDK.CalendarItem) {
@@ -142,6 +150,7 @@ extension CalendarItem {
     }
 }
 
+// MARK: - CalendarDayState
 extension CalendarDayState {
 
     init(_ day: SharedSDK.CalendarDayState) {
@@ -154,6 +163,7 @@ extension CalendarDayState {
     }
 }
 
+// MARK: - CalendarMonthState
 extension CalendarMonthState {
 
     init(_ month: SharedSDK.CalendarMonthState) {
@@ -166,6 +176,7 @@ extension CalendarMonthState {
     }
 }
 
+// MARK: - CalendarDrag
 extension CalendarDrag {
 
     init(_ drag: SharedSDK.CalendarDrag) {
@@ -181,6 +192,7 @@ extension CalendarDrag {
     }
 }
 
+// MARK: - CalendarClipboard
 extension CalendarClipboard {
 
     init(_ clipboard: SharedSDK.CalendarClipboard) {
@@ -188,6 +200,7 @@ extension CalendarClipboard {
     }
 }
 
+// MARK: - CalendarDeleteRequest
 extension CalendarDeleteRequest {
 
     init(_ request: SharedSDK.CalendarDeleteRequest) {
@@ -207,6 +220,7 @@ extension CalendarListPhase {
     }
 }
 
+// MARK: - CalendarGroup
 extension CalendarGroup {
 
     init(_ group: SharedSDK.CalendarGroup) {
@@ -218,6 +232,7 @@ extension CalendarGroup {
     }
 }
 
+// MARK: - CalendarSwatch
 extension CalendarSwatch {
 
     init(_ swatch: SharedSDK.CalendarSwatch) {
@@ -225,6 +240,7 @@ extension CalendarSwatch {
     }
 }
 
+// MARK: - CalendarRow
 extension CalendarRow {
 
     init(_ row: SharedSDK.CalendarRow) {
@@ -243,6 +259,7 @@ extension CalendarRow {
     }
 }
 
+// MARK: - CalendarImpact
 extension CalendarImpact {
 
     init(_ impact: SharedSDK.CalendarImpact) {
@@ -267,6 +284,7 @@ extension InvitationsPhase {
     }
 }
 
+// MARK: - InvitationsTab
 extension InvitationsTab {
 
     init(_ tab: SharedSDK.InvitationsTab) {
@@ -284,6 +302,7 @@ extension InvitationsTab {
     }
 }
 
+// MARK: - InvitationItemKind
 extension InvitationItemKind {
 
     init(_ kind: SharedSDK.InvitationItemKind) {
@@ -294,6 +313,7 @@ extension InvitationItemKind {
     }
 }
 
+// MARK: - InvitationItemStatus
 extension InvitationItemStatus {
 
     init(_ status: SharedSDK.InvitationItemStatus) {
@@ -308,6 +328,7 @@ extension InvitationItemStatus {
     }
 }
 
+// MARK: - InvitationReply
 extension InvitationReply {
 
     var shared: SharedSDK.InvitationReply {
@@ -320,6 +341,7 @@ extension InvitationReply {
     }
 }
 
+// MARK: - InvitationItem
 extension InvitationItem {
 
     init(_ item: SharedSDK.InvitationItem) {
@@ -351,6 +373,7 @@ extension NewItemPhase {
     }
 }
 
+// MARK: - NewItemKind
 extension NewItemKind {
 
     var shared: SharedSDK.NewItemKind {
@@ -361,6 +384,7 @@ extension NewItemKind {
     }
 }
 
+// MARK: - NewItemCalendar
 extension NewItemCalendar {
 
     init(_ calendar: SharedSDK.NewItemCalendar) {
