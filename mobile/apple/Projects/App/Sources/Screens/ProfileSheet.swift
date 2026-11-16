@@ -49,10 +49,8 @@ extension ProfileSheet {
             AccountScreenFactory.aiUsage { models.makeAiUsage() }
         case .trash:
             AccountScreenFactory.trash { models.makeTrash() }
-        case .sempStatus:
-            PendingScreen(title: String(localized: "pending.sempStatus"))
-        case .mailAccounts:
-            // The router closes the sheet and opens the accounts on the Overview stack; this page is never pushed.
+        case .sempStatus, .mailAccounts:
+            // The router closes the sheet and opens these on the Overview stack; they are never pushed here.
             EmptyView()
         }
     }

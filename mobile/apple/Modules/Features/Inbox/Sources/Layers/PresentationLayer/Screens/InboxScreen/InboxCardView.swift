@@ -37,11 +37,24 @@ struct InboxCardView: View {
         .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(InboxIdentifiers.card)
+        .dropTarget(sempTarget)
     }
 }
 
 // MARK: - Subviews
 private extension InboxCardView {
+
+    /// What the Semp bubble receives when it is dropped on the card: the captured text (the type of the card when it
+    /// has none) and the type of the card.
+    var sempTarget: SempTarget {
+        let quoted = card.quotes.joined(separator: " ")
+        return SempTarget(
+            kind: .inbox,
+            title: quoted.isEmpty ? card.type.chipText : quoted,
+            meta: card.type.chipText,
+            itemId: card.id
+        )
+    }
 
     var sectionKey: LocalizedStringKey {
         switch card.type {

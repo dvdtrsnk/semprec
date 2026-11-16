@@ -2,8 +2,7 @@ import AccountFeature
 import CoreKit
 
 /// Routes of the Account feature, inside the profile sheet. The e-mail accounts live on a stack of the Overview tab,
-/// so their row closes the sheet and opens them there; the Semp status belongs to a feature that is built elsewhere,
-/// and its row opens a notice that names it.
+/// so their row closes the sheet and opens them there; the Semp status does the same.
 @MainActor
 final class AppAccountRouter {
 
@@ -30,6 +29,11 @@ extension AppAccountRouter: AccountRouting {
         if page == .mailAccounts {
             dismissSheet()
             context.showMailAccounts(in: .overview)
+            return
+        }
+        if page == .sempStatus {
+            dismissSheet()
+            context.push(.sempStatus, in: .overview)
             return
         }
         guard path.pages.last != page else { return }

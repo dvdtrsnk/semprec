@@ -62,6 +62,7 @@ private extension CollectionGalleryView {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier(CollectionsIdentifiers.rowPrefix + row.id)
+        .dropTarget(appearance.sempTarget(of: row))
     }
 
     func subtitle(_ row: CollectionRow) -> String? {
