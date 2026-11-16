@@ -5,6 +5,8 @@ import cz.semprec.app.domain.CollectionWrites
 import cz.semprec.app.domain.FindRelationTargets
 import cz.semprec.app.domain.LoadItemDetail
 import cz.semprec.app.domain.OpenCollection
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlin.experimental.ExperimentalObjCRefinement
 import kotlin.native.HiddenFromObjC
 
@@ -14,12 +16,24 @@ import kotlin.native.HiddenFromObjC
  */
 @OptIn(ExperimentalObjCRefinement::class)
 @HiddenFromObjC
-class CollectionViewModelFactory(private val reads: CollectionReads, private val writes: CollectionWrites) {
+class CollectionViewModelFactory(
+    private val reads: CollectionReads,
+    private val writes: CollectionWrites,
+    private val changes: Flow<Unit> = emptyFlow(),
+) {
     /** One new ViewModel per call; the caller owns it (see [ScreenViewModel]). */
     fun collectionViewModel(target: CollectionTarget): CollectionViewModel =
-        CollectionViewModel(target.toConfig(), OpenCollection(reads), reads, writes)
+        CollectionViewModel(target.toConfig(), OpenCollection(reads), reads, writes, changes)
 
     /** One new ViewModel per call; the caller owns it. [databaseKeyHint] is the key of the item's database. */
     fun itemViewModel(itemId: String, databaseKeyHint: String?): ItemViewModel =
-        ItemViewModel(itemId, databaseKeyHint, LoadItemDetail(reads), FindRelationTargets(reads), reads, writes)
+        ItemViewModel(
+            itemId,
+            databaseKeyHint,
+            LoadItemDetail(reads),
+            FindRelationTargets(reads),
+            reads,
+            writes,
+            changes,
+        )
 }

@@ -11,6 +11,8 @@ import cz.semprec.app.domain.SessionUser
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -20,10 +22,12 @@ import kotlinx.coroutines.launch
 class OverviewViewModel internal constructor(
     private val loadOverview: LoadOverview,
     private val auth: AuthRepository,
+    changes: Flow<Unit> = emptyFlow(),
 ) : ScreenViewModel<OverviewState, OverviewAction, OverviewTarget>(OverviewState()) {
     private var loadJob: Job? = null
 
     init {
+        reloadOnChanges(changes) { onAction(OverviewAction.Refresh) }
         load(showWait = true)
     }
 

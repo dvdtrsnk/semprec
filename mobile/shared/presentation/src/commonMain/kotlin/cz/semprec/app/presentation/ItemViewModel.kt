@@ -11,6 +11,8 @@ import cz.semprec.app.domain.LoadItemDetail
 import cz.semprec.app.domain.RepositoryResult
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -28,6 +30,7 @@ class ItemViewModel internal constructor(
     findTargets: FindRelationTargets,
     reads: CollectionReads,
     private val writes: CollectionWrites,
+    changes: Flow<Unit> = emptyFlow(),
 ) : ScreenViewModel<ItemState, ItemAction, ItemEffect>(ItemState()) {
     private var detail: ItemDetail? = null
     private var loadJob: Job? = null
@@ -39,6 +42,7 @@ class ItemViewModel internal constructor(
     private val picker = ItemPickerFlow(host, findTargets, writes, itemId, { detail?.database }, ::mutate)
 
     init {
+        reloadOnChanges(changes) { onAction(ItemAction.Refresh) }
         load(quiet = false)
     }
 

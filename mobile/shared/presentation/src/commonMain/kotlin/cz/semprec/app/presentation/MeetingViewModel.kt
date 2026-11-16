@@ -19,6 +19,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 
 /** What the page of an event reads in one go. */
@@ -40,11 +42,13 @@ class MeetingViewModel internal constructor(
     private val meetings: MeetingRepository,
     private val recordings: RecordingsRepository,
     private val transcripts: TranscriptRepository,
+    changes: Flow<Unit> = emptyFlow(),
 ) : ScreenViewModel<MeetingState, MeetingAction, MeetingEffect>(MeetingState()) {
     private var loadJob: Job? = null
     private var pollJob: Job? = null
 
     init {
+        reloadOnChanges(changes) { onAction(MeetingAction.Refresh) }
         read(showWait = true)
     }
 

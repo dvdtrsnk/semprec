@@ -6,6 +6,8 @@ import cz.semprec.app.domain.ItemRepository
 import cz.semprec.app.domain.MeetingRepository
 import cz.semprec.app.domain.RecordingsRepository
 import cz.semprec.app.domain.TranscriptRepository
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlin.experimental.ExperimentalObjCRefinement
 import kotlin.native.HiddenFromObjC
 
@@ -23,9 +25,10 @@ class RecordingsViewModelFactory(
     private val details: ItemRepository,
     private val recorder: AudioRecorder,
     private val player: AudioPlayer,
+    private val changes: Flow<Unit> = emptyFlow(),
 ) {
     /** One new ViewModel per call; the caller owns it (see [ScreenViewModel]). */
-    fun recordingsViewModel(): RecordingsViewModel = RecordingsViewModel(recordings)
+    fun recordingsViewModel(): RecordingsViewModel = RecordingsViewModel(recordings, changes)
 
     /** The recorder; its recording belongs to [eventId] when one is named. */
     fun recorderViewModel(eventId: String?): RecorderViewModel = RecorderViewModel(eventId, recorder, recordings)
@@ -34,5 +37,5 @@ class RecordingsViewModelFactory(
         TranscriptViewModel(transcriptId, transcripts, player)
 
     fun meetingViewModel(eventId: String): MeetingViewModel =
-        MeetingViewModel(eventId, details, meetings, recordings, transcripts)
+        MeetingViewModel(eventId, details, meetings, recordings, transcripts, changes)
 }

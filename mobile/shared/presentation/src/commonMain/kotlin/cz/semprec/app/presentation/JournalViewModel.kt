@@ -17,6 +17,8 @@ import cz.semprec.app.domain.startOf
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 
 /** Used when the host passes a day that is not `YYYY-MM-DD`; the first answer of the server then names today. */
@@ -32,12 +34,34 @@ class JournalViewModel internal constructor(
     initialDay: String,
     private val loadPeriod: LoadJournalPeriod,
     private val editPage: EditJournalPage,
+    changes: Flow<Unit> = emptyFlow(),
 ) : ScreenViewModel<JournalState, JournalAction, JournalEffect>(initialState(initialDay)) {
     private var loadJob: Job? = null
     private var editJob: Job? = null
     private var itemIds: Map<JournalPageRef, String> = emptyMap()
 
     init {
+        // After a write elsewhere in the window, what the shown period lists around its page (its weeks, events,
+        // birthdays and Inbox) is read again. The page, the axis and an edit in flight stay as they are, and a load
+        // already running is not interrupted.
+        reloadOnChanges(changes) {
+            if (state.value.phase == JournalPhase.CONTENT && loadJob?.isActive != true) {
+                val period = state.value.selection.toPeriod()
+                loadJob = viewModelScope.launch {
+                    val result = try {
+                        loadPeriod(period)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        null
+                    }
+                    ensureActive()
+                    if (result is RepositoryResult.Content && state.value.selection.toPeriod() == period) {
+                        update { it.around(result.value) }
+                    }
+                }
+            }
+        }
         load()
     }
 
@@ -231,4 +255,12 @@ private fun failed(state: JournalState, failure: FailureKind?) =
 private fun JournalState.withPage(written: JournalPageState): JournalState = copy(
     page = page?.let { if (it.ref == written.ref) written else it },
     weeks = weeks.map { if (it.page.ref == written.ref) it.copy(page = written) else it },
+)
+
+/** [this] with what [page] lists around its own page: its weeks, events, birthdays and Inbox. */
+private fun JournalState.around(page: JournalPeriodPage) = copy(
+    weeks = page.weeks.map { week -> week.toState() },
+    events = page.events.map { event -> event.toState() },
+    birthdays = page.birthdays.map { birthday -> JournalBirthdayState(birthday.id, birthday.personName) },
+    inbox = page.inbox.map { entry -> entry.toState() },
 )

@@ -8,6 +8,7 @@ import cz.semprec.app.domain.MailThreadQuery
 import cz.semprec.app.domain.RepositoryResult
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -384,5 +385,20 @@ class MailThreadsViewModelTest : MainDispatcherTest() {
         assertEquals(1, mail.threads.cancellations)
         vm.onAction(MailThreadsAction.Retry)
         assertEquals(1, mail.threads.count)
+    }
+
+    @Test fun `a write elsewhere in the window reads the threads again`() = runTest(dispatcher) {
+        val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+        val mail = ScriptedMailRepository(
+            threads = MailCall(mailContent(mailPage()), mailContent(mailPage(mailThread(id = "t2")))),
+        )
+        val vm = MailViewModelFactory(mail, ScriptedMailDraftRepository(), ScriptedMailboxRepository(), changes)
+            .threadsViewModel(MailListStart())
+        runCurrent()
+        changes.emit(Unit)
+        runCurrent()
+        assertEquals(2, mail.threads.count)
+        assertEquals(listOf("t2"), vm.state.value.threads.map { it.threadId })
+        vm.close()
     }
 }

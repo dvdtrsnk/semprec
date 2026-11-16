@@ -11,6 +11,7 @@ import cz.semprec.app.domain.SortSpec
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
@@ -532,5 +533,20 @@ class CollectionViewModelTest : MainDispatcherTest() {
         vm.onAction(CollectionAction.Search("x"))
         runCurrent()
         assertEquals(1, fake.queries.size)
+    }
+
+    @Test fun `a write elsewhere in the window queries the collection again`() = runTest(dispatcher) {
+        val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+        fake.queryAnswer = { _, _ -> page(alpha) }
+        val vm = CollectionViewModelFactory(fake, fake, changes)
+            .collectionViewModel(CollectionTarget.Whole("projects", null))
+        runCurrent()
+        val queried = fake.queries.size
+        fake.queryAnswer = { _, _ -> page(alpha, gamma) }
+        changes.emit(Unit)
+        runCurrent()
+        assertEquals(queried + 1, fake.queries.size)
+        assertEquals(listOf("Alpha", "Gamma"), vm.state.value.sections.single().rows.map { it.title })
+        vm.close()
     }
 }

@@ -17,7 +17,12 @@ import cz.semprec.app.presentation.MailViewModelFactory
 /** The mail screens; [HomeSDK.mail] hands it out. */
 class MailSDK internal constructor(private val factory: MailViewModelFactory) {
     internal constructor(api: AuthenticatedApi) : this(
-        MailViewModelFactory(HttpMailRepository(api), HttpMailDraftRepository(api), HttpMailboxRepository(api)),
+        MailViewModelFactory(
+            HttpMailRepository(api),
+            HttpMailDraftRepository(api),
+            HttpMailboxRepository(api),
+            api.changes.events,
+        ),
     )
 
     /** The thread list that [start] selects. */

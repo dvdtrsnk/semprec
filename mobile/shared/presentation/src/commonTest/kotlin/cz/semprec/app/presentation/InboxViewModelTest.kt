@@ -15,6 +15,7 @@ import cz.semprec.app.domain.InboxValue
 import cz.semprec.app.domain.RepositoryResult
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceTimeBy
@@ -685,6 +686,19 @@ class InboxViewModelTest : MainDispatcherTest() {
         assertEquals(true, vm.state.value.cards.first().edited)
         assertEquals(true, vm.state.value.field("allDay").flag)
         assertEquals(false, vm.state.value.cards[1].edited)
+        vm.close()
+    }
+
+    @Test fun `a write elsewhere in the window reads the stack again`() = runTest(dispatcher) {
+        val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+        val repository = ScriptedInbox(stackOfTwo, inboxContent(inboxTaskCard("c")))
+        val vm = InboxViewModelFactory(repository, repository, changes).inboxViewModel()
+        runCurrent()
+        assertEquals(1, repository.stackCalls)
+        changes.emit(Unit)
+        runCurrent()
+        assertEquals(2, repository.stackCalls)
+        assertEquals(listOf("c"), vm.state.value.cards.map { it.id })
         vm.close()
     }
 }

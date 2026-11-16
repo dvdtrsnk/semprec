@@ -36,8 +36,10 @@ interface CatalogRepository {
 }
 
 /**
- * Tells the open lists that a task or an event changed somewhere else (in the Podrobnosti sheet), so that they load
- * again. Every window has its own instance.
+ * Tells the open screens of a window that its data changed, so that they load again: the window's signed-in API
+ * client announces every write it made, and the Podrobnosti sheet its own saves
+ * (docs/adr/2026-11-16-open-mobile-screens-reload-after-any-write-of-their-window.md). Every window has its own
+ * instance.
  */
 class ItemChanges {
     private val mutable = MutableSharedFlow<Unit>(extraBufferCapacity = 1)

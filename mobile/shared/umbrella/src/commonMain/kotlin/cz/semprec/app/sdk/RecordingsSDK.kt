@@ -38,7 +38,15 @@ class RecordingsSDK internal constructor(private val factory: RecordingsViewMode
         ): RecordingsSDK {
             val data = RecordingsData(api, details)
             return RecordingsSDK(
-                RecordingsViewModelFactory(data.recordings, data.transcripts, data.meetings, details, recorder, player),
+                RecordingsViewModelFactory(
+                    data.recordings,
+                    data.transcripts,
+                    data.meetings,
+                    details,
+                    recorder,
+                    player,
+                    api.changes.events,
+                ),
             )
         }
     }

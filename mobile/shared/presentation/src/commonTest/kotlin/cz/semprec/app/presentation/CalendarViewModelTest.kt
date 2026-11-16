@@ -10,6 +10,7 @@ import cz.semprec.app.domain.RepositoryResult
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
@@ -636,6 +637,40 @@ class CalendarViewModelTest : MainDispatcherTest() {
         }
         act(vm, CalendarAction.Navigation.Refresh)
         assertNull(vm.state.value.selectedItemId)
+        vm.close()
+    }
+
+    private fun viewModel(changes: MutableSharedFlow<Unit>) =
+        CalendarViewModelFactory(
+            repository,
+            FakeCatalogRepository(),
+            FakeInvitationRepository(),
+            repository.changes,
+            changes,
+        ).calendarViewModel("2026-10-16")
+
+    @Test fun `a write elsewhere in the window reloads the calendar`() = runTest(dispatcher) {
+        val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+        serve(MEETING)
+        val vm = viewModel(changes).also { runCurrent() }
+        val windowReads = repository.calls.count { it == "window" }
+        serve(MEETING, LUNCH)
+        changes.emit(Unit)
+        runCurrent()
+        assertEquals(windowReads + 1, repository.calls.count { it == "window" })
+        assertEquals("lunch", vm.item("lunch").id)
+        vm.close()
+    }
+
+    @Test fun `a write elsewhere does not reload the calendar while an item is dragged`() = runTest(dispatcher) {
+        val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+        serve(MEETING)
+        val vm = viewModel(changes).also { runCurrent() }
+        act(vm, CalendarAction.Gesture.DragMove("meeting", "2026-10-16", 14 * 60, false, null))
+        val windowReads = repository.calls.count { it == "window" }
+        changes.emit(Unit)
+        runCurrent()
+        assertEquals(windowReads, repository.calls.count { it == "window" })
         vm.close()
     }
 }

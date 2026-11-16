@@ -6,6 +6,8 @@ import cz.semprec.app.domain.LoadAreaOverview
 import cz.semprec.app.domain.SetAreaActive
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 
 private const val TASKS_KEY = "tasks"
@@ -21,11 +23,13 @@ class AreaViewModel internal constructor(
     private val today: () -> String,
     private val load: LoadAreaOverview,
     private val setActive: SetAreaActive,
+    changes: Flow<Unit> = emptyFlow(),
 ) : ScreenViewModel<AreaState, AreaAction, AreaEffect>(AreaState()) {
     private var loadJob: Job? = null
     private var version: String? = null
 
     init {
+        reloadOnChanges(changes) { onAction(AreaAction.Refresh) }
         read(showWait = true)
     }
 

@@ -10,6 +10,7 @@ import cz.semprec.app.domain.ClockTime
 import cz.semprec.app.domain.RepositoryResult
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -203,5 +204,21 @@ class CalendarAgendaViewModelTest : MainDispatcherTest() {
         vm.onAction(CalendarAgendaAction.Retry)
         runCurrent()
         assertEquals(2, agenda.reads.size)
+    }
+
+    @Test fun `a write elsewhere in the window reads the agenda again from its first day`() = runTest(dispatcher) {
+        val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+        val vm = CalendarAgendaViewModel("2026-11-16", agenda, changes)
+        runCurrent()
+        agenda.onPage = {
+            RepositoryResult.Content(
+                CalendarAgendaPage(listOf(agendaEntry("new", CalendarEntryKind.EVENT, AGENDA_MONDAY, "08:00")), null),
+            )
+        }
+        changes.emit(Unit)
+        runCurrent()
+        assertEquals(listOf<Pair<CalendarDay, String?>>(AGENDA_MONDAY to null, AGENDA_MONDAY to null), agenda.reads)
+        assertEquals(listOf("new"), vm.state.value.days.single().entries.map { it.id })
+        vm.close()
     }
 }

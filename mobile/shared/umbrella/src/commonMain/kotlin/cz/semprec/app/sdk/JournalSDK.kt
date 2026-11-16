@@ -10,7 +10,8 @@ import cz.semprec.app.presentation.JournalViewModelFactory
 
 /** The diary part of [HomeSDK]. Every call creates a new ViewModel that the caller owns. */
 class JournalSDK internal constructor(api: AuthenticatedApi) {
-    private val viewModels = JournalViewModelFactory(HttpJournalRepository(api), HttpInboxCaptureRepository(api))
+    private val viewModels =
+        JournalViewModelFactory(HttpJournalRepository(api), HttpInboxCaptureRepository(api), api.changes.events)
 
     /** [initialDay] is the device's current day, `YYYY-MM-DD`. */
     fun journalViewModel(initialDay: String): JournalViewModel = viewModels.journalViewModel(initialDay)

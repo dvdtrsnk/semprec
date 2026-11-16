@@ -22,6 +22,7 @@ import cz.semprec.app.domain.TaskScope
 import cz.semprec.app.domain.WorkItem
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
@@ -519,4 +520,20 @@ class AreaViewModelTest : MainDispatcherTest() {
             assertTrue(owned.isClosed)
             assertEquals(2, tasks.cancellations)
         }
+
+    @Test fun `a write elsewhere in the window reads the area again`() = runTest(dispatcher) {
+        val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+        val vm = AreaViewModelFactory(collections, collections, tasks, changes).areaViewModel(AREA) { AREA_TODAY }
+        runCurrent()
+        assertEquals(2, vm.state.value.tasksToday)
+        val reads = tasks.calls
+        tasks.answer = {
+            RepositoryResult.Content(listOf(aTask("new", date = AREA_TODAY, from = "08:00", project = workProject)))
+        }
+        changes.emit(Unit)
+        runCurrent()
+        assertEquals(reads + 1, tasks.calls)
+        assertEquals(1, vm.state.value.tasksToday)
+        vm.close()
+    }
 }

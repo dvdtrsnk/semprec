@@ -5,6 +5,8 @@ import cz.semprec.app.domain.RecordingsRepository
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 
 /** How long a list with a recording in process waits before it asks the server again. */
@@ -16,11 +18,13 @@ internal const val RECORDINGS_POLL_MILLIS = 5_000L
  */
 class RecordingsViewModel internal constructor(
     private val recordings: RecordingsRepository,
+    changes: Flow<Unit> = emptyFlow(),
 ) : ScreenViewModel<RecordingsState, RecordingsAction, RecordingsEffect>(RecordingsState()) {
     private var loadJob: Job? = null
     private var pollJob: Job? = null
 
     init {
+        reloadOnChanges(changes) { onAction(RecordingsAction.Refresh) }
         read(showWait = true)
     }
 

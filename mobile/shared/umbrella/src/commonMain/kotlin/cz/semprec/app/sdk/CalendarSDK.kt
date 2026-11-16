@@ -26,8 +26,9 @@ class CalendarSDK internal constructor(api: AuthenticatedApi) {
         HttpCalendarCatalogRepository(api, changes),
         HttpInvitationRepository(api, changes),
         changes,
+        api.changes.events,
     )
-    private val agenda = CalendarAgendaViewModelFactory(HttpCalendarAgendaRepository(api))
+    private val agenda = CalendarAgendaViewModelFactory(HttpCalendarAgendaRepository(api), api.changes.events)
 
     /** [initialDay] is the device's current day, `YYYY-MM-DD`; the first answer of the server names today. */
     fun calendarViewModel(initialDay: String): CalendarViewModel = viewModels.calendarViewModel(initialDay)

@@ -8,6 +8,7 @@ import cz.semprec.app.domain.PageDocument
 import cz.semprec.app.domain.PageWrite
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
@@ -485,5 +486,44 @@ class JournalViewModelTest : MainDispatcherTest() {
         vm.onAction(JournalAction.Retry)
         runCurrent()
         assertEquals(1, repository.periodCalls.size)
+    }
+
+    @Test fun `a write elsewhere in the window reads the period again but keeps the page and the axis`() =
+        runTest(dispatcher) {
+            val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+            withDiary()
+            val vm = JournalViewModelFactory(repository, UnusedInboxCaptures, changes).journalViewModel("2026-10-16")
+            runCurrent()
+            val before = vm.state.value
+            repository.onPeriod = {
+                content(periodPage(it, markdown = "Changed elsewhere", itemId = "item-day").copy(events = emptyList()))
+            }
+            changes.emit(Unit)
+            runCurrent()
+            assertEquals(2, repository.periodCalls.size)
+            assertTrue(vm.state.value.events.isEmpty())
+            assertEquals(before.inbox, vm.state.value.inbox)
+            assertEquals(before.page, vm.state.value.page)
+            assertEquals(before.axis, vm.state.value.axis)
+            vm.close()
+        }
+
+    @Test fun `a write elsewhere while the period is still loading reads nothing more`() = runTest(dispatcher) {
+        val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+        val gate = CompletableDeferred<Unit>()
+        repository.onPeriod = {
+            gate.await()
+            content(periodPage(it))
+        }
+        val vm = JournalViewModelFactory(repository, UnusedInboxCaptures, changes).journalViewModel("2026-10-16")
+        runCurrent()
+        changes.emit(Unit)
+        runCurrent()
+        assertEquals(1, repository.periodCalls.size)
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(JournalPhase.CONTENT, vm.state.value.phase)
+        assertEquals(1, repository.periodCalls.size)
+        vm.close()
     }
 }

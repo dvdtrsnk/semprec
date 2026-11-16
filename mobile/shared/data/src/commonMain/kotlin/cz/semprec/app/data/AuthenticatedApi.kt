@@ -3,16 +3,22 @@ package cz.semprec.app.data
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.core.SessionStorage
 import cz.semprec.app.core.StoredSession
+import cz.semprec.app.domain.ItemChanges
 import io.ktor.http.ContentType
 import io.ktor.http.HttpMethod
 
 /**
  * The calls of a signed-in person: every request goes to the stored server with the stored token. A `401` means
  * the server no longer knows the session, so [onSessionRejected] runs once before the failure is returned.
+ *
+ * Every successful write is announced on [changes], so that the open screens of the window load again
+ * (docs/adr/2026-11-16-open-mobile-screens-reload-after-any-write-of-their-window.md): a request other than a `GET`,
+ * except those that only read or only save the text of a page, which [announces] lists.
  */
 class AuthenticatedApi(
     private val client: ApiClient,
     private val storage: SessionStorage,
+    val changes: ItemChanges = ItemChanges(),
     private val onSessionRejected: () -> Unit,
 ) {
     /** The session the calls go out with, or `null` when nobody is signed in. */
@@ -31,6 +37,7 @@ class AuthenticatedApi(
             session.serverUrl, method, path, session.token, query, body, extraHeaders, bodyContentType,
         )
         if (response is ApiResponse.Failure && response.status == UNAUTHORIZED_STATUS) onSessionRejected()
+        if (response is ApiResponse.Success && announces(method, path)) changes.announce()
         return response
     }
 
@@ -39,6 +46,7 @@ class AuthenticatedApi(
         val session = storage.load() ?: return ApiResponse.Failure(FailureKind.UNAUTHORIZED, null)
         val response = client.upload(session.serverUrl, path, session.token, body, extraHeaders)
         if (response is ApiResponse.Failure && response.status == UNAUTHORIZED_STATUS) onSessionRejected()
+        if (response is ApiResponse.Success && announces(HttpMethod.Post, path)) changes.announce()
         return response
     }
 
@@ -49,7 +57,26 @@ class AuthenticatedApi(
         return response
     }
 
-    private companion object {
+    internal companion object {
         const val UNAUTHORIZED_STATUS = 401
+
+        /**
+         * Whether a successful [method] on [path] changed what a screen shows. Reads are not changes, nor are the
+         * `POST`s that only read (a query, a count, a search), the raw staging of a blob (the item it belongs to is
+         * created by a later request) and the saving of a page's own text (the diary's day page, which its load
+         * ensures with a `PUT`, and an item's `page.md`), which no list shows.
+         */
+        fun announces(method: HttpMethod, path: String): Boolean {
+            if (method == HttpMethod.Get || method == HttpMethod.Head) return false
+            val route = path.substringBefore('?')
+            return !(
+                route.endsWith("/query") ||
+                    route.endsWith("/count") ||
+                    route.startsWith("/api/search") ||
+                    route == "/api/blobs" ||
+                    route.endsWith("/doc") ||
+                    route.endsWith("/page.md")
+                )
+        }
     }
 }

@@ -9,6 +9,8 @@ import cz.semprec.app.domain.MailboxRepository
 import cz.semprec.app.domain.RepositoryResult
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -21,6 +23,7 @@ class MailThreadsViewModel internal constructor(
     private val mail: MailRepository,
     private val mailboxes: MailboxRepository,
     start: MailListStart,
+    changes: Flow<Unit> = emptyFlow(),
 ) : ScreenViewModel<MailThreadsState, MailThreadsAction, MailThreadsEffect>(
     MailThreadsState(
         box = start.box,
@@ -36,6 +39,7 @@ class MailThreadsViewModel internal constructor(
     private var nextCursor: String? = null
 
     init {
+        reloadOnChanges(changes) { onAction(MailThreadsAction.Refresh) }
         load(showWait = true)
         loadFacets()
         loadMailboxes()

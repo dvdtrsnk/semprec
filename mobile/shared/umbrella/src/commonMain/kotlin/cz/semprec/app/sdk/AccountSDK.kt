@@ -36,6 +36,7 @@ class AccountSDK internal constructor(private val factory: AccountViewModelFacto
                 usage = HttpAccountUsageRepository(api),
                 trash = HttpAccountTrashRepository(api, reads),
                 auth = auth,
+                changes = api.changes.events,
             ),
         )
     }

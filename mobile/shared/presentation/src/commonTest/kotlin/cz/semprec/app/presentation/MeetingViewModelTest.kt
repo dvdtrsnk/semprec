@@ -24,6 +24,7 @@ import cz.semprec.app.domain.TranscriptRepository
 import cz.semprec.app.domain.WorkItem
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -378,5 +379,33 @@ class MeetingViewModelTest : MainDispatcherTest() {
         runCurrent()
         assertEquals(1, s.events.calls)
         assertEquals(emptyList(), s.meeting.writes)
+    }
+
+    @Test fun `a write elsewhere in the window reads the event again`() = runTest(dispatcher) {
+        val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+        val events = CallScript<WorkItem>(
+            listOf<ScriptedStep<WorkItem>>(
+                { RepositoryResult.Content(EVENT) },
+                { RepositoryResult.Content(EVENT.copy(title = "Moved meeting")) },
+            ),
+        )
+        val vm = MeetingViewModel(
+            "ev-1",
+            ScriptedEvents(events),
+            ScriptedMeeting(),
+            ScriptedEventRecordings(
+                CallScript(
+                    listOf<ScriptedStep<List<RecordingEntry>>>({ RepositoryResult.Content(listOf(recording())) }),
+                ),
+            ),
+            SuggestionTasks(),
+            changes,
+        )
+        runCurrent()
+        changes.emit(Unit)
+        runCurrent()
+        assertEquals(2, events.calls)
+        assertEquals("Moved meeting", vm.state.value.title)
+        vm.close()
     }
 }

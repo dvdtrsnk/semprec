@@ -2,10 +2,12 @@ package cz.semprec.app.presentation
 
 import androidx.lifecycle.ViewModelStore
 import cz.semprec.app.core.FailureKind
+import cz.semprec.app.domain.LoadOverview
 import cz.semprec.app.domain.RepositoryResult
 import cz.semprec.app.domain.SessionStatus
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
@@ -227,5 +229,21 @@ class OverviewViewModelTest : MainDispatcherTest() {
         assertEquals(1, repository.cancellations)
         vm.onAction(OverviewAction.Retry)
         assertEquals(1, repository.calls)
+    }
+
+    @Test fun `a write elsewhere in the window reloads the overview`() = runTest(dispatcher) {
+        val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+        val repository = ScriptedOverviewRepository(
+            { CONTENT },
+            { RepositoryResult.Content(overviewData.copy(summary = overviewSummary.copy(tasksToday = 7))) },
+        )
+        val vm = OverviewViewModel(LoadOverview(repository), SIGNED_IN, changes)
+        runCurrent()
+        assertEquals(1, repository.calls)
+        changes.emit(Unit)
+        runCurrent()
+        assertEquals(2, repository.calls)
+        assertEquals(7, vm.state.value.tasksToday)
+        vm.close()
     }
 }

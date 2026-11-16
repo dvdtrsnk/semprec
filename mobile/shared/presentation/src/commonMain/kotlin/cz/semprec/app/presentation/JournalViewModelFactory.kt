@@ -5,6 +5,8 @@ import cz.semprec.app.domain.InboxCaptureRepository
 import cz.semprec.app.domain.JournalRepository
 import cz.semprec.app.domain.LoadJournalPage
 import cz.semprec.app.domain.LoadJournalPeriod
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlin.experimental.ExperimentalObjCRefinement
 import kotlin.native.HiddenFromObjC
 
@@ -17,10 +19,11 @@ import kotlin.native.HiddenFromObjC
 class JournalViewModelFactory(
     private val repository: JournalRepository,
     private val captures: InboxCaptureRepository,
+    private val changes: Flow<Unit> = emptyFlow(),
 ) {
     /** One new ViewModel per call; the caller owns it (see [ScreenViewModel]). [initialDay] is `YYYY-MM-DD`. */
     fun journalViewModel(initialDay: String): JournalViewModel =
-        JournalViewModel(initialDay, LoadJournalPeriod(repository), EditJournalPage(repository))
+        JournalViewModel(initialDay, LoadJournalPeriod(repository), EditJournalPage(repository), changes)
 
     /** One new ViewModel per call; the caller owns it (see [ScreenViewModel]). */
     fun journalSubpageViewModel(itemId: String): JournalSubpageViewModel =

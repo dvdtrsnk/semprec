@@ -11,6 +11,7 @@ import cz.semprec.app.domain.AccountTrashRepository
 import cz.semprec.app.domain.RepositoryResult
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
@@ -371,6 +372,31 @@ class TrashViewModelTest : MainDispatcherTest() {
         gate.complete(Unit)
         runCurrent()
         assertEquals(listOf(row(TASK)), vm.state.value.items)
+        vm.close()
+    }
+
+    @Test fun `a write elsewhere in the window reads the shown tab again`() = runTest(dispatcher) {
+        val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+        val trash = ScriptedTrash(
+            items = listOf<ScriptedStep<AccountTrashPage>>(
+                { RepositoryResult.Content(AccountTrashPage(listOf(TASK, FILE), 3, "c1")) },
+                { RepositoryResult.Content(AccountTrashPage(listOf(MORE), 1, null)) },
+            ),
+        )
+        val vm = AccountViewModelFactory(
+            AccountUnusedAccount,
+            AccountUnusedNotifications,
+            AccountUnusedUsage,
+            trash,
+            FakeAuthRepository(),
+            changes,
+        ).trashViewModel()
+        runCurrent()
+        changes.emit(Unit)
+        runCurrent()
+        assertEquals(2, trash.itemCalls.calls)
+        assertEquals(listOf<String?>(null, null), trash.cursors)
+        assertEquals(listOf(row(MORE)), vm.state.value.items)
         vm.close()
     }
 }

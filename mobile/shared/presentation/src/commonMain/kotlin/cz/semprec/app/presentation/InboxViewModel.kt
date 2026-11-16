@@ -8,6 +8,8 @@ import cz.semprec.app.domain.carrying
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -18,6 +20,7 @@ import kotlinx.coroutines.launch
  */
 class InboxViewModel internal constructor(
     dependencies: InboxDependencies,
+    changes: Flow<Unit> = emptyFlow(),
 ) : ScreenViewModel<InboxState, InboxAction, InboxEffect>(InboxState()) {
     private val model = InboxModel()
     private val deps = dependencies
@@ -34,6 +37,7 @@ class InboxViewModel internal constructor(
     private var pollJob: Job? = null
 
     init {
+        reloadOnChanges(changes) { onAction(InboxAction.Refresh) }
         load(showWait = true)
     }
 

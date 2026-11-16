@@ -9,6 +9,8 @@ import cz.semprec.app.domain.CalendarEntry
 import cz.semprec.app.domain.CalendarEntryKind
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -19,6 +21,7 @@ import kotlinx.coroutines.launch
 class CalendarAgendaViewModel internal constructor(
     from: String,
     private val repository: CalendarAgendaRepository,
+    changes: Flow<Unit> = emptyFlow(),
 ) : ScreenViewModel<CalendarAgendaState, CalendarAgendaAction, CalendarAgendaEffect>(CalendarAgendaState()) {
     private val first: CalendarDay? = CalendarDay.parse(from)
     private var job: Job? = null
@@ -27,6 +30,7 @@ class CalendarAgendaViewModel internal constructor(
     private var entryDays: Map<String, String> = emptyMap()
 
     init {
+        reloadOnChanges(changes) { load() }
         load()
     }
 

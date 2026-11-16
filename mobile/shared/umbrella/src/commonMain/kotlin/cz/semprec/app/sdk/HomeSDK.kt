@@ -19,7 +19,6 @@ import cz.semprec.app.data.HttpSearchRepository
 import cz.semprec.app.data.InMemoryPlaceholderRepository
 import cz.semprec.app.data.WorkData
 import cz.semprec.app.domain.InMemoryRecentSearches
-import cz.semprec.app.domain.ItemChanges
 import cz.semprec.app.domain.LoadOverview
 import cz.semprec.app.domain.LoadPlaceholderItem
 import cz.semprec.app.domain.LoadPlaceholderItems
@@ -73,12 +72,18 @@ class HomeSDK(
 
     /** The generic collection screens: any database's items, and one item of it. */
     val collections: CollectionSDK =
-        CollectionSDK(CollectionViewModelFactory(collectionReads, HttpCollectionWrites(auth.api, collectionReads)))
+        CollectionSDK(
+            CollectionViewModelFactory(
+                collectionReads,
+                HttpCollectionWrites(auth.api, collectionReads),
+                auth.api.changes.events,
+            ),
+        )
 
     private val inboxRepository = HttpInboxRepository(auth.api, collectionReads)
 
     /** The Inbox screen: the stack of cards the person approves, edits or discards. */
-    val inbox: InboxSDK = InboxSDK(InboxViewModelFactory(inboxRepository, inboxRepository))
+    val inbox: InboxSDK = InboxSDK(InboxViewModelFactory(inboxRepository, inboxRepository, auth.api.changes.events))
 
     // The overview and its search; the recent searches live as long as this SDK, that is, as long as the window.
     private val overviewViewModels = OverviewViewModelFactory(
@@ -86,14 +91,20 @@ class HomeSDK(
         SearchEverything(HttpSearchRepository(auth.api)),
         InMemoryRecentSearches(),
         auth,
+        auth.api.changes.events,
     )
 
-    // The task lists and the Podrobnosti sheet; a change made in the sheet reaches the open lists of the same window.
+    // The task lists and the Podrobnosti sheet; any write of the window reaches the open lists of the same window.
     private val work = WorkData(auth.api)
-    private val workViewModels = WorkViewModelFactory(work.tasks, work.details, work.catalog, ItemChanges())
+    private val workViewModels = WorkViewModelFactory(work.tasks, work.details, work.catalog, auth.api.changes)
 
     /** The area screen. */
-    val areas: AreasSDK = AreasSDK.create(collectionReads, HttpCollectionWrites(auth.api, collectionReads), work.tasks)
+    val areas: AreasSDK = AreasSDK.create(
+        collectionReads,
+        HttpCollectionWrites(auth.api, collectionReads),
+        work.tasks,
+        auth.api.changes,
+    )
 
     /** The notes screen over the page API. */
     val notes: NotesSDK = NotesSDK.create(auth.api)

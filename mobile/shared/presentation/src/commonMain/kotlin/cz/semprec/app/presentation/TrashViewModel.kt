@@ -9,6 +9,8 @@ import cz.semprec.app.domain.AccountTrashItem
 import cz.semprec.app.domain.AccountTrashRepository
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -17,11 +19,13 @@ import kotlinx.coroutines.launch
  */
 class TrashViewModel internal constructor(
     private val trash: AccountTrashRepository,
+    changes: Flow<Unit> = emptyFlow(),
 ) : ScreenViewModel<TrashState, TrashAction, TrashEffect>(TrashState()) {
     private var loadJob: Job? = null
     private var cursor: String? = null
 
     init {
+        reloadOnChanges(changes) { load(state.value.tab) }
         load(TrashTab.ITEMS)
     }
 

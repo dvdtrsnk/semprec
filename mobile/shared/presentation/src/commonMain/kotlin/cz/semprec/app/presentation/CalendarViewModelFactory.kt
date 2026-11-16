@@ -9,6 +9,8 @@ import cz.semprec.app.domain.EditCalendarEntry
 import cz.semprec.app.domain.EditCalendars
 import cz.semprec.app.domain.InvitationRepository
 import cz.semprec.app.domain.LoadCalendarWindow
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlin.experimental.ExperimentalObjCRefinement
 import kotlin.native.HiddenFromObjC
 
@@ -24,10 +26,17 @@ class CalendarViewModelFactory(
     private val catalog: CalendarCatalogRepository,
     private val invitations: InvitationRepository,
     private val changes: CalendarChanges,
+    private val dataChanges: Flow<Unit> = emptyFlow(),
 ) {
     /** One new ViewModel per call; the caller owns it (see [ScreenViewModel]). [initialDay] is `YYYY-MM-DD`. */
     fun calendarViewModel(initialDay: String): CalendarViewModel =
-        CalendarViewModel(initialDay, LoadCalendarWindow(calendar), changes, EditCalendarEntry(calendar))
+        CalendarViewModel(
+            initialDay,
+            LoadCalendarWindow(calendar),
+            changes,
+            EditCalendarEntry(calendar),
+            dataChanges,
+        )
 
     fun calendarListViewModel(): CalendarListViewModel =
         CalendarListViewModel(catalog, EditCalendars(catalog), changes)

@@ -11,6 +11,8 @@ import cz.semprec.app.domain.OpenedCollection
 import cz.semprec.app.domain.PropertyKind
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -24,6 +26,7 @@ class CollectionViewModel internal constructor(
     private val openCollection: OpenCollection,
     private val reads: CollectionReads,
     writes: CollectionWrites,
+    changes: Flow<Unit> = emptyFlow(),
 ) : ScreenViewModel<CollectionState, CollectionAction, CollectionEffect>(CollectionState()) {
     private var inputs = Inputs()
     private var loaded: CollectionLoaded? = null
@@ -36,6 +39,7 @@ class CollectionViewModel internal constructor(
     private val adding = CollectionWriteFlow(host, writes, config, { loaded?.opened?.database }, ::query)
 
     init {
+        reloadOnChanges(changes) { onAction(CollectionAction.Refresh) }
         load()
     }
 

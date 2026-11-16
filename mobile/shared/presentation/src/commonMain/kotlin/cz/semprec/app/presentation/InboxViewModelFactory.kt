@@ -5,6 +5,8 @@ import cz.semprec.app.domain.EditInboxCard
 import cz.semprec.app.domain.InboxDecisions
 import cz.semprec.app.domain.InboxRepository
 import cz.semprec.app.domain.LoadInbox
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlin.experimental.ExperimentalObjCRefinement
 import kotlin.native.HiddenFromObjC
 
@@ -17,6 +19,7 @@ import kotlin.native.HiddenFromObjC
 class InboxViewModelFactory(
     private val repository: InboxRepository,
     private val decisions: InboxDecisions,
+    private val changes: Flow<Unit> = emptyFlow(),
 ) {
     /** One new ViewModel per call; the caller owns it (see [ScreenViewModel]). */
     fun inboxViewModel(): InboxViewModel = InboxViewModel(
@@ -27,5 +30,6 @@ class InboxViewModelFactory(
             repository = repository,
             decisions = decisions,
         ),
+        changes,
     )
 }

@@ -8,6 +8,8 @@ import cz.semprec.app.domain.EditCalendarEntry
 import cz.semprec.app.domain.LoadCalendarWindow
 import cz.semprec.app.domain.ScheduleEditing
 import cz.semprec.app.domain.isEditable
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 
 /**
  * The calendar: a year of months, a month of days or one day hour by hour, with the events and tasks of the
@@ -19,10 +21,12 @@ class CalendarViewModel internal constructor(
     loadWindow: LoadCalendarWindow,
     changes: CalendarChanges,
     edit: EditCalendarEntry,
+    dataChanges: Flow<Unit> = emptyFlow(),
 ) : CalendarGestureViewModel(initialDay, loadWindow, changes, edit) {
     private var copied: CalendarEntry? = null
 
     init {
+        reloadOnChanges(dataChanges) { onAction(CalendarAction.Navigation.Refresh) }
         start()
     }
 

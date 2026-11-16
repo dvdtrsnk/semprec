@@ -10,6 +10,7 @@ import cz.semprec.app.domain.RecordingsRepository
 import cz.semprec.app.domain.RepositoryResult
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceTimeBy
@@ -193,5 +194,22 @@ class RecordingsViewModelTest : MainDispatcherTest() {
         runCurrent()
         store.clear()
         assertTrue(vm.isClosed)
+    }
+
+    @Test fun `a write elsewhere in the window reads the recordings again`() = runTest(dispatcher) {
+        val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+        val repository = ScriptedRecordings(
+            listOf<ScriptedStep<List<RecordingEntry>>>(
+                { RepositoryResult.Content(listOf(entry("a"))) },
+                { RepositoryResult.Content(listOf(entry("a"), entry("b"))) },
+            ),
+        )
+        val vm = RecordingsViewModel(repository, changes)
+        runCurrent()
+        changes.emit(Unit)
+        runCurrent()
+        assertEquals(2, repository.listCalls.calls)
+        assertEquals(listOf("a", "b"), vm.state.value.recordings.map { it.id })
+        vm.close()
     }
 }

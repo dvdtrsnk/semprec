@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 /**
  * Base for shared screen logic. A screen has one immutable [State], user intents as [Action], and
@@ -82,5 +83,14 @@ abstract class ScreenViewModel<State : Any, Action : Any, Effect : Any>(initialS
      */
     protected fun emit(effect: Effect) {
         effectChannel.trySend(effect)
+    }
+
+    /**
+     * Runs [reload] on every event of [changes], the writes of the window this screen belongs to, for as long as
+     * the screen lives (docs/adr/2026-11-16-open-mobile-screens-reload-after-any-write-of-their-window.md).
+     * [reload] is the screen's own quiet refresh, so what is on screen stays until the answer replaces it.
+     */
+    protected fun reloadOnChanges(changes: Flow<Unit>, reload: () -> Unit) {
+        viewModelScope.launch { changes.collect { reload() } }
     }
 }
