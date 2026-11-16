@@ -45,6 +45,23 @@ enum AppDestination: Hashable {
     case mailCompose(MailComposeStart)
     case mailAccounts(tab: AppTab)
     case mailAccount(mailboxId: String, tab: AppTab)
+    /// The agent of a project: its instructions, tools, automatic tasks and runs.
+    case sempProjectAgent(projectId: String)
+    /// The health of Semp. The profile reaches it from its problems count.
+    case sempStatus
+}
+
+// MARK: - Presentation
+extension AppDestination {
+
+    /// Whether the destination is presented as a sheet over a stack, which covers the Semp bubble of the scene.
+    var presentsAsSheet: Bool {
+        switch self {
+        case .profile, .details, .sleepPlan, .sleepNight, .calendars, .invitations, .newItem, .mailCompose: true
+        case .pending, .tasks, .collection, .collectionItem, .journalPage, .area, .notes, .inbox, .mailList,
+             .mailThread, .mailFolders, .mailAccounts, .mailAccount, .sempProjectAgent, .sempStatus: false
+        }
+    }
 }
 
 // MARK: - NavigationProvidedDestination

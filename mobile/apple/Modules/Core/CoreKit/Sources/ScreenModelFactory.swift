@@ -52,4 +52,21 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
     func makeMailFolders() -> any MailFoldersScreenModel
     func makeMailAccounts() -> any MailAccountsScreenModel
     func makeMailAccount(mailboxId: String) -> any MailAccountScreenModel
+
+    // Semp slice
+    /// A conversation. `threadId` names the thread of `.existing`, `inboxItemId` the Inbox item of `.item`; `title`
+    /// and `meta` name what the thread is about, as the screen that opened it knows.
+    func makeSempThread(
+        start: SempThreadStart,
+        threadId: String?,
+        inboxItemId: String?,
+        title: String?,
+        meta: String?
+    ) -> any SempThreadScreenModel
+    func makeSempChats() -> any SempChatsScreenModel
+    func makeSempStatus() -> any SempStatusScreenModel
+    func makeSempRun(runId: String, messageId: String?) -> any SempRunScreenModel
+    func makeSempApprovals() -> any SempApprovalsScreenModel
+    func makeSempProjectAgent(projectId: String) -> any SempProjectAgentScreenModel
+    func makeSempBubble() -> any SempBubbleScreenModel
 }

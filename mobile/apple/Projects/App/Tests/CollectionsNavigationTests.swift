@@ -57,9 +57,17 @@ final class CollectionsNavigationTests: XCTestCase {
         context.register(overview, for: .overview)
         let router = AppCollectionsRouter(context: context, tab: .overview)
         router.showProjectTasks(projectId: "p1")
-        router.showProjectAgent(projectId: "p1")
         XCTAssertTrue(overview.pushed.isEmpty)
         XCTAssertTrue(overview.sheets.isEmpty)
+    }
+
+    @MainActor
+    func testTheAgentOfAProjectOpensTheSempProjectAgentOnTheStackOfTheCollection() {
+        let context = NavigationContext()
+        let overview = StackSpy()
+        context.register(overview, for: .overview)
+        AppCollectionsRouter(context: context, tab: .overview).showProjectAgent(projectId: "p1")
+        XCTAssertEqual(overview.pushed, [.sempProjectAgent(projectId: "p1")])
     }
 
     @MainActor

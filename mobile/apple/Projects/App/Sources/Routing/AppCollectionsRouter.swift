@@ -47,5 +47,8 @@ extension AppCollectionsRouter: CollectionsRouting {
     func showProjectNotes(projectId: String) {
         context.push(.notes(itemId: projectId, tab: tab), in: tab)
     }
-    func showProjectAgent(projectId: String) {}
+
+    func showProjectAgent(projectId: String) {
+        context.push(.sempProjectAgent(projectId: projectId), in: tab)
+    }
 }

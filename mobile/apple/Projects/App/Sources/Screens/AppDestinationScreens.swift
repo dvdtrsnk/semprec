@@ -3,6 +3,7 @@ import CalendarFeature
 import InboxFeature
 import JournalFeature
 import NotesFeature
+import SempFeature
 import SleepFeature
 import SwiftUI
 
@@ -125,6 +126,32 @@ struct SleepDestination: View {
             SleepScreenFactory.night { composition.models.makeSleep(night: night, startOnNight: true) }
         default:
             EmptyView()
+        }
+    }
+}
+
+/// The destinations of the app's own screens: the notice for a screen that is not built, the profile and Semp.
+struct ShellDestination: View {
+
+    let destination: AppDestination
+    let composition: AppComposition
+
+    var body: some View {
+        switch destination {
+        case .pending(let title):
+            PendingScreen(title: title)
+        case .profile:
+            ProfileSheet(models: composition.models, navigation: composition.navigation)
+        case .sempProjectAgent(let projectId):
+            SempScreenFactory.projectAgent(
+                makeModel: { composition.models.makeSempProjectAgent(projectId: projectId) },
+                router: composition.sempRouter
+            )
+        default:
+            SempScreenFactory.status(
+                makeModel: { composition.models.makeSempStatus() },
+                router: composition.sempRouter
+            )
         }
     }
 }

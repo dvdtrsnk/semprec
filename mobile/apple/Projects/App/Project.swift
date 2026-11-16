@@ -58,6 +58,7 @@ let project = Project(
                 .project(target: "NotesFeature", path: "../../Modules/Features/Notes"),
                 .project(target: "MailFeature", path: "../../Modules/Features/Mail"),
                 .project(target: "OverviewFeature", path: "../../Modules/Features/Overview"),
+                .project(target: "SempFeature", path: "../../Modules/Features/Semp"),
                 .project(target: "SleepFeature", path: "../../Modules/Features/Sleep"),
                 .project(target: "InboxFeature", path: "../../Modules/Features/Inbox"),
                 .project(target: "TasksFeature", path: "../../Modules/Features/Tasks"),
