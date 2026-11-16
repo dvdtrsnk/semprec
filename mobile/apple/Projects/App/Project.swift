@@ -28,7 +28,9 @@ let project = Project(
                 "CFBundleShortVersionString": "$(MARKETING_VERSION)",
                 "CFBundleVersion": "$(CURRENT_PROJECT_VERSION)",
                 "LSApplicationCategoryType": "public.app-category.productivity",
+                "NSMicrophoneUsageDescription": "Semprec records meetings and voice notes so that Semp can transcribe them.",
                 "UIApplicationSceneManifest": ["UIApplicationSupportsMultipleScenes": true],
+                "UIBackgroundModes": ["audio"],
                 "UILaunchScreen": [:],
                 "UISupportedInterfaceOrientations": [
                     "UIInterfaceOrientationPortrait",
@@ -59,6 +61,7 @@ let project = Project(
                 .project(target: "MailFeature", path: "../../Modules/Features/Mail"),
                 .project(target: "OverviewFeature", path: "../../Modules/Features/Overview"),
                 .project(target: "SempFeature", path: "../../Modules/Features/Semp"),
+                .project(target: "RecordingsFeature", path: "../../Modules/Features/Recordings"),
                 .project(target: "SleepFeature", path: "../../Modules/Features/Sleep"),
                 .project(target: "InboxFeature", path: "../../Modules/Features/Inbox"),
                 .project(target: "TasksFeature", path: "../../Modules/Features/Tasks"),

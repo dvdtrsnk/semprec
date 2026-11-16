@@ -5,7 +5,12 @@
 public final class SharedScreenModelFactory {
 
     // MARK: - Dependencies
-    let sdk = SharedSDK.HomeSDK(sessionStorage: KeychainSessionStorage(), device: DeviceIdentity.current())
+    let sdk = SharedSDK.HomeSDK(
+        sessionStorage: KeychainSessionStorage(),
+        device: DeviceIdentity.current(),
+        recorder: DeviceAudioRecorder(),
+        player: DeviceAudioPlayer()
+    )
 
     // MARK: - Init
     public init() {}

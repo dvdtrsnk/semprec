@@ -4,6 +4,7 @@ import cz.semprec.app.core.FailureKind
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.timeout
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.header
 import io.ktor.client.request.request
@@ -21,6 +22,8 @@ import kotlinx.coroutines.CancellationException
 
 private const val REQUEST_TIMEOUT_MILLIS = 30_000L
 private const val CONNECT_TIMEOUT_MILLIS = 15_000L
+// A recording of an hour is tens of megabytes; its upload gets far longer than a JSON call.
+private const val UPLOAD_TIMEOUT_MILLIS = 600_000L
 private const val DEFAULT_MEDIA_TYPE = "application/octet-stream"
 
 /** The raw bytes of a request body and the media type they are sent as. */
@@ -88,6 +91,7 @@ class ApiClient internal constructor(engine: HttpClientEngine?) {
             headers(token)
             extraHeaders.forEach { (name, value) -> header(name, value) }
             contentType(ContentType.parse(body.mimeType))
+            timeout { requestTimeoutMillis = UPLOAD_TIMEOUT_MILLIS }
             setBody(body.bytes)
         }
         val failure = failureKind(response.status)

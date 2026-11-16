@@ -1,0 +1,22 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "NSMicrophoneUsageDescription" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Semprec nahrává schůzky a hlasové poznámky, aby je Semp mohl přepsat."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Semprec records meetings and voice notes so that Semp can transcribe them."
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.0"
+}

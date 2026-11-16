@@ -110,8 +110,7 @@ private extension AppScene {
                 makeModel: { composition.models.makeTasks(start: start) },
                 router: composition.tasksRouter(in: tab)
             )
-        case .details(let target):
-            TasksScreenFactory.details { composition.models.makeItemDetails(kind: target.kind, itemId: target.id) }
+        case .details(let target): Self.detailsView(target, composition: composition)
         case .collection(let target):
             CollectionsScreenFactory.collection(
                 target,
@@ -124,6 +123,8 @@ private extension AppScene {
             NotesDestination(itemId: itemId, tab: tab, composition: composition)
         case .inbox(let tab):
             InboxDestination(tab: tab, composition: composition)
+        case .recordings, .transcript, .meeting:
+            Self.recordingsDestinationView(destination, composition: composition)
         case .collectionItem(let itemId, let databaseKey):
             CollectionsScreenFactory.item(
                 itemId: itemId,

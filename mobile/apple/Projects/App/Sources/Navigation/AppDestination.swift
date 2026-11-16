@@ -49,6 +49,13 @@ enum AppDestination: Hashable {
     case sempProjectAgent(projectId: String)
     /// The health of Semp. The profile reaches it from its problems count.
     case sempStatus
+
+    /// The recordings, on the stack of `tab`: the list and the recorder of a recording without an event.
+    case recordings(tab: AppTab)
+    /// The transcript of the recording `recordingId`, on the stack of `tab`.
+    case transcript(recordingId: String, tab: AppTab)
+    /// The page of the event `eventId`: its tasks, notes, recordings and people, on the stack of `tab`.
+    case meeting(eventId: String, tab: AppTab)
 }
 
 // MARK: - Presentation
@@ -59,7 +66,8 @@ extension AppDestination {
         switch self {
         case .profile, .details, .sleepPlan, .sleepNight, .calendars, .invitations, .newItem, .mailCompose: true
         case .pending, .tasks, .collection, .collectionItem, .journalPage, .area, .notes, .inbox, .mailList,
-             .mailThread, .mailFolders, .mailAccounts, .mailAccount, .sempProjectAgent, .sempStatus: false
+             .mailThread, .mailFolders, .mailAccounts, .mailAccount, .sempProjectAgent, .sempStatus,
+             .recordings, .transcript, .meeting: false
         }
     }
 }
