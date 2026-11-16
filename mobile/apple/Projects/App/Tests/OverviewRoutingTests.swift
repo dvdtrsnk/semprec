@@ -36,7 +36,7 @@ final class OverviewRoutingTests: XCTestCase {
     @MainActor
     func testEveryRowOpensANoticeThatNamesItOnTheOverviewStack() {
         let targets: [OverviewTarget] = [
-            .mail, .recordings, .finance, .journal(itemId: "j1"), .project(id: "p")
+            .recordings, .finance, .journal(itemId: "j1"), .project(id: "p")
         ]
         let context = NavigationContext()
         let overview = OverviewStackSpy()
@@ -65,6 +65,15 @@ final class OverviewRoutingTests: XCTestCase {
             overview.pushed,
             [.area(areaId: "a1", tab: .overview), .collection(.whole(databaseKey: nil, databaseId: "d1"))]
         )
+    }
+
+    @MainActor
+    func testTheMailRowPushesTheThreadListOntoTheOverviewStack() {
+        let context = NavigationContext()
+        let overview = OverviewStackSpy()
+        context.register(overview, for: .overview)
+        AppOverviewRouter(context: context).show(.mail)
+        XCTAssertEqual(overview.pushed, [.mailList(MailListStart(), title: nil, tab: .overview)])
     }
 
     @MainActor

@@ -38,9 +38,12 @@ extension AppCollectionsRouter: CollectionsRouting {
         context.push(.area(areaId: areaId, tab: tab), in: tab)
     }
 
+    func showProjectMail(projectId: String) {
+        context.showMail(MailListStart(projectId: projectId), in: tab)
+    }
+
     // The requests below belong to features that are built elsewhere; the integrator maps each to its screen.
     func showProjectTasks(projectId: String) {}
-    func showProjectMail(projectId: String) {}
     func showProjectNotes(projectId: String) {
         context.push(.notes(itemId: projectId, tab: tab), in: tab)
     }

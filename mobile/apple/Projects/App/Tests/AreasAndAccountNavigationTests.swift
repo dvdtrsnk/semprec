@@ -41,7 +41,7 @@ final class AreasAndAccountNavigationTests: XCTestCase {
     }
 
     @MainActor
-    func testTheMailOfAnAreaOpensANoticeAndItsNotesOpenTheNotesScreen() {
+    func testTheMailOfAnAreaOpensItsThreadListAndItsNotesOpenTheNotesScreen() {
         let context = NavigationContext()
         let overview = AreaStackSpy()
         context.register(overview, for: .overview)
@@ -49,8 +49,7 @@ final class AreasAndAccountNavigationTests: XCTestCase {
         router.showMail(areaId: "a1")
         router.showNotes(areaId: "a1")
         XCTAssertEqual(overview.pushed.count, 2)
-        guard case .pending(let title) = overview.pushed[0] else { return XCTFail("The mail must open a notice") }
-        XCTAssertFalse(title.hasPrefix("pending."), "The title must be read from the catalog")
+        XCTAssertEqual(overview.pushed[0], .mailList(MailListStart(areaId: "a1"), title: nil, tab: .overview))
         XCTAssertEqual(overview.pushed[1], .notes(itemId: "a1", tab: .overview))
     }
 
@@ -73,13 +72,27 @@ final class AreasAndAccountNavigationTests: XCTestCase {
     @MainActor
     func testARowOfTheProfileAppendsItsPageToTheSheetsOwnStackOnce() {
         let path = AccountPath()
-        let router = AppAccountRouter(path: path)
+        let router = AppAccountRouter(path: path, context: NavigationContext(), dismissSheet: {})
         router.show(.devices)
         router.show(.devices)
         router.show(.trash)
         XCTAssertEqual(path.pages, [.devices, .trash])
         router.show(.devices)
         XCTAssertEqual(path.pages, [.devices, .trash, .devices], "Only the page on top is not pushed again")
+    }
+
+    @MainActor
+    func testTheMailAccountsRowClosesTheSheetAndOpensTheAccountsOnTheOverviewStack() {
+        let context = NavigationContext()
+        let overview = AreaStackSpy()
+        context.register(overview, for: .overview)
+        let path = AccountPath()
+        var dismissals = 0
+        let router = AppAccountRouter(path: path, context: context, dismissSheet: { dismissals += 1 })
+        router.show(.mailAccounts)
+        XCTAssertEqual(dismissals, 1)
+        XCTAssertEqual(overview.pushed, [.mailAccounts(tab: .overview)])
+        XCTAssertTrue(path.pages.isEmpty, "The accounts are not a page of the sheet's own stack")
     }
 }
 

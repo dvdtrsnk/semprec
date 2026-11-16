@@ -8,13 +8,17 @@ struct ProfileSheet: View {
 
     // MARK: - Dependencies
     private let models: any ScreenModelFactory
+    private let navigation: NavigationContext
 
     // MARK: - State
     @StateObject private var path = AccountPath()
+    @Environment(\.dismiss)
+    private var dismiss
 
     // MARK: - Init
-    init(models: any ScreenModelFactory) {
+    init(models: any ScreenModelFactory, navigation: NavigationContext) {
         self.models = models
+        self.navigation = navigation
     }
 
     // MARK: - Body
@@ -22,7 +26,7 @@ struct ProfileSheet: View {
         NavigationStack(path: $path.pages) {
             AccountScreenFactory.profile(
                 makeModel: { [models] in models.makeProfile() },
-                router: AppAccountRouter(path: path)
+                router: AppAccountRouter(path: path, context: navigation, dismissSheet: { dismiss() })
             )
             .navigationDestination(for: AccountPage.self) { [models] page in
                 Self.destination(page, models)
@@ -48,7 +52,8 @@ extension ProfileSheet {
         case .sempStatus:
             PendingScreen(title: String(localized: "pending.sempStatus"))
         case .mailAccounts:
-            PendingScreen(title: String(localized: "pending.mailAccounts"))
+            // The router closes the sheet and opens the accounts on the Overview stack; this page is never pushed.
+            EmptyView()
         }
     }
 }

@@ -23,7 +23,7 @@ extension AppOverviewRouter: OverviewRouting {
         switch target {
         case .profile: context.presentSheet(.profile, from: .overview)
         case .inbox: context.showInbox(in: .overview)
-        case .mail: pending(String(localized: "pending.mail"))
+        case .mail: context.showMail(MailListStart(), in: .overview)
         case .recordings: pending(String(localized: "pending.recordings"))
         case .tasks: context.showTasks(TasksStart(), in: .overview)
         case .finance: pending(String(localized: "pending.finance"))

@@ -1,0 +1,388 @@
+package cz.semprec.app.presentation
+
+import androidx.lifecycle.ViewModelStore
+import cz.semprec.app.core.FailureKind
+import cz.semprec.app.domain.MailBox
+import cz.semprec.app.domain.MailSyncStatus
+import cz.semprec.app.domain.MailThreadQuery
+import cz.semprec.app.domain.RepositoryResult
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class MailThreadsViewModelTest : MainDispatcherTest() {
+    private fun viewModel(
+        mail: ScriptedMailRepository = ScriptedMailRepository(),
+        mailboxes: ScriptedMailboxRepository = ScriptedMailboxRepository(),
+        start: MailListStart = MailListStart(),
+    ) = MailViewModelFactory(mail, ScriptedMailDraftRepository(), mailboxes).threadsViewModel(start)
+
+    @Test fun `starts loading and publishes the rows the server listed`() = runTest(dispatcher) {
+        val vm = viewModel(ScriptedMailRepository(threads = MailCall(mailContent(mailPage(next = "c1")))))
+        assertEquals(MailThreadsPhase.LOADING, vm.state.value.phase)
+        runCurrent()
+        val state = vm.state.value
+        assertEquals(MailThreadsPhase.CONTENT, state.phase)
+        assertTrue(state.hasMore)
+        val row = state.threads.single()
+        assertEquals("t1", row.threadId)
+        assertEquals("Petr Novák", row.senderName)
+        assertEquals("Klient", row.senderRelationship)
+        assertEquals("Web", row.projectName)
+        assertTrue(row.unread && row.hasSempDraft && row.hasAttachment)
+        vm.close()
+    }
+
+    @Test fun `the start decides the first query`() = runTest(dispatcher) {
+        val mail = ScriptedMailRepository()
+        val start = MailListStart("ar1", "pr1", MailListBox.SEMP_DRAFTS, "m1", "f1")
+        val vm = viewModel(mail, start = start)
+        runCurrent()
+        val expected = MailThreadQuery(MailBox.SEMP_DRAFTS, "m1", "f1", "ar1", "pr1")
+        assertEquals(expected, mail.threads.asked.single())
+        assertEquals(listOf<Pair<String?, String?>>("ar1" to "pr1"), mail.facets.asked)
+        vm.close()
+    }
+
+    @Test fun `filters and search change the query and reload behind a wait`() = runTest(dispatcher) {
+        val mail = ScriptedMailRepository()
+        val vm = viewModel(mail)
+        runCurrent()
+        vm.onAction(MailThreadsAction.SelectFilter(MailListFilter.UNREAD))
+        assertEquals(MailThreadsPhase.LOADING, vm.state.value.phase)
+        runCurrent()
+        vm.onAction(MailThreadsAction.SelectFilter(MailListFilter.FLAGGED))
+        runCurrent()
+        vm.onAction(MailThreadsAction.SelectFilter(MailListFilter.ALL))
+        vm.onAction(MailThreadsAction.Search("  from:petr "))
+        runCurrent()
+        vm.onAction(MailThreadsAction.SelectMailbox("m1"))
+        runCurrent()
+        assertEquals(
+            listOf(
+                MailThreadQuery(),
+                MailThreadQuery(unreadOnly = true),
+                MailThreadQuery(box = MailBox.FLAGGED),
+                MailThreadQuery(search = "from:petr"),
+                MailThreadQuery(search = "from:petr", mailboxId = "m1"),
+            ),
+            mail.threads.asked,
+        )
+        vm.close()
+    }
+
+    @Test fun `choosing the chosen mailbox again clears it and an unchanged search loads nothing`() =
+        runTest(dispatcher) {
+            val mail = ScriptedMailRepository()
+            val vm = viewModel(mail)
+            runCurrent()
+            vm.onAction(MailThreadsAction.SelectMailbox("m1"))
+            runCurrent()
+            vm.onAction(MailThreadsAction.SelectMailbox("m1"))
+            runCurrent()
+            assertNull(vm.state.value.mailboxId)
+            val calls = mail.threads.count
+            vm.onAction(MailThreadsAction.Search(""))
+            runCurrent()
+            assertEquals(calls, mail.threads.count)
+            vm.close()
+        }
+
+    @Test fun `an expected failure is an error with its kind and retry recovers`() = runTest(dispatcher) {
+        val mail = ScriptedMailRepository(
+            threads = MailCall(mailFailure(FailureKind.UNAUTHORIZED), mailContent(mailPage())),
+        )
+        val vm = viewModel(mail)
+        runCurrent()
+        assertEquals(MailThreadsPhase.ERROR, vm.state.value.phase)
+        assertEquals(FailureKind.UNAUTHORIZED, vm.state.value.failure)
+        vm.onAction(MailThreadsAction.Retry)
+        assertEquals(MailThreadsPhase.LOADING, vm.state.value.phase)
+        runCurrent()
+        assertEquals(MailThreadsPhase.CONTENT, vm.state.value.phase)
+        vm.close()
+    }
+
+    @Test fun `an unexpected exception is an error without a failure kind`() = runTest(dispatcher) {
+        val vm = viewModel(ScriptedMailRepository(threads = MailCall(crashes())))
+        runCurrent()
+        assertEquals(MailThreadsPhase.ERROR, vm.state.value.phase)
+        assertNull(vm.state.value.failure)
+        vm.close()
+    }
+
+    @Test fun `a refresh keeps the rows and a failed one says so until dismissed`() = runTest(dispatcher) {
+        val mail = ScriptedMailRepository(
+            threads = MailCall(mailContent(mailPage()), mailFailure(FailureKind.UNAVAILABLE)),
+        )
+        val vm = viewModel(mail)
+        runCurrent()
+        vm.onAction(MailThreadsAction.Refresh)
+        assertTrue(vm.state.value.refreshing)
+        assertEquals(1, vm.state.value.threads.size)
+        runCurrent()
+        assertFalse(vm.state.value.refreshing)
+        assertTrue(vm.state.value.actionFailed)
+        assertEquals(1, vm.state.value.threads.size)
+        vm.onAction(MailThreadsAction.DismissFailure)
+        assertFalse(vm.state.value.actionFailed)
+        vm.close()
+    }
+
+    @Test fun `a refresh without rows is a retry`() = runTest(dispatcher) {
+        val mail = ScriptedMailRepository(
+            threads = MailCall(mailFailure(FailureKind.UNAVAILABLE), mailContent(mailPage())),
+        )
+        val vm = viewModel(mail)
+        runCurrent()
+        vm.onAction(MailThreadsAction.Refresh)
+        assertEquals(MailThreadsPhase.LOADING, vm.state.value.phase)
+        runCurrent()
+        assertEquals(MailThreadsPhase.CONTENT, vm.state.value.phase)
+        vm.close()
+    }
+
+    @Test fun `more rows are appended after the cursor and a repeated thread is kept once`() = runTest(dispatcher) {
+        val mail = ScriptedMailRepository(
+            threads = MailCall(
+                mailContent(mailPage(mailThread("a"), mailThread("b"), next = "c1")),
+                mailContent(mailPage(mailThread("b"), mailThread("c"))),
+            ),
+        )
+        val vm = viewModel(mail)
+        runCurrent()
+        vm.onAction(MailThreadsAction.LoadMore)
+        assertTrue(vm.state.value.loadingMore)
+        runCurrent()
+        assertEquals(listOf("a", "b", "c"), vm.state.value.threads.map { it.threadId })
+        assertFalse(vm.state.value.hasMore)
+        assertFalse(vm.state.value.loadingMore)
+        assertEquals("c1", mail.threads.asked.last().cursor)
+        vm.onAction(MailThreadsAction.LoadMore)
+        runCurrent()
+        assertEquals(2, mail.threads.count)
+        vm.close()
+    }
+
+    @Test fun `a failed page leaves the rows and raises the failure`() = runTest(dispatcher) {
+        val mail = ScriptedMailRepository(
+            threads = MailCall(mailContent(mailPage(next = "c1")), mailFailure(FailureKind.UNAVAILABLE)),
+        )
+        val vm = viewModel(mail)
+        runCurrent()
+        vm.onAction(MailThreadsAction.LoadMore)
+        runCurrent()
+        assertEquals(1, vm.state.value.threads.size)
+        assertFalse(vm.state.value.loadingMore)
+        assertTrue(vm.state.value.actionFailed)
+        assertTrue(vm.state.value.hasMore)
+        vm.close()
+    }
+
+    @Test fun `a page is not requested while a load runs`() = runTest(dispatcher) {
+        val mail = ScriptedMailRepository(threads = MailCall(mailContent(mailPage(next = "c1")), neverAnswers()))
+        val vm = viewModel(mail)
+        runCurrent()
+        vm.onAction(MailThreadsAction.LoadMore)
+        runCurrent()
+        vm.onAction(MailThreadsAction.LoadMore)
+        runCurrent()
+        assertEquals(2, mail.threads.count)
+        vm.close()
+    }
+
+    @Test fun `a superseded load that answers late never overwrites the newer list`() = runTest(dispatcher) {
+        val gate = CompletableDeferred<Unit>()
+        val mail = ScriptedMailRepository(
+            threads = MailCall(
+                answersLate(gate, RepositoryResult.Failure(FailureKind.UNAVAILABLE)),
+                mailContent(mailPage(mailThread("fresh"))),
+            ),
+        )
+        val vm = viewModel(mail)
+        runCurrent()
+        vm.onAction(MailThreadsAction.Retry)
+        runCurrent()
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(MailThreadsPhase.CONTENT, vm.state.value.phase)
+        assertEquals(listOf("fresh"), vm.state.value.threads.map { it.threadId })
+        vm.close()
+    }
+
+    @Test fun `marking read shows at once and keeps the answer of the server`() = runTest(dispatcher) {
+        val mail = ScriptedMailRepository(
+            threads = MailCall(mailContent(mailPage(mailThread("a", unread = true)))),
+            read = MailCall({ RepositoryResult.Content(false) }),
+        )
+        val vm = viewModel(mail)
+        runCurrent()
+        vm.onAction(MailThreadsAction.ToggleRead("a"))
+        assertFalse(vm.state.value.threads.single().unread)
+        runCurrent()
+        assertFalse(vm.state.value.threads.single().unread)
+        assertEquals(listOf("a" to true), mail.read.asked)
+        vm.close()
+    }
+
+    @Test fun `marking unread asks for read false and a refused write puts the dot back`() = runTest(dispatcher) {
+        val mail = ScriptedMailRepository(
+            threads = MailCall(mailContent(mailPage(mailThread("a", unread = false)))),
+            read = MailCall(mailFailure(FailureKind.REJECTED)),
+        )
+        val vm = viewModel(mail)
+        runCurrent()
+        vm.onAction(MailThreadsAction.ToggleRead("a"))
+        assertTrue(vm.state.value.threads.single().unread)
+        runCurrent()
+        assertFalse(vm.state.value.threads.single().unread)
+        assertTrue(vm.state.value.actionFailed)
+        assertEquals(listOf("a" to false), mail.read.asked)
+        vm.onAction(MailThreadsAction.ToggleRead("unknown"))
+        runCurrent()
+        assertEquals(1, mail.read.count)
+        vm.close()
+    }
+
+    @Test fun `the facets name the context and an area that does not hold the project drops it`() =
+        runTest(dispatcher) {
+            val mail = ScriptedMailRepository()
+            val vm = viewModel(mail, start = MailListStart(areaId = "ar1", projectId = "pr1"))
+            runCurrent()
+            vm.onAction(MailThreadsAction.SetArea("ar2"))
+            runCurrent()
+            assertEquals("ar2", vm.state.value.areaId)
+            assertEquals("Domácnost", vm.state.value.areaName)
+            assertNull(vm.state.value.projectId)
+            assertNull(vm.state.value.projectName)
+            assertEquals(MailFacetsPhase.READY, vm.state.value.facets.phase)
+            assertEquals(listOf<Pair<String?, String?>>("ar1" to "pr1", "ar2" to null), mail.facets.asked)
+            vm.close()
+        }
+
+    @Test fun `an area that holds the project keeps it and a project is chosen by name`() = runTest(dispatcher) {
+        val mail = ScriptedMailRepository()
+        val vm = viewModel(mail, start = MailListStart(areaId = "ar2", projectId = "pr2"))
+        runCurrent()
+        vm.onAction(MailThreadsAction.SetArea("ar2"))
+        runCurrent()
+        assertEquals("pr2", vm.state.value.projectId)
+        vm.onAction(MailThreadsAction.SetProject("pr1"))
+        assertEquals("Web", vm.state.value.projectName)
+        assertEquals("pr1", vm.state.value.projectId)
+        vm.onAction(MailThreadsAction.SetProject(null))
+        assertNull(vm.state.value.projectId)
+        vm.onAction(MailThreadsAction.ClearContext)
+        assertNull(vm.state.value.areaId)
+        runCurrent()
+        assertEquals(MailThreadQuery(), mail.threads.asked.last())
+        vm.close()
+    }
+
+    @Test fun `failed facets leave the list and mark the sheet`() = runTest(dispatcher) {
+        val mail = ScriptedMailRepository(facets = MailCall(mailFailure(FailureKind.UNAVAILABLE)))
+        val vm = viewModel(mail)
+        runCurrent()
+        assertEquals(MailFacetsPhase.ERROR, vm.state.value.facets.phase)
+        assertEquals(MailThreadsPhase.CONTENT, vm.state.value.phase)
+        vm.close()
+    }
+
+    @Test fun `the mailboxes become chips and the ones needing a sign in a notice`() = runTest(dispatcher) {
+        val boxes = ScriptedMailboxRepository(
+            list = MailCall(
+                mailContent(
+                    listOf(mailAccount("m1"), mailAccount("m2", status = MailSyncStatus.NEEDS_REAUTHORIZATION)),
+                ),
+            ),
+        )
+        val vm = viewModel(mailboxes = boxes)
+        runCurrent()
+        assertEquals(listOf("m1", "m2"), vm.state.value.mailboxes.map { it.id })
+        val notice = MailAccountNotice("m2", "Gmail", "2026-10-19T09:12:00.000Z")
+        assertEquals(listOf(notice), vm.state.value.reauthorization)
+        vm.close()
+    }
+
+    @Test fun `mailboxes that cannot be read leave the list without chips`() = runTest(dispatcher) {
+        val boxes = ScriptedMailboxRepository(list = MailCall(mailFailure(FailureKind.UNAVAILABLE)))
+        val vm = viewModel(mailboxes = boxes)
+        runCurrent()
+        assertEquals(emptyList(), vm.state.value.mailboxes)
+        assertEquals(MailThreadsPhase.CONTENT, vm.state.value.phase)
+        vm.close()
+    }
+
+    @Test fun `opening raises the target exactly once`() = runTest(dispatcher) {
+        val vm = viewModel()
+        val received = collectEffects(vm)
+        val targets = listOf(
+            MailThreadsEffect.OpenThread("t1"),
+            MailThreadsEffect.OpenFolders,
+            MailThreadsEffect.Compose,
+            MailThreadsEffect.OpenAccount("m1"),
+        )
+        targets.forEach { vm.onAction(MailThreadsAction.Open(it)) }
+        runCurrent()
+        assertEquals(targets, received)
+        vm.close()
+    }
+
+    @Test fun `close cancels in flight work without a failure state and is idempotent`() = runTest(dispatcher) {
+        val mail = ScriptedMailRepository(threads = MailCall(neverAnswers()))
+        val vm = viewModel(mail)
+        runCurrent()
+        vm.close()
+        vm.close()
+        runCurrent()
+        assertTrue(vm.isClosed)
+        assertEquals(1, mail.threads.cancellations)
+        assertEquals(MailThreadsPhase.LOADING, vm.state.value.phase)
+    }
+
+    @Test fun `a closed ViewModel ignores actions`() = runTest(dispatcher) {
+        val mail = ScriptedMailRepository()
+        val vm = viewModel(mail)
+        runCurrent()
+        vm.close()
+        vm.onAction(MailThreadsAction.Retry)
+        vm.onAction(MailThreadsAction.SelectFilter(MailListFilter.UNREAD))
+        vm.onAction(MailThreadsAction.Open(MailThreadsEffect.Compose))
+        runCurrent()
+        assertEquals(1, mail.threads.count)
+        assertEquals(MailListFilter.ALL, vm.state.value.filter)
+        assertEquals(emptyList(), vm.effects.toList())
+    }
+
+    @Test fun `a load that answers late after close never publishes`() = runTest(dispatcher) {
+        val gate = CompletableDeferred<Unit>()
+        val mail = ScriptedMailRepository(threads = MailCall(answersLate(gate, RepositoryResult.Content(mailPage()))))
+        val vm = viewModel(mail)
+        runCurrent()
+        vm.close()
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(MailThreadsPhase.LOADING, vm.state.value.phase)
+    }
+
+    @Test fun `clearing the owning store ends it like close`() = runTest(dispatcher) {
+        val store = ViewModelStore()
+        val mail = ScriptedMailRepository(threads = MailCall(neverAnswers()))
+        val vm = store.provide { viewModel(mail) }
+        runCurrent()
+        store.clear()
+        runCurrent()
+        assertTrue(vm.isClosed)
+        assertEquals(1, mail.threads.cancellations)
+        vm.onAction(MailThreadsAction.Retry)
+        assertEquals(1, mail.threads.count)
+    }
+}
