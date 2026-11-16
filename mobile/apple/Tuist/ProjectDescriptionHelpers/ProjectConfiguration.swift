@@ -10,6 +10,9 @@ public enum ProjectConfiguration {
     public static let versionCode = "1"
     public static let iosMinimum = "26.0"
     public static let macosMinimum = "26.0"
+    /// The server the sign-in form offers until the person types another one: the deployment this build is made for.
+    /// It reaches the app as `SemprecDefaultServer` in Info.plist.
+    public static let defaultServer = "https://semprec.tresnak.cc"
     /// `ARCHS` of every Tuist project and of the Swift packages. It must match the slices of the Kotlin framework:
     /// the Kotlin Apple targets of mobile/shared/umbrella/build.gradle.kts (iosArm64, iosSimulatorArm64,
     /// macosArm64) and the architecture check in mobile/scripts/kmp-framework, which rejects any other value.

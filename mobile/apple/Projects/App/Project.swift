@@ -32,6 +32,7 @@ let project = Project(
                 "UIApplicationSceneManifest": ["UIApplicationSupportsMultipleScenes": true],
                 "UIBackgroundModes": ["audio"],
                 "UILaunchScreen": [:],
+                "SemprecDefaultServer": .string(ProjectConfiguration.defaultServer),
                 "UISupportedInterfaceOrientations": [
                     "UIInterfaceOrientationPortrait",
                     "UIInterfaceOrientationLandscapeLeft",

@@ -35,6 +35,7 @@ struct LoginScreen: View {
             }
             .padding(.horizontal, Theme.Spacing.medium)
             .padding(.top, Theme.Spacing.hero)
+            .onAppear { if server.isEmpty { server = Self.defaultServer } }
             .frame(maxWidth: Theme.Layout.formWidth)
             .frame(maxWidth: .infinity)
         }
@@ -157,4 +158,14 @@ private extension LoginScreen {
 
 #Preview("Failed") {
     LoginScreen(viewModel: LoginViewModel(model: ScriptedLoginScreenModel(state: .failed(.unauthorized))))
+}
+
+// MARK: - Default server
+private extension LoginScreen {
+
+    /// The server the app was built for (`SemprecDefaultServer` in the app's Info.plist), offered while the person
+    /// has not signed in to any other one; empty when the build names none.
+    static var defaultServer: String {
+        Bundle.main.object(forInfoDictionaryKey: "SemprecDefaultServer") as? String ?? ""
+    }
 }
