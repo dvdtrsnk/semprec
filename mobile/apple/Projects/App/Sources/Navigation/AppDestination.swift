@@ -33,6 +33,8 @@ enum AppDestination: Hashable {
     case area(areaId: String, tab: AppTab)
     /// The page of notes of an item (a project, an area or a subpage), on the stack of `tab`.
     case notes(itemId: String, tab: AppTab)
+    /// The Inbox, on the stack of `tab`.
+    case inbox(tab: AppTab)
 }
 
 // MARK: - NavigationProvidedDestination

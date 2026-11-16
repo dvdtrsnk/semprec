@@ -35,6 +35,11 @@ final class AppComposition: ObservableObject {
     }
 
     // MARK: - Routers
+    /// The router of an Inbox that sits on the stack of `tab`; what a decision created opens over that stack.
+    func inboxRouter(in tab: AppTab) -> AppInboxRouter {
+        AppInboxRouter(context: navigation, tab: tab)
+    }
+
     /// The router of a Tasks screen that sits on the stack of `tab`; it opens Podrobnosti over that stack.
     func tasksRouter(in tab: AppTab) -> AppTasksRouter {
         AppTasksRouter(context: navigation, tab: tab)

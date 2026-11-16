@@ -16,3 +16,12 @@ extension NavigationContext {
         push(.tasks(start, tab: tab), in: tab)
     }
 }
+
+// MARK: - Inbox
+extension NavigationContext {
+
+    /// Pushes the Inbox onto the stack of `tab`.
+    func showInbox(in tab: AppTab) {
+        push(.inbox(tab: tab), in: tab)
+    }
+}

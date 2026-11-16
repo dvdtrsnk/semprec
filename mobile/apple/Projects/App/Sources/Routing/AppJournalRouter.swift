@@ -22,7 +22,7 @@ extension AppJournalRouter: JournalRouting {
     }
 
     func showInbox() {
-        context.push(.pending(title: String(localized: "pending.inbox")), in: .journal)
+        context.showInbox(in: .journal)
     }
 
     func showPage(itemId: String, title: String) {

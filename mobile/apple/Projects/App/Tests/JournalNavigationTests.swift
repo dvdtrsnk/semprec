@@ -2,7 +2,7 @@ import XCTest
 
 @testable import Semprec
 
-/// The Journal router opens Podrobnosti over the Journal stack and pushes subpages and the Inbox notice onto it.
+/// The Journal router opens Podrobnosti over the Journal stack and pushes subpages and the Inbox onto it.
 final class JournalNavigationTests: XCTestCase {
 
     // MARK: - Tests
@@ -23,11 +23,10 @@ final class JournalNavigationTests: XCTestCase {
     }
 
     @MainActor
-    func testTheInboxIsAPendingNoticeOnTheJournalStack() {
+    func testTheInboxIsPushedOntoTheJournalStack() {
         let (router, stack) = makeRouter()
         router.showInbox()
-        XCTAssertEqual(stack.pushed.count, 1)
-        guard case .pending = stack.pushed.first else { return XCTFail("The Inbox must open the pending notice") }
+        XCTAssertEqual(stack.pushed, [.inbox(tab: .journal)])
     }
 
     // MARK: - Helpers
