@@ -97,6 +97,12 @@ private extension CalendarScreen {
             }
         }
         ToolbarItem(placement: .primaryAction) {
+            Button { viewModel.open(.agenda(day: viewModel.state.selectedDay)) } label: {
+                Label { Text("calendar.agenda", bundle: .module) } icon: { Image(systemName: "list.bullet") }
+            }
+            .accessibilityIdentifier(CalendarIdentifiers.agenda)
+        }
+        ToolbarItem(placement: .primaryAction) {
             Button { viewModel.open(.newItem(day: viewModel.state.selectedDay)) } label: {
                 Label { Text("calendar.new", bundle: .module) } icon: { Image(systemName: "plus") }
             }

@@ -35,6 +35,8 @@ final class SignedInModels: ScreenModelFactory {
 
     func makeInboxCapture() -> any InboxCaptureScreenModel { real.makeInboxCapture() }
 
+    func makeCalendarAgenda(from day: String) -> any CalendarAgendaScreenModel { real.makeCalendarAgenda(from: day) }
+
     func makeSleep(night: String?, startOnNight: Bool) -> any SleepScreenModel {
         real.makeSleep(night: night, startOnNight: startOnNight)
     }

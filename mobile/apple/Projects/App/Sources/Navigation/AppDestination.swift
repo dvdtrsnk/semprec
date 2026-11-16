@@ -56,6 +56,9 @@ enum AppDestination: Hashable {
     case transcript(recordingId: String, tab: AppTab)
     /// The page of the event `eventId`: its tasks, notes, recordings and people, on the stack of `tab`.
     case meeting(eventId: String, tab: AppTab)
+
+    /// The calendar as a list from `day` (`YYYY-MM-DD`) on, on the Calendar tab's stack.
+    case calendarAgenda(day: String)
 }
 
 // MARK: - Presentation
@@ -67,7 +70,7 @@ extension AppDestination {
         case .profile, .details, .sleepPlan, .sleepNight, .calendars, .invitations, .newItem, .mailCompose: true
         case .pending, .tasks, .collection, .collectionItem, .journalPage, .area, .notes, .inbox, .mailList,
              .mailThread, .mailFolders, .mailAccounts, .mailAccount, .sempProjectAgent, .sempStatus,
-             .recordings, .transcript, .meeting: false
+             .recordings, .transcript, .meeting, .calendarAgenda: false
         }
     }
 }

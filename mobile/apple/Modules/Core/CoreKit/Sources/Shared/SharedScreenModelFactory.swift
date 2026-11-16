@@ -78,6 +78,10 @@ extension SharedScreenModelFactory: ScreenModelFactory {
         SharedInboxCaptureScreenModel(sdk.journal.inboxCaptureViewModel())
     }
 
+    public func makeCalendarAgenda(from day: String) -> any CalendarAgendaScreenModel {
+        SharedCalendarAgendaScreenModel(sdk.calendar.calendarAgendaViewModel(from: day))
+    }
+
     public func makeSleep(night: String?, startOnNight: Bool) -> any SleepScreenModel {
         SharedSleepScreenModel(sdk.sleep.sleepViewModel(night: night, startOnNight: startOnNight))
     }

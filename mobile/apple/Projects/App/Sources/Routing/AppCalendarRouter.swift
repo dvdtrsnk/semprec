@@ -46,4 +46,8 @@ extension AppCalendarRouter: CalendarRouting {
     func showSleepPlan() {
         context.presentSheet(.sleepPlan(night: nil), from: .calendar)
     }
+
+    func showAgenda(from day: String) {
+        context.push(.calendarAgenda(day: day), in: .calendar)
+    }
 }

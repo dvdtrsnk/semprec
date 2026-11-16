@@ -83,6 +83,7 @@ extension SharedCalendarScreenModel {
         case .openInvitations: .openInvitations
         case .openNewItem(let item): .openNewItem(day: item.day)
         case .openSleep(let sleep): .openSleep(night: sleep.night)
+        case .openAgenda(let agenda): .openAgenda(day: agenda.day)
         }
     }
 }
@@ -141,6 +142,7 @@ private extension SharedCalendarScreenModel {
         case .invitations: SharedSDK.CalendarActionOpenInvitations.shared
         case .newItem(let day): SharedSDK.CalendarActionOpenNewItem(day: day)
         case .sleep(let night): SharedSDK.CalendarActionOpenSleep(night: night)
+        case .agenda(let day): SharedSDK.CalendarActionOpenAgenda(day: day)
         }
     }
 }

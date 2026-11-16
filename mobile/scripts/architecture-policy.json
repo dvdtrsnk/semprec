@@ -73,7 +73,7 @@
     "module": ":shared:presentation",
     "baseClass": "ScreenViewModel",
     "leaseType": "SharedViewModelLease",
-    "appleOnly": ["LoginViewModel", "SessionViewModel", "TasksViewModel", "ItemDetailsViewModel", "OverviewViewModel", "SearchViewModel", "CollectionViewModel", "ItemViewModel", "JournalViewModel", "JournalSubpageViewModel", "SleepViewModel", "SempThreadViewModel", "SempChatsViewModel", "SempStatusViewModel", "SempRunViewModel", "SempApprovalsViewModel", "SempProjectAgentViewModel", "SempBubbleViewModel", "CalendarViewModel", "CalendarListViewModel", "InvitationsViewModel", "NewCalendarItemViewModel", "ProfileViewModel", "DevicesViewModel", "NotificationSettingsViewModel", "AiUsageViewModel", "TrashViewModel", "AreaViewModel", "NotesViewModel", "InboxViewModel", "MailThreadsViewModel", "MailThreadViewModel", "MailComposeViewModel", "MailFoldersViewModel", "MailAccountsViewModel", "MailAccountViewModel", "RecordingsViewModel", "RecorderViewModel", "TranscriptViewModel", "MeetingViewModel", "InboxCaptureViewModel"],
+    "appleOnly": ["LoginViewModel", "SessionViewModel", "TasksViewModel", "ItemDetailsViewModel", "OverviewViewModel", "SearchViewModel", "CollectionViewModel", "ItemViewModel", "JournalViewModel", "JournalSubpageViewModel", "SleepViewModel", "SempThreadViewModel", "SempChatsViewModel", "SempStatusViewModel", "SempRunViewModel", "SempApprovalsViewModel", "SempProjectAgentViewModel", "SempBubbleViewModel", "CalendarViewModel", "CalendarListViewModel", "InvitationsViewModel", "NewCalendarItemViewModel", "ProfileViewModel", "DevicesViewModel", "NotificationSettingsViewModel", "AiUsageViewModel", "TrashViewModel", "AreaViewModel", "NotesViewModel", "InboxViewModel", "MailThreadsViewModel", "MailThreadViewModel", "MailComposeViewModel", "MailFoldersViewModel", "MailAccountsViewModel", "MailAccountViewModel", "RecordingsViewModel", "RecorderViewModel", "TranscriptViewModel", "MeetingViewModel", "InboxCaptureViewModel", "CalendarAgendaViewModel"],
     "androidOnly": ["HomeViewModel", "DetailViewModel", "SettingsViewModel"]
   },
   "navigation": {
@@ -1609,7 +1609,12 @@
         "sheets.failure.title",
         "sheets.failure.unauthorized",
         "sheets.failure.unavailable",
-        "sheets.failure.unexpected"
+        "sheets.failure.unexpected",
+        "calendar.agenda",
+        "calendar.agenda.allDay",
+        "calendar.agenda.empty",
+        "calendar.agenda.noMatch",
+        "calendar.agenda.search"
       ]
     }
   ]

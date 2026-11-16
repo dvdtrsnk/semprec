@@ -134,16 +134,33 @@ private extension AppScene {
             )
         case .sleepPlan, .sleepNight:
             SleepDestination(destination: destination, composition: composition)
+        case .calendars, .invitations, .newItem, .calendarAgenda:
+            calendarView(destination, composition: composition)
+        case .journalPage(let itemId, let title):
+            JournalSubpageScreen(itemId: itemId, title: title, composition: composition)
+        case .mailList, .mailThread, .mailFolders, .mailCompose, .mailAccounts, .mailAccount:
+            mailView(destination, composition: composition)
+        }
+    }
+
+    /// The screens and sheets the Calendar tab opens.
+    @ViewBuilder
+    static func calendarView(_ destination: AppDestination, composition: AppComposition) -> some View {
+        switch destination {
         case .calendars:
             CalendarsSheet(composition: composition)
         case .invitations:
             InvitationsSheet(composition: composition)
         case .newItem(let day):
             NewItemSheet(day: day, composition: composition)
-        case .journalPage(let itemId, let title):
-            JournalSubpageScreen(itemId: itemId, title: title, composition: composition)
-        case .mailList, .mailThread, .mailFolders, .mailCompose, .mailAccounts, .mailAccount:
-            mailView(destination, composition: composition)
+        case .calendarAgenda(let day):
+            CalendarScreenFactory.agenda(
+                day: day,
+                makeModel: { composition.models.makeCalendarAgenda(from: $0) },
+                router: composition.calendarRouter
+            )
+        default:
+            EmptyView()
         }
     }
 

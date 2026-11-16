@@ -118,4 +118,8 @@ extension SheetsRouterSpy: CalendarRouting {
     func showSleepPlan() {
         calls.append("sleepPlan")
     }
+
+    func showAgenda(from day: String) {
+        calls.append("agenda \(day)")
+    }
 }

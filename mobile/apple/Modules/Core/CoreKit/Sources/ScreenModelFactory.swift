@@ -22,6 +22,8 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
     func makeJournalSubpage(itemId: String) -> any JournalSubpageScreenModel
     /// The capture row of the diary's Inbox.
     func makeInboxCapture() -> any InboxCaptureScreenModel
+    /// The calendar as a list from `day` (`YYYY-MM-DD`) on.
+    func makeCalendarAgenda(from day: String) -> any CalendarAgendaScreenModel
 
     /// The sleep sheet for the evening `night` (`YYYY-MM-DD`, or nil); `startOnNight` opens it on that night.
     func makeSleep(night: String?, startOnNight: Bool) -> any SleepScreenModel

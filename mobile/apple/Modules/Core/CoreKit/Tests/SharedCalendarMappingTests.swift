@@ -254,6 +254,7 @@ final class SharedCalendarMappingTests: XCTestCase {
         XCTAssertTrue(Model.action(.open(.invitations)) is SharedSDK.CalendarActionOpenInvitations)
         XCTAssertEqual((Model.action(.open(.newItem(day: "d"))) as? SharedSDK.CalendarActionOpenNewItem)?.day, "d")
         XCTAssertEqual((Model.action(.open(.sleep(night: "n"))) as? SharedSDK.CalendarActionOpenSleep)?.night, "n")
+        XCTAssertEqual((Model.action(.open(.agenda(day: "d"))) as? SharedSDK.CalendarActionOpenAgenda)?.day, "d")
     }
 
     // MARK: - Effects
@@ -267,5 +268,6 @@ final class SharedCalendarMappingTests: XCTestCase {
         XCTAssertEqual(Model.effect(SharedSDK.CalendarEffectOpenInvitations.shared), .openInvitations)
         XCTAssertEqual(Model.effect(SharedSDK.CalendarEffectOpenNewItem(day: "d")), .openNewItem(day: "d"))
         XCTAssertEqual(Model.effect(SharedSDK.CalendarEffectOpenSleep(night: "n")), .openSleep(night: "n"))
+        XCTAssertEqual(Model.effect(SharedSDK.CalendarEffectOpenAgenda(day: "d")), .openAgenda(day: "d"))
     }
 }

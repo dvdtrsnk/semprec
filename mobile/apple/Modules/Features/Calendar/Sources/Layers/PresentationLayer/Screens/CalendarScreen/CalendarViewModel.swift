@@ -61,6 +61,7 @@ private extension CalendarViewModel {
         case .openInvitations: router.showInvitations()
         case .openNewItem(let day): router.showNewItem(day: day)
         case .openSleep(let night): router.showSleepNight(night: night)
+        case .openAgenda(let day): router.showAgenda(from: day)
         }
     }
 }

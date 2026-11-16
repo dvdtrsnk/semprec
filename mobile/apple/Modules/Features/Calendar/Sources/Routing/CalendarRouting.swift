@@ -26,6 +26,10 @@ public protocol CalendarRouting: AnyObject {
 
     /// Opens the sleep plans sheet.
     func showSleepPlan()
+
+    // MARK: - Agenda
+    /// Shows the calendar as a list from `day` (`YYYY-MM-DD`) on.
+    func showAgenda(from day: String)
 }
 
 // MARK: - Preview router
@@ -44,4 +48,6 @@ final class PreviewCalendarRouter: CalendarRouting {
     func showSleepNight(night: String) {}
 
     func showSleepPlan() {}
+
+    func showAgenda(from day: String) {}
 }

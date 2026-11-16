@@ -16,6 +16,11 @@ enum CalendarIdentifiers {
     static let yearGrid = "calendar.yearGrid"
     static let menu = "calendar.menu"
     static let clipboard = "calendar.clipboard"
+    static let agenda = "calendar.agenda"
+    static let agendaList = "calendar.agenda.list"
+    /// Followed by the id of the entry, e.g. `calendar.agenda.entry.e1`.
+    static let agendaEntryPrefix = "calendar.agenda.entry."
+    static let agendaMore = "calendar.agenda.more"
 
     /// A day of the week strip, the month grid or the year grid.
     static func day(_ date: String) -> String { "calendar.day.\(date)" }

@@ -15,4 +15,13 @@ public enum CalendarScreenFactory {
     ) -> some View {
         CalendarScreen(viewModel: CalendarViewModel(model: makeModel(CalendarDates.deviceToday()), router: router))
     }
+
+    /// The calendar as a list from `day` (`YYYY-MM-DD`) on.
+    public static func agenda(
+        day: String,
+        makeModel: @escaping @MainActor (_ day: String) -> any CalendarAgendaScreenModel,
+        router: any CalendarRouting
+    ) -> some View {
+        CalendarAgendaScreen(viewModel: CalendarAgendaViewModel(model: makeModel(day), router: router))
+    }
 }

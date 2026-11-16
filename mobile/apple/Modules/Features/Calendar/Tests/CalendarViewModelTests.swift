@@ -61,10 +61,14 @@ final class CalendarViewModelTests: XCTestCase {
         model.emit(.openInvitations)
         model.emit(.openNewItem(day: "2026-10-17"))
         model.emit(.openSleep(night: "2026-10-16"))
-        try await eventually { router.calls.count == 5 }
+        model.emit(.openAgenda(day: "2026-10-16"))
+        try await eventually { router.calls.count == 6 }
         XCTAssertEqual(
             router.calls,
-            ["details e1 task 2026-10-16", "calendars", "invitations", "newItem 2026-10-17", "sleepNight 2026-10-16"]
+            [
+                "details e1 task 2026-10-16", "calendars", "invitations", "newItem 2026-10-17",
+                "sleepNight 2026-10-16", "agenda 2026-10-16"
+            ]
         )
         observer.cancel()
     }
@@ -125,5 +129,9 @@ extension CalendarRouterSpy: CalendarRouting {
 
     func showSleepPlan() {
         calls.append("sleepPlan")
+    }
+
+    func showAgenda(from day: String) {
+        calls.append("agenda \(day)")
     }
 }

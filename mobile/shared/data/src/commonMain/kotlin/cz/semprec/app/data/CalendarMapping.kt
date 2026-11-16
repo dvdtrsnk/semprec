@@ -32,7 +32,7 @@ internal fun TimelineResponse.toDomain(): RepositoryResult<CalendarTimeline> {
     return RepositoryResult.Content(CalendarTimeline(timezone, days[0], minutes, days[1], days[2], entries))
 }
 
-private fun JsonObject.toEntryDto(): TimelineEntryDto? = try {
+internal fun JsonObject.toEntryDto(): TimelineEntryDto? = try {
     ApiJson.decodeFromJsonElement(TimelineEntryDto.serializer(), this)
 } catch (_: SerializationException) {
     null

@@ -367,15 +367,6 @@ public enum CalendarEdit: Equatable, Sendable {
     case dismissProblem
 }
 
-/// Opening the screens the calendar does not show itself.
-public enum CalendarOpen: Equatable, Sendable {
-
-    case calendars
-    case invitations
-    case newItem(day: String)
-    case sleep(night: String)
-}
-
 public enum CalendarAction: Equatable, Sendable {
 
     case navigation(CalendarNavigation)
@@ -391,6 +382,7 @@ public enum CalendarEffect: Equatable, Sendable {
     case openInvitations
     case openNewItem(day: String)
     case openSleep(night: String)
+    case openAgenda(day: String)
 }
 
 public typealias CalendarScreenModel = ScreenModel<CalendarState, CalendarAction, CalendarEffect>

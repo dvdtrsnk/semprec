@@ -609,12 +609,14 @@ class CalendarViewModelTest : MainDispatcherTest() {
         act(vm, CalendarAction.Open.Invitations)
         act(vm, CalendarAction.Open.NewItem("2026-10-17"))
         act(vm, CalendarAction.Open.Sleep("2026-10-16"))
+        act(vm, CalendarAction.Open.Agenda("2026-10-16"))
         assertEquals(
             listOf(
                 CalendarEffect.OpenCalendars,
                 CalendarEffect.OpenInvitations,
                 CalendarEffect.OpenNewItem("2026-10-17"),
                 CalendarEffect.OpenSleep("2026-10-16"),
+                CalendarEffect.OpenAgenda("2026-10-16"),
             ),
             effects,
         )

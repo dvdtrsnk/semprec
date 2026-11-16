@@ -83,5 +83,8 @@ sealed interface CalendarAction {
         data class NewItem(val day: String) : Open
 
         data class Sleep(val night: String) : Open
+
+        /** The calendar as a list from [day] (`YYYY-MM-DD`) on. */
+        data class Agenda(val day: String) : Open
     }
 }

@@ -13,4 +13,7 @@ sealed interface CalendarEffect {
 
     /** Opens the sleep of the evening [night] (`YYYY-MM-DD`). */
     data class OpenSleep(val night: String) : CalendarEffect
+
+    /** Opens the calendar as a list from [day] (`YYYY-MM-DD`) on. */
+    data class OpenAgenda(val day: String) : CalendarEffect
 }

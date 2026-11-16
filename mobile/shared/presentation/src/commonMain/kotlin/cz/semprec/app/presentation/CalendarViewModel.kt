@@ -82,6 +82,7 @@ class CalendarViewModel internal constructor(
                 CalendarAction.Open.Invitations -> CalendarEffect.OpenInvitations
                 is CalendarAction.Open.NewItem -> CalendarEffect.OpenNewItem(action.day)
                 is CalendarAction.Open.Sleep -> CalendarEffect.OpenSleep(action.night)
+                is CalendarAction.Open.Agenda -> CalendarEffect.OpenAgenda(action.day)
             },
         )
     }
