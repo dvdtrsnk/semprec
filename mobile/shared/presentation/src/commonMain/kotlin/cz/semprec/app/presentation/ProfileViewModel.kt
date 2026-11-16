@@ -14,14 +14,14 @@ import kotlinx.coroutines.launch
 
 /**
  * The profile: who is signed in, the figures of the rows below it, the language, the password-reset link and the
- * sign-out. A row raises its [AccountPage] as the effect. A failed summary leaves the identity and the sign-out usable.
+ * sign-out. A row raises its page as the effect. A failed summary leaves the identity and the sign-out usable.
  */
 class ProfileViewModel internal constructor(
     private val account: AccountRepository,
     private val auth: AuthRepository,
     private val requestReset: RequestPasswordReset,
     private val signOut: SignOut,
-) : ScreenViewModel<ProfileState, ProfileAction, AccountPage>(identity(auth)) {
+) : ScreenViewModel<ProfileState, ProfileAction, ProfileEffect>(identity(auth)) {
     private var loadJob: Job? = null
 
     init {
@@ -32,7 +32,7 @@ class ProfileViewModel internal constructor(
         if (isClosed) return
         when (action) {
             ProfileAction.Retry -> load()
-            is ProfileAction.Open -> emit(action.page)
+            is ProfileAction.Open -> emit(ProfileEffect.Open(action.page))
             is ProfileAction.ChangeLocale -> changeLocale(action.locale)
             ProfileAction.RequestPasswordReset -> sendReset()
             ProfileAction.SignOut -> viewModelScope.launch { signOut() }

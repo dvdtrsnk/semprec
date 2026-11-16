@@ -26,7 +26,7 @@ class NotificationSettingsViewModel internal constructor(
         if (isClosed) return
         when (action) {
             NotificationSettingsAction.Retry -> load()
-            is NotificationSettingsAction.Set -> setSwitch(action.switch, action.on)
+            is NotificationSettingsAction.Set -> setSwitch(action.choice, action.on)
             is NotificationSettingsAction.SetProblemsLevel -> setLevel(action.level)
             NotificationSettingsAction.DismissFailure -> update { it.copy(writeFailure = null) }
         }

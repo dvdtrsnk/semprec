@@ -7,6 +7,11 @@ enum class ProfilePhase { LOADING, CONTENT, ERROR }
 /** Where a row of the profile leads. The app decides which screen shows it. */
 enum class AccountPage { DEVICES, NOTIFICATIONS, AI_USAGE, TRASH, SEMP_STATUS, MAIL_ACCOUNTS }
 
+/** What the profile asks the app to do: show the screen a row leads to. */
+sealed interface ProfileEffect {
+    data class Open(val page: AccountPage) : ProfileEffect
+}
+
 /** What sending the password-reset link came to. */
 enum class ProfileResetPhase { IDLE, SENDING, SENT, FAILED }
 

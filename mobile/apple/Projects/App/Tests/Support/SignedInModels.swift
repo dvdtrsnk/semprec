@@ -27,6 +27,17 @@ final class SignedInModels: ScreenModelFactory {
         real.makeItem(itemId: itemId, databaseKey: databaseKey)
     }
 
+    // MARK: - Account
+    func makeProfile() -> any ProfileScreenModel { real.makeProfile() }
+
+    func makeDevices() -> any DevicesScreenModel { real.makeDevices() }
+
+    func makeNotificationSettings() -> any NotificationSettingsScreenModel { real.makeNotificationSettings() }
+
+    func makeAiUsage() -> any AiUsageScreenModel { real.makeAiUsage() }
+
+    func makeTrash() -> any TrashScreenModel { real.makeTrash() }
+
     func makeSession() -> any SessionScreenModel {
         ScriptedSessionScreenModel(
             state: .signedIn(SessionUser(email: "a@b.cz", role: "member", serverUrl: "https://s.example"))

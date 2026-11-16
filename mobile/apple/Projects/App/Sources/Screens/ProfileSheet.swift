@@ -1,0 +1,54 @@
+import AccountFeature
+import CoreKit
+import SwiftUI
+
+/// The sheet the profile button of the Overview opens: the profile, and the account screens it leads to on a stack of
+/// the sheet's own.
+struct ProfileSheet: View {
+
+    // MARK: - Dependencies
+    private let models: any ScreenModelFactory
+
+    // MARK: - State
+    @StateObject private var path = AccountPath()
+
+    // MARK: - Init
+    init(models: any ScreenModelFactory) {
+        self.models = models
+    }
+
+    // MARK: - Body
+    var body: some View {
+        NavigationStack(path: $path.pages) {
+            AccountScreenFactory.profile(
+                makeModel: { [models] in models.makeProfile() },
+                router: AppAccountRouter(path: path)
+            )
+            .navigationDestination(for: AccountPage.self) { [models] page in
+                Self.destination(page, models)
+            }
+        }
+    }
+}
+
+// MARK: - Subviews
+extension ProfileSheet {
+
+    @ViewBuilder
+    static func destination(_ page: AccountPage, _ models: any ScreenModelFactory) -> some View {
+        switch page {
+        case .devices:
+            AccountScreenFactory.devices { models.makeDevices() }
+        case .notifications:
+            AccountScreenFactory.notificationSettings { models.makeNotificationSettings() }
+        case .aiUsage:
+            AccountScreenFactory.aiUsage { models.makeAiUsage() }
+        case .trash:
+            AccountScreenFactory.trash { models.makeTrash() }
+        case .sempStatus:
+            PendingScreen(title: String(localized: "pending.sempStatus"))
+        case .mailAccounts:
+            PendingScreen(title: String(localized: "pending.mailAccounts"))
+        }
+    }
+}

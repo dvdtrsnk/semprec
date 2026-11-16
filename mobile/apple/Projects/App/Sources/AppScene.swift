@@ -91,7 +91,7 @@ private extension AppScene {
         case .pending(let title):
             PendingScreen(title: title)
         case .profile:
-            ProfileScreen(viewModel: SessionViewModel(model: composition.models.makeSession()))
+            ProfileSheet(models: composition.models)
         case .tasks(let start, let tab):
             TasksScreenFactory.tasks(
                 makeModel: { composition.models.makeTasks(start: start) },

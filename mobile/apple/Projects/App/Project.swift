@@ -49,6 +49,7 @@ let project = Project(
                 .project(target: "CoreKit", path: "../../Modules/Core/CoreKit"),
                 .project(target: "Dependencies", path: "../../Modules/Core/Dependencies"),
                 .project(target: "DesignSystem", path: "../../Modules/Core/DesignSystem"),
+                .project(target: "AccountFeature", path: "../../Modules/Features/Account"),
                 .project(target: "AuthFeature", path: "../../Modules/Features/Auth"),
                 .project(target: "CollectionsFeature", path: "../../Modules/Features/Collections"),
                 .project(target: "OverviewFeature", path: "../../Modules/Features/Overview"),
