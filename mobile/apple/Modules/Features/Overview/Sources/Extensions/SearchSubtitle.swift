@@ -1,8 +1,8 @@
 import CoreKit
 import Foundation
 
-/// Composes the subtitle of a search result from the pieces the server names. The server sends canonical values (a date,
-/// a time, a stored key); the words, the relative days and the separators are the app's.
+/// Composes the subtitle of a search result from the pieces the server names. The server sends canonical values
+/// (a date, a time, a stored key); the words, the relative days and the separators are the app's.
 struct SearchSubtitle {
 
     // MARK: - Properties
@@ -42,7 +42,8 @@ private extension SearchSubtitle {
         case .relationship: relationship(part.value)
         case .status: status(part.value)
         case .count: Int(part.value).map { String(format: localized("search.count"), locale: locale, $0) }
-        case .movedFrom: date.text(iso: part.value).map { String(format: localized("search.movedFrom"), locale: locale, $0) }
+        case .movedFrom:
+            date.text(iso: part.value).map { String(format: localized("search.movedFrom"), locale: locale, $0) }
         case .missedInEvent: String(format: localized("search.missedInEvent"), locale: locale, part.value)
         }
     }

@@ -8,7 +8,8 @@ struct ProfileScreen: View {
 
     // MARK: - Dependencies
     @StateObject private var viewModel: SessionViewModel
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.dismiss)
+    private var dismiss
 
     // MARK: - Init
     /// `viewModel` runs once per sheet, when SwiftUI creates the state object.

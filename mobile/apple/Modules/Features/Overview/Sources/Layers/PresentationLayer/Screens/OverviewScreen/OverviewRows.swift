@@ -7,6 +7,10 @@ enum OverviewRows {
 
     // MARK: - Main
     static func main(_ content: OverviewContent) -> [OverviewRow] {
+        communication(content) + planning(content)
+    }
+
+    private static func communication(_ content: OverviewContent) -> [OverviewRow] {
         [
             OverviewRow(
                 id: "inbox",
@@ -33,7 +37,12 @@ enum OverviewRows {
                 title: Text("overview.row.recordings", bundle: .module),
                 target: .recordings,
                 identifier: OverviewIdentifiers.rowPrefix + "recordings"
-            ),
+            )
+        ]
+    }
+
+    private static func planning(_ content: OverviewContent) -> [OverviewRow] {
+        [
             OverviewRow(
                 id: "journal",
                 symbol: "book",

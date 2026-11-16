@@ -114,7 +114,10 @@ final class SharedTasksMappingTests: XCTestCase {
                 projectOptions: [SharedSDK.TaskFilterOption(id: "p1", title: "iOS", color: nil, count: 2, areaId: "a1")]
             )
         )
-        XCTAssertEqual(state.areaOptions, [CoreKit.TaskFilterOption(id: "a1", title: "Práce", color: "#5856D6", count: 3)])
+        XCTAssertEqual(
+            state.areaOptions,
+            [CoreKit.TaskFilterOption(id: "a1", title: "Práce", color: "#5856D6", count: 3)]
+        )
         XCTAssertEqual(state.projectOptions, [CoreKit.TaskFilterOption(id: "p1", title: "iOS", count: 2, areaId: "a1")])
     }
 

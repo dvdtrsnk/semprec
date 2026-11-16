@@ -110,9 +110,10 @@ private extension DatePickerPanel {
         let iso = IsoDay(year: month.year, month: month.month, day: day)
         let selected = iso.text == value
         let isToday = iso.text == today
+        let isEmphasized = selected || isToday
         return Button { onPick(iso.text) } label: {
             Text(day, format: .number.grouping(.never))
-                .font(.body.weight(selected || isToday ? .semibold : .regular))
+                .font(.body.weight(isEmphasized ? .semibold : .regular))
                 .foregroundStyle(dayStyle(selected: selected, isToday: isToday))
                 .frame(maxWidth: .infinity)
                 .frame(height: Self.cellHeight)

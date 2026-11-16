@@ -70,7 +70,10 @@ final class FormattingTests: XCTestCase {
     }
 
     func testKeysBecomeWordsAndUnknownKeysAreLeftOut() {
-        XCTAssertEqual(subtitle([part(.relationship, "client"), part(.status, "inProgress")]), "Client \u{00B7} In progress")
+        XCTAssertEqual(
+            subtitle([part(.relationship, "client"), part(.status, "inProgress")]),
+            "Client \u{00B7} In progress"
+        )
         XCTAssertEqual(subtitle([part(.relationship, "somethingNew"), part(.status, "unheard")]), "")
         XCTAssertEqual(subtitle([part(.recurrence, "yearly")]), "")
     }
@@ -99,7 +102,9 @@ final class FormattingTests: XCTestCase {
 
     func testPlainValuesAreShownAsTheyAre() {
         XCTAssertEqual(
-            subtitle([part(.area, "Work"), part(.people, "Petr, Jana"), part(.phone, "777 123 456"), part(.sender, "Petr")]),
+            subtitle([
+                part(.area, "Work"), part(.people, "Petr, Jana"), part(.phone, "777 123 456"), part(.sender, "Petr")
+            ]),
             "Work \u{00B7} Petr, Jana \u{00B7} 777 123 456 \u{00B7} Petr"
         )
     }
@@ -132,7 +137,10 @@ final class FormattingTests: XCTestCase {
         XCTAssertEqual(OverviewSymbols.area(icon: "unheard-of"), OverviewSymbols.areaFallback)
         XCTAssertEqual(OverviewSymbols.collection(icon: "calendar", ownerModuleId: "events"), "calendar")
         XCTAssertEqual(OverviewSymbols.collection(icon: nil, ownerModuleId: "movies"), "film")
-        XCTAssertEqual(OverviewSymbols.collection(icon: nil, ownerModuleId: "unheard"), OverviewSymbols.collectionFallback)
+        XCTAssertEqual(
+            OverviewSymbols.collection(icon: nil, ownerModuleId: "unheard"),
+            OverviewSymbols.collectionFallback
+        )
         for type in SearchGroupType.allCases {
             XCTAssertFalse(OverviewSymbols.searchGroup(type).isEmpty)
         }

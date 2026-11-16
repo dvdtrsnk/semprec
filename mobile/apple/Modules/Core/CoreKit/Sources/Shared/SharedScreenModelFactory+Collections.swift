@@ -4,7 +4,9 @@
 extension SharedScreenModelFactory {
 
     public func makeCollection(target: CollectionTarget) -> any CollectionScreenModel {
-        SharedCollectionScreenModel(sdk.collections.collectionViewModel(target: SharedCollectionScreenModel.target(target)))
+        SharedCollectionScreenModel(
+            sdk.collections.collectionViewModel(target: SharedCollectionScreenModel.target(target))
+        )
     }
 
     public func makeItem(itemId: String, databaseKey: String?) -> any ItemScreenModel {

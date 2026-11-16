@@ -19,10 +19,12 @@ enum PreviewOverview {
         ],
         collections: [
             OverviewCollection(
-                databaseId: "d1", ownerModuleId: "events", name: "Events", icon: "calendar", color: "#FF3B30", itemCount: 214
+                databaseId: "d1", ownerModuleId: "events", name: "Events",
+                icon: "calendar", color: "#FF3B30", itemCount: 214
             ),
             OverviewCollection(
-                databaseId: "d2", ownerModuleId: "people", name: "People", icon: "person", color: "#30B0C7", itemCount: 48
+                databaseId: "d2", ownerModuleId: "people", name: "People",
+                icon: "person", color: "#30B0C7", itemCount: 48
             )
         ]
     )
