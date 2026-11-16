@@ -27,7 +27,7 @@ final class OverviewRoutingTests: XCTestCase {
     @MainActor
     func testEveryRowOpensANoticeThatNamesItOnTheOverviewStack() {
         let targets: [OverviewTarget] = [
-            .inbox, .mail, .recordings, .finance, .journal(itemId: "j1"),
+            .inbox, .recordings, .finance, .journal(itemId: "j1"),
             .area(id: "a"), .project(id: "p"), .collection(ownerModuleId: "events", databaseId: "d")
         ]
         let context = NavigationContext()
@@ -43,6 +43,15 @@ final class OverviewRoutingTests: XCTestCase {
         XCTAssertEqual(Set(titles).count, targets.count, "Each notice must name its own row")
         XCTAssertFalse(titles.contains { $0.hasPrefix("pending.") }, "The titles must be read from the catalog")
         XCTAssertTrue(overview.sheets.isEmpty)
+    }
+
+    @MainActor
+    func testTheMailRowPushesTheThreadListOntoTheOverviewStack() {
+        let context = NavigationContext()
+        let overview = OverviewStackSpy()
+        context.register(overview, for: .overview)
+        AppOverviewRouter(context: context).show(.mail)
+        XCTAssertEqual(overview.pushed, [.mailList(MailListStart(), title: nil, tab: .overview)])
     }
 
     @MainActor

@@ -57,11 +57,25 @@ final class CollectionsNavigationTests: XCTestCase {
         context.register(overview, for: .overview)
         let router = AppCollectionsRouter(context: context, tab: .overview)
         router.showProjectTasks(projectId: "p1")
-        router.showProjectMail(projectId: "p1")
         router.showProjectNotes(projectId: "p1")
         router.showProjectAgent(projectId: "p1")
         XCTAssertTrue(overview.pushed.isEmpty)
         XCTAssertTrue(overview.sheets.isEmpty)
+    }
+
+    @MainActor
+    func testTheMailOfAProjectOpensItsThreadListOnTheStackOfTheTab() {
+        let context = NavigationContext()
+        let overview = StackSpy()
+        let calendarStack = StackSpy()
+        context.register(overview, for: .overview)
+        context.register(calendarStack, for: .calendar)
+        AppCollectionsRouter(context: context, tab: .calendar).showProjectMail(projectId: "p1")
+        XCTAssertEqual(
+            calendarStack.pushed,
+            [.mailList(MailListStart(projectId: "p1"), title: nil, tab: .calendar)]
+        )
+        XCTAssertTrue(overview.pushed.isEmpty)
     }
 
     @MainActor

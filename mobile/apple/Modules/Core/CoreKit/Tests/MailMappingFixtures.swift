@@ -1,0 +1,173 @@
+import SharedSDK
+import XCTest
+
+@testable import CoreKit
+
+// MARK: - Kotlin values for the mail mapping tests
+extension XCTestCase {
+
+    func threadsState(
+        _ phase: SharedSDK.MailThreadsPhase,
+        failure: SharedSDK.FailureKind? = nil,
+        refreshing: Bool = false,
+        hasMore: Bool = false,
+        threads: [SharedSDK.MailThreadItem] = [],
+        box: SharedSDK.MailListBox = .inbox,
+        filter: SharedSDK.MailListFilter = .all,
+        facets: SharedSDK.MailFacetsState = SharedSDK.MailFacetsState(
+            phase: .idle, areaTotal: 0, projectTotal: 0, areas: [], projects: []
+        )
+    ) -> SharedSDK.MailThreadsState {
+        SharedSDK.MailThreadsState(
+            phase: phase,
+            failure: failure,
+            refreshing: refreshing,
+            loadingMore: false,
+            hasMore: hasMore,
+            threads: threads,
+            search: "from:petr",
+            box: box,
+            filter: filter,
+            mailboxId: "m1",
+            folderId: "f1",
+            areaId: "a1",
+            projectId: "p1",
+            areaName: "Práce",
+            projectName: "Web",
+            mailboxes: [SharedSDK.MailMailboxChip(id: "m1", name: "Gmail")],
+            reauthorization: [SharedSDK.MailAccountNotice(id: "m2", name: "Outlook", since: "2026-10-19T09:12:00Z")],
+            facets: facets,
+            actionFailed: true
+        )
+    }
+
+    func threadState(
+        _ phase: SharedSDK.MailThreadPhase,
+        failure: SharedSDK.FailureKind? = nil,
+        company: SharedSDK.MailLinkedValue = SharedSDK.MailLinkedValue(text: nil, link: nil),
+        messages: [SharedSDK.MailMessageItem] = [],
+        tasks: [SharedSDK.MailTaskItem] = [],
+        draft: SharedSDK.MailSempDraft? = nil,
+        sendPhase: SharedSDK.MailSendPhase = .idle,
+        sendFailure: SharedSDK.FailureKind? = nil
+    ) -> SharedSDK.MailThreadState {
+        SharedSDK.MailThreadState(
+            phase: phase,
+            failure: failure,
+            refreshing: false,
+            subject: "Re: Nabídka",
+            senderName: "Petr",
+            senderAddress: "p@x.cz",
+            senderRelationship: "Klient",
+            mailboxNames: ["Gmail"],
+            messageCount: 3,
+            flagged: true,
+            company: company,
+            project: SharedSDK.MailLinkedValue(text: nil, link: nil),
+            messages: messages,
+            tasks: tasks,
+            draft: draft,
+            sendPhase: sendPhase,
+            sendFailure: sendFailure,
+            sentFrom: "Gmail",
+            archivedOrTrashed: true,
+            canReply: true,
+            acting: true,
+            creatingTask: true,
+            actionFailed: true
+        )
+    }
+
+    func composeState(
+        _ phase: SharedSDK.MailComposePhase,
+        failure: SharedSDK.FailureKind? = nil
+    ) -> SharedSDK.MailComposeState {
+        SharedSDK.MailComposeState(
+            phase: phase,
+            failure: failure,
+            senders: [SharedSDK.MailSender(mailboxId: "m1", name: "Gmail", address: "me@gmail.com")],
+            senderId: "m1",
+            to: [SharedSDK.MailRecipient(name: "Petr", address: "p@x.cz")],
+            cc: [SharedSDK.MailRecipient(name: "", address: "c@x.cz")],
+            initialSubject: "Re",
+            initialBody: "Text",
+            suggestions: [SharedSDK.MailSuggestion(name: "Jana", address: "j@x.cz", relationship: "Přítel")],
+            invalidAddress: true,
+            sendPhase: .sent,
+            sendFailure: .rejected,
+            sentFrom: "Gmail",
+            discardFailed: true
+        )
+    }
+
+    func foldersState(
+        _ phase: SharedSDK.MailFoldersPhase,
+        failure: SharedSDK.FailureKind? = nil
+    ) -> SharedSDK.MailFoldersState {
+        SharedSDK.MailFoldersState(
+            phase: phase,
+            failure: failure,
+            refreshing: false,
+            unreadInbox: 5,
+            flagged: 2,
+            sempDrafts: 1,
+            accounts: [
+                SharedSDK.MailFolderAccount(
+                    id: "m1",
+                    name: "Gmail",
+                    address: "me@gmail.com",
+                    status: .syncing,
+                    folders: [
+                        SharedSDK.MailFolderItem(id: "f1", name: "Inbox", specialPurpose: "inbox", unreadCount: 3)
+                    ],
+                    foldersFailed: true,
+                    collapsed: true
+                )
+            ]
+        )
+    }
+
+    func accountsState(
+        _ phase: SharedSDK.MailAccountsPhase,
+        failure: SharedSDK.FailureKind? = nil,
+        connectFailure: SharedSDK.MailConnectFailure? = nil
+    ) -> SharedSDK.MailAccountsState {
+        SharedSDK.MailAccountsState(
+            phase: phase,
+            failure: failure,
+            refreshing: false,
+            accounts: [
+                SharedSDK.MailAccountItem(id: "m1", name: "Gmail", address: nil, provider: "gmail", status: .ok)
+            ],
+            connecting: true,
+            connectFailure: connectFailure
+        )
+    }
+
+    func accountState(
+        _ phase: SharedSDK.MailAccountPhase,
+        failure: SharedSDK.FailureKind? = nil,
+        removal: SharedSDK.MailRemovalPhase = .confirming
+    ) -> SharedSDK.MailAccountState {
+        SharedSDK.MailAccountState(
+            phase: phase,
+            failure: failure,
+            account: SharedSDK.MailAccountDetail(
+                id: "m1",
+                name: "Gmail",
+                address: "me@gmail.com",
+                provider: "gmail",
+                syncMode: "imap",
+                status: .needsReauthorization,
+                lastSuccessfulSyncAt: "2026-10-19T08:12:00Z",
+                failingSince: "2026-10-19T09:12:00Z",
+                connectionLimit: 3,
+                connectionLimitApplies: true,
+                autonomousSendProjectCount: 1
+            ),
+            removal: removal,
+            impact: SharedSDK.MailRemovalImpactItem(messages: 120, drafts: 2, threads: 50, attachmentsKept: 7),
+            actionFailed: true
+        )
+    }
+}

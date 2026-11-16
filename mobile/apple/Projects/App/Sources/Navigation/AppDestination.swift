@@ -17,6 +17,16 @@ enum AppDestination: Hashable {
     case collection(CollectionTarget)
     /// The detail of an item of any database; `databaseKey` is its database's canonical key, if the caller knows it.
     case collectionItem(itemId: String, databaseKey: String?)
+
+    // MARK: - Mail
+    /// A thread list on the stack of `tab`: all mail, an area, a project, a folder or a mailbox.
+    case mailList(MailListStart, title: String?, tab: AppTab)
+    case mailThread(threadId: String, tab: AppTab)
+    case mailFolders(tab: AppTab)
+    /// The editor of a message, presented as a sheet.
+    case mailCompose(MailComposeStart)
+    case mailAccounts(tab: AppTab)
+    case mailAccount(mailboxId: String, tab: AppTab)
 }
 
 // MARK: - NavigationProvidedDestination

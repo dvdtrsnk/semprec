@@ -58,8 +58,8 @@ public struct MailComposeState: Equatable, Sendable {
     public var phase: MailComposePhase
     public var senders: [MailSender]
     public var senderId: String?
-    public var to: [MailRecipient]
-    public var cc: [MailRecipient]
+    public var toRecipients: [MailRecipient]
+    public var ccRecipients: [MailRecipient]
     public var initialSubject: String
     public var initialBody: String
     public var suggestions: [MailSuggestion]
@@ -73,8 +73,8 @@ public struct MailComposeState: Equatable, Sendable {
         phase: MailComposePhase = .loading,
         senders: [MailSender] = [],
         senderId: String? = nil,
-        to: [MailRecipient] = [],
-        cc: [MailRecipient] = [],
+        toRecipients: [MailRecipient] = [],
+        ccRecipients: [MailRecipient] = [],
         initialSubject: String = "",
         initialBody: String = "",
         suggestions: [MailSuggestion] = [],
@@ -87,8 +87,8 @@ public struct MailComposeState: Equatable, Sendable {
         self.phase = phase
         self.senders = senders
         self.senderId = senderId
-        self.to = to
-        self.cc = cc
+        self.toRecipients = toRecipients
+        self.ccRecipients = ccRecipients
         self.initialSubject = initialSubject
         self.initialBody = initialBody
         self.suggestions = suggestions

@@ -50,8 +50,8 @@ extension SharedMailComposeScreenModel {
             phase: phase(state),
             senders: state.senders.map { MailSender(mailboxId: $0.mailboxId, name: $0.name, address: $0.address) },
             senderId: state.senderId,
-            to: state.to.map { MailRecipient(name: $0.name, address: $0.address) },
-            cc: state.cc.map { MailRecipient(name: $0.name, address: $0.address) },
+            toRecipients: state.to.map { MailRecipient(name: $0.name, address: $0.address) },
+            ccRecipients: state.cc.map { MailRecipient(name: $0.name, address: $0.address) },
             initialSubject: state.initialSubject,
             initialBody: state.initialBody,
             suggestions: state.suggestions.map {
