@@ -21,9 +21,23 @@ class LoadCalendarWindow(private val repository: CalendarRepository) {
     }
 }
 
+private const val SYSTEM_SLEEP = "sleep"
+private const val SYSTEM_TASKS = "tasks"
+
+/**
+ * Sleep nights and the traces of carried-over tasks carry no calendar of their own: they follow the system
+ * calendars Sleep and Tasks, so hiding those hides them too.
+ */
 private fun CalendarWindow.withoutHidden(): CalendarWindow {
-    val hidden = calendars.filter { it.hidden }.map { it.id }.toSet()
-    val shown = timeline.entries.filter { it.calendarId == null || it.calendarId !in hidden }
+    val hidden = calendars.filter { it.hidden }
+    val hiddenIds = hidden.map { it.id }.toSet()
+    val hiddenKeys = hidden.mapNotNull { it.systemKey }.toSet()
+    val shown = timeline.entries.filter { entry ->
+        val byCalendar = entry.calendarId == null || entry.calendarId !in hiddenIds
+        val bySleep = entry.kind != CalendarEntryKind.SLEEP || SYSTEM_SLEEP !in hiddenKeys
+        val byTasks = entry.kind != CalendarEntryKind.TRACE || SYSTEM_TASKS !in hiddenKeys
+        byCalendar && bySleep && byTasks
+    }
     return copy(timeline = timeline.copy(entries = shown))
 }
 
