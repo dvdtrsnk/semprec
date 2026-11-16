@@ -21,7 +21,9 @@ internal class ItemDeletionFlow(
     fun handle(action: ItemAction.Deletion) {
         when (action) {
             ItemAction.Deletion.Request -> request()
-            ItemAction.Deletion.Cancel -> {
+            // Once the deletion is sent it is not called back: the confirmation dialog closes as its button is tapped,
+            // and the cancel that its closing sends must not abort the request the button just made.
+            ItemAction.Deletion.Cancel -> if (host.state.deletion?.deleting != true) {
                 job?.cancel()
                 host.update { it.copy(deletion = null) }
             }

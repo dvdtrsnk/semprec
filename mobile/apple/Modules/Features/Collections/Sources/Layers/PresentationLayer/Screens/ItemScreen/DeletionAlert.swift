@@ -13,16 +13,21 @@ struct DeletionSummary {
     let names: [String: String]
 
     // MARK: - Methods
+    /// The intro and one line per thing the deletion reaches; an item that reaches nothing else gets the intro alone,
+    /// without announcing a list that does not follow.
     var message: String {
-        var lines = [String(format: String(localized: "delete.intro", bundle: .module), title)]
-        lines += impact.related.map { "\(names[$0.databaseKey ?? ""] ?? $0.databaseKey ?? ""): \($0.count)" }
-        lines += counted("delete.nestedItems", impact.nestedItems)
-        lines += counted("delete.nestedPages", impact.nestedPages)
-        lines += counted("delete.takenOver", impact.takenOverValues)
-        lines += counted("delete.series", impact.seriesInstances)
-        lines += counted("delete.attachments", impact.attachments)
-        lines += counted("delete.hostEvents", impact.hostEvents)
-        return lines.joined(separator: "\n")
+        var reached = impact.related.map { "\(names[$0.databaseKey ?? ""] ?? $0.databaseKey ?? ""): \($0.count)" }
+        reached += counted("delete.nestedItems", impact.nestedItems)
+        reached += counted("delete.nestedPages", impact.nestedPages)
+        reached += counted("delete.takenOver", impact.takenOverValues)
+        reached += counted("delete.series", impact.seriesInstances)
+        reached += counted("delete.attachments", impact.attachments)
+        reached += counted("delete.hostEvents", impact.hostEvents)
+        let intro = String(
+            format: String(localized: reached.isEmpty ? "delete.introAlone" : "delete.intro", bundle: .module),
+            title
+        )
+        return ([intro] + reached).joined(separator: "\n")
     }
 
     private func counted(_ key: String, _ count: Int) -> [String] {

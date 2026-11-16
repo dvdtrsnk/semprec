@@ -89,7 +89,7 @@ final class OriginAndDeletionTests: XCTestCase {
             hostEvents: 0
         )
         let intro = DeletionSummary(title: "X", impact: none, names: [:]).message
-        XCTAssertEqual(intro.components(separatedBy: "\n").count, 1)
+        XCTAssertEqual(intro, "“X” moves to Recently deleted, where it stays for 30 days.")
         let all = ImpactView(
             related: [],
             nestedItems: 1,

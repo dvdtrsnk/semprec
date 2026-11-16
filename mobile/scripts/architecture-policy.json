@@ -616,6 +616,7 @@
         "delete.confirm",
         "delete.hostEvents",
         "delete.intro",
+        "delete.introAlone",
         "delete.nestedItems",
         "delete.nestedPages",
         "delete.series",
