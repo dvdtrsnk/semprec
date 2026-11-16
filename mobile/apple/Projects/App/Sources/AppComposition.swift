@@ -15,6 +15,8 @@ final class AppComposition: ObservableObject {
     let navigation: NavigationContext
     let overviewRouter: AppOverviewRouter
     let collectionsRouter: AppCollectionsRouter
+    let calendarRouter: AppCalendarRouter
+    let journalRouter: AppJournalRouter
 
     // MARK: - Init
     convenience init() {
@@ -28,6 +30,8 @@ final class AppComposition: ObservableObject {
         self.navigation = navigation
         overviewRouter = AppOverviewRouter(context: navigation)
         collectionsRouter = AppCollectionsRouter(context: navigation, tab: .overview)
+        calendarRouter = AppCalendarRouter(context: navigation)
+        journalRouter = AppJournalRouter(context: navigation)
     }
 
     // MARK: - Routers

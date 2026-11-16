@@ -1,13 +1,15 @@
-import DesignSystem
+import CoreKit
+import JournalFeature
 import SwiftUI
 
-/// The root screen of the Journal tab. The Journal feature replaces the body of `root` with its own screen; the app
-/// scene already wraps the result in the tab's navigation stack.
+/// The root screen of the Journal tab: the diary.
 enum JournalTab {
 
     @MainActor
     static func root(_ composition: AppComposition) -> some View {
-        StatusView(.empty(message: Text("tab.journal.placeholder"), systemImage: "book"))
-            .navigationTitle(Text("tab.journal"))
+        JournalScreenFactory.journal(
+            makeModel: { composition.models.makeJournal(initialDay: $0) },
+            router: composition.journalRouter
+        )
     }
 }

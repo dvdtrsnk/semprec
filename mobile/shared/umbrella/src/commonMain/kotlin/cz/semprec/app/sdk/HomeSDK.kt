@@ -96,6 +96,15 @@ class HomeSDK(
     fun sessionViewModel(): SessionViewModel = viewModels.sessionViewModel()
 
     fun loginViewModel(): LoginViewModel = viewModels.loginViewModel()
+
+    /** The diary and its subpages. */
+    val journal: JournalSDK = JournalSDK(auth.api)
+
+    /** The sleep plans, night exceptions and settings. */
+    val sleep: SleepSDK = SleepSDK(auth.api)
+
+    /** The calendar, its calendars list, its invitations and the new item form. */
+    val calendar: CalendarSDK = CalendarSDK(auth.api)
 }
 
 /** The screens of the generic collection engine; [HomeSDK.collections] hands it out. */

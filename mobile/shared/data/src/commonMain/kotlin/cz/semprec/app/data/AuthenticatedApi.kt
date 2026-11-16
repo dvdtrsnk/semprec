@@ -3,6 +3,7 @@ package cz.semprec.app.data
 import cz.semprec.app.core.FailureKind
 import cz.semprec.app.core.SessionStorage
 import cz.semprec.app.core.StoredSession
+import io.ktor.http.ContentType
 import io.ktor.http.HttpMethod
 
 /**
@@ -23,9 +24,12 @@ class AuthenticatedApi(
         query: List<Pair<String, String>> = emptyList(),
         body: String? = null,
         extraHeaders: List<Pair<String, String>> = emptyList(),
+        bodyContentType: ContentType = ContentType.Application.Json,
     ): ApiResponse {
         val session = storage.load() ?: return ApiResponse.Failure(FailureKind.UNAUTHORIZED, null)
-        val response = client.send(session.serverUrl, method, path, session.token, query, body, extraHeaders)
+        val response = client.send(
+            session.serverUrl, method, path, session.token, query, body, extraHeaders, bodyContentType,
+        )
         if (response is ApiResponse.Failure && response.status == UNAUTHORIZED_STATUS) onSessionRejected()
         return response
     }

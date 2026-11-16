@@ -1,7 +1,10 @@
 import AuthFeature
+import CalendarFeature
 import CollectionsFeature
 import DesignSystem
+import JournalFeature
 import NavigatorUI
+import SleepFeature
 import SwiftUI
 import TasksFeature
 
@@ -110,6 +113,31 @@ private extension AppScene {
                 itemId: itemId,
                 makeModel: { composition.models.makeItem(itemId: itemId, databaseKey: databaseKey) },
                 router: composition.collectionsRouter
+            )
+        case .sleepPlan(let night):
+            SleepScreenFactory.plan { composition.models.makeSleep(night: night, startOnNight: false) }
+        case .sleepNight(let night):
+            SleepScreenFactory.night { composition.models.makeSleep(night: night, startOnNight: true) }
+        case .calendars:
+            NavigationStack {
+                CalendarScreenFactory.calendars(
+                    makeModel: { composition.models.makeCalendarList() },
+                    router: composition.calendarRouter
+                )
+            }
+        case .invitations:
+            NavigationStack {
+                CalendarScreenFactory.invitations(makeModel: { composition.models.makeInvitations() })
+            }
+        case .newItem(let day):
+            NavigationStack {
+                CalendarScreenFactory.newItem(day: day, makeModel: { composition.models.makeNewItem(day: $0) })
+            }
+        case .journalPage(let itemId, let title):
+            JournalScreenFactory.subpage(
+                title: title,
+                makeModel: { composition.models.makeJournalSubpage(itemId: itemId) },
+                router: composition.journalRouter
             )
         }
     }
