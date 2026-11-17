@@ -55,7 +55,8 @@ export interface ImapMailClient {
   getCapabilities(): Promise<Set<string>>;
   listFolders(): Promise<ImapFolderRef[]>;
   selectFolder(path: string): Promise<ImapFolderSelection>;
-  fetchMessagesSince(path: string, sinceUid: number): Promise<ImapFetchedMessage[]>;
+  /** At most `limit` messages from `sinceUid` up, lowest UIDs first. */
+  fetchMessagesSince(path: string, sinceUid: number, limit: number): Promise<ImapFetchedMessage[]>;
   /** `null` without QRESYNC; the caller then falls back to `fetchAllUids`. */
   fetchVanishedSince(path: string, sinceModSeq: number): Promise<number[] | null>;
   /** No-QRESYNC deletion detection by full UID diff. */
@@ -88,6 +89,22 @@ export interface ReconcileImapFolderParams {
   mailboxFolderRelationPropertyId: string;
   /** This mailbox's registered addresses, used as deliveredToAddress's alias fallback. Defaults to `[]`. */
   mailboxAliases?: string[];
+  /** How many new messages this call may ingest. Defaults to `IMAP_NEW_MESSAGES_PER_PASS`. */
+  maxNewMessages?: number;
+}
+
+/**
+ * New messages one pass ingests across all folders of an account. A pass is one transaction that holds the tenant's
+ * mail-thread guard while it downloads bodies and attachments, so a mailbox with thousands of messages is backfilled
+ * over many short passes, each committing its own batch. Kept small enough that a pass over a slow provider ends well
+ * within the statement timeout of the writers waiting for that guard.
+ */
+export const IMAP_NEW_MESSAGES_PER_PASS = 10;
+
+export interface ReconcileImapFolderResult {
+  ingested: number;
+  /** `false` when new messages above the last ingested UID are left for a later pass. */
+  complete: boolean;
 }
 
 const GMAIL_LABEL_TO_PURPOSE: Record<string, string> = {
@@ -152,7 +169,7 @@ export async function reconcileImapFolder(
   dbClient: PoolClient,
   imap: ImapMailClient,
   params: ReconcileImapFolderParams,
-): Promise<void> {
+): Promise<ReconcileImapFolderResult> {
   await lockMailThreadMutation(dbClient);
   const protectedMoveMessageIds = await protectedMailMovesForPass(
     dbClient,
@@ -174,8 +191,12 @@ export async function reconcileImapFolder(
   }
 
   const sinceUid = state.uidnext ? Number(state.uidnext) : 1;
-  const fetched = await imap.fetchMessagesSince(params.folderPath, sinceUid);
-  for (const item of fetched) {
+  const limit = params.maxNewMessages ?? IMAP_NEW_MESSAGES_PER_PASS;
+  // One more than the limit tells whether messages remain above this batch.
+  const fetched = (await imap.fetchMessagesSince(params.folderPath, sinceUid, limit + 1)).sort((a, b) => a.uid - b.uid);
+  const batch = fetched.slice(0, limit);
+  const complete = fetched.length <= limit;
+  for (const item of batch) {
     const result = await ingestEmailMessage(dbClient, {
       emailsDatabaseId: params.emailsDatabaseId,
       filesDatabaseId: params.filesDatabaseId,
@@ -258,12 +279,16 @@ export async function reconcileImapFolder(
     }
   }
 
+  // A partial batch resumes after its last UID. The modseq read at selection still bounds the flag and vanish
+  // checks of the next pass: changes after it have a higher modseq.
+  const lastIngested = batch.at(-1);
   await recordReconcile(dbClient, {
     itemId: params.folderItemId,
     uidvalidity: String(selection.uidvalidity),
-    uidnext: String(selection.uidnext),
+    uidnext: String(complete || !lastIngested ? selection.uidnext : lastIngested.uid + 1),
     highestmodseq: selection.highestModSeq !== null ? String(selection.highestModSeq) : null,
   });
+  return { ingested: batch.length, complete };
 }
 
 const SPECIAL_USE_TO_PURPOSE: Record<string, string> = {
@@ -294,16 +319,27 @@ export interface ReconcileImapAccountParams {
   mailboxAliases?: string[];
 }
 
+export interface ReconcileImapAccountResult {
+  /** `false` when new messages are left for a later pass, which the caller must schedule. */
+  complete: boolean;
+}
+
+/** The inbox first, so a new account shows its current mail before the backfill of other folders. */
+function inboxFirst(folders: ImapFolderRef[]): ImapFolderRef[] {
+  const isInbox = (folder: ImapFolderRef) => folder.specialUse === "\\Inbox" || folder.path.toUpperCase() === "INBOX";
+  return [...folders.filter(isInbox), ...folders.filter((folder) => !isInbox(folder))];
+}
+
 /**
- * Discovers Folder items, then reconciles each folder. Does not record its own failures: the
- * pass runs in the caller's transaction, so such a write would be rolled back with it.
+ * Discovers Folder items, then reconciles each folder within one pass's budget of new messages. Does not record its
+ * own failures: the pass runs in the caller's transaction, so such a write would be rolled back with it.
  * mailSyncJob.ts records sync failures in a separate transaction.
  */
 export async function reconcileImapAccount(
   dbClient: PoolClient,
   imap: ImapMailClient,
   params: ReconcileImapAccountParams,
-): Promise<void> {
+): Promise<ReconcileImapAccountResult> {
   await lockMailThreadMutation(dbClient);
   const protectedMoveMessageIds = await protectedMailMovesForPass(
     dbClient,
@@ -313,8 +349,12 @@ export async function reconcileImapAccount(
   );
   await ensureMailAccountSyncState(dbClient, { itemId: params.mailboxItemId, syncMode: "imap" });
   const allFolders = await imap.listFolders();
-  const folders = params.folderPaths ? allFolders.filter((f) => params.folderPaths!.includes(f.path)) : allFolders;
+  const folders = inboxFirst(
+    params.folderPaths ? allFolders.filter((f) => params.folderPaths!.includes(f.path)) : allFolders,
+  );
 
+  let budget = IMAP_NEW_MESSAGES_PER_PASS;
+  let complete = true;
   for (const folder of folders) {
     const folderItemId = await ensureFolderItem(dbClient, {
       foldersDatabaseId: params.foldersDatabaseId,
@@ -326,7 +366,12 @@ export async function reconcileImapAccount(
       specialPurpose: (folder.specialUse && SPECIAL_USE_TO_PURPOSE[folder.specialUse]) ?? "none",
     });
 
-    await reconcileImapFolder(dbClient, imap, {
+    if (budget === 0) {
+      complete = false;
+      continue;
+    }
+    const folderResult = await reconcileImapFolder(dbClient, imap, {
+      maxNewMessages: budget,
       folderItemId,
       folderPath: folder.path,
       protectedMoveMessageIds,
@@ -341,6 +386,8 @@ export async function reconcileImapAccount(
       mailboxFolderRelationPropertyId: params.mailboxFolderRelationPropertyId,
       mailboxAliases: params.mailboxAliases,
     });
+    budget -= folderResult.ingested;
+    if (!folderResult.complete) complete = false;
   }
 
   const [folderRelationDefinition, mailboxFolderRelationDefinition] = await Promise.all([
@@ -380,9 +427,12 @@ export async function reconcileImapAccount(
     await recordConfirmedMailMessageFlag(dbClient, pending.messageItemId, pending.propertyKey, pending.desiredState);
   }
 
-  // Periodic reconcile is the only mechanism here; IDLE just triggers it earlier.
+  // Periodic reconcile is the only mechanism here; IDLE just triggers it earlier. An unfinished backfill is due at
+  // once, so the sweep resumes it even if the follow-up job is lost.
   await recordImapActivity(dbClient, {
     itemId: params.mailboxItemId,
-    nextExpectedActivityAt: new Date(Date.now() + 30 * 60 * 1000),
+    nextExpectedActivityAt: complete ? new Date(Date.now() + 30 * 60 * 1000) : new Date(),
+    completesInitialSync: complete,
   });
+  return { complete };
 }
