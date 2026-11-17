@@ -20,7 +20,7 @@ const DAY_PATTERN = "^[0-9]{4}-[0-9]{2}-[0-9]{2}$";
  * earlier start, which only the expansion can tell, so any series starting on or before `$3` is a candidate.
  */
 const SUBSCRIBED_EVENT_CANDIDATES_SQL = `
-  SELECT i.id, i.properties, i.updated_at
+  SELECT i.id, i.properties, i.updated_at, i.version
     FROM items i
    CROSS JOIN LATERAL (SELECT left(i.properties->>'startsAt', 10) AS first_day,
                               left(coalesce(nullif(i.properties->>'endsAt', ''), i.properties->>'startsAt'), 10) AS last_day) days
@@ -33,7 +33,7 @@ const SUBSCRIBED_EVENT_CANDIDATES_SQL = `
 
 /** Read regardless of range: an override moved out of it still replaces its occurrence in it. */
 const SUBSCRIBED_EVENT_OVERRIDES_SQL = `
-  SELECT i.id, i.properties, i.updated_at
+  SELECT i.id, i.properties, i.updated_at, i.version
     FROM items i
    WHERE i.database_id = $1 AND i.deleted_at IS NULL
      AND i.properties->>'uid' = ANY($2::text[])
@@ -260,6 +260,7 @@ export async function readSubscribedEventTimelineItems(
       counts: null,
       carriedFrom: null,
       updatedAt: row.updated_at.toISOString(),
+      version: row.version,
       readOnly: true,
     });
     if (recurrence === null) return [toItem(schedule, row.id)];

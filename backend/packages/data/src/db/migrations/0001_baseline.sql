@@ -1437,11 +1437,14 @@ CREATE TABLE public.items (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     deleted_at timestamp with time zone,
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    version bigint DEFAULT 1 NOT NULL
 )
 PARTITION BY LIST (database_id);
 
 COMMENT ON TABLE public.items IS 'semprec:tenancy=tenant';
+
+COMMENT ON COLUMN public.items.version IS 'Optimistic-concurrency token (ifVersion): incremented by every write that advances updated_at.';
 
 ALTER TABLE ONLY public.items
     ADD CONSTRAINT items_pkey PRIMARY KEY (database_id, id);

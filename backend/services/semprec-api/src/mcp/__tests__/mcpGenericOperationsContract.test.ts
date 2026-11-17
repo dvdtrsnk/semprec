@@ -378,7 +378,7 @@ const CASES: Record<GenericOperationName, Case> = {
   "item.patch": {
     tool: (fx) => ({
       name: "semprec.item.patch",
-      arguments: { itemId: fx.itemA.id, properties: { title: "Updated" }, ifVersion: fx.itemA.updatedAt },
+      arguments: { itemId: fx.itemA.id, properties: { title: "Updated" }, ifVersion: fx.itemA.version },
     }),
   },
   "item.delete": { tool: (fx) => ({ name: "semprec.item.delete", arguments: { itemId: fx.itemB.id } }) },
@@ -780,14 +780,14 @@ describe("generic operation MCP contract (issue #220)", () => {
       const updated = await rpc(baseUrl, headers, "semprec.item.patch", {
         itemId: item.id,
         properties: { [field]: value },
-        ifVersion: item.updatedAt,
+        ifVersion: item.version,
       });
       expect(updated.error).toMatchObject({ code: -32602, data: { field } });
     }
     const accepted = await rpc(baseUrl, headers, "semprec.item.patch", {
       itemId: item.id,
       properties: { icon: "briefcase", color: "#5856D6" },
-      ifVersion: item.updatedAt,
+      ifVersion: item.version,
     });
     expect(accepted.error).toBeUndefined();
     expect((await chokePoint.getItem(database.id, item.id))?.properties).toMatchObject({
@@ -882,7 +882,7 @@ describe("generic operation MCP contract (issue #220)", () => {
     const result = await rpc(baseUrl, headers, "semprec.item.patch", {
       itemId: item.id,
       properties: { status: "done" },
-      ifVersion: item.updatedAt,
+      ifVersion: item.version,
     });
     expect(result.error).toBeUndefined();
     const text = result.result?.content[0]?.text;
@@ -894,7 +894,7 @@ describe("generic operation MCP contract (issue #220)", () => {
     const refused = await rpc(baseUrl, headers, "semprec.item.patch", {
       itemId: item.id,
       properties: { completedAt: "2000-01-01" },
-      ifVersion: current.updatedAt,
+      ifVersion: current.version,
     });
     expect(refused.error).toBeDefined();
     expect((await chokePoint.getItem(databaseId, item.id))?.properties.completedAt).toBe(day);
@@ -912,7 +912,7 @@ describe("generic operation MCP contract (issue #220)", () => {
     const patch = async (properties: Record<string, unknown>) => {
       const current = await chokePoint.getItem(databaseId, item.id);
       if (!current) throw new Error("Missing project");
-      return rpc(baseUrl, headers, "semprec.item.patch", { itemId: item.id, properties, ifVersion: current.updatedAt });
+      return rpc(baseUrl, headers, "semprec.item.patch", { itemId: item.id, properties, ifVersion: current.version });
     };
     expect((await patch({ status: "longTerm" })).error).toBeUndefined();
     expect((await chokePoint.getItem(databaseId, item.id))?.properties.date).toBeNull();
@@ -968,7 +968,7 @@ describe("generic operation MCP contract (issue #220)", () => {
     async function patchProject(properties: Record<string, unknown>) {
       const current = await chokePoint.getItem(databaseId, item.id);
       if (!current) throw new Error("Missing project fixture");
-      const args: InputByOperation["item.patch"] = { itemId: item.id, properties, ifVersion: current.updatedAt };
+      const args: InputByOperation["item.patch"] = { itemId: item.id, properties, ifVersion: current.version };
       return rpc(baseUrl, headers, "semprec.item.patch", args);
     }
     const answer = await patchProject({ status });

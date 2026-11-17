@@ -42,6 +42,7 @@ export async function refreshSeriesNextOccurrenceDate(
     eventsDatabaseId,
     id: series.id,
     updatedAt: new Date(series.updatedAt),
+    version: series.version,
   });
   if (value === (series.properties[NEXT_OCCURRENCE_DATE_PROPERTY_KEY] ?? null)) return;
   await updateItemWithClient(

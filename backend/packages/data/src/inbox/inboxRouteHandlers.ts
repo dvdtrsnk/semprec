@@ -106,14 +106,16 @@ function bodyObject(body: unknown): Record<string, unknown> {
   return body as Record<string, unknown>;
 }
 
-/** The card's `updatedAt`, an ISO 8601 UTC timestamp. */
-const ifVersionSchema = z.iso.datetime();
+/** The card's `version`, a decimal integer string. */
+const ifVersionSchema = z.string().regex(/^[1-9][0-9]{0,18}$/);
 
 function parseIfVersion(body: Record<string, unknown>): string | undefined {
   if (body.ifVersion === undefined) return undefined;
   const parsed = ifVersionSchema.safeParse(body.ifVersion);
   if (!parsed.success) {
-    throw new ValidationError("'ifVersion' must be an ISO 8601 UTC timestamp string", { field: "ifVersion" });
+    throw new ValidationError("'ifVersion' must be the card's version, a decimal integer string", {
+      field: "ifVersion",
+    });
   }
   return parsed.data;
 }
@@ -390,6 +392,7 @@ const storedCardSchema = z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
   deletedAt: z.string().nullable(),
+  version: z.string(),
   fromInbox: z.boolean().optional(),
 });
 

@@ -58,6 +58,7 @@ export const nextOccurrenceDateTransform: ItemPreWriteTransform = async ({ clien
     eventsDatabaseId: database.id,
     id: stored.id,
     updatedAt: new Date(stored.updatedAt),
+    version: stored.version,
   });
   return withValue(stored.properties, patch, value);
 };

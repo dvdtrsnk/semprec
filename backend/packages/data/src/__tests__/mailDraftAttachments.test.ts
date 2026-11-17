@@ -345,7 +345,7 @@ describe("the attachments of a mail draft (issue gh-1895)", () => {
       expect(answer.body.attachments.map((attachment) => attachment.fileItemId)).toEqual([first, second]);
       const updated = await runInTenant(tenant, () =>
         createMailDraftUpdateRouteHandler(runtime)(
-          ctx({ id: draft.id }, { ifVersion: answer.body.updatedAt, subject: "Changed" }),
+          ctx({ id: draft.id }, { ifVersion: answer.body.version, subject: "Changed" }),
         ),
       );
       expect(updated.body.attachments.map((attachment) => attachment.fileItemId)).toEqual([first, second]);
@@ -563,7 +563,7 @@ describe("the attachments of a mail draft (issue gh-1895)", () => {
         return rows[0]?.last_edited_by;
       };
       const editAsAgent = async (draftId: string) => {
-        const version = (await readDraft(draftId)).body.updatedAt;
+        const version = (await readDraft(draftId)).body.version;
         await withTransaction(runtime, (client) =>
           updateEmailDraft(
             client,

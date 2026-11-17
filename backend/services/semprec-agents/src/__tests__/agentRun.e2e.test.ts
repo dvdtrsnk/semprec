@@ -925,7 +925,7 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
             {
               itemId: item.id,
               properties: { due: "2026-10-22T09:00", body: "new-private-body" },
-              ifVersion: item.updatedAt,
+              ifVersion: item.version,
             },
             { id: "patch-call-1" },
           ),

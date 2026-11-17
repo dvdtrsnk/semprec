@@ -28,6 +28,8 @@ export interface StoredRow {
   id: string;
   properties: Record<string, unknown>;
   updated_at: Date;
+  /** `items.version`, a `bigint` that pg returns as a string. */
+  version: string;
 }
 
 /** Bound as `$4` by the candidate queries, against a stored value's first ten characters. */
@@ -38,7 +40,7 @@ const DAY_PATTERN = "^[0-9]{4}-[0-9]{2}-[0-9]{2}$";
  * do not start with a date is always a candidate, so `readSchedule` can log it.
  */
 const EVENT_CANDIDATES_SQL = `
-  SELECT i.id, i.properties, i.updated_at
+  SELECT i.id, i.properties, i.updated_at, i.version
     FROM items i
    CROSS JOIN LATERAL (SELECT left(i.properties->>'date', 10) AS first_day,
                               left(i.properties->>'endDate', 10) AS last_day) days
@@ -51,7 +53,7 @@ const EVENT_CANDIDATES_SQL = `
 /** Selected like `EVENT_CANDIDATES_SQL`, by the Task's display day. `seriesFilter` is a condition on row `i`. */
 function taskCandidatesSql(seriesFilter: string): string {
   return `
-  SELECT i.id, i.properties, i.updated_at
+  SELECT i.id, i.properties, i.updated_at, i.version
     FROM items i
    CROSS JOIN LATERAL (SELECT ${TASK_DISPLAY_DAY_SQL} AS day) days
    WHERE i.database_id = $1 AND i.deleted_at IS NULL
@@ -300,6 +302,7 @@ export async function toTimelineItems(
       counts: null,
       carriedFrom: null,
       updatedAt: row.updated_at.toISOString(),
+      version: row.version,
       readOnly: false,
     };
   });
@@ -465,6 +468,7 @@ export type CalendarTimelineCompactItem = Pick<
   | "counts"
   | "attendance"
   | "updatedAt"
+  | "version"
   | "readOnly"
 > &
   Partial<Pick<CalendarEventOccurrence, "seriesId" | "occurrenceDate">>;
@@ -473,7 +477,7 @@ export type CalendarTimelineCompactItem = Pick<
 function toCompactItem(entry: CalendarTimelineEntry): CalendarTimelineCompactItem | CalendarDerivedTimelineItem {
   if (entry.kind !== "event" && entry.kind !== "task") return entry;
   const { id, kind, title, calendarId, allDay, date, endDate, timeFrom, status, counts, attendance } = entry;
-  const { updatedAt, readOnly } = entry;
+  const { updatedAt, version, readOnly } = entry;
   const compact = {
     id,
     kind,
@@ -487,6 +491,7 @@ function toCompactItem(entry: CalendarTimelineEntry): CalendarTimelineCompactIte
     counts,
     attendance,
     updatedAt,
+    version,
     readOnly,
   };
   return "seriesId" in entry ? { ...compact, seriesId: entry.seriesId, occurrenceDate: entry.occurrenceDate } : compact;

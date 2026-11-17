@@ -135,8 +135,8 @@ async function findExistingProposal(
 /**
  * Re-reads the unlocked `snapshot` under `FOR UPDATE` and returns it only if it is still the row the tick decided on:
  * live, not `confirmed`/`rejected`, same `fingerprint` and `aiVersion`. Otherwise logs why and returns `null`, and the
- * caller skips its write. A manual edit that moved only `updatedAt` does not count; the caller passes the locked
- * `updatedAt` as `ifVersion`.
+ * caller skips its write. A manual edit that moved only `updatedAt` and `version` does not count; the caller passes
+ * the locked `version` as `ifVersion`.
  *
  * The repeatable-read phase treats a serialization conflict as changed. The post-model phase uses a nonblocking lock so
  * a confirmation holding the card cannot wait on the source while this transaction waits on the card. The savepoint
@@ -423,7 +423,7 @@ async function writeNeedsClarification(
       {
         databaseId: config.processingProposalsDatabaseId,
         itemId: locked.id,
-        ifVersion: locked.updatedAt,
+        ifVersion: locked.version,
         propertiesPatch: {
           fingerprint,
           proposal: null,
@@ -539,7 +539,7 @@ async function invalidateProposalForDeletedSource(
     {
       databaseId: config.processingProposalsDatabaseId,
       itemId: locked.id,
-      ifVersion: locked.updatedAt,
+      ifVersion: locked.version,
       propertiesPatch: {
         status: "invalid",
         reason: null,
@@ -606,7 +606,7 @@ async function reopenRestoredSourceProposal(
     {
       databaseId: config.processingProposalsDatabaseId,
       itemId: locked.id,
-      ifVersion: locked.updatedAt,
+      ifVersion: locked.version,
       propertiesPatch: {
         status: "proposed",
         invalidReason: null,
@@ -751,7 +751,7 @@ async function reviseProposal(
     {
       databaseId: config.processingProposalsDatabaseId,
       itemId: locked.id,
-      ifVersion: locked.updatedAt,
+      ifVersion: locked.version,
       propertiesPatch: {
         fingerprint,
         proposal: merged.effective,
@@ -928,7 +928,7 @@ async function writeComputeFailure(
       {
         databaseId: config.processingProposalsDatabaseId,
         itemId: locked.id,
-        ifVersion: locked.updatedAt,
+        ifVersion: locked.version,
         propertiesPatch: { fingerprint: null, status: "computeFailed", history },
       },
       { allowedSystemKeys: ["fingerprint", "status", "history"] },

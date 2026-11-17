@@ -45,6 +45,7 @@ const SAMPLE_ITEM: ItemRow = {
   createdAt: "2026-09-11T00:00:00.000Z",
   updatedAt: "2026-09-11T00:00:00.000Z",
   deletedAt: null,
+  version: "1",
 };
 
 async function tokenFor(email: string, role?: "admin" | "member", tenantId?: string): Promise<string> {
@@ -490,6 +491,7 @@ describe("adapter route (issue #238)", () => {
         linkLabels: [],
         followUp: null,
         updatedAt: SAMPLE_ITEM.updatedAt,
+        version: SAMPLE_ITEM.version,
         blockIds: [],
       },
     ];
@@ -625,6 +627,7 @@ describe("adapter route (issue #238)", () => {
         linkLabels: [],
         followUp: null,
         updatedAt: item.updatedAt,
+        version: item.version,
         blockIds: [],
       },
     ];

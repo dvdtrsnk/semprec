@@ -152,6 +152,8 @@ export interface Item {
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+  /** The optimistic-concurrency token a patch passes back as `ifVersion`; a decimal integer string. */
+  version: string;
   /** Present on item reads and queries: true exactly when the item was created from an Inbox proposal. */
   fromInbox?: boolean;
   relations?: Record<string, ItemRelationTarget[]>;

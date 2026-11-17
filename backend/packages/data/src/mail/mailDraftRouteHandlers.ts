@@ -162,7 +162,7 @@ export function createMailDraftReadRouteHandler(pool: Pool) {
   };
 }
 
-/** `PATCH /api/mail/drafts/:id`: `ifVersion` is the `updatedAt` the caller read; absent fields keep their value. */
+/** `PATCH /api/mail/drafts/:id`: `ifVersion` is the `version` the caller read; absent fields keep their value. */
 export function createMailDraftUpdateRouteHandler(pool: Pool) {
   const queueAffinity = createActionQueueAffinity();
   return async (ctx: DraftRouteContext): DraftRouteResult<EmailDraftView> => {

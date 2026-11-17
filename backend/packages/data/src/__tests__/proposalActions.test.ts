@@ -4282,7 +4282,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       const card = await createDatabaseProposal("Buy milk");
 
       const revised = await revise(card.id, {
-        ifVersion: card.updatedAt,
+        ifVersion: card.version,
         entityKind: "database",
         target: tasksId,
         properties: { name: "Buy bread" },
@@ -4295,7 +4295,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       const cardId = await createTranscriptCard();
       const card = await readCard(cardId);
 
-      const revised = await revise(cardId, { ifVersion: card.updatedAt, message: "Note this" });
+      const revised = await revise(cardId, { ifVersion: card.version, message: "Note this" });
 
       const history = revised.properties.history as Array<Record<string, unknown>>;
       expect(history[history.length - 1]).toMatchObject({ author: "user", message: "Note this" });
@@ -4346,7 +4346,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       );
       const current = await readCard(cardId);
 
-      const error = await revise(cardId, { ifVersion: card.updatedAt, message: "Stale note" }).catch((e: unknown) => e);
+      const error = await revise(cardId, { ifVersion: card.version, message: "Stale note" }).catch((e: unknown) => e);
 
       expect(error).toBeInstanceOf(ConflictError);
       expect(error).toMatchObject({ code: "version_conflict", details: { current } });
@@ -4711,14 +4711,14 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     it("accepts a current ifVersion", async () => {
       const card = await createDatabaseProposal("Send the invoice");
 
-      const edited = await edit(card.id, { primary: { name: "Edited" } }, (await readCard(card.id)).updatedAt);
+      const edited = await edit(card.id, { primary: { name: "Edited" } }, (await readCard(card.id)).version);
 
       expect(edited.properties.userEditedKeys).toEqual(["primary.name"]);
     });
 
     it("answers a stale ifVersion with a ConflictError carrying the current card, and writes nothing", async () => {
       const card = await createDatabaseProposal("Send the invoice");
-      const stale = (await readCard(card.id)).updatedAt;
+      const stale = (await readCard(card.id)).version;
       await edit(card.id, { primary: { name: "First edit" } });
       const current = await readCard(card.id);
 
@@ -5521,7 +5521,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       it("refuses a revision whose ifVersion is not the card's current version, and writes nothing", async () => {
         const card = await createDatabaseProposal("Send the invoice");
         const sourceId = await sourceOf(card.id);
-        const seen = (await readCard(card.id)).updatedAt;
+        const seen = (await readCard(card.id)).version;
         await edit(card.id, { primary: { name: "Poslat fakturu Alze" } });
         const before = await readCard(card.id);
 
@@ -5535,7 +5535,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
 
         const current = await reviseFromThread(card.id, sourceId, {
           properties: { name: "Poslat fakturu Alze" },
-          ifVersion: before.updatedAt,
+          ifVersion: before.version,
         });
         expect(current.properties.userOverrides).toEqual({ primary: { name: "Poslat fakturu Alze" } });
       });
@@ -7053,14 +7053,14 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     it("accepts a current ifVersion", async () => {
       const edited = await editedCard();
 
-      const restored = await reset(edited.id, edited.updatedAt);
+      const restored = await reset(edited.id, edited.version);
 
       expect(restored.properties.userEditedKeys).toEqual([]);
     });
 
     it("answers a stale ifVersion with a ConflictError carrying the current card, and writes nothing", async () => {
       const card = await createDatabaseProposal("Send the invoice");
-      const stale = (await readCard(card.id)).updatedAt;
+      const stale = (await readCard(card.id)).version;
       await edit(card.id, { primary: { name: "First edit" } });
       const current = await readCard(card.id);
 
@@ -7075,7 +7075,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
 
     it("answers a stale ifVersion with a ConflictError also when nothing is edited", async () => {
       const card = await createDatabaseProposal("Send the invoice");
-      const stale = (await readCard(card.id)).updatedAt;
+      const stale = (await readCard(card.id)).version;
       await store(card.id, { reason: "changed since" });
 
       const error = await expectRefusedUnchanged(card.id, () => reset(card.id, stale));
@@ -7378,7 +7378,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       const first = await recompute(card.id);
       await discardQueuedJobs();
 
-      const second = await recompute(card.id, { ifVersion: card.updatedAt });
+      const second = await recompute(card.id, { ifVersion: card.version });
 
       expect(card.updatedAt).not.toBe(first.updatedAt);
       expect(plain(second)).toEqual(plain(first));
@@ -7482,7 +7482,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       const current = await readCard(card.id);
       expect(current.updatedAt).not.toBe(card.updatedAt);
 
-      const error = await expectRefusedUnchanged(card.id, () => recompute(card.id, { ifVersion: card.updatedAt }));
+      const error = await expectRefusedUnchanged(card.id, () => recompute(card.id, { ifVersion: card.version }));
 
       expect(error).toBeInstanceOf(ConflictError);
       expect(error).toMatchObject({ status: 409, code: "version_conflict", details: { current } });
@@ -7491,7 +7491,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     it("accepts the current ifVersion", async () => {
       const { card, itemId } = await editedCard();
 
-      const answered = await recompute(card.id, { ifVersion: card.updatedAt });
+      const answered = await recompute(card.id, { ifVersion: card.version });
 
       expect(answered.properties.status).toBe("computing");
       expect(await queuedJobs()).toEqual([{ key: await tickJobKey(itemId), revision: 0 }]);
@@ -7614,7 +7614,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         const { card } = await computingCard();
         clockAfter(COMPUTING_TIMEOUT_MS + MINUTE_MS);
 
-        const answered = await recompute(card.id, { ifVersion: card.updatedAt });
+        const answered = await recompute(card.id, { ifVersion: card.version });
 
         expect(answered.updatedAt).not.toBe(card.updatedAt);
       });

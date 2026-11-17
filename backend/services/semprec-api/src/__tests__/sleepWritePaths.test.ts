@@ -41,7 +41,7 @@ const tmpBlobDir = join(tmpdir(), `semprec-test-blobs-${randomUUID()}`);
 const noopMailer: PasswordResetMailer = { async sendPasswordResetEmail() {} };
 const moduleRegistry = await loadFullModuleRegistry();
 
-const itemBody = z.object({ id: z.string(), updatedAt: z.string() }).passthrough();
+const itemBody = z.object({ id: z.string(), updatedAt: z.string(), version: z.string() }).passthrough();
 const storedRow = z.object({ id: z.string(), properties: z.record(z.string(), z.unknown()) });
 const restError = z.object({
   error: z.object({ code: z.string(), details: z.record(z.string(), z.unknown()) }).strict(),
@@ -194,13 +194,13 @@ describe("sleep value rules and one-item-per-key rules through REST and the agen
   async function versionOf(itemId: string): Promise<string> {
     const res = await fetch(`${baseUrl}/api/items/${itemId}`, { headers });
     expect(res.status).toBe(200);
-    return itemBody.parse(await res.json()).updatedAt;
+    return itemBody.parse(await res.json()).version;
   }
 
   function refuse(
     transport: Transport,
     operation: "create" | "patch",
-    target: { databaseId: string; itemId?: string; updatedAt?: string },
+    target: { databaseId: string; itemId?: string; updatedAt?: string; version?: string },
     properties: Record<string, unknown>,
   ): Promise<Refusal> {
     if (operation === "create") {
@@ -208,9 +208,9 @@ describe("sleep value rules and one-item-per-key rules through REST and the agen
         ? restRefusal("POST", `/api/databases/${target.databaseId}/items`, { properties })
         : gatewayRefusal("item.create", { databaseId: target.databaseId, properties });
     }
-    const input = { itemId: target.itemId, properties, ifVersion: target.updatedAt };
+    const input = { itemId: target.itemId, properties, ifVersion: target.version };
     return transport === "rest"
-      ? restRefusal("PATCH", `/api/items/${target.itemId}`, { properties, ifVersion: target.updatedAt })
+      ? restRefusal("PATCH", `/api/items/${target.itemId}`, { properties, ifVersion: target.version })
       : gatewayRefusal("item.patch", input);
   }
 
@@ -275,7 +275,7 @@ describe("sleep value rules and one-item-per-key rules through REST and the agen
         const refusal = await refuse(
           transport,
           "patch",
-          { databaseId: databaseIds[key], itemId: target.id, updatedAt: await versionOf(target.id) },
+          { databaseId: databaseIds[key], itemId: target.id, version: await versionOf(target.id) },
           patch,
         );
 
@@ -353,7 +353,7 @@ describe("sleep value rules and one-item-per-key rules through REST and the agen
       const refusal = await refuse(
         transport,
         "patch",
-        { databaseId: databaseIds.sleepNights, itemId: moving.id, updatedAt: moving.updatedAt },
+        { databaseId: databaseIds.sleepNights, itemId: moving.id, version: moving.version },
         { night: "2026-10-16" },
       );
 

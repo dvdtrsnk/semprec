@@ -597,15 +597,13 @@ describe("PUT /api/inbox/items/:id/type (issue gh-1947)", () => {
       },
     );
 
-    it("answers 409 version_conflict with the current card for an ifVersion that is not the card's updatedAt, and changes nothing", async () => {
+    it("answers 409 version_conflict with the current card for an ifVersion that is not the card's version, and changes nothing", async () => {
       const { itemId, cardId } = await proposedTaskItem(p);
       const newTypeId = await createType(p, "Event", EVENT_TYPE);
       await discardQueuedJobs();
       const before = await writtenState(p, itemId);
 
-      await expect(
-        change(p, itemId, { typeId: newTypeId, ifVersion: "2000-01-01T00:00:00.000Z" }),
-      ).rejects.toMatchObject({
+      await expect(change(p, itemId, { typeId: newTypeId, ifVersion: "999999999" })).rejects.toMatchObject({
         status: 409,
         code: "version_conflict",
         details: { current: { id: cardId, updatedAt: before.card?.updatedAt } },
@@ -614,12 +612,12 @@ describe("PUT /api/inbox/items/:id/type (issue gh-1947)", () => {
       expect(await writtenState(p, itemId)).toEqual(before);
     });
 
-    it("accepts the card's current updatedAt as ifVersion", async () => {
+    it("accepts the card's current version as ifVersion", async () => {
       const { itemId } = await proposedTaskItem(p);
       const newTypeId = await createType(p, "Event", EVENT_TYPE);
-      const { updatedAt } = await requireCard(p, itemId);
+      const { version } = await requireCard(p, itemId);
 
-      await change(p, itemId, { typeId: newTypeId, ifVersion: updatedAt });
+      await change(p, itemId, { typeId: newTypeId, ifVersion: version });
 
       expect(await typeIdsOf(p, itemId)).toEqual([newTypeId]);
       expect((await requireCard(p, itemId)).properties.status).toBe("computing");

@@ -111,6 +111,7 @@ export const confirmationResultSchema = z.object({
   linkLabels: z.array(z.string()),
   followUp: z.enum(["transcriptionQueued", "mcpSyncQueued"]).nullable(),
   updatedAt: z.string(),
+  version: z.string(),
   blockIds: z.array(z.string()),
 });
 export type ConfirmationResult = z.infer<typeof confirmationResultSchema>;
@@ -712,6 +713,7 @@ export async function confirmProposalWithClient(
               ? "mcpSyncQueued"
               : null,
         updatedAt: item.updatedAt,
+        version: item.version,
         blockIds: written.ref === "primary" ? blockIds : [],
       });
     }
@@ -861,6 +863,7 @@ export async function settleSpeakerCardWithClient(
       linkLabels: [personLabel],
       followUp: null,
       updatedAt: transcript.updatedAt,
+      version: transcript.version,
       blockIds: [],
     },
   ];

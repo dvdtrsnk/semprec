@@ -13,6 +13,7 @@ function folder(id: string, specialPurpose: string): Item {
     computed: {},
     updatedAt: "2026-10-29T00:00:00.000Z",
     deletedAt: null,
+    version: "1",
   };
 }
 

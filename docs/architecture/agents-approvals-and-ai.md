@@ -305,7 +305,7 @@ The project set on a mail thread never takes part in a send decision.
 - Reopening a confirmed card (`undoConfirmedProposal.ts`) reverses only what confirm recorded: created items
   soft-deleted, patched values restored, recorded edges reversed (`writtenRelations`, `removedRelations` written by
   `writeRecordedEdge`), derived blocks removed, stored MCP credentials deleted, queued follow-ups cancelled. Every
-  touched item must still have its recorded `updatedAt`, else 409 `version_conflict`. Files moved from an attachment
+  touched item must still have its recorded `version`, else 409 `version_conflict`. Files moved from an attachment
   stay and are named. No time limit. Any new confirm step defines its recorded data and reversal.
 - Reopening a rejected card recomputes nothing: the stored envelope is revalidated and the card becomes `proposed` or
   `invalid`.

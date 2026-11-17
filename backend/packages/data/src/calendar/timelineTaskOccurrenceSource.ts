@@ -17,6 +17,8 @@ import type { CalendarTaskOccurrence, CalendarTimelineContext } from "./timeline
 
 /** A virtual occurrence has no version to pass back; a constant keeps reads stable. */
 const VIRTUAL_UPDATED_AT = new Date(0).toISOString();
+/** Below every stored version, which starts at 1. */
+const VIRTUAL_VERSION = "0";
 
 /** The projection refuses more than 400 days, and `readCalendarTimeline` does not bound its range. */
 const PROJECTION_WINDOW_DAYS = 400;
@@ -91,6 +93,7 @@ function virtualEntry(
     counts: null,
     carriedFrom: null,
     updatedAt: VIRTUAL_UPDATED_AT,
+    version: VIRTUAL_VERSION,
     readOnly: true,
     seriesId: occurrence.seriesId,
     occurrenceDate: occurrence.occurrenceDate,
@@ -102,7 +105,12 @@ function virtualEntry(
 function storedRows(occurrences: StoredOccurrence[]): StoredRow[] {
   return occurrences
     .filter(({ item }) => item.properties.status !== "wontDo")
-    .map(({ item }) => ({ id: item.id, properties: item.properties, updated_at: new Date(item.updatedAt) }));
+    .map(({ item }) => ({
+      id: item.id,
+      properties: item.properties,
+      updated_at: new Date(item.updatedAt),
+      version: item.version,
+    }));
 }
 
 interface OccurrenceKey {

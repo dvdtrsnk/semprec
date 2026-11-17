@@ -79,7 +79,7 @@ export async function loadInboxCardThreadContext(
 
   const base = {
     proposalId: card.id,
-    version: card.updatedAt,
+    version: card.version,
     status: stored.status,
     source: await readSource(client, source),
   };

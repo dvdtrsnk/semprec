@@ -93,7 +93,7 @@ function confirmationEntry(proposal: ItemRow) {
 
 /**
  * Before any write, locks in id order every item the confirmation created, changed or wrote blocks into: one gone,
- * trashed or with a different `updatedAt` refuses with a 409 `version_conflict`. Moved-attachment Files items and
+ * trashed or with a different `version` refuses with a 409 `version_conflict`. Moved-attachment Files items and
  * merely linked items are not checked, since the undo overwrites neither.
  */
 async function assertNothingChanged(client: PoolClient, checked: ClassifiedResult[]): Promise<void> {
@@ -106,7 +106,7 @@ async function assertNothingChanged(client: PoolClient, checked: ClassifiedResul
   }
   for (const { result } of checked) {
     const item = current.get(result.itemId);
-    if (!item || item.deletedAt !== null || item.updatedAt !== result.updatedAt) {
+    if (!item || item.deletedAt !== null || item.version !== result.version) {
       throw new ConflictError("An item the confirmation wrote was changed since, so the undo would overwrite it", {
         itemId: result.itemId,
         databaseKey: result.databaseKey,

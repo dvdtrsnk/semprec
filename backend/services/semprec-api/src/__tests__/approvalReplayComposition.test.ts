@@ -417,7 +417,7 @@ describe("createApiQueueRuntime generic-operation approval replay (issue #646)",
         gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
           itemId: file.id,
           properties: { title: "Agent title" },
-          ifVersion: file.updatedAt,
+          ifVersion: file.version,
         }),
       );
       expect.unreachable("Expected approval");
@@ -487,7 +487,7 @@ describe("createApiQueueRuntime generic-operation approval replay (issue #646)",
           method: "tools/call",
           params: {
             name: "semprec.item.patch",
-            arguments: { itemId: file.id, properties: { title: "Human title" }, ifVersion: file.updatedAt },
+            arguments: { itemId: file.id, properties: { title: "Human title" }, ifVersion: file.version },
           },
         }),
       });

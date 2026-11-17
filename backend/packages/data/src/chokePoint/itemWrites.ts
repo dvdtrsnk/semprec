@@ -347,6 +347,13 @@ async function applyItemPreWriteTransforms(
   return transformed;
 }
 
+/** Re-reads a row this transaction wrote and still holds locked. */
+async function requireStoredItem(client: PoolClient, item: ItemRow): Promise<ItemRow> {
+  const stored = await itemsStore.getItemById(client, item.databaseId, item.id);
+  if (!stored) throw new NotFoundError(`Item ${item.id} not found`);
+  return stored;
+}
+
 /**
  * A create on an archived database is let through only as an exact replay of an idempotency key that
  * committed a row before archiving, so a retry does not turn a transient error permanent. Any other
@@ -430,7 +437,7 @@ export async function createItemReportingReplay(
   let itemProperties = input.properties ?? {};
   const defaultedKeys = new Set<string>();
   const moduleId = database.ownerModuleId;
-  const { item, created } = await itemsStore.insertItemWithReplay(
+  const { item: inserted, created } = await itemsStore.insertItemWithReplay(
     client,
     { databaseId: input.databaseId, properties: itemProperties, idempotencyKey: input.idempotencyKey },
     async () => {
@@ -480,19 +487,24 @@ export async function createItemReportingReplay(
       return itemProperties;
     },
   );
-  if (!created) return { item, created: false };
+  if (!created) return { item: inserted, created: false };
 
   // In the same transaction, so a rejection rolls the row back.
   await runItemCreateHooks({
     client,
     database,
-    item,
+    item: inserted,
     properties: itemProperties,
     defaultedKeys,
     humanWriterUserId: options.humanWriterUserId,
     writer,
     initialRelations,
   });
+  // A create hook may write the new item again (Areas assigns its `position`): answer with the row as stored.
+  const item =
+    itemsStore.itemPropertyWriteCount(client, inserted.databaseId, inserted.id) === 0
+      ? inserted
+      : await requireStoredItem(client, inserted);
   await triggerOnItemEventHeartbeats(client, input.databaseId, "create", item.id, options.queueAffinity);
   runAfterCommit(client, () =>
     notifyInvalidation({
@@ -607,7 +619,7 @@ export async function updateItemWithClient(
     stored = await itemsStore.lockItemById(client, input.databaseId, input.itemId);
     if (!stored || stored.deletedAt) throw new NotFoundError(`Item ${input.itemId} not found`);
   }
-  if (stored && input.ifVersion !== undefined && input.ifVersion !== stored.updatedAt) {
+  if (stored && input.ifVersion !== undefined && input.ifVersion !== stored.version) {
     throw new ConflictError("Item was modified since ifVersion was read", { current: stored });
   }
   const ordinaryPatch = { ...input.propertiesPatch };
@@ -653,28 +665,34 @@ export async function updateItemWithClient(
     }
   }
 
-  const { previous, ...item } = await itemsStore.updateItemProperties(client, {
+  const { previous, ...written } = await itemsStore.updateItemProperties(client, {
     databaseId: input.databaseId,
     itemId: input.itemId,
     propertiesPatch,
     ifVersion: input.ifVersion,
   });
+  const ownWriteCount = itemsStore.itemPropertyWriteCount(client, written.databaseId, written.id);
   // A user or agent write that changes a linked value ends its link here. An agent under a run asks
   // for approval first, rolling this transaction back.
   const changedKeys = writtenKeys.filter((key) => !isDeepStrictEqual(previous[key], propertiesPatch[key]));
-  await requireApprovalForChangedItemLinks(client, writer, { itemId: item.id, changedKeys });
-  await breakValueLinks(client, { itemId: item.id, propertyKeys: changedKeys, writerKind: writer.writerKind });
+  await requireApprovalForChangedItemLinks(client, writer, { itemId: written.id, changedKeys });
+  await breakValueLinks(client, { itemId: written.id, propertyKeys: changedKeys, writerKind: writer.writerKind });
   // Every domain's transactional side effect on this write runs here, in the same transaction.
   await runItemUpdateHooks({
     client,
     database,
-    item,
+    item: written,
     propertiesPatch,
     previous,
     humanWriterUserId: options.humanWriterUserId,
     writer,
     skipMailDesiredStateRecording: options.skipMailDesiredStateRecording,
   });
+  // An update hook may write the same item again: answer with the row as stored, so its `version` is current.
+  const item =
+    itemsStore.itemPropertyWriteCount(client, written.databaseId, written.id) === ownWriteCount
+      ? written
+      : await requireStoredItem(client, written);
   await triggerOnItemEventHeartbeats(client, input.databaseId, "update", item.id, options.queueAffinity);
 
   for (const key of writtenKeys) {
@@ -814,6 +832,7 @@ export function createItemWriteOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
                   createdAt: z.string(),
                   updatedAt: z.string(),
                   deletedAt: z.string().nullable(),
+                  version: z.string(),
                 })
                 .passthrough(),
             })

@@ -89,7 +89,7 @@ export async function reviseProposalFromThreadWithClient(
   if (isFinalInvalid(proposal.properties)) {
     throw new ValidationError("Cannot revise a proposal whose source Inbox item was deleted", { field: "status" });
   }
-  if (input.ifVersion !== undefined && input.ifVersion !== proposal.updatedAt) {
+  if (input.ifVersion !== undefined && input.ifVersion !== proposal.version) {
     throw new ConflictError(
       "The card was changed after you read it. Read it again with inbox.proposal.get and compose the revision from its current envelope.",
       { field: "ifVersion" },

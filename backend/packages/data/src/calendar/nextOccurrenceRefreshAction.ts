@@ -30,7 +30,7 @@ async function lockStaleBatch(
   afterId: string | null,
 ): Promise<StoredRow[]> {
   const { rows } = await client.query<StoredRow>(
-    `SELECT id, properties, updated_at FROM items
+    `SELECT id, properties, updated_at, version FROM items
       WHERE database_id = $1 AND deleted_at IS NULL
         AND jsonb_typeof(properties->'recurrence') = 'object'
         AND properties->'seriesId' IS NULL

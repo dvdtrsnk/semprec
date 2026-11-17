@@ -44,6 +44,7 @@ const itemEnvelope = z.object({
   databaseId: z.string(),
   properties: z.record(z.string(), z.unknown()),
   updatedAt: z.string(),
+  version: z.string(),
 });
 const propertyEnvelope = z.object({ id: z.string(), key: z.string(), config: z.record(z.string(), z.unknown()) });
 
@@ -248,7 +249,7 @@ describe("batch 34 entry-point contracts", () => {
     for (const patch of [{ seriesId: randomUUID() }, { occurrenceDate: "2026-10-19" }]) {
       const refused = await call("PATCH", `/api/items/${task.id}`, own.headers, {
         properties: patch,
-        ifVersion: before.updatedAt,
+        ifVersion: before.version,
       });
       expect(refused.status).toBe(403);
       expect(errorBody.parse(refused.json).error).toMatchObject({
@@ -258,7 +259,7 @@ describe("batch 34 entry-point contracts", () => {
     }
     const malformed = await call("PATCH", `/api/items/${task.id}`, own.headers, {
       properties: { recurrence: { preset: null, mode: "fixed", rule } },
-      ifVersion: before.updatedAt,
+      ifVersion: before.version,
     });
     expect(malformed.status).toBe(400);
     const after = await call("GET", `/api/items/${task.id}`, own.headers);
@@ -267,7 +268,7 @@ describe("batch 34 entry-point contracts", () => {
     expect(invalidations).toEqual([]);
     const permitted = await call("PATCH", `/api/items/${task.id}`, own.headers, {
       properties: { recurrence: { mode: "fixed", rule } },
-      ifVersion: before.updatedAt,
+      ifVersion: before.version,
     });
     expect(permitted.status).toBe(200);
 

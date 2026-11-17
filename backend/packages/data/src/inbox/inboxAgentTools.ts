@@ -91,7 +91,7 @@ export function createInboxProposalGetTool(pool: Pool) {
           attachments: attachments.map((attachment) => ({ attachmentId: attachment.attachmentId, name: null })),
           envelope: parseStoredProposalEnvelope(cardProperties.proposal, card.id),
           userEditedKeys: cardProperties.userEditedKeys ?? [],
-          version: card.updatedAt,
+          version: card.version,
           status: cardProperties.status,
           history: history.success ? history.data : [],
         }),
@@ -205,7 +205,7 @@ export function createInboxProposalReviseTool(pool: Pool) {
         publishInboxCardChange(client, revised.id, "updated");
         return {
           error: false,
-          result: JSON.stringify({ proposalId: revised.id, revised: true, version: revised.updatedAt }),
+          result: JSON.stringify({ proposalId: revised.id, revised: true, version: revised.version }),
         };
       });
     } catch (error) {
@@ -313,7 +313,7 @@ export function createInboxProposalSplitTool(pool: Pool) {
             proposalId: split.primary.id,
             siblingProposalIds: split.siblings.map((sibling) => sibling.id),
             split: true,
-            version: split.primary.updatedAt,
+            version: split.primary.version,
           }),
         };
       });

@@ -80,6 +80,7 @@ describe("compose sender (issue #98)", () => {
         computed: {},
         updatedAt: "",
         deletedAt: null,
+        version: "1",
       },
     ]);
     expect(options).toEqual([

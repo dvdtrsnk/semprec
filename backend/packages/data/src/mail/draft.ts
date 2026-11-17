@@ -163,7 +163,7 @@ export interface CreateEmailDraftInMailboxInput extends EmailDraftFields {
 
 export interface UpdateEmailDraftInput extends Partial<EmailDraftFields> {
   draftItemId: string;
-  /** The `updatedAt` the caller read. */
+  /** The `version` the caller read. */
   ifVersion: string;
   /** A value other than the draft's own is refused. */
   mailboxItemId?: string;
@@ -189,8 +189,9 @@ export interface EmailDraftView {
   attachments: DraftAttachment[];
   createdBy: MailDraftActor;
   lastEditedBy: MailDraftActor;
-  /** Sent back as `ifVersion` on a later `PATCH`. */
   updatedAt: string;
+  /** Sent back as `ifVersion` on a later `PATCH`. */
+  version: string;
   sentAt: string | null;
 }
 
@@ -216,6 +217,7 @@ function toEmailDraftView(item: ItemRow, draft: MailDraft, attachments: DraftAtt
     createdBy: draft.createdBy,
     lastEditedBy: draft.lastEditedBy,
     updatedAt: item.updatedAt,
+    version: item.version,
     sentAt: draft.sentAt === null ? null : draft.sentAt.toISOString(),
   };
 }
@@ -358,7 +360,7 @@ export async function updateEmailDraft(
   const ids = await resolveMailModuleIds(client);
   const { emailsDatabaseId, mailboxesDatabaseId } = ids;
   const { item, draft } = await lockUnsentDraft(client, emailsDatabaseId, input.draftItemId);
-  if (input.ifVersion !== item.updatedAt) {
+  if (input.ifVersion !== item.version) {
     throw new ConflictError("Draft was modified since ifVersion was read", { current: item });
   }
   if (input.mailboxItemId !== undefined && input.mailboxItemId !== draft.mailboxItemId) {

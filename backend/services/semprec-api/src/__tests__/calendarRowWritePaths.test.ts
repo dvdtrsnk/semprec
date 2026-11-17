@@ -31,6 +31,7 @@ const restError = z.object({
 const calendarRow = z.object({
   id: z.string(),
   updatedAt: z.string(),
+  version: z.string(),
   properties: z.object({ name: z.string(), isDefault: z.boolean().optional() }).passthrough(),
 });
 
@@ -115,7 +116,7 @@ describe("the generic item routes apply the calendar row rules (issue #1778)", (
   /** The properties and the version it read. */
   async function patchRequest(name: string, properties: Record<string, unknown>) {
     const row = await calendar(name);
-    return { path: `/api/items/${row.id}`, body: { properties, ifVersion: row.updatedAt } };
+    return { path: `/api/items/${row.id}`, body: { properties, ifVersion: row.version } };
   }
 
   async function patch(name: string, properties: Record<string, unknown>) {

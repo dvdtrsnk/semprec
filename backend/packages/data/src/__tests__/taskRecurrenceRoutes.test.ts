@@ -150,7 +150,7 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
         cp.updateItem({
           databaseId: tasksId,
           itemId: id,
-          ifVersion: first.updatedAt,
+          ifVersion: first.version,
           propertiesPatch: { recurrence: { preset: "weekly" } },
         }),
       );
@@ -168,7 +168,7 @@ describe("PUT and DELETE /api/tasks/:id/recurrence (issue #1665)", () => {
       cp.updateItem({
         databaseId: tasksId,
         itemId: id,
-        ifVersion: same.updatedAt,
+        ifVersion: same.version,
         propertiesPatch: { recurrence: null },
       }),
     );

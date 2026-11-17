@@ -61,6 +61,7 @@ const draftSchema = z.looseObject({
   createdBy: z.string(),
   lastEditedBy: z.string(),
   updatedAt: z.string(),
+  version: z.string(),
   sentAt: z.string().nullable(),
 });
 const refusalSchema = z.looseObject({
@@ -1330,7 +1331,7 @@ describe("the mail agent tools (issue gh-1927)", () => {
           withTransaction(runtime, (client) =>
             updateEmailDraft(
               client,
-              { draftItemId: created.id, ifVersion: created.updatedAt, body: "Edited by the user" },
+              { draftItemId: created.id, ifVersion: created.version, body: "Edited by the user" },
               { writer: { writerKind: "user" }, actingUserId: tenant.userId },
             ),
           ),

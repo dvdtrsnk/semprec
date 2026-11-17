@@ -225,7 +225,7 @@ const CASES: Record<GenericOperationName, Case> = {
     }),
   },
   "item.patch": {
-    args: (fx) => ({ itemId: fx.itemA.id, properties: { title: "Updated" }, ifVersion: fx.itemA.updatedAt }),
+    args: (fx) => ({ itemId: fx.itemA.id, properties: { title: "Updated" }, ifVersion: fx.itemA.version }),
   },
   "item.delete": { args: (fx) => ({ itemId: fx.itemB.id }) },
   "item.restore": {
@@ -617,7 +617,7 @@ describe("generic operation AgentTools contract (issue #220)", () => {
         const patch = async (properties: Record<string, unknown>) => {
           const current = await cp.getItem(areas.id, item.id);
           if (!current) throw new Error("Area missing");
-          return tools["item.patch"](run.id, { itemId: item.id, properties, ifVersion: current.updatedAt });
+          return tools["item.patch"](run.id, { itemId: item.id, properties, ifVersion: current.version });
         };
         expect((await patch({ icon: "briefcase", color: "#5856D6" })).error).toBe(false);
         const before = await cp.getItem(areas.id, item.id);

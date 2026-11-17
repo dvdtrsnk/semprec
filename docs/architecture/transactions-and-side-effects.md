@@ -33,6 +33,14 @@ concurrent writers are ordered. What may be written, and by whom, is in
   that catches a busy/refusal error cannot commit earlier work. The mark survives savepoint rollback.
 - An escaping error from `fn` stays primary; cleanup failures never replace it.
 
+### Transaction-local state
+
+- `TransactionLocal` (`data/db/pool.ts`) holds a module's state for one `withTransaction` invocation,
+  keyed on the invocation itself, so nothing in it outlives the transaction or reaches another one.
+  A savepoint rollback does not reset it; it may only hold facts that stay safe after one. The item
+  store counts each transaction's property writes per item in it, so a create or update whose hooks
+  wrote the same item again re-reads the row and answers with its current `version`.
+
 ### Savepoints
 
 - `withSavepoint(client, fn)` runs one step of the active managed transaction between `SAVEPOINT`

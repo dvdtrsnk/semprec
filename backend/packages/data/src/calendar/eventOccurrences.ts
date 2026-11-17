@@ -24,7 +24,7 @@ export async function readLiveEventSeries(
   to: string,
 ): Promise<StoredRow[]> {
   const { rows } = await client.query<StoredRow>(
-    `SELECT id, properties, updated_at FROM items
+    `SELECT id, properties, updated_at, version FROM items
       WHERE database_id = $1 AND deleted_at IS NULL
         AND jsonb_typeof(properties->'recurrence') = 'object'
         AND properties->'seriesId' IS NULL
@@ -85,7 +85,7 @@ async function readOccurrenceItems(
   range: EventOccurrenceRange,
 ): Promise<OccurrenceItems> {
   const { rows } = await client.query<OccurrenceRow>(
-    `SELECT i.id, i.properties, i.updated_at, i.deleted_at,
+    `SELECT i.id, i.properties, i.updated_at, i.version, i.deleted_at,
             i.properties->>'seriesId' AS series_id, i.properties->>'occurrenceDate' AS occurrence_date,
             (left(i.properties->>'date', 10) COLLATE "C" <= $6
              AND coalesce(left(i.properties->>'endDate', 10), left(i.properties->>'date', 10)) COLLATE "C" >= $5)

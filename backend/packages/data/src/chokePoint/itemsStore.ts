@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { requireAffectedRows, requireSingleRow, type Queryable } from "../db/pool.js";
+import { requireAffectedRows, requireSingleRow, TransactionLocal, type Queryable } from "../db/pool.js";
 import { ConflictError, NotFoundError } from "../errors.js";
 import type { ItemRow } from "../types.js";
 
@@ -12,6 +12,8 @@ type ItemDbRow = {
   created_at: Date;
   updated_at: Date;
   deleted_at: Date | null;
+  /** `bigint`, which pg returns as a decimal string. */
+  version: string;
 };
 
 /**
@@ -36,6 +38,7 @@ function mapItemRow(row: ItemDbRow): ItemRow {
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
     deletedAt: row.deleted_at ? row.deleted_at.toISOString() : null,
+    version: row.version,
   };
 }
 
@@ -50,7 +53,7 @@ export async function visibleDatabaseIds(client: Queryable): Promise<string[]> {
 
 export async function getItemById(client: Queryable, databaseId: string, itemId: string): Promise<ItemRow | null> {
   const { rows } = await client.query<ItemDbRow>(
-    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at
+    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at, version
      FROM items WHERE database_id = $1 AND id = $2`,
     [databaseId, itemId],
   );
@@ -59,7 +62,7 @@ export async function getItemById(client: Queryable, databaseId: string, itemId:
 
 export async function lockItemById(client: Queryable, databaseId: string, itemId: string): Promise<ItemRow | null> {
   const { rows } = await client.query<ItemDbRow>(
-    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at
+    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at, version
      FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE`,
     [databaseId, itemId],
   );
@@ -78,7 +81,7 @@ export async function lockTrashedItemBefore(
   cutoff: Date,
 ): Promise<ItemRow | null> {
   const { rows } = await client.query<ItemDbRow>(
-    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at
+    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at, version
      FROM items WHERE database_id = $1 AND id = $2 AND deleted_at IS NOT NULL AND deleted_at < $3 FOR UPDATE`,
     [databaseId, itemId, cutoff],
   );
@@ -92,7 +95,7 @@ export async function lockItemByIdNowait(
   itemId: string,
 ): Promise<ItemRow | null> {
   const { rows } = await client.query<Record<string, unknown>>(
-    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at
+    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at, version
      FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE NOWAIT`,
     [databaseId, itemId],
   );
@@ -107,6 +110,7 @@ export async function lockItemByIdNowait(
         created_at: z.date(),
         updated_at: z.date(),
         deleted_at: z.date().nullable(),
+        version: z.string(),
       })
       .parse(rows[0]),
   );
@@ -193,7 +197,7 @@ export async function insertItemWithReplay(
   const properties = resolveCreateProperties ? await resolveCreateProperties() : input.properties;
   const { rows } = await client.query<ItemDbRow>(
     `INSERT INTO items (id, database_id, properties) VALUES ($1, $2, $3::jsonb)
-     RETURNING id, database_id, properties, computed, created_at, updated_at, deleted_at`,
+     RETURNING id, database_id, properties, computed, created_at, updated_at, deleted_at, version`,
     [itemId, input.databaseId, JSON.stringify(properties)],
   );
   return { item: mapItemRow(requireSingleRow(rows, "items row")), created: true };
@@ -235,7 +239,7 @@ export interface UpdateItemInput {
   databaseId: string;
   itemId: string;
   propertiesPatch: Record<string, unknown>;
-  /** The `updated_at` the client last held; a mismatch is a conflict, not a silent overwrite. */
+  /** The `version` the client last held; a mismatch is a conflict, not a silent overwrite. */
   ifVersion?: string;
 }
 
@@ -243,21 +247,36 @@ export interface UpdateItemResult extends ItemRow {
   previous: Record<string, unknown>;
 }
 
+/** Per transaction and item (`databaseId/id`), how many `updateItemProperties` calls wrote the row. */
+const propertyWriteCounts = new TransactionLocal(() => new Map<string, number>());
+
+/**
+ * How many times this transaction wrote the item's properties so far; `0` outside a managed transaction. A caller
+ * that holds a row compares two readings to learn whether a nested write (a hook writing the same item) made its
+ * row, and so its `version`, stale. A rolled-back savepoint may leave the count higher than the stored writes.
+ */
+export function itemPropertyWriteCount(client: Queryable, databaseId: string, itemId: string): number {
+  return propertyWriteCounts.get(client)?.get(`${databaseId}/${itemId}`) ?? 0;
+}
+
 export async function updateItemProperties(client: Queryable, input: UpdateItemInput): Promise<UpdateItemResult> {
   const current = await lockItemById(client, input.databaseId, input.itemId);
   if (!current || current.deletedAt) {
     throw new NotFoundError(`Item ${input.itemId} not found`);
   }
-  if (input.ifVersion !== undefined && input.ifVersion !== current.updatedAt) {
+  if (input.ifVersion !== undefined && input.ifVersion !== current.version) {
     throw new ConflictError("Item was modified since ifVersion was read", { current });
   }
 
   const { rows } = await client.query<ItemDbRow>(
-    `UPDATE items SET properties = properties || $3::jsonb, updated_at = now()
+    `UPDATE items SET properties = properties || $3::jsonb, updated_at = now(), version = version + 1
      WHERE database_id = $1 AND id = $2
-     RETURNING id, database_id, properties, computed, created_at, updated_at, deleted_at`,
+     RETURNING id, database_id, properties, computed, created_at, updated_at, deleted_at, version`,
     [input.databaseId, input.itemId, JSON.stringify(input.propertiesPatch)],
   );
+  const counts = propertyWriteCounts.get(client);
+  const countKey = `${input.databaseId}/${input.itemId}`;
+  counts?.set(countKey, (counts.get(countKey) ?? 0) + 1);
   return {
     ...mapItemRow(requireSingleRow(rows, "items row")),
     previous: Object.fromEntries(
@@ -282,7 +301,7 @@ export async function softDeleteItem(
   const { rows } = await client.query<ItemDbRow>(
     `UPDATE items SET deleted_at = COALESCE($3::timestamptz, now())
       WHERE database_id = $1 AND id = $2 AND deleted_at IS NULL
-     RETURNING id, database_id, properties, computed, created_at, updated_at, deleted_at`,
+     RETURNING id, database_id, properties, computed, created_at, updated_at, deleted_at, version`,
     [databaseId, itemId, deletedAtExact ?? null],
   );
   return rows[0] ? mapItemRow(rows[0]) : null;
@@ -308,7 +327,7 @@ export async function lockItemTrashEpoch(
 export async function restoreItem(client: Queryable, databaseId: string, itemId: string): Promise<ItemRow | null> {
   const { rows } = await client.query<ItemDbRow>(
     `UPDATE items SET deleted_at = NULL WHERE database_id = $1 AND id = $2 AND deleted_at IS NOT NULL
-     RETURNING id, database_id, properties, computed, created_at, updated_at, deleted_at`,
+     RETURNING id, database_id, properties, computed, created_at, updated_at, deleted_at, version`,
     [databaseId, itemId],
   );
   return rows[0] ? mapItemRow(rows[0]) : null;
@@ -317,7 +336,7 @@ export async function restoreItem(client: Queryable, databaseId: string, itemId:
 /** Every row regardless of `deleted_at`: the cascade traversal must see live and trashed rows alike. */
 export async function getAllItemsInDatabase(client: Queryable, databaseId: string): Promise<ItemRow[]> {
   const { rows } = await client.query<ItemDbRow>(
-    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at FROM items WHERE database_id = $1`,
+    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at, version FROM items WHERE database_id = $1`,
     [databaseId],
   );
   return rows.map(mapItemRow);
@@ -329,7 +348,7 @@ export async function getAllItemsInDatabase(client: Queryable, databaseId: strin
  */
 export async function lockAllItemsInDatabaseForShare(client: Queryable, databaseId: string): Promise<ItemRow[]> {
   const { rows } = await client.query<ItemDbRow>(
-    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at FROM items WHERE database_id = $1
+    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at, version FROM items WHERE database_id = $1
      ORDER BY id FOR SHARE`,
     [databaseId],
   );
@@ -348,7 +367,7 @@ export async function listItemsByTextProperty(
   lock: boolean,
 ): Promise<ItemRow[]> {
   const { rows } = await client.query<ItemDbRow>(
-    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at FROM items
+    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at, version FROM items
      WHERE database_id = $1 AND properties->>$2 = $3 ORDER BY id${lock ? " FOR UPDATE" : ""}`,
     [databaseId, propertyKey, value],
   );
@@ -365,7 +384,7 @@ export async function findFileItemByBlobId(
   blobId: string,
 ): Promise<ItemRow | null> {
   const { rows } = await client.query<ItemDbRow>(
-    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at FROM items
+    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at, version FROM items
      WHERE database_id = $1 AND deleted_at IS NULL AND properties -> 'file' ->> 'blobId' = $2
      ORDER BY id ASC LIMIT 1`,
     [databaseId, blobId],
@@ -390,7 +409,7 @@ export async function findItemsDeletedBefore(
   );
   const databaseIds = requireSingleRow(databaseRows, "live databases").ids;
   const { rows } = await client.query<ItemDbRow>(
-    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at
+    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at, version
      FROM items
      WHERE deleted_at IS NOT NULL AND deleted_at < $1
        AND database_id = ANY($5::uuid[])
@@ -435,7 +454,7 @@ export async function hardDeleteItemsOfDatabase(
 ): Promise<ItemRow[]> {
   const { rows } = await client.query<ItemDbRow>(
     `DELETE FROM items WHERE database_id = $1 AND id = ANY($2::uuid[])
-     RETURNING id, database_id, properties, computed, created_at, updated_at, deleted_at`,
+     RETURNING id, database_id, properties, computed, created_at, updated_at, deleted_at, version`,
     [databaseId, itemIds],
   );
   return rows.map(mapItemRow);
@@ -490,7 +509,7 @@ export async function listItems(
 
   const exactColumns = options.keyset ? `, ${EXACT_TIMESTAMP_COLUMNS}` : "";
   const { rows } = await client.query<ItemDbRow & Record<string, unknown>>(
-    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at${exactColumns}
+    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at, version${exactColumns}
      FROM items WHERE ${conditions.join(" AND ")} ORDER BY ${orderBySql} LIMIT $${params.length}`,
     params,
   );
@@ -655,7 +674,7 @@ export async function countItemsGrouped(
 export async function getItemsByIds(client: Queryable, itemIds: string[]): Promise<ItemRow[]> {
   if (itemIds.length === 0) return [];
   const { rows } = await client.query<ItemDbRow>(
-    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at
+    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at, version
      FROM items WHERE id = ANY($1::uuid[]) AND database_id = ANY($2::uuid[]) AND deleted_at IS NULL`,
     [itemIds, await visibleDatabaseIds(client)],
   );
@@ -669,7 +688,7 @@ export async function getItemsByIds(client: Queryable, itemIds: string[]): Promi
 export async function getItemsByIdsIncludingDeleted(client: Queryable, itemIds: string[]): Promise<ItemRow[]> {
   if (itemIds.length === 0) return [];
   const { rows } = await client.query<ItemDbRow>(
-    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at
+    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at, version
      FROM items WHERE id = ANY($1::uuid[]) AND database_id = ANY($2::uuid[])`,
     [itemIds, await visibleDatabaseIds(client)],
   );
@@ -687,7 +706,7 @@ export async function getItemsByIdsInDatabaseIncludingDeleted(
 ): Promise<ItemRow[]> {
   if (itemIds.length === 0) return [];
   const { rows } = await client.query<ItemDbRow>(
-    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at
+    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at, version
      FROM items WHERE database_id = $1 AND id = ANY($2::uuid[])`,
     [databaseId, itemIds],
   );

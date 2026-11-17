@@ -47,7 +47,7 @@ const noopMailer: PasswordResetMailer = { async sendPasswordResetEmail() {} };
 const moduleRegistry = await loadFullModuleRegistry();
 
 const itemBody = z
-  .object({ id: z.string(), updatedAt: z.string(), properties: z.record(z.string(), z.unknown()) })
+  .object({ id: z.string(), updatedAt: z.string(), version: z.string(), properties: z.record(z.string(), z.unknown()) })
   .passthrough();
 const storedRow = z.object({ properties: z.record(z.string(), z.unknown()) });
 const restError = z.object({
@@ -280,12 +280,12 @@ describe("Health records select values are judged alike through REST, the agent 
   /** REST must answer 200. */
   async function patchVia(
     path: Transport,
-    item: { id: string; updatedAt: string },
+    item: { id: string; updatedAt: string; version: string },
     properties: Record<string, unknown>,
   ) {
-    const input = { itemId: item.id, properties, ifVersion: item.updatedAt };
+    const input = { itemId: item.id, properties, ifVersion: item.version };
     if (path === "rest") {
-      const patched = await rest("PATCH", `/api/items/${item.id}`, { properties, ifVersion: item.updatedAt });
+      const patched = await rest("PATCH", `/api/items/${item.id}`, { properties, ifVersion: item.version });
       expect(patched.status).toBe(200);
       return itemBody.parse(patched.body);
     }
@@ -319,16 +319,16 @@ describe("Health records select values are judged alike through REST, the agent 
         mcp: await createVia("mcp", { name: `${label} mcp`, tags: ["prevention"] }),
       };
       const before = await Promise.all(Object.values(targets).map((target) => storedProperties(target.id)));
-      const input = (target: { id: string; updatedAt: string }) => ({
+      const input = (target: { id: string; updatedAt: string; version: string }) => ({
         itemId: target.id,
         properties: values,
-        ifVersion: target.updatedAt,
+        ifVersion: target.version,
       });
 
       const refusals = {
         rest: await restRefusal("PATCH", `/api/items/${targets.rest.id}`, {
           properties: values,
-          ifVersion: targets.rest.updatedAt,
+          ifVersion: targets.rest.version,
         }),
         gateway: await gatewayRefusal("item.patch", input(targets.gateway)),
         mcp: await mcpRefusal("semprec.item.patch", input(targets.mcp)),
@@ -372,7 +372,7 @@ describe("Health records select values are judged alike through REST, the agent 
     "accepts a patch that resends the unchanged unknown values of a record through %s",
     async (path) => {
       const legacy = await createAsSystem({ tags: ["neznamy"], status: "ghost" });
-      const item = { id: legacy.id, updatedAt: legacy.updatedAt };
+      const item = { id: legacy.id, updatedAt: legacy.updatedAt, version: legacy.version };
 
       await patchVia(path, item, { name: `Resent ${path}`, tags: ["neznamy"], status: "ghost" });
 

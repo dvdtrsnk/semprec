@@ -125,6 +125,7 @@ function isVersionConflictDetails(details: unknown): details is { current: ItemR
     typeof row.computed === "object" &&
     row.computed !== null &&
     typeof row.updatedAt === "string" &&
+    typeof row.version === "string" &&
     (row.deletedAt === null || typeof row.deletedAt === "string")
   );
 }

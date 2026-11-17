@@ -73,8 +73,8 @@ async function storedUrl(itemId: string): Promise<unknown> {
 
 /** The version a write of the item must name, as the choke point reports it. */
 async function storedVersion(itemId: string): Promise<string> {
-  const { rows } = await pool.query<{ updated_at: Date }>("SELECT updated_at FROM items WHERE id = $1", [itemId]);
-  return rows[0]?.updated_at.toISOString() ?? "";
+  const { rows } = await pool.query<{ version: string }>("SELECT version FROM items WHERE id = $1", [itemId]);
+  return rows[0]?.version ?? "";
 }
 
 async function calendarCount(): Promise<number> {
@@ -124,7 +124,7 @@ describe("a calendar's subscriptionUrl through the generic operation gateway (is
           gateway().invoke("item.patch", actor, ALL_CAPABILITIES, {
             itemId: feed.id,
             properties: { subscriptionUrl: url },
-            ifVersion: feed.updatedAt,
+            ifVersion: feed.version,
           }),
         ).rejects.toMatchObject(INVALID_URL);
         expect(await storedUrl(feed.id)).toBeNull();
@@ -157,7 +157,7 @@ describe("a calendar's subscriptionUrl through the generic operation gateway (is
           gateway().invoke("item.patch", actor, ALL_CAPABILITIES, {
             itemId: own.id,
             properties: { subscriptionUrl: "https://example.com/a.ics" },
-            ifVersion: own.updatedAt,
+            ifVersion: own.version,
           }),
         ).rejects.toMatchObject(INVALID_URL);
         expect(await storedUrl(own.id)).toBeNull();
@@ -172,7 +172,7 @@ describe("a calendar's subscriptionUrl through the generic operation gateway (is
         await gateway().invoke("item.patch", actor, ALL_CAPABILITIES, {
           itemId: feed.id,
           properties: { subscriptionUrl: "https://example.com/a.ics" },
-          ifVersion: feed.updatedAt,
+          ifVersion: feed.version,
         });
         expect(await storedUrl(feed.id)).toBe("https://example.com/a.ics");
 

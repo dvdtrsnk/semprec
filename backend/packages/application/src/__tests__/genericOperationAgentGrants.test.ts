@@ -219,7 +219,7 @@ describe("agent access to databases through the generic operation gateway (issue
         gateway().invoke("item.patch", agent, ALL_CAPABILITIES, {
           itemId: record.id,
           properties: { name: "After" },
-          ifVersion: record.updatedAt,
+          ifVersion: record.version,
         });
       const put = () =>
         gateway().invoke("relation.put", agent, ALL_CAPABILITIES, {

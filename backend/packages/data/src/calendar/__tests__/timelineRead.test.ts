@@ -1074,6 +1074,7 @@ describe("calendar timeline read (issue #1717)", () => {
       counts: null,
       carriedFrom: null,
       updatedAt: "2026-10-16T00:00:00.000Z",
+      version: "0",
       readOnly: true,
     };
     vi.useFakeTimers({ toFake: ["Date"] });

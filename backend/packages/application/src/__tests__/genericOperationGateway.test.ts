@@ -1003,7 +1003,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
             }
           });
           const gateway = createGenericOperationGateway(scoped, testMetadataResolver);
-          const input = { itemId: item.id, properties: { note: "after" }, ifVersion: item.updatedAt };
+          const input = { itemId: item.id, properties: { note: "after" }, ifVersion: item.version };
           let requestId = "";
           try {
             await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, input);
@@ -1182,7 +1182,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
         await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
           itemId: item.id,
           properties: { recurrence: { preset: "monthly" } },
-          ifVersion: weekly.updatedAt,
+          ifVersion: weekly.version,
         });
         expect.unreachable("Expected approval");
       } catch (error) {
@@ -1231,14 +1231,14 @@ describe("createGenericOperationGateway (issue #220)", () => {
           gateway.invoke("item.patch", actor, NO_CAPABILITIES, {
             itemId: item.id,
             properties: { recurrence: { preset: "weekly" } },
-            ifVersion: item.updatedAt,
+            ifVersion: item.version,
           }),
         ).rejects.toMatchObject({ status: 404, code: "not_found" });
         expect(await cp.findItem(item.id)).toEqual(initial);
         const created = await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
           itemId: item.id,
           properties: { recurrence: { preset: "weekly" } },
-          ifVersion: item.updatedAt,
+          ifVersion: item.version,
         });
         expect(created.properties.recurrence).toMatchObject({ preset: "weekly" });
         expect(created.properties.seriesId).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/));
@@ -1275,7 +1275,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
           }
           throw new Error("Approval was not requested");
         };
-        const rejected = await requestFor(null, weekly.updatedAt);
+        const rejected = await requestFor(null, weekly.version);
         expect((await seriesSnapshot()).rows).toEqual(originalSeries.rows);
         await withTransaction(runtime, (client) =>
           decideAndEnqueueApprovalRequest(client, {
@@ -1286,7 +1286,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
         );
         expect(await cp.findItem(item.id)).toEqual(weekly);
         expect((await seriesSnapshot()).rows).toEqual(originalSeries.rows);
-        const seriesOnly = await requestFor({ preset: "monthly" }, weekly.updatedAt);
+        const seriesOnly = await requestFor({ preset: "monthly" }, weekly.version);
         expect((await seriesSnapshot()).rows).toEqual(originalSeries.rows);
         // Synthetic intervening state: normal recurrence owners update the item projection too.
         const seriesOnlyRule = { kind: "weekdays", days: ["mon"] };
@@ -1347,7 +1347,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
           created.properties.seriesId,
           JSON.stringify({ kind: "weekdays", days: ["thu"] }),
         ]);
-        const stale = await requestFor({ preset: "monthly" }, weekly.updatedAt, {
+        const stale = await requestFor({ preset: "monthly" }, weekly.version, {
           name: "Changed only after approval",
         });
         expect(await cp.findItem(item.id)).toEqual(weekly);
@@ -1387,7 +1387,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
           {
             itemId: item.id,
             properties: { recurrence: { preset: "daily" } },
-            ifVersion: weekly.updatedAt,
+            ifVersion: weekly.version,
           },
         );
         const changedProjection = await cp.findItem(item.id);
@@ -1441,7 +1441,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
         expect((await withTransaction(runtime, (client) => getApprovalRequest(client, stale)))?.executionStatus).toBe(
           "conflict",
         );
-        const changeRequest = await requestFor({ preset: "monthly" }, changed.updatedAt, {
+        const changeRequest = await requestFor({ preset: "monthly" }, changed.version, {
           name: "Approved together",
         });
         await withTransaction(runtime, (client) =>
@@ -1491,7 +1491,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
         ).toEqual(jobsAfterChange.rows);
         expect(replayInvalidations).toEqual([]);
         if (!changedTogether) throw new Error("Missing changed task");
-        const ending = await requestFor(null, changedTogether.updatedAt);
+        const ending = await requestFor(null, changedTogether.version);
         await withTransaction(runtime, (client) =>
           decideAndEnqueueApprovalRequest(client, {
             approvalRequestId: ending,
@@ -1534,7 +1534,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
           {
             itemId: item.id,
             properties: { recurrence: { preset: "daily" } },
-            ifVersion: ended.updatedAt,
+            ifVersion: ended.version,
           },
         );
         const userStarted = await cp.findItem(item.id);
@@ -1548,7 +1548,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
           {
             itemId: item.id,
             properties: { recurrence: null },
-            ifVersion: userStart.updatedAt,
+            ifVersion: userStart.version,
           },
         );
         expect((await cp.findItem(item.id))?.properties).toMatchObject({
@@ -1636,7 +1636,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
           gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
             itemId: item.id,
             properties: { recurrence: { preset: "monthly" }, name: "Not committed" },
-            ifVersion: weekly.updatedAt,
+            ifVersion: weekly.version,
           }),
         ).rejects.toThrow("injected recurrence notification failure");
         expect(await cp.findItem(item.id)).toEqual(beforeItem);
@@ -1714,7 +1714,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
           await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
             itemId: item.id,
             properties: { note: "after" },
-            ifVersion: item.updatedAt,
+            ifVersion: item.version,
           });
           expect.unreachable("Expected approval");
         } catch (err) {
@@ -2085,7 +2085,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
       const result = await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
         itemId: item.id,
         properties: { due: "2026-10-28T09:00:00Z", unset: "Now set" },
-        ifVersion: item.updatedAt,
+        ifVersion: item.version,
       });
       expect(result).toMatchObject({
         id: item.id,
@@ -2120,7 +2120,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
       });
       const actor: AuthenticatedActor = { userId: await createUser() };
       const gateway = createGenericOperationGateway(runtimePool, testMetadataResolver);
-      const input = { itemId: fixture.item.id, properties: { title: "Changed" }, ifVersion: fixture.item.updatedAt };
+      const input = { itemId: fixture.item.id, properties: { title: "Changed" }, ifVersion: fixture.item.version };
       const foreign = await runInTenant(tenantB, () =>
         Promise.allSettled([
           gateway.invoke("item.patch", actor, ALL_CAPABILITIES, input),
@@ -4108,7 +4108,7 @@ describe("approval_pending recipient in a tenant (issue #1018)", () => {
           gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
             itemId,
             properties: { note: "after" },
-            ifVersion: own.updatedAt,
+            ifVersion: own.version,
           }),
         );
       const missing = randomUUID();

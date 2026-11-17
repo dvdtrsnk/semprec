@@ -151,7 +151,7 @@ describe("derived calendar timeline ids on the item routes (issues #1800, #1804 
     const response = await fetch(`${baseUrl}/api/items/${personId}`, {
       method: "PATCH",
       headers,
-      body: JSON.stringify({ properties: { birthday: "2000-11-17" }, ifVersion: stored?.updatedAt }),
+      body: JSON.stringify({ properties: { birthday: "2000-11-17" }, ifVersion: stored?.version }),
     });
     expect(response.status).toBe(200);
     expect((await chokePoint.getItem(peopleId, personId))?.properties.birthday).toBe("2000-11-17");

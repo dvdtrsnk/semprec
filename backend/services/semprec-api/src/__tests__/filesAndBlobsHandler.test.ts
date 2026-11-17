@@ -797,7 +797,9 @@ describe("files and blobs routes (issue #158)", () => {
         !("id" in created) ||
         typeof created.id !== "string" ||
         !("updatedAt" in created) ||
-        typeof created.updatedAt !== "string"
+        typeof created.updatedAt !== "string" ||
+        !("version" in created) ||
+        typeof created.version !== "string"
       )
         throw new Error("expected created item");
       const metadata = { blobId, byteSize: PNG_IMAGE.length, mimeType: "image/png", filename: null };
@@ -805,7 +807,7 @@ describe("files and blobs routes (issue #158)", () => {
       const clear = await fetch(`${baseUrl}/api/items/${created.id}`, {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ properties: { photo: null }, ifVersion: created.updatedAt }),
+        body: JSON.stringify({ properties: { photo: null }, ifVersion: created.version }),
       });
       expect(clear.status).toBe(200);
       const cleared: unknown = await clear.json();
@@ -813,7 +815,9 @@ describe("files and blobs routes (issue #158)", () => {
         typeof cleared !== "object" ||
         cleared === null ||
         !("updatedAt" in cleared) ||
-        typeof cleared.updatedAt !== "string"
+        typeof cleared.updatedAt !== "string" ||
+        !("version" in cleared) ||
+        typeof cleared.version !== "string"
       )
         throw new Error("expected patched item");
       expect(cleared).toMatchObject({ properties: { photo: null } });
@@ -821,7 +825,7 @@ describe("files and blobs routes (issue #158)", () => {
       const restore = await fetch(`${baseUrl}/api/items/${created.id}`, {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ properties: { photo: { blobId } }, ifVersion: cleared.updatedAt }),
+        body: JSON.stringify({ properties: { photo: { blobId } }, ifVersion: cleared.version }),
       });
       expect(restore.status).toBe(200);
       expect(await restore.json()).toMatchObject({ properties: { photo: { blobId } }, blobs: { photo: metadata } });

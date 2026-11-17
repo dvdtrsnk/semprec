@@ -95,7 +95,7 @@ describe("a task always has a status (issue sp-9cf1be65)", () => {
         cp.updateItem({
           databaseId: tasks,
           itemId: created.id,
-          ifVersion: created.updatedAt,
+          ifVersion: created.version,
           propertiesPatch: { status },
         }),
       ),
@@ -110,7 +110,7 @@ describe("a task always has a status (issue sp-9cf1be65)", () => {
       cp.updateItem({
         databaseId: tasks,
         itemId: created.id,
-        ifVersion: created.updatedAt,
+        ifVersion: created.version,
         propertiesPatch: { status: "done" },
       }),
     );
@@ -133,7 +133,7 @@ describe("a task always has a status (issue sp-9cf1be65)", () => {
       cp.updateItem({
         databaseId: tasks,
         itemId: legacyId,
-        ifVersion: legacy.updatedAt,
+        ifVersion: legacy.version,
         propertiesPatch: { name: "Renamed" },
       }),
     );

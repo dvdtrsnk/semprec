@@ -128,7 +128,7 @@ describe("completing a task in an event through PATCH /api/items/:id (issue #178
   async function versionOf(taskId: string): Promise<string> {
     const response = await fetch(`${base}/api/items/${taskId}`, { headers });
     expect(response.status).toBe(200);
-    return z.object({ updatedAt: z.string() }).parse(await response.json()).updatedAt;
+    return z.object({ version: z.string() }).parse(await response.json()).version;
   }
 
   const patch = async (taskId: string, status: string, requestHeaders = headers, ifVersion?: string) =>

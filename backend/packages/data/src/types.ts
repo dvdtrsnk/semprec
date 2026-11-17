@@ -96,6 +96,11 @@ export interface ItemRow {
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+  /**
+   * `items.version` as a decimal string: the optimistic-concurrency token a write passes back as `ifVersion`.
+   * Every write that advances `updatedAt` increments it.
+   */
+  version: string;
   /** Set by reads only: true when the item was created from an Inbox proposal. Absent on write results. */
   fromInbox?: boolean;
 }

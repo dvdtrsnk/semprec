@@ -104,7 +104,7 @@ describe("the Events nextOccurrenceDate over REST (issue gh-1905)", () => {
 
     const patched = await rest("PATCH", `/api/items/${item.id}`, {
       properties: { recurrence: { kind: "weekdays", days: ["sat"] } },
-      ifVersion: item.updatedAt,
+      ifVersion: item.version,
     });
 
     expect(patched.status).toBe(200);
@@ -137,7 +137,7 @@ describe("the Events nextOccurrenceDate over REST (issue gh-1905)", () => {
 
     const response = await rest("PATCH", `/api/items/${item.id}`, {
       properties: { nextOccurrenceDate: "2026-12-01" },
-      ifVersion: item.updatedAt,
+      ifVersion: item.version,
     });
 
     expect(response.status).toBe(403);

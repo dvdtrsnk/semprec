@@ -49,6 +49,29 @@ export function markManagedTransactionRollbackOnly(client: PoolClient, error: un
   owner.failure ??= { error };
 }
 
+/**
+ * One module's state for the active `withTransaction` invocation of a client: created by `init` on first use and
+ * keyed on the invocation, so it is unreachable once the invocation ends and nothing in it reaches another
+ * transaction. A savepoint rollback does not reset it, so it may only hold facts that stay safe to
+ * act on after one.
+ */
+export class TransactionLocal<T> {
+  private readonly values = new WeakMap<TransactionOwner, T>();
+
+  constructor(private readonly init: () => T) {}
+
+  /** `undefined` when `client` is not the client of the active invocation. */
+  get(client: Queryable): T | undefined {
+    const owner = transactionOwner.getStore();
+    if (!owner?.active || owner.client !== client) return undefined;
+    const existing = this.values.get(owner);
+    if (existing !== undefined) return existing;
+    const created = this.init();
+    this.values.set(owner, created);
+    return created;
+  }
+}
+
 export function assertManagedTransactionCommittable(client: PoolClient): void {
   requireManagedTransaction(client);
   const owner = transactionOwner.getStore();

@@ -41,7 +41,7 @@ const tmpBlobDir = join(tmpdir(), `semprec-test-blobs-${randomUUID()}`);
 const noopMailer: PasswordResetMailer = { async sendPasswordResetEmail() {} };
 const moduleRegistry = await loadFullModuleRegistry();
 
-const itemBody = z.object({ id: z.string(), updatedAt: z.string() }).passthrough();
+const itemBody = z.object({ id: z.string(), version: z.string() }).passthrough();
 
 let pool: Pool;
 
@@ -77,7 +77,7 @@ describe("the sleep resync push through REST, the agent gateway and the queue ha
   }
 
   async function planVersion(): Promise<string> {
-    return itemBody.parse((await rest("GET", `/api/items/${planId}`)).body).updatedAt;
+    return itemBody.parse((await rest("GET", `/api/items/${planId}`)).body).version;
   }
 
   beforeEach(async () => {

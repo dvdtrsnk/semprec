@@ -233,7 +233,7 @@ function editAsUser(draftId: string, body = "The user's own words"): Promise<unk
     if (!item) throw new Error(`draft ${draftId} is missing`);
     return updateEmailDraft(
       client,
-      { draftItemId: draftId, ifVersion: item.updatedAt, body },
+      { draftItemId: draftId, ifVersion: item.version, body },
       { writer: { writerKind: "user" }, actingUserId: randomUUID() },
     );
   });
@@ -320,7 +320,7 @@ describe("retireSupersededSempDrafts (issue gh-1902)", () => {
       if (!item) throw new Error("draft is missing");
       await updateEmailDraft(
         client,
-        { draftItemId: untouched.draftId, ifVersion: item.updatedAt, body: "A better agent text" },
+        { draftItemId: untouched.draftId, ifVersion: item.version, body: "A better agent text" },
         { writer: { writerKind: "agent" } },
       );
     });
