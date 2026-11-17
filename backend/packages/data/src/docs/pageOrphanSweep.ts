@@ -98,7 +98,7 @@ async function trashOrphans(client: PoolClient, pagesDatabaseId: string, pageIds
     `SELECT id, properties->>'parentItemId' AS parent_item_id FROM items
       WHERE database_id = $1 AND id = ANY($2::uuid[]) AND deleted_at IS NULL
       ORDER BY id
-      FOR UPDATE`,
+      FOR NO KEY UPDATE`,
     [pagesDatabaseId, pageIds],
   );
   const byParent = new Map<string, string[]>();

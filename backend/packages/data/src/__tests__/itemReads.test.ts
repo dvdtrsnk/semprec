@@ -25,7 +25,7 @@ describe("choke-point itemReads", () => {
   }
 
   describe("findItem", () => {
-    it("returns the item for an existing id, cross-partition", async () => {
+    it("returns the item for an existing id, by id alone", async () => {
       const db = await makeMoviesDb();
       const created = await chokePoint.createItem({ databaseId: db.id, properties: { title: "Arrival" } });
 

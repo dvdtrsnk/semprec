@@ -15,7 +15,13 @@ import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 import { withTransaction } from "../../db/pool.js";
 import { LocalFsBlobStorageWriter } from "../../mail/blobStorage.js";
 import { seedSystem } from "../../seed/seedSystem.js";
-import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
+import {
+  createRuntimeRolePool,
+  createTestProjectItem,
+  createTestTenant,
+  getTestPool,
+  resetDatabase,
+} from "../../testSupport/testDb.js";
 import {
   RECORDING_EVENT_DECISION_NO_EVENT,
   readRecordingEventDecision,
@@ -86,10 +92,11 @@ describe("recording intake", () => {
         (client, result) =>
           recordRecordingIntake(client, { fileItemId: result.item.id, eventId: null, recordedAt: null }),
       );
+      const projectItemId = await createTestProjectItem(runtime);
       // Future intake fields have no production writer yet; this scoped fixture creates that stored shape.
       const updated = await runtime.query(
         "UPDATE recording_requests SET name = $5, language = $2, num_speakers_exact = $3, project_item_id = $4 WHERE tenant_id = app_tenant_default() AND file_item_id = $1",
-        [uploaded.result.item.id, "cs", 2, "bdb16414-01ad-4ac4-8453-25e4ba9c86d5", "Pricing call"],
+        [uploaded.result.item.id, "cs", 2, projectItemId, "Pricing call"],
       );
       expect(updated.rowCount).toBe(1);
       expect(await withTransaction(runtime, (client) => readRecordingRequest(client, uploaded.result.item.id))).toEqual(
@@ -100,7 +107,7 @@ describe("recording intake", () => {
           language: "cs",
           numSpeakersExact: 2,
           numSpeakersMin: null,
-          projectItemId: "bdb16414-01ad-4ac4-8453-25e4ba9c86d5",
+          projectItemId,
         },
       );
       return uploaded.result.item.id;

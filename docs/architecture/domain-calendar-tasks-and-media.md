@@ -377,8 +377,8 @@ never locked by an Event trash (it must not wait for an open transcription match
 ### Action item states and refs
 
 - `transcript_action_item_states` is written only by `transcription/transcriptActionItemStates.ts` under the
-  transcript's row lock (route `PUT /api/transcripts/:id/action-items/:actionItemId/state`); purge deletes its rows in
-  `deleteItemDependents`.
+  transcript's row lock (route `PUT /api/transcripts/:id/action-items/:actionItemId/state`); a purge removes its rows
+  through their foreign keys (data-model-and-writes.md, *Storage*).
 - `transcriptSegment` refs are validated and labelled in batches (`transcription/transcriptSegmentRef.ts`), labelled by
   `resolveTranscriptDisplayName` plus the time stretch.
 

@@ -10,6 +10,7 @@ import {
   createTestTenant,
   getTenantZeroId,
   getTestPool,
+  insertItemsWithIds,
   resetDatabase,
   withTenantTransaction,
 } from "../testSupport/testDb.js";
@@ -37,6 +38,16 @@ async function insertTenantRow(client: Queryable, tenantId: string, itemId: stri
      VALUES ($1, $2, 'api_key', $3, $4, 1, 'tenant')`,
     [tenantId, itemId, sealed.ciphertext, sealed.nonce],
   );
+}
+
+/** Items of tenant zero for the credentials a test stores there: a credential must name an existing item of its tenant. */
+async function tenantZeroItems(...ids: string[]): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await insertItemsWithIds(client, ids);
+  } finally {
+    client.release();
+  }
 }
 
 interface StoredRow {
@@ -100,6 +111,7 @@ describe("external credentials store, tenant scheme only", () => {
     it("storeCredential in tenant zero writes a tenant row bound to the tenant and item, logged once on read", async () => {
       const tenantZero = getTenantZeroId();
       const itemId = randomUUID();
+      await tenantZeroItems(itemId);
       await storeCredential(pool, { itemId, credentialType: "api_key", plaintext: "s3cret" });
 
       const rows = await storedRows(itemId);
@@ -123,6 +135,7 @@ describe("external credentials store, tenant scheme only", () => {
 
     it("storeCredential over a tenant row replaces its ciphertext", async () => {
       const itemId = randomUUID();
+      await tenantZeroItems(itemId);
       await storeCredential(pool, { itemId, credentialType: "api_key", plaintext: "first" });
       await storeCredential(pool, { itemId, credentialType: "api_key", plaintext: "second" });
       expect((await storedRows(itemId)).map((r) => r.scheme)).toEqual(["tenant"]);
@@ -134,9 +147,10 @@ describe("external credentials store, tenant scheme only", () => {
       const itemId = randomUUID();
       expect(await tenantKeyCount(tenantB)).toBe(0);
 
-      await withTenantTransaction(dataPool, tenantB, (c) =>
-        storeCredential(c, { itemId, credentialType: "api_key", plaintext: "b-secret" }),
-      );
+      await withTenantTransaction(dataPool, tenantB, async (c) => {
+        await insertItemsWithIds(c, [itemId]);
+        await storeCredential(c, { itemId, credentialType: "api_key", plaintext: "b-secret" });
+      });
 
       expect(await tenantKeyCount(tenantB)).toBe(1);
       expect((await storedRows(itemId)).map((r) => ({ tenantId: r.tenant_id, scheme: r.scheme }))).toEqual([
@@ -153,6 +167,7 @@ describe("external credentials store, tenant scheme only", () => {
 
       await expect(
         withTenantTransaction(dataPool, tenantB, async (c) => {
+          await insertItemsWithIds(c, [itemId]);
           await storeCredential(c, { itemId, credentialType: "api_key", plaintext: "b-secret" });
           throw new Error("caller failed after storing");
         }),
@@ -174,7 +189,10 @@ describe("external credentials store, tenant scheme only", () => {
       expect(upperItem).not.toBe(itemId);
       expect(associatedData(upperTenant, upperItem).equals(associatedData(tenantB, itemId))).toBe(true);
 
-      await withTenantTransaction(dataPool, tenantB, (c) => insertTenantRow(c, upperTenant, upperItem, "upper-secret"));
+      await withTenantTransaction(dataPool, tenantB, async (c) => {
+        await insertItemsWithIds(c, [itemId]);
+        await insertTenantRow(c, upperTenant, upperItem, "upper-secret");
+      });
 
       expect((await storedRows(itemId)).map((r) => r.tenant_id)).toEqual([tenantB]);
       expect(
@@ -187,6 +205,7 @@ describe("external credentials store, tenant scheme only", () => {
   describe("scheme", () => {
     it("throws a plain error for a row whose scheme is not tenant, after logging the attempt", async () => {
       const itemId = randomUUID();
+      await tenantZeroItems(itemId);
       await storeCredential(pool, { itemId, credentialType: "api_key", plaintext: "x" });
       const client = await pool.connect();
       let failure: { error: unknown } | undefined;
@@ -230,6 +249,7 @@ describe("external credentials store, tenant scheme only", () => {
     it("refuses a ciphertext copied from another item and still logs the attempt", async () => {
       const itemX = randomUUID();
       const itemY = randomUUID();
+      await tenantZeroItems(itemX, itemY);
       await storeCredential(pool, { itemId: itemX, credentialType: "api_key", plaintext: "x-secret" });
       await storeCredential(pool, { itemId: itemY, credentialType: "api_key", plaintext: "y-secret" });
       // Raw SQL: copying a ciphertext between rows is the tampering this case simulates.
@@ -248,12 +268,14 @@ describe("external credentials store, tenant scheme only", () => {
       const tenantB = await createTestTenant(pool);
       const itemA = randomUUID();
       const itemB = randomUUID();
-      await withTenantTransaction(dataPool, tenantA, (c) =>
-        storeCredential(c, { itemId: itemA, credentialType: "api_key", plaintext: "a-secret" }),
-      );
-      await withTenantTransaction(dataPool, tenantB, (c) =>
-        storeCredential(c, { itemId: itemB, credentialType: "api_key", plaintext: "b-secret" }),
-      );
+      await withTenantTransaction(dataPool, tenantA, async (c) => {
+        await insertItemsWithIds(c, [itemA]);
+        await storeCredential(c, { itemId: itemA, credentialType: "api_key", plaintext: "a-secret" });
+      });
+      await withTenantTransaction(dataPool, tenantB, async (c) => {
+        await insertItemsWithIds(c, [itemB]);
+        await storeCredential(c, { itemId: itemB, credentialType: "api_key", plaintext: "b-secret" });
+      });
       expect(
         await withTenantTransaction(dataPool, tenantB, (c) => getDecryptedCredential(c, { itemId: itemB, ...READ })),
       ).toBe("b-secret");
@@ -278,6 +300,7 @@ describe("external credentials store, tenant scheme only", () => {
 
     it("refuses a corrupted ciphertext and still logs the attempt", async () => {
       const itemId = randomUUID();
+      await tenantZeroItems(itemId);
       await storeCredential(pool, { itemId, credentialType: "api_key", plaintext: "intact" });
       // Raw SQL: flipping one ciphertext byte is the corruption this case simulates.
       await pool.query(
@@ -290,6 +313,7 @@ describe("external credentials store, tenant scheme only", () => {
 
     it("throws once the tenant's key row is deleted", async () => {
       const itemId = randomUUID();
+      await tenantZeroItems(itemId);
       await storeCredential(pool, { itemId, credentialType: "api_key", plaintext: "gone" });
       await pool.query("DELETE FROM tenant_keys");
       await expectNoCode(getDecryptedCredential(pool, { itemId, ...READ }));
@@ -300,6 +324,7 @@ describe("external credentials store, tenant scheme only", () => {
   describe("error shape", () => {
     it("the missing-key error carries no code", async () => {
       const itemId = randomUUID();
+      await tenantZeroItems(itemId);
       await storeCredential(pool, { itemId, credentialType: "api_key", plaintext: "x" });
       await pool.query("DELETE FROM tenant_keys");
       await expect(getDecryptedCredential(pool, { itemId, ...READ })).rejects.toThrow(

@@ -37,7 +37,7 @@ async function lockStaleBatch(
         AND jsonb_typeof(properties->'nextOccurrenceDate') = 'string'
         AND left(properties->>'nextOccurrenceDate', 10) COLLATE "C" < $2
         AND ($3::uuid IS NULL OR id > $3::uuid)
-      ORDER BY id LIMIT $4 FOR UPDATE`,
+      ORDER BY id LIMIT $4 FOR NO KEY UPDATE`,
     [eventsDatabaseId, today, afterId, BATCH_SIZE],
   );
   return rows;

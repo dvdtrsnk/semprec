@@ -561,7 +561,7 @@ describe("trashing and restoring a recurring task series (issue gh-1882)", () =>
         const highest = ids.at(-1)!;
         if (operation === "restore") await trash(highest);
         const holder = holdLocks(async (client) => {
-          await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE", [
+          await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR NO KEY UPDATE", [
             databases.tasks,
             lowest,
           ]);
@@ -574,7 +574,7 @@ describe("trashing and restoring a recurring task series (issue gh-1882)", () =>
           // The named instance is free while the call waits: the series is locked in id order, and the lowest comes first.
           const probe = await runInTenant(tenant, () =>
             withTransaction(pool, (client) =>
-              client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE NOWAIT", [
+              client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR NO KEY UPDATE NOWAIT", [
                 databases.tasks,
                 highest,
               ]),
@@ -602,7 +602,7 @@ describe("trashing and restoring a recurring task series (issue gh-1882)", () =>
       const highest = ids.at(-1)!;
       await trash(highest);
       const holder = holdLocks(async (client) => {
-        await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE", [
+        await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR NO KEY UPDATE", [
           databases.tasks,
           lowest,
         ]);
@@ -620,7 +620,7 @@ describe("trashing and restoring a recurring task series (issue gh-1882)", () =>
         // and a restore of the series, which takes it in that order too, cannot wait for a row this purge holds.
         const probe = await runInTenant(tenant, () =>
           withTransaction(pool, (client) =>
-            client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE NOWAIT", [
+            client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR NO KEY UPDATE NOWAIT", [
               databases.tasks,
               highest,
             ]),

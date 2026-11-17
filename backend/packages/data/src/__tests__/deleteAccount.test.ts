@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { Pool, PoolClient } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { sealSecret } from "@semprec/credentials";
-import { createRuntimeRolePool, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { createRuntimeRolePool, getTestPool, insertItemsWithIds, resetDatabase } from "../testSupport/testDb.js";
 import { createTestTenant, withTenantTransaction } from "../testSupport/tenantFixtures.js";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
@@ -108,6 +108,7 @@ async function seedTenantCredential(tenantId: string): Promise<string> {
   const itemId = randomUUID();
   await runInTenant(tenantId, () =>
     withTenantTransaction(adminPool, tenantId, async (client) => {
+      await insertItemsWithIds(client, [itemId]);
       const { dataKey } = await getOrCreateTenantDataKey(client);
       const sealed = await sealSecret(
         "secret",

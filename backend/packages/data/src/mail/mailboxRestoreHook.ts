@@ -33,7 +33,7 @@ WHERE f.database_id = $2::uuid
   AND f.deleted_at = $3::timestamptz
   AND f.id IN (SELECT id FROM mailbox_folders)
 ORDER BY f.id
-FOR UPDATE OF f`;
+FOR NO KEY UPDATE OF f`;
 
 /** Matched through any of the mailbox's Folders, whatever that folder's own trash state. */
 const MAILBOX_EMAILS_OF_EPOCH_SQL = `${MAILBOX_FOLDERS_CTE_SQL},
@@ -56,7 +56,7 @@ WHERE e.database_id = $3::uuid
         OR (r.item_b = e.id AND r.item_a IN (SELECT id FROM mailbox_folders)))
   )
 ORDER BY e.id
-FOR UPDATE OF e`;
+FOR NO KEY UPDATE OF e`;
 
 async function lockMailboxFolderIdsOfEpoch(
   client: PoolClient,
@@ -88,7 +88,7 @@ async function lockMailboxEmailIdsOfEpoch(
  *
  * 1. A mailbox without a sync state row gets the default for its `provider`; an existing row is kept.
  * 2. Folders, then Emails, trashed with exactly the mailbox's deletion epoch (the epoch the removal job
- *    uses) are locked `FOR UPDATE` in id order and restored through the choke point. Rows trashed at
+ *    uses) are locked `FOR NO KEY UPDATE` in id order and restored through the choke point. Rows trashed at
  *    another instant stay in the trash.
  *
  * The mailbox returns with `syncStatus` `needsReauthorization`; deleted credentials and settings are not

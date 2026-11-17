@@ -67,13 +67,6 @@ async function databaseExists(databaseId: string): Promise<boolean> {
   return rows.length === 1;
 }
 
-async function partitionExists(databaseId: string): Promise<boolean> {
-  const { rows } = await adminPool.query<{ exists: boolean }>("SELECT to_regclass($1) IS NOT NULL AS exists", [
-    `items_p_${databaseId.replace(/-/g, "")}`,
-  ]);
-  return rows[0]?.exists === true;
-}
-
 async function blobExists(blobId: string): Promise<boolean> {
   const { rows } = await adminPool.query("SELECT 1 FROM blobs WHERE id = $1", [blobId]);
   return rows.length === 1;
@@ -174,7 +167,7 @@ describe("purgeExpiredTrash runs per tenant (issue #986)", () => {
     expect(await blobExists(liveBlob.id)).toBe(true);
   });
 
-  it("drops tenant B's emptied inline database and its partition, leaving tenant zero's databases", async () => {
+  it("drops tenant B's emptied inline database, leaving tenant zero's databases", async () => {
     const zero = await seedTrash(tenantZero);
     const { inlineDbId, parentId } = await runInTenant(tenantB, async () => {
       const db = await chokePoint.createDatabase({ name: "Pages" });
@@ -187,15 +180,13 @@ describe("purgeExpiredTrash runs per tenant (issue #986)", () => {
       ]);
       return { inlineDbId: inlineDb.id, parentId: parent.id };
     });
-    expect(await partitionExists(inlineDbId)).toBe(true);
+    expect(await databaseExists(inlineDbId)).toBe(true);
 
     await runAsSystem("test", () => handleItemTrashPurgeSweepTask(pool, fakeStorage().storage));
 
     expect(await itemExists(parentId)).toBe(false);
     expect(await databaseExists(inlineDbId)).toBe(false);
-    expect(await partitionExists(inlineDbId)).toBe(false);
     expect(await databaseExists(zero.databaseId)).toBe(true);
-    expect(await partitionExists(zero.databaseId)).toBe(true);
   });
 
   it("leaves tenant B's trashed item in an archived database alone, without an error, while purging the rest", async () => {

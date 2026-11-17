@@ -535,7 +535,6 @@ export * from "./calendar/calendarHeartbeatActions.js";
 export { firstOccurrenceAfter, latestOccurrenceOnOrBefore } from "./tasks/nextDueDate.js";
 export {
   createTaskRecurrence,
-  deleteTaskRecurrence,
   getTaskRecurrence,
   getTaskRecurrenceBySeriesId,
   setTaskRecurrenceActive,

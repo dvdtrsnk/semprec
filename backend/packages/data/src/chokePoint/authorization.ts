@@ -43,8 +43,8 @@ export function assertSystemKeyWritable(config: Record<string, unknown> | undefi
 
 /**
  * A missing or dangling `agentProjectItemId` is rejected before any row is touched, so ownership
- * checks never run against a forged identity. A live lookup rather than an FK because partitioned
- * `items` cannot carry one. No-op for a 'user'/'system' actor.
+ * checks never run against a forged identity. A live lookup: the identity must be an untrashed item of
+ * the Projects database, which no foreign key expresses. No-op for a 'user'/'system' actor.
  */
 export async function assertAuthenticatedAgentIdentity(client: PoolClient, actor: Actor): Promise<void> {
   if (actor.type !== "ai_agent") return;

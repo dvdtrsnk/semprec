@@ -46,9 +46,6 @@ function stubOperations(getItem: GenericOperations["getItem"]): GenericOperation
     async unlinkItem() {
       throw new Error("not used by this renderer");
     },
-    async callOperation() {
-      throw new Error("not used by this renderer");
-    },
   };
 }
 

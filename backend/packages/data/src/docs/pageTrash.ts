@@ -75,7 +75,7 @@ export async function lockLiveChildPageIds(
     `SELECT id FROM items
       WHERE database_id = $1 AND properties->>'parentItemId' = $2 AND deleted_at IS NULL
       ORDER BY id
-      FOR UPDATE`,
+      FOR NO KEY UPDATE`,
     [pagesDatabaseId, parentItemId],
   );
   return rows.map((row) => row.id);
@@ -92,7 +92,7 @@ async function lockChildPageIdsOfEpoch(
     `SELECT id FROM items
       WHERE database_id = $1 AND properties->>'parentItemId' = $2 AND deleted_at = $3::timestamptz
       ORDER BY id
-      FOR UPDATE`,
+      FOR NO KEY UPDATE`,
     [pagesDatabaseId, parentItemId, deletedAtExact],
   );
   return rows.map((row) => row.id);

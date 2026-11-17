@@ -48,6 +48,7 @@ import {
   createTestTenant,
   getTenantZeroId,
   getTestPool,
+  insertItemsWithIds,
   resetDatabase,
 } from "../testSupport/testDb.js";
 
@@ -314,10 +315,8 @@ async function tombstones(tenantId: string): Promise<{ requested_at: Date }[]> {
   return rows;
 }
 
-async function partitionExists(databaseId: string): Promise<boolean> {
-  const { rows } = await adminPool.query("SELECT 1 FROM pg_class WHERE relname = $1", [
-    `items_p_${databaseId.replaceAll("-", "")}`,
-  ]);
+async function databaseExists(databaseId: string): Promise<boolean> {
+  const { rows } = await adminPool.query("SELECT 1 FROM databases WHERE id = $1", [databaseId]);
   return rows.length > 0;
 }
 
@@ -332,8 +331,11 @@ async function unblockDeletion(path: string): Promise<void> {
   await rm(path, { recursive: true, force: true });
 }
 
-/** The purge lists databases with this, in the partitions step and again right before `items`. */
-const DATABASE_LISTING = "SELECT id FROM databases WHERE tenant_id = $1";
+/** The first statement of the rows step, right after the bytes step. */
+const ROWS_STEP_START = "DELETE FROM agent_run_mcp_credentials WHERE tenant_id = $1";
+
+/** The catalog read of the rows step (first) and of the final check that nothing remains (second). */
+const CATALOG_FOREIGN_KEYS = "SELECT child.relname AS table_name";
 
 /** Runs `after` once the `nth` statement containing `sqlFragment` returned: a writer already running when deletion began. */
 async function poolRunningAfter(sqlFragment: string, nth: number, after: () => Promise<void>): Promise<Pool> {
@@ -506,13 +508,15 @@ describe("tenant purge (issue #1055)", () => {
       );
     }
     for (const tenant of [tenantA, tenantB]) {
-      // A cover candidate row for an item id of the tenant; the purge deletes it with the tenant's other rows.
+      // A cover candidate row for an item of the tenant; the purge deletes it with the tenant's other rows.
       await runInTenant(tenant, () =>
-        withTransaction(pool, (client) =>
-          replaceCoverCandidates(client, randomUUID(), [
+        withTransaction(pool, async (client) => {
+          const itemId = randomUUID();
+          await insertItemsWithIds(client, [itemId]);
+          await replaceCoverCandidates(client, itemId, [
             { source: "tmdb", title: "Purge me", subtitle: null, imageUrl: "https://covers.example.test/p.jpg" },
-          ]),
-        ),
+          ]);
+        }),
       );
     }
     await runInTenant(tenantB, () => enqueueJob(pool, "purgeTestJob", { which: "b" }));
@@ -553,7 +557,7 @@ describe("tenant purge (issue #1055)", () => {
     await purge();
 
     expect(await nonEmptyTables(tenantB)).toEqual([]);
-    for (const databaseId of b.databaseIds) expect(await partitionExists(databaseId)).toBe(false);
+    for (const databaseId of b.databaseIds) expect(await databaseExists(databaseId)).toBe(false);
     for (const path of b.filePaths) expect(existsSync(path)).toBe(false);
     expect(existsSync(join(dirs.files, tenantB))).toBe(false);
     expect(existsSync(join(dirs.mailAttachments, tenantB))).toBe(false);
@@ -803,7 +807,7 @@ describe("tenant purge (issue #1055)", () => {
     expect(await tenantStatus(tenantB)).toBe("deleting");
     expect(await tombstones(tenantB)).toHaveLength(0);
     expect(await rowCounts(tenantB)).toEqual(rowsBefore);
-    for (const databaseId of b.databaseIds) expect(await partitionExists(databaseId)).toBe(true);
+    for (const databaseId of b.databaseIds) expect(await databaseExists(databaseId)).toBe(true);
 
     await unblockDeletion(b.uploadPath);
     await purge();
@@ -933,7 +937,7 @@ describe("tenant purge (issue #1055)", () => {
     const counts = await rowCounts(tenantB);
     expect(counts["tenant_keys"]).toBe(0);
     expect(counts["items"]).toBeGreaterThan(0);
-    for (const databaseId of b.databaseIds) expect(await partitionExists(databaseId)).toBe(true);
+    for (const databaseId of b.databaseIds) expect(await databaseExists(databaseId)).toBe(true);
 
     vi.restoreAllMocks();
     await purge();
@@ -951,7 +955,7 @@ describe("tenant purge (issue #1055)", () => {
       join(dirs.files, tenantB, "late", "upload.bin"),
       join(dirs.mailAttachments, tenantB, "late.bin"),
     ];
-    const writer = await poolRunningAfter(DATABASE_LISTING, 1, async () => {
+    const writer = await poolRunningAfter(ROWS_STEP_START, 1, async () => {
       for (const path of latePaths) {
         await mkdir(join(path, ".."), { recursive: true });
         await writeFile(path, "late bytes");
@@ -969,34 +973,33 @@ describe("tenant purge (issue #1055)", () => {
     expect(await tombstones(tenantB)).toHaveLength(1);
   });
 
-  it("drops the partition of a database a running writer creates after the partitions step", async () => {
+  it("deletes a database and item a running writer creates after the bytes step", async () => {
     const tenantB = await provisionedTenant();
     await seedTenant(tenantB);
     await beginDeletion(tenantB);
     let lateDatabaseId: string | undefined;
-    const writer = await poolRunningAfter(DATABASE_LISTING, 1, async () => {
+    const writer = await poolRunningAfter(ROWS_STEP_START, 1, async () => {
       lateDatabaseId = await createLateDatabase(tenantB, true);
     });
     try {
-      // Resolving proves the predicate delete on `items` found nothing: any row there fails the tenant.
       await purge({}, writer);
     } finally {
       await writer.end();
     }
 
     if (!lateDatabaseId) throw new Error("the late writer never ran");
-    expect(await partitionExists(lateDatabaseId)).toBe(false);
+    expect(await databaseExists(lateDatabaseId)).toBe(false);
     expect(await nonEmptyTables(tenantB)).toEqual([]);
     expect(await tombstones(tenantB)).toHaveLength(1);
   });
 
-  it("fails the tenant when item rows remain after the partitions were dropped, and drops their partition on the retry", async () => {
+  it("fails the tenant when a running writer creates a database and item after the rows step, and deletes both on the retry", async () => {
     const tenantB = await provisionedTenant();
     await seedTenant(tenantB);
     await beginDeletion(tenantB);
-    // Created after the second partition pass, so only the predicate delete on `items` reaches its row.
+    // Created after every table was emptied, so only the final check finds the rows.
     let lateDatabaseId: string | undefined;
-    const writer = await poolRunningAfter(DATABASE_LISTING, 2, async () => {
+    const writer = await poolRunningAfter(CATALOG_FOREIGN_KEYS, 2, async () => {
       lateDatabaseId = await createLateDatabase(tenantB, true);
     });
     try {
@@ -1008,11 +1011,11 @@ describe("tenant purge (issue #1055)", () => {
     if (!lateDatabaseId) throw new Error("the late writer never ran");
     expect(await tenantStatus(tenantB)).toBe("deleting");
     expect(await tombstones(tenantB)).toHaveLength(0);
-    expect(await partitionExists(lateDatabaseId)).toBe(true);
+    expect(await databaseExists(lateDatabaseId)).toBe(true);
 
     await purge();
 
-    expect(await partitionExists(lateDatabaseId)).toBe(false);
+    expect(await databaseExists(lateDatabaseId)).toBe(false);
     expect(await nonEmptyTables(tenantB)).toEqual([]);
     expect(await tombstones(tenantB)).toHaveLength(1);
   });

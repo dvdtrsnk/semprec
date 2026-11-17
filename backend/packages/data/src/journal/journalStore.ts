@@ -141,7 +141,7 @@ async function pointJournalPeriodReservation(
 const OLDEST_LIVE_PERIOD_ENTRIES_SQL = `SELECT id FROM items
      WHERE database_id = $1 AND deleted_at IS NULL AND properties->>'type' = $2 AND properties->>'period' = $3
      ORDER BY created_at, id LIMIT 2`;
-const OLDEST_LIVE_PERIOD_ENTRIES_FOR_UPDATE_SQL = `${OLDEST_LIVE_PERIOD_ENTRIES_SQL} FOR UPDATE`;
+const OLDEST_LIVE_PERIOD_ENTRIES_FOR_UPDATE_SQL = `${OLDEST_LIVE_PERIOD_ENTRIES_SQL} FOR NO KEY UPDATE`;
 
 export interface JournalDuplicatePair {
   survivorId: string;
@@ -166,7 +166,7 @@ export async function findJournalDuplicatePair(
  * Holds the two oldest live entries of a period for a merge, or returns `null` with fewer than two.
  *
  * Lock order: the period reservation first (so `getOrCreateJournalItem`, restores and other merges wait), then the
- * entries re-read `FOR UPDATE`, since another transaction may have trashed or merged one meanwhile. The
+ * entries re-read `FOR NO KEY UPDATE`, since another transaction may have trashed or merged one meanwhile. The
  * reservation is then pointed at the survivor, so the next `getOrCreateJournalItem` returns it.
  */
 export async function lockJournalDuplicatePair(

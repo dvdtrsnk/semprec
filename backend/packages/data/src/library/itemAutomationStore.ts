@@ -243,11 +243,6 @@ export async function listRetryableLibraryAutomationForDatabases(
   return rows.map(mapRow);
 }
 
-/** For a hard-deleted item (trash purge); most items have no row. */
-export async function deleteItemAutomation(client: PoolClient, itemId: string): Promise<void> {
-  await client.query(`DELETE FROM item_automation WHERE item_id = $1`, [itemId]);
-}
-
 interface ItemAutomationRead {
   status: "pending" | "found" | "notFound" | "error" | "locked";
   attempts: number;

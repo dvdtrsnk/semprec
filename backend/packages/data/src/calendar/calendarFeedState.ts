@@ -1,5 +1,5 @@
 // Store of `calendar_feed_state`, kept per subscription calendar between sweep runs. The sweep is the only writer
-// of a row's contents; `calendarFeedStatePurgeHook` only deletes the row with its calendar item.
+// of a row's contents; the row goes with its calendar item through its foreign key.
 import { createHash } from "node:crypto";
 import type { PoolClient } from "pg";
 
@@ -56,13 +56,4 @@ export async function recordCalendarFeedFailure(
         SET last_fetched_at = now(), last_status = EXCLUDED.last_status, last_error_code = EXCLUDED.last_error_code`,
     [calendarItemId, status, errorCode],
   );
-}
-
-/** Zero is legitimate: a never-requested calendar, or a purged non-calendar item, has no row. */
-export async function deleteCalendarFeedState(client: PoolClient, calendarItemId: string): Promise<number> {
-  const removed = await client.query(
-    "DELETE FROM calendar_feed_state WHERE tenant_id = app_tenant_default() AND calendar_item_id = $1",
-    [calendarItemId],
-  );
-  return removed.rowCount ?? 0;
 }

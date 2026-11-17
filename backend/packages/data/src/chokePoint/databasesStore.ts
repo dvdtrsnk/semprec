@@ -71,10 +71,6 @@ export interface CreateDatabaseInput {
   sensitive?: boolean;
 }
 
-/**
- * Creates the `databases` row and its `items` partition in one transaction. `items` has no DEFAULT
- * partition, so a database is writable only once this returns.
- */
 export async function createDatabase(client: PoolClient, input: CreateDatabaseInput): Promise<DatabaseRow> {
   if (!input.system && !input.name) {
     throw new ValidationError("name is required for a non-system database", { field: "name" });
@@ -130,21 +126,23 @@ export async function createDatabase(client: PoolClient, input: CreateDatabaseIn
     }
     throw err;
   }
-
-  if (!UUID_RE.test(database.id)) {
-    // Sanity check only: the id comes from gen_random_uuid() and the partition function binds and
-    // escapes it itself.
-    throw new Error(`Generated database id is not a UUID: ${database.id}`);
-  }
-  // The runtime role does not own `items`, so the partition is created by the SECURITY DEFINER
-  // function `create_items_partition` rather than inline DDL.
-  await client.query("SELECT create_items_partition($1::uuid)", [database.id]);
-
   return database;
 }
 
 export async function getDatabase(client: PoolClient, id: string): Promise<DatabaseRow | null> {
   const { rows } = await client.query<DatabaseDbRow>(`SELECT ${DATABASE_COLUMNS} FROM databases WHERE id = $1`, [id]);
+  return rows[0] ? mapDatabaseRow(rows[0]) : null;
+}
+
+/**
+ * `getDatabase` holding the row to commit against its deletion: a purge that already deleted it makes this read wait
+ * for that purge and then miss the row, and a later purge waits for this transaction.
+ */
+export async function getDatabaseForKeyShare(client: PoolClient, id: string): Promise<DatabaseRow | null> {
+  const { rows } = await client.query<DatabaseDbRow>(
+    `SELECT ${DATABASE_COLUMNS} FROM databases WHERE id = $1 FOR KEY SHARE`,
+    [id],
+  );
   return rows[0] ? mapDatabaseRow(rows[0]) : null;
 }
 
@@ -374,15 +372,15 @@ export async function listInlineDatabaseIds(client: PoolClient, itemIds: readonl
 }
 
 /**
- * Permanently removes an inline database whose last item the purge just deleted: its
- * `rollup_dependencies` and `item_search_index` rows (FKs without cascade), its partition via the
- * SECURITY DEFINER `drop_items_partition`, then the row (`properties` and `views` cascade). The caller
- * must have confirmed the partition is empty in the same transaction.
+ * Permanently removes a database whose items the purge already removed with their dependents: its
+ * `rollup_dependencies` rows (FKs without cascade), any item left, then the row (`properties` and `views`
+ * cascade). A remaining item takes its derived rows with it; one whose dependents need their owner's delete
+ * path fails the commit on that row's foreign key, so the caller must have emptied the database in the same
+ * transaction.
  */
-export async function dropDatabaseWithPartition(client: PoolClient, id: string): Promise<void> {
+export async function deleteDatabaseWithItems(client: PoolClient, id: string): Promise<void> {
   await deleteRollupDependenciesBySourceDatabase(client, id);
-  await client.query("DELETE FROM item_search_index WHERE database_id = $1", [id]);
-  await client.query("SELECT drop_items_partition($1::uuid)", [id]);
+  await client.query("DELETE FROM items WHERE database_id = $1", [id]);
   const result = await client.query("DELETE FROM databases WHERE id = $1", [id]);
   requireAffectedRows(result, `delete of databases row ${id}`);
 }

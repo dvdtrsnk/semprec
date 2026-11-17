@@ -124,6 +124,24 @@ describe("two-tenant runtime-role harness", () => {
     }
   });
 
+  it("connects when parallel workers re-apply the run's password at the same moment", async () => {
+    // Separate sessions, as separate workers would be: Postgres refuses the loser of two simultaneous ALTER ROLEs.
+    const sessions = Array.from({ length: 16 }, () => getTestPool({ max: 1 }));
+    try {
+      const pools = await Promise.all(sessions.map((session) => createRuntimeRolePool(session, "semprec_side")));
+      try {
+        const users = await Promise.all(
+          pools.map(async (pool) => (await pool.query<{ current_user: string }>("SELECT current_user")).rows[0]),
+        );
+        expect(users).toEqual(Array.from({ length: 16 }, () => ({ current_user: "semprec_side" })));
+      } finally {
+        await Promise.all(pools.map((pool) => pool.end()));
+      }
+    } finally {
+      await Promise.all(sessions.map((session) => session.end()));
+    }
+  });
+
   describe("with tenant zero and tenant B under semprec_data", () => {
     it("scopes inserted rows to the tenant they were written in", async () => {
       const b = await createTestTenant(adminPool);

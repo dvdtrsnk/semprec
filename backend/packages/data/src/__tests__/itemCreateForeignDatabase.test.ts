@@ -4,14 +4,14 @@ import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
-import { dropDatabaseWithPartition } from "../chokePoint/databasesStore.js";
+import { deleteDatabaseWithItems } from "../chokePoint/databasesStore.js";
 import { withTransaction } from "../db/pool.js";
 import { NotFoundError } from "../errors.js";
 
 /**
- * A raw `items` insert naming another tenant's database fails with 23503 (composite foreign key), one
- * naming a random UUID with 23514 (no partition). `createItem` resolves the database under row-level
- * security first, so both must get the same NotFoundError and write nothing.
+ * A raw `items` insert naming another tenant's database or a random UUID fails with 23503 (composite
+ * foreign key). `createItem` resolves the database under row-level security first, so both must get the
+ * same NotFoundError and write nothing.
  */
 
 let adminPool: Pool;
@@ -111,7 +111,7 @@ describe("createItem answers a foreign and an unknown database id identically (i
 
       const whileForeign = await create();
       await runInTenant(tenantA, () =>
-        withTransaction(dataPool, (client) => dropDatabaseWithPartition(client, databaseA)),
+        withTransaction(dataPool, (client) => deleteDatabaseWithItems(client, databaseA)),
       );
       const onceUnknown = await create();
 

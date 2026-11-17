@@ -19,7 +19,10 @@ import {
   type Actor,
 } from "./authorization.js";
 
-/** `view_items` has no FK to partitioned `items`; this is the existence check `addViewItem` runs instead. */
+/**
+ * The not-found `addViewItem` answers for a missing, trashed or foreign item; `view_items`' foreign key alone would
+ * accept a trashed one and refuse the others with a constraint error.
+ */
 async function assertItemExists(client: PoolClient, itemId: string): Promise<void> {
   const [item] = await itemsStore.getItemsByIds(client, [itemId]);
   if (!item) throw new NotFoundError(`Item ${itemId} not found`);

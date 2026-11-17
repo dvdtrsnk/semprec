@@ -245,7 +245,7 @@ async function lockNightException(client: PoolClient, databaseId: string, night:
     `SELECT id, properties FROM items
       WHERE database_id = $1 AND deleted_at IS NULL AND properties ->> 'night' = $2
       ORDER BY id
-        FOR UPDATE`,
+        FOR NO KEY UPDATE`,
     [databaseId, night],
   );
   return rows[0] ?? null;
@@ -262,7 +262,7 @@ export interface SleepNightWriteOptions {
  * Runs inside the caller's READ COMMITTED transaction: a snapshot taken before the lock could not see an
  * exception another writer committed meanwhile.
  *
- * Lock order is the per-night advisory lock, then the exception row `FOR UPDATE`; a generic update naming
+ * Lock order is the per-night advisory lock, then the exception row `FOR NO KEY UPDATE`; a generic update naming
  * `night` takes the same order (`sleepNightUpdatePreLockHook`), so the two cannot deadlock. Only differing fields
  * are written (no `ifVersion`); an exception is never deleted, a null field follows the plan. Writes go through
  * the choke point, which checks an agent writer's database access, but that check does not happen when nothing is

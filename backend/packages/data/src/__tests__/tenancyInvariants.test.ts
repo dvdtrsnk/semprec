@@ -7,10 +7,9 @@ import { findTenancyViolations, verifyTenancy, type TenancyViolation } from "../
 
 /**
  * The deploy-time tenancy verification. Each break runs in a rolled-back transaction. Interpolated identifiers
- * are fixed names, random hex probe names, or `partitionName` (hex only); DDL takes no bind parameters.
+ * are fixed names or random hex probe names; DDL takes no bind parameters.
  */
 let pool: Pool;
-let partitionName: string;
 
 function probeName(prefix: string): string {
   return `${prefix}_${randomBytes(4).toString("hex")}`;
@@ -41,9 +40,7 @@ describe("findTenancyViolations", () => {
   beforeAll(async () => {
     pool = getTestPool();
     await resetDatabase(pool);
-    const db = await createChokePoint(pool).createDatabase({ name: "Tenancy invariants partition" });
-    // Hex only: a server-generated UUID with its hyphens removed, safe to interpolate into DDL.
-    partitionName = `items_p_${db.id.replaceAll("-", "")}`;
+    await createChokePoint(pool).createDatabase({ name: "Tenancy invariants database" });
   });
 
   afterAll(async () => {
@@ -51,11 +48,6 @@ describe("findTenancyViolations", () => {
   });
 
   it("finds no violation on the migrated database", async () => {
-    const { rows } = await pool.query<{ count: number }>(
-      "SELECT count(*)::int AS count FROM pg_class WHERE relname = $1 AND relispartition",
-      [partitionName],
-    );
-    expect(rows).toEqual([{ count: 1 }]);
     expect(await findTenancyViolations(pool)).toEqual([]);
   });
 
@@ -94,12 +86,38 @@ describe("findTenancyViolations", () => {
       ]);
     });
 
-    it("partitionPrivilege: SELECT on an items partition granted to semprec_data", async () => {
-      expect(await violationsAfter([`GRANT SELECT ON ${partitionName} TO semprec_data`])).toEqual([
+    it("itemForeignKey: a foreign key to items on the bare item id", async () => {
+      const table = probeName("tenancy_invariants_item_ref");
+      expect(
+        await violationsAfter([
+          `CREATE TABLE ${table} (item_id uuid REFERENCES items (id))`,
+          `COMMENT ON TABLE ${table} IS 'semprec:tenancy=global'`,
+        ]),
+      ).toEqual([
         {
-          invariant: "partitionPrivilege",
-          object: partitionName,
-          detail: "semprec_data holds a table privilege on the partition",
+          invariant: "itemForeignKey",
+          object: `${table}.${table}_item_id_fkey`,
+          detail: "foreign key to items is not over (tenant_id, id)",
+        },
+      ]);
+    });
+
+    it("itemForeignKey: a foreign key to items that does not lead with tenant_id", async () => {
+      const table = probeName("tenancy_invariants_item_ref");
+      expect(
+        only(
+          await violationsAfter([
+            `CREATE TABLE ${table} (item_id uuid, tenant_id uuid, FOREIGN KEY (item_id, tenant_id) REFERENCES items (id, tenant_id))`,
+            `CREATE UNIQUE INDEX ${table}_probe_uq ON items (id, tenant_id)`,
+            `COMMENT ON TABLE ${table} IS 'semprec:tenancy=global'`,
+          ]),
+          "itemForeignKey",
+        ),
+      ).toEqual([
+        {
+          invariant: "itemForeignKey",
+          object: `${table}.${table}_item_id_tenant_id_fkey`,
+          detail: "foreign key to items is not over (tenant_id, id)",
         },
       ]);
     });
@@ -211,7 +229,7 @@ describe("findTenancyViolations", () => {
     });
 
     it("runtimeRole: a superuser runtime role", async () => {
-      // A superuser is a member of every role, so the membership and partition checks fire as well.
+      // A superuser is a member of every role, so the membership checks fire as well.
       const violations = await violationsAfter(["ALTER ROLE semprec_side SUPERUSER"]);
       const side = only(violations, "runtimeRole").find((violation) => violation.object === "semprec_side");
       expect(side?.detail.split("; ")[0]).toBe("is a superuser");
@@ -439,7 +457,7 @@ describe("findTenancyViolations", () => {
             });
           }
           expect(violations.map((violation) => violation.object)).toEqual(
-            expect.arrayContaining([`${fn}()`, "create_items_partition(uuid)"]),
+            expect.arrayContaining([`${fn}()`, "ops_health_counts()"]),
           );
         },
       );
@@ -493,13 +511,13 @@ describe("findTenancyViolations", () => {
         ]);
       });
 
-      it("create_items_partition(uuid) with the search_path of finding R2-DB-1", async () => {
+      it("ops_health_counts() with the search_path of finding R2-DB-1", async () => {
         expect(
-          await violationsAfter(["ALTER FUNCTION create_items_partition(uuid) SET search_path = pg_catalog, public"]),
+          await violationsAfter(["ALTER FUNCTION ops_health_counts() SET search_path = pg_catalog, public"]),
         ).toEqual([
           {
             invariant: "definerFunction",
-            object: "create_items_partition(uuid)",
+            object: "ops_health_counts()",
             detail: "search_path does not end with pg_temp",
           },
         ]);
@@ -536,23 +554,21 @@ describe("verifyTenancy", () => {
     expect(output.error).toEqual([]);
   });
 
-  it("returns 1 for create_items_partition(uuid) with the search_path of finding R2-DB-1", async () => {
+  it("returns 1 for ops_health_counts() with the search_path of finding R2-DB-1", async () => {
     // verifyTenancy reads through its own connections, so the break is committed and restored below; integration files run serially.
-    await verifyPool.query("ALTER FUNCTION create_items_partition(uuid) SET search_path = pg_catalog, public");
+    await verifyPool.query("ALTER FUNCTION ops_health_counts() SET search_path = pg_catalog, public");
     try {
       const output = recordingOutput();
       expect(await verifyTenancy(verifyPool, output.sink)).toBe(1);
       expect(output.error).toEqual([
-        "tenancy violation [definerFunction] create_items_partition(uuid): search_path does not end with pg_temp",
+        "tenancy violation [definerFunction] ops_health_counts(): search_path does not end with pg_temp",
       ]);
       expect(output.info).toEqual([]);
     } finally {
-      await verifyPool.query(
-        "ALTER FUNCTION create_items_partition(uuid) SET search_path = pg_catalog, public, pg_temp",
-      );
+      await verifyPool.query("ALTER FUNCTION ops_health_counts() SET search_path = pg_catalog, public, pg_temp");
     }
     const restored = await verifyPool.query<{ proconfig: string[] }>(
-      "SELECT proconfig FROM pg_proc WHERE oid = 'create_items_partition(uuid)'::regprocedure",
+      "SELECT proconfig FROM pg_proc WHERE oid = 'ops_health_counts()'::regprocedure",
     );
     expect(restored.rows).toEqual([{ proconfig: ["search_path=pg_catalog, public, pg_temp"] }]);
   });

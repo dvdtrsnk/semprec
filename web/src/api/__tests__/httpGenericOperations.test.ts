@@ -102,22 +102,6 @@ describe("http generic operations", () => {
     await expect(operations.getView("v1")).rejects.toMatchObject({ kind: "retryable" });
   });
 
-  it("posts a named module operation to the operations endpoint (no backend route currently serves it)", async () => {
-    const calls: Array<{ url: string; method?: string; body: unknown }> = [];
-    const operations = createHttpGenericOperations({
-      baseUrl: "/api",
-      fetchImpl: async (input, init) => {
-        calls.push({ url: String(input), method: init?.method, body: JSON.parse(String(init?.body)) });
-        return jsonResponse({ itemId: "e1", messageId: "<m1@example.com>" });
-      },
-    });
-
-    const result = await operations.callOperation("email.send", { draftItemId: "e1" });
-
-    expect(calls[0]).toMatchObject({ url: "/api/operations/email.send", method: "POST", body: { draftItemId: "e1" } });
-    expect(result).toEqual({ itemId: "e1", messageId: "<m1@example.com>" });
-  });
-
   it("reads the item, then patches it with the version it read", async () => {
     const calls: Array<{ url: string; method?: string; body?: unknown }> = [];
     const operations = createHttpGenericOperations({

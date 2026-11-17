@@ -70,7 +70,7 @@ async function lockOccurrence(
     `SELECT id FROM items
      WHERE database_id = $1 AND deleted_at IS NULL
        AND properties->>'seriesId' = $2 AND properties->>'occurrenceDate' = $3
-     ORDER BY id LIMIT 1 FOR UPDATE`,
+     ORDER BY id LIMIT 1 FOR NO KEY UPDATE`,
     [databaseId, seriesId, occurrenceDate],
   );
   return rows[0] ? itemsStore.getItemById(client, databaseId, rows[0].id) : null;

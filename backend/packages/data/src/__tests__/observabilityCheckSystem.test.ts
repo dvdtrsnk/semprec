@@ -9,6 +9,7 @@ import {
   createTestTenant,
   getTenantZeroId,
   getTestPool,
+  insertItemsWithIds,
   resetDatabase,
 } from "../testSupport/testDb.js";
 import { createUser, listAdminRecipients } from "../auth/usersStore.js";
@@ -110,6 +111,18 @@ async function beatMailbox(mailboxId: string, ageMs: number): Promise<void> {
     "UPDATE process_heartbeats SET beat_at = now() - ($2::bigint * interval '1 millisecond') WHERE process = $1",
     [mailSyncProcessName(mailboxId), ageMs],
   );
+}
+
+/** A mailbox's sync state needs an existing item; its database does not matter to these checks. */
+async function fixtureItemId(): Promise<string> {
+  const id = randomUUID();
+  const client = await pool.connect();
+  try {
+    await insertItemsWithIds(client, [id]);
+  } finally {
+    client.release();
+  }
+  return id;
 }
 
 async function runCheck(jobId: string = randomUUID(), taskPool: Pool = pool): Promise<void> {
@@ -261,14 +274,14 @@ describe("observability.checkSystem (issue #169)", () => {
   it("folds an overdue next_expected_activity_at and a non-null last_error into one mail_sync_stalled predicate", async () => {
     await createTestUser();
     await markAllProcessesFresh();
-    const overdueMailbox = randomUUID();
+    const overdueMailbox = await fixtureItemId();
     await ensureMailAccountSyncState(pool, { itemId: overdueMailbox, syncMode: "imap" });
     await pool.query(
       `UPDATE mail_account_sync_state SET next_expected_activity_at = now() - interval '1 minute' WHERE item_id = $1`,
       [overdueMailbox],
     );
 
-    const erroredMailbox = randomUUID();
+    const erroredMailbox = await fixtureItemId();
     await ensureMailAccountSyncState(pool, { itemId: erroredMailbox, syncMode: "imap" });
     // A connection-limit backoff defers next_expected_activity_at while last_error stays set: not due, but must alert.
     await recordSyncError(pool, erroredMailbox, "boom", "reauthorization");
@@ -277,11 +290,11 @@ describe("observability.checkSystem (issue #169)", () => {
       [erroredMailbox],
     );
 
-    const limitedMailbox = randomUUID();
+    const limitedMailbox = await fixtureItemId();
     await ensureMailAccountSyncState(pool, { itemId: limitedMailbox, syncMode: "imap" });
     await recordSyncError(pool, limitedMailbox, "private provider detail", "connectionLimit");
 
-    const healthyMailbox = randomUUID();
+    const healthyMailbox = await fixtureItemId();
     await ensureMailAccountSyncState(pool, { itemId: healthyMailbox, syncMode: "imap" });
     await pool.query(
       `UPDATE mail_account_sync_state SET next_expected_activity_at = now() + interval '1 hour' WHERE item_id = $1`,
@@ -336,7 +349,7 @@ describe("observability.checkSystem (issue #169)", () => {
   it("keeps hysteresis: a second run writes no notification and leaves changed_at, recovery flips to ok", async () => {
     await createTestUser();
     await markAllProcessesFresh();
-    const mailboxItemId = randomUUID();
+    const mailboxItemId = await fixtureItemId();
     await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "imap" });
     await recordSyncError(pool, mailboxItemId, "boom", "other");
 
@@ -357,7 +370,7 @@ describe("observability.checkSystem (issue #169)", () => {
   it("drops an orphaned mail check once its account is deleted, instead of leaving it alerting forever", async () => {
     await createTestUser();
     await markAllProcessesFresh();
-    const mailboxItemId = randomUUID();
+    const mailboxItemId = await fixtureItemId();
     await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "imap" });
     await recordSyncError(pool, mailboxItemId, "boom", "other");
 
@@ -536,7 +549,7 @@ describe("observability.checkSystem (issue #169)", () => {
     }
 
     async function overdueMailbox(): Promise<string> {
-      const mailboxItemId = randomUUID();
+      const mailboxItemId = await fixtureItemId();
       await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "imap" });
       await pool.query(
         `UPDATE mail_account_sync_state SET next_expected_activity_at = now() - interval '1 minute' WHERE item_id = $1`,
@@ -568,7 +581,7 @@ describe("observability.checkSystem (issue #169)", () => {
 
     it("raises the problem as critical when the stall follows a revoked credential", async () => {
       await createTestUser();
-      const mailboxItemId = randomUUID();
+      const mailboxItemId = await fixtureItemId();
       await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "imap" });
       // The sync job's own report is covered in mailSync.test.ts.
       await recordSyncError(pool, mailboxItemId, "token revoked", "reauthorization");
@@ -580,7 +593,7 @@ describe("observability.checkSystem (issue #169)", () => {
 
     it("starts the problem at the failure streak's start, not at the tick that raised it", async () => {
       await createTestUser();
-      const mailboxItemId = randomUUID();
+      const mailboxItemId = await fixtureItemId();
       await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "imap" });
       await recordSyncError(pool, mailboxItemId, "boom", "other");
       // Fixture: the streak began an hour ago, as earlier failing passes would have recorded.
@@ -665,7 +678,7 @@ describe("observability.checkSystem (issue #169)", () => {
 
     it("resolves the problem when the check returns to ok", async () => {
       await createTestUser();
-      const mailboxItemId = randomUUID();
+      const mailboxItemId = await fixtureItemId();
       await ensureMailAccountSyncState(pool, { itemId: mailboxItemId, syncMode: "imap" });
       await recordSyncError(pool, mailboxItemId, "boom", "other");
       await runCheck();
@@ -1017,10 +1030,13 @@ describe("observability.checkSystem (issue #169)", () => {
       const mailboxId = randomUUID();
       await runInTenant(tenantB, () =>
         withTransaction(pool, async (client) => {
+          await insertItemsWithIds(client, [mailboxId]);
           await ensureMailAccountSyncState(client, { itemId: mailboxId, syncMode: "imap" });
           await recordSyncError(client, mailboxId, "boom", "other");
         }),
       );
+      // The mailbox item is live, so its sync process beats; only the sync error stalls it.
+      await beatMailbox(mailboxId, 0);
 
       await runCheck(randomUUID(), runtimePool);
 

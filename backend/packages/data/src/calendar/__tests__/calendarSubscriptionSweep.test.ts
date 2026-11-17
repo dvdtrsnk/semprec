@@ -817,15 +817,15 @@ describe("the subscription calendar sweep (issue gh-1960)", () => {
       expect(await stateOf(other)).not.toBeNull();
     });
 
-    it("leaves a row alone when the purged item is not a calendar", async () => {
+    it("removes the row with the purged item even when the item is not a calendar", async () => {
       const databases = await runInTenant(tenantA.id, () => cp.listDatabases());
       const tasks = databases.find((row) => row.ownerModuleId === "tasks");
       if (!tasks) throw new Error("Missing the tasks database");
       const task = await runInTenant(tenantA.id, () =>
         cp.createItem({ databaseId: tasks.id, properties: { name: "Task" } }),
       );
-      // Raw SQL as the superuser: no production write puts a download state row on an item that is no calendar, and the
-      // hook must not delete one by id alone.
+      // Raw SQL as the superuser: no production write puts a download state row on an item that is no calendar; the
+      // row is keyed by its item, so it goes with it whatever the item's database.
       await admin.query(
         "INSERT INTO calendar_feed_state (tenant_id, calendar_item_id, last_status) VALUES ($1, $2, 200)",
         [tenantA.id, task.id],
@@ -838,7 +838,7 @@ describe("the subscription calendar sweep (issue gh-1960)", () => {
       );
 
       expect(purged.purgedItemIds).toEqual([task.id]);
-      expect(await stateOf(task.id)).toMatchObject({ last_status: 200 });
+      expect(await stateOf(task.id)).toBeNull();
     });
   });
 });

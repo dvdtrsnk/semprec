@@ -348,13 +348,6 @@ describe("purgeExpiredTrash (issue #156)", () => {
       return Number(rows[0]?.count);
     }
 
-    async function partitionExists(databaseId: string): Promise<boolean> {
-      const { rows } = await pool.query<{ exists: boolean }>("SELECT to_regclass($1) IS NOT NULL AS exists", [
-        `items_p_${databaseId.replace(/-/g, "")}`,
-      ]);
-      return rows[0]?.exists === true;
-    }
-
     async function makeFilesItem(databaseId: string, blobId: string) {
       const item = await chokePoint.createItem({ databaseId, properties: {} });
       await pool.query(
@@ -441,10 +434,10 @@ describe("purgeExpiredTrash (issue #156)", () => {
       expect(await countRows("databases WHERE id = $1", [inlineDb.id])).toBe(0);
       expect(await countRows("properties WHERE database_id = $1", [inlineDb.id])).toBe(0);
       expect(await countRows("views WHERE database_id = $1", [inlineDb.id])).toBe(0);
-      expect(await partitionExists(inlineDb.id)).toBe(false);
+      expect(await countRows("databases WHERE id = $1", [inlineDb.id])).toBe(0);
       const children = await withClient(pool, (client) => databasesStore.listDatabasesByParentItem(client, page.id));
       expect(children).toEqual([]);
-      expect(await partitionExists(db.id)).toBe(true);
+      expect(await countRows("databases WHERE id = $1", [db.id])).toBe(1);
     });
 
     it("removes the action item states of a purged transcript and keeps another transcript's (issue #1754)", async () => {
@@ -494,15 +487,14 @@ describe("purgeExpiredTrash (issue #156)", () => {
       // The nested row is a candidate of its own and may be reached first; that call never drops its database.
       const first = await chokePoint.purgeExpiredTrashSubtree(inlineRow.id, cutoff);
       expect(first.purgedItemIds).toEqual([inlineRow.id]);
-      expect(await partitionExists(inlineDb.id)).toBe(true);
+      expect(await countRows("databases WHERE id = $1", [inlineDb.id])).toBe(1);
 
       const second = await chokePoint.purgeExpiredTrashSubtree(page.id, cutoff);
       expect(second.purgedItemIds).toEqual([page.id]);
       expect(await countRows("databases WHERE id = $1", [inlineDb.id])).toBe(0);
-      expect(await partitionExists(inlineDb.id)).toBe(false);
     });
 
-    it("keeps an inline database and its partition when a nested live row stopped the cascade", async () => {
+    it("keeps an inline database when a nested live row stopped the cascade", async () => {
       const db = await chokePoint.createDatabase({ name: "Pages" });
       const page = await chokePoint.createItem({ databaseId: db.id, properties: {} });
       const inlineDb = await chokePoint.createInlineDatabase({ name: "Inline", parentItemId: page.id });
@@ -517,7 +509,6 @@ describe("purgeExpiredTrash (issue #156)", () => {
       expect(purgedCount).toBe(2);
 
       expect(await countRows("databases WHERE id = $1", [inlineDb.id])).toBe(1);
-      expect(await partitionExists(inlineDb.id)).toBe(true);
       const { rows } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [inlineDb.id]);
       expect(rows.map((row) => row.id)).toEqual([liveRow.id]);
     });
@@ -721,10 +712,13 @@ describe("purgeExpiredTrash (issue #156)", () => {
       const db = await chokePoint.createDatabase({ name: "Files" });
       const blob = await createBlob(pool, { mimeType: "text/plain", byteSize: 3, storageKey: "mail-key" });
       const purgedFile = await makeFilesItem(db.id, blob.id);
+      const emails = await chokePoint.createDatabase({ name: "Emails" });
+      const message = await chokePoint.createItem({ databaseId: emails.id, properties: {} });
+      // Only the attachment row matters here; ingesting a whole message would add unrelated Files items.
       await pool.query(
         `INSERT INTO mail_attachments (message_item_id, blob_id, filename, content_type, disposition, byte_size)
-         VALUES (gen_random_uuid(), $1, 'a.txt', 'text/plain', 'attachment', 3)`,
-        [blob.id],
+         VALUES ($1, $2, 'a.txt', 'text/plain', 'attachment', 3)`,
+        [message.id, blob.id],
       );
       await chokePoint.softDeleteItem(db.id, purgedFile.id);
       await ageDeletion(purgedFile.id, 31, db.id);

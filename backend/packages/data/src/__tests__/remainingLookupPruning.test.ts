@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
@@ -14,29 +13,8 @@ import { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js
 import { listPendingImapFlagWrites, recordDesiredMailMessageFlags } from "../mail/mailMessageFlagSyncStore.js";
 import { generatePermissionManifest } from "../manifest/permissionManifest.js";
 import { getActiveMailSyncProcessNames } from "../health/processHeartbeats.js";
-import { getSystemHealthReport } from "../observability/systemHealthReport.js";
 
 let pool: Pool;
-
-/** Matches the statements that read or write `items`; `JOIN items` and `FROM items` both count. */
-const ITEMS_STATEMENT = /\b(FROM|JOIN|UPDATE) items\b/;
-
-interface RecordedStatement {
-  text: string;
-  values: unknown[];
-}
-
-interface PlanNode {
-  "Relation Name"?: string;
-  "One-Time Filter"?: string;
-  Plans?: PlanNode[];
-}
-
-interface ScanSummary {
-  statements: number;
-  relations: Set<string>;
-  falseFilter: boolean;
-}
 
 async function inRolledBackTransaction(fn: (client: PoolClient) => Promise<void>): Promise<void> {
   const client = await pool.connect();
@@ -61,51 +39,6 @@ async function addTenant(client: PoolClient): Promise<string> {
   const id = rows[0]?.id;
   if (!id) throw new Error("tenant was not inserted");
   return id;
-}
-
-function partitionName(databaseId: string): string {
-  return `items_p_${databaseId.replaceAll("-", "")}`;
-}
-
-function recordItemsStatements(client: PoolClient, sink: RecordedStatement[]): PoolClient {
-  return new Proxy(client, {
-    get(target, prop) {
-      if (prop !== "query") return Reflect.get(target, prop, target) as unknown;
-      return (text: unknown, values?: unknown[]) => {
-        if (typeof text === "string" && ITEMS_STATEMENT.test(text)) sink.push({ text, values: values ?? [] });
-        return (target.query as (...args: unknown[]) => unknown)(text, values);
-      };
-    },
-  });
-}
-
-function walkPlan(node: PlanNode, visit: (node: PlanNode) => void): void {
-  visit(node);
-  for (const child of node.Plans ?? []) walkPlan(child, visit);
-}
-
-/** Runs `fn`, then EXPLAINs every `items` statement it sent with the parameters it bound. */
-async function scanPartitions(
-  client: PoolClient,
-  fn: (recorded: PoolClient) => Promise<unknown>,
-): Promise<ScanSummary> {
-  const sent: RecordedStatement[] = [];
-  await fn(recordItemsStatements(client, sent));
-  const summary: ScanSummary = { statements: sent.length, relations: new Set(), falseFilter: false };
-  for (const statement of sent) {
-    const { rows } = await client.query<{ "QUERY PLAN": { Plan: PlanNode }[] }>(
-      `EXPLAIN (FORMAT JSON) ${statement.text}`,
-      statement.values,
-    );
-    const root = rows[0]?.["QUERY PLAN"][0]?.Plan;
-    if (!root) throw new Error("EXPLAIN returned no plan");
-    walkPlan(root, (node) => {
-      const relation = node["Relation Name"];
-      if (relation?.startsWith("items")) summary.relations.add(relation);
-      if (node["One-Time Filter"] === "false") summary.falseFilter = true;
-    });
-  }
-  return summary;
 }
 
 interface Fixture {
@@ -235,24 +168,7 @@ async function seedPendingImapFlagWriteB(client: PoolClient, fx: Fixture): Promi
   };
 }
 
-/** Every call that reads `items` by id, run through the same entry point its production caller uses. */
-function lookups(blobId: string): Record<string, (client: PoolClient) => Promise<unknown>> {
-  return {
-    listLiveViewItemsAfter: (c) => listLiveViewItemsAfter(c, randomUUID(), { afterPosition: null, limit: 10 }),
-    generatePermissionManifest: (c) => generatePermissionManifest(c, randomUUID()),
-    deleteBlobIfUnreferenced: (c) => deleteBlobIfUnreferenced(c, blobId),
-    getActiveMailSyncProcessNames: (c) => getActiveMailSyncProcessNames(c),
-    listPendingImapFlagWrites: (c) =>
-      listPendingImapFlagWrites(c, {
-        folderRelationDefinitionId: randomUUID(),
-        mailboxFolderRelationDefinitionId: randomUUID(),
-        mailboxItemId: randomUUID(),
-      }),
-    getSystemHealthReport: (c) => getSystemHealthReport(c),
-  };
-}
-
-describe("the remaining id-only item lookups are pruned to the tenant's partitions", () => {
+describe("the remaining id-only item lookups stay within the scoped tenant", () => {
   beforeAll(async () => {
     pool = getTestPool();
     await resetDatabase(pool);
@@ -260,20 +176,6 @@ describe("the remaining id-only item lookups are pruned to the tenant's partitio
 
   afterAll(async () => {
     await pool?.end();
-  });
-
-  it("plans only the scoped tenant's partitions for each of the six lookups", async () => {
-    await inRolledBackTransaction(async (client) => {
-      const fx = await seed(client);
-      await scopeTo(client, fx.tenantB);
-      await client.query("SET LOCAL ROLE semprec_data");
-
-      for (const [name, lookup] of Object.entries(lookups(fx.referencedBlobB))) {
-        const summary = await scanPartitions(client, lookup);
-        expect(summary.statements, name).toBeGreaterThan(0);
-        expect(summary.relations, name).toEqual(new Set([partitionName(fx.dbB)]));
-      }
-    });
   });
 
   it("returns the scoped tenant's live mailbox sync process and no other", async () => {
@@ -423,19 +325,13 @@ describe("the remaining id-only item lookups are pruned to the tenant's partitio
     });
   });
 
-  it("returns nothing and scans no partition for a tenant with no databases", async () => {
+  it("returns nothing for a tenant with no databases", async () => {
     await inRolledBackTransaction(async (client) => {
       const fx = await seed(client);
       await scopeTo(client, fx.tenantEmpty);
       await client.query("SET LOCAL ROLE semprec_data");
 
       expect(await getActiveMailSyncProcessNames(client)).toEqual([]);
-
-      for (const [name, lookup] of Object.entries(lookups(fx.blobEmpty))) {
-        const summary = await scanPartitions(client, lookup);
-        expect(summary.relations.size, name).toBe(0);
-        expect(summary.falseFilter, name).toBe(true);
-      }
     });
   });
 });

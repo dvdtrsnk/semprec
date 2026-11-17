@@ -2,7 +2,13 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
-import { getTenantZeroId, getTestPool, resetDatabase, withTenantTransaction } from "../testSupport/testDb.js";
+import {
+  getTenantZeroId,
+  getTestPool,
+  insertItemsWithIds,
+  resetDatabase,
+  withTenantTransaction,
+} from "../testSupport/testDb.js";
 
 /** The schema admits only the tenant credential scheme. */
 const CONSTRAINT = "external_credentials_scheme_tenant_only";
@@ -33,16 +39,20 @@ beforeEach(async () => {
 describe("external_credentials scheme constraint (issue #1069)", () => {
   it("keeps a tenant row and refuses a master row and a row without scheme", async () => {
     const itemId = randomUUID();
-    await withTenantTransaction(adminPool, getTenantZeroId(), (client) =>
-      storeCredential(client, { itemId, credentialType: "api_key", plaintext: "kept" }),
-    );
+    const masterItemId = randomUUID();
+    const defaultedItemId = randomUUID();
+    await withTenantTransaction(adminPool, getTenantZeroId(), async (client) => {
+      // Real items for every row, so only the scheme constraint can refuse the raw inserts below.
+      await insertItemsWithIds(client, [itemId, masterItemId, defaultedItemId]);
+      await storeCredential(client, { itemId, credentialType: "api_key", plaintext: "kept" });
+    });
 
     // Raw SQL: no writer produces a master row, so only SQL can attempt one.
     const master = await errorOf(
       adminPool.query(
         `INSERT INTO external_credentials (tenant_id, item_id, credential_type, ciphertext, nonce, key_version, scheme)
          VALUES ($1, $2, 'api_key', '\\x0102'::bytea, '\\x0304'::bytea, 1, 'master')`,
-        [getTenantZeroId(), randomUUID()],
+        [getTenantZeroId(), masterItemId],
       ),
     );
     expect({ code: master.code, constraint: master.constraint }).toEqual({ code: "23514", constraint: CONSTRAINT });
@@ -51,7 +61,7 @@ describe("external_credentials scheme constraint (issue #1069)", () => {
       adminPool.query(
         `INSERT INTO external_credentials (tenant_id, item_id, credential_type, ciphertext, nonce, key_version)
          VALUES ($1, $2, 'api_key', '\\x0102'::bytea, '\\x0304'::bytea, 1)`,
-        [getTenantZeroId(), randomUUID()],
+        [getTenantZeroId(), defaultedItemId],
       ),
     );
     expect({ code: defaulted.code, constraint: defaulted.constraint }).toEqual({

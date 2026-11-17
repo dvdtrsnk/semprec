@@ -3,16 +3,21 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { I18nProvider } from "../../i18n/index.js";
 import { OperationError, type GenericOperations, type View } from "../../api/genericOperations.js";
 import { createFakeOperations } from "../../test/fakeOperations.js";
+import { createFakeMailDrafts } from "../../test/fakeMailDrafts.js";
 import { VIEW_ID, createMailboxBackend, mailboxView } from "../../test/mailboxFixture.js";
 import { setViewport } from "../../test/renderMailbox.js";
 import { createDefaultViewRegistry } from "../registerViews.js";
 import { ViewHost } from "../ViewHost.js";
 import { createViewRegistry, registerViewRenderer, resolveViewRenderer } from "../viewRegistry.js";
 
+function defaultRegistry() {
+  return createDefaultViewRegistry({ mailDrafts: createFakeMailDrafts(createMailboxBackend()) });
+}
+
 function renderHost(operations: GenericOperations, viewId = VIEW_ID) {
   return render(
     <I18nProvider locale="en">
-      <ViewHost viewId={viewId} operations={operations} registry={createDefaultViewRegistry()} />
+      <ViewHost viewId={viewId} operations={operations} registry={defaultRegistry()} />
     </I18nProvider>,
   );
 }
@@ -32,7 +37,7 @@ describe("view resolution", () => {
   });
 
   it("resolves by view type when the payload carries no clientComponent", () => {
-    const registry = createDefaultViewRegistry();
+    const registry = defaultRegistry();
     const withoutComponent: View = { ...mailboxView, clientComponent: undefined };
     expect(resolveViewRenderer(registry, withoutComponent)).toBeDefined();
   });

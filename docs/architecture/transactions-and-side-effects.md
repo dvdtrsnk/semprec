@@ -145,6 +145,11 @@ transactional contract is:
   `derivedValueAdmission.ts` → `ConflictError` `unsupported_isolation`); they never change it.
 - Row locks are taken with typed helpers in the owning store (`itemsStore.lockItemById`,
   `lockTrashedItemBefore`, `lockItemTrashEpoch`, `databaseRowLocks.ts`, `lockLiveItem`).
+- A writer locks an `items` row `FOR NO KEY UPDATE`, never `FOR UPDATE`, so the `FOR KEY SHARE` every
+  foreign key to the item takes at commit for a dependent row written in the transaction (an edge, a view
+  membership, ...) does not wait on it. Only a statement that deletes the item, and `lockTrashedItemBefore` ahead of the
+  purge's delete, takes `FOR UPDATE`. Wherever these documents say an item is locked `FOR UPDATE`,
+  that is this `FOR NO KEY UPDATE`; both conflict with each other and with `FOR SHARE` alike.
 - Several rows of the same kind are locked in one statement, in id order, before the first of them
   is written.
 - A predicate that decides whether to lock belongs in the locking statement itself (re-evaluated
@@ -199,6 +204,13 @@ A change to any of these paths must keep the order:
   dependents.
 - **Archived database purge:** `FOR NO KEY UPDATE` on the database row first in every deleting
   transaction.
+- **Relation property vs. target database delete:** `createRelationPropertyWithClient` reads the
+  target `databases` row `FOR KEY SHARE` and holds it to commit; a purge deleting that database
+  (`deleteDatabaseWithItems`) either waits for the relation's commit or, having deleted the row first,
+  makes the read wait and then miss it (`validation_failed`). This orders the two; it does not remove
+  the relation: when the creation commits first, the purge has already listed (or, for an inline
+  database of a purged item, never lists) the dependent schema, so the new relation property keeps
+  naming the deleted database. That was already so with partitions.
 
 ### Advisory locks
 
@@ -216,10 +228,8 @@ A change to any of these paths must keep the order:
 
 ### DDL locks
 
-- `create_items_partition` attaches a standalone table with `ATTACH PARTITION`, taking
-  `SHARE UPDATE EXCLUSIVE` on `items` (no wait for other tenants' item reads/writes). Cloning the
-  `database_id` foreign key still takes `SHARE ROW EXCLUSIVE` on `databases` until commit, so database
-  creations of all tenants serialize behind it.
+- The choke point runs no DDL: creating or deleting a database writes rows only, so database writes of
+  different tenants never wait on each other's locks.
 - A schema change that must drain concurrent validating writers takes an explicit table lock with a
   bounded `SET LOCAL lock_timeout`, once, and fails rather than waits indefinitely.
 

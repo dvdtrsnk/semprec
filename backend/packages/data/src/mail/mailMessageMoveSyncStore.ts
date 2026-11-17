@@ -183,7 +183,7 @@ export async function recordDesiredMailMessageMove(
        WHERE edge.tenant_id = app_tenant_default() AND membership.tenant_id = app_tenant_default()
          AND (edge.item_a = $1 OR edge.item_b = $1) AND (edge.item_a = folder.id OR edge.item_b = folder.id)
          AND edge.metadata ->> 'uid' = $4 AND folder.properties ->> 'providerId' = $5 AND state.uidvalidity = $6
-       FOR UPDATE OF edge, folder, state, membership, message, mailbox`,
+       FOR NO KEY UPDATE OF edge, folder, state, membership, message, mailbox`,
       [
         input.messageItemId,
         input.mailboxItemId,

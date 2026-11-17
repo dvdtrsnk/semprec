@@ -376,7 +376,7 @@ describe("batched relation expansion", () => {
       );
     });
   });
-  it("never exposes a foreign target even through a dangling legacy edge", async () => {
+  it("never exposes a foreign target, since the schema refuses an edge to one", async () => {
     const foreign = await runInTenant(tenant, () => make("companies", { name: "Private company" }));
     const other = await createTestTenant(admin);
     await runInTenant(other, async () => {
@@ -384,12 +384,15 @@ describe("batched relation expansion", () => {
       const own = await make("people", { name: "Own person" });
       const property = (await cp.listProperties(own.databaseId)).find((p) => p.key === "companies");
       if (!property || typeof property.config.relationDefinitionId !== "string") throw new Error("Missing relation");
-      // Deliberately malformed legacy edge: normal relation writes refuse foreign endpoints.
-      await pool.query("INSERT INTO item_relations (relation_definition_id,item_a,item_b) VALUES ($1,$2,$3)", [
-        property.config.relationDefinitionId,
-        own.id,
-        foreign.id,
-      ]);
+      // Deliberately malformed edge: relation writes refuse a foreign endpoint, and so does the endpoint's key to
+      // items of the edge's tenant, so no such edge can be stored.
+      await expect(
+        pool.query("INSERT INTO item_relations (relation_definition_id,item_a,item_b) VALUES ($1,$2,$3)", [
+          property.config.relationDefinitionId,
+          own.id,
+          foreign.id,
+        ]),
+      ).rejects.toMatchObject({ code: "23503", constraint: "item_relations_item_b_tenant_fkey" });
       expect((await expand([own], { companies: [] }))[0]?.relations?.companies).toEqual([]);
     });
   });

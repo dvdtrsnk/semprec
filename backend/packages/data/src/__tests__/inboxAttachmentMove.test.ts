@@ -269,7 +269,7 @@ function observeResourceAttempt(client: PoolClient, resource: WaitResource, reco
       const matches =
         resource.kind === "blob"
           ? sql.includes("FROM blobs WHERE") && sql.includes("FOR UPDATE")
-          : sql.includes("FROM items i JOIN databases") && sql.includes("FOR UPDATE OF i");
+          : sql.includes("FROM items i JOIN databases") && sql.includes("UPDATE OF i");
       if (matches && Array.isArray(params) && params[0] === resource.id) record();
       return Reflect.apply(target, receiver, args);
     },
@@ -299,7 +299,7 @@ async function waitForResourceWait(
   observer: Pool,
 ): Promise<void> {
   const pattern =
-    resource.kind === "blob" ? "%FROM blobs WHERE%FOR UPDATE%" : "%FROM items i JOIN databases%FOR UPDATE OF i%";
+    resource.kind === "blob" ? "%FROM blobs WHERE%FOR UPDATE%" : "%FROM items i JOIN databases%FOR NO KEY UPDATE OF i%";
   const deadline = Date.now() + 2000;
   while (Date.now() < deadline) {
     const result = await observer.query<{ waiting: boolean }>(

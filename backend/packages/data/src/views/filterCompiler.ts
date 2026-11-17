@@ -56,7 +56,8 @@ function isRelationEmptinessCondition(node: FilterCondition): node is RelationEm
 
 /**
  * An edge counts only when its other end is a live item of the target database. Only the `a`/`b` side names from
- * the registered definition are interpolated; `OFFSET 0` pins the lateral join to the target partition.
+ * the registered definition are interpolated; `OFFSET 0` keeps the lateral lookup a per-edge probe of the target
+ * database.
  */
 function compileRelationEmptinessCondition(
   node: RelationEmptinessCondition,
@@ -109,7 +110,7 @@ function compileRelationCondition(node: RelationCondition, property: FilterPrope
   return node.type === "relation_contains" ? exists : `(NOT ${exists})`;
 }
 
-/** Two registered relations with a live intermediate item, pinned to its database partition. */
+/** Two registered relations with a live intermediate item of its own database. */
 function compileRelationPathCondition(
   node: Extract<FilterCondition, { type: "relation_path_contains" }>,
   properties: FilterProperties,

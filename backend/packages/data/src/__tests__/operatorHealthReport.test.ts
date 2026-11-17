@@ -3,7 +3,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { enqueueJob } from "@semprec/queue";
 import { runAsSystem, runInTenant } from "@semprec/shared";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTestPool, insertItemsWithIds, resetDatabase } from "../testSupport/testDb.js";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -36,12 +36,14 @@ async function seedErroredAgentRun(tenantId: string, userId: string, ageDays = 0
 
 /** Raw SQL: no production writer sets an `item_automation` error from a fixture item. */
 async function seedAutomationError(tenantId: string): Promise<void> {
-  await withTenantTransaction(pool, tenantId, (client) =>
-    client.query(`INSERT INTO item_automation (tenant_id, item_id, status, error) VALUES ($1, $2, 'error', 'boom')`, [
-      tenantId,
-      randomUUID(),
-    ]),
-  );
+  const itemId = randomUUID();
+  await withTenantTransaction(pool, tenantId, async (client) => {
+    await insertItemsWithIds(client, [itemId]);
+    await client.query(
+      `INSERT INTO item_automation (tenant_id, item_id, status, error) VALUES ($1, $2, 'error', 'boom')`,
+      [tenantId, itemId],
+    );
+  });
 }
 
 async function seedAlertingTenantCheck(tenantId: string): Promise<void> {

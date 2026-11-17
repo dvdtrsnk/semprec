@@ -378,6 +378,10 @@ jobs:
       - name: Backend — test:integration (shard ${{ matrix.shard }}/14)
         timeout-minutes: 30
         working-directory: backend
+        # Two workers on the two-core runner: the files mostly wait on Postgres, and each worker has its own
+        # database (`testSupport/workerDatabase.ts`).
+        env:
+          SEMPREC_TEST_WORKERS: "2"
         run: pnpm run test:integration --shard=${{ matrix.shard }}/14
 
   # Exists so the required context keeps the name `integration` while the work runs in

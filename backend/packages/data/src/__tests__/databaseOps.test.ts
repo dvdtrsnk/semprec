@@ -399,14 +399,13 @@ describe("choke-point databaseOps", () => {
     ]);
   });
 
-  it("createDatabaseWithProperties rolls back the database and partition when a later property fails", async () => {
+  it("createDatabaseWithProperties rolls back the database when a later property fails", async () => {
     const countRows = async () =>
       (
-        await pool.query<{ databases: string; properties: string; positioned: string; partitions: string }>(
+        await pool.query<{ databases: string; properties: string; positioned: string }>(
           `SELECT (SELECT count(*) FROM databases) AS databases,
                   (SELECT count(*) FROM properties) AS properties,
-                  (SELECT count(*) FROM properties WHERE initial_position IS NOT NULL) AS positioned,
-                  (SELECT count(*) FROM pg_class WHERE relname LIKE 'items\\_p\\_%') AS partitions`,
+                  (SELECT count(*) FROM properties WHERE initial_position IS NOT NULL) AS positioned`,
         )
       ).rows[0];
     const before = await countRows();
@@ -487,7 +486,7 @@ describe("choke-point databaseOps", () => {
     }
   });
   it.each(["creation-first", "purge-first"] as const)(
-    "coordinates atomic relation target lookup and partition removal: %s",
+    "coordinates atomic relation target lookup and database removal: %s",
     async (order) => {
       const parent = await chokePoint.createDatabase({ name: "Parent" });
       const owner = await chokePoint.createItem({ databaseId: parent.id, properties: {} });
@@ -520,8 +519,8 @@ describe("choke-point databaseOps", () => {
             if (!Array.isArray(params) || params[0] !== target.id) return value;
             const match =
               order === "creation-first"
-                ? args[0].includes("FROM databases WHERE id = $1")
-                : args[0].includes("SELECT drop_items_partition");
+                ? args[0].includes("FROM databases WHERE id = $1 FOR KEY SHARE")
+                : args[0].includes("DELETE FROM databases WHERE id = $1");
             if (!match) return value;
             held = true;
             return Promise.resolve(value).then(async (result: unknown) => {
@@ -537,7 +536,9 @@ describe("choke-point databaseOps", () => {
       (order === "creation-first" ? createPool : purgePool).on("acquire", instrument);
       const competing = observeStatementPid(
         order === "creation-first" ? purgePool : createPool,
-        order === "creation-first" ? /SELECT drop_items_partition/i : /INSERT INTO databases/i,
+        order === "creation-first"
+          ? /DELETE FROM databases WHERE id = \$1/i
+          : /FROM databases WHERE id = \$1 FOR KEY SHARE/i,
       );
       const create = () =>
         runInTenant(tenant, () =>
@@ -578,28 +579,6 @@ describe("choke-point databaseOps", () => {
           if (!blocked) await new Promise((r) => setTimeout(r, 10));
         }
         expect(blocked).toBe(true);
-        const locks = await pool.query<{ pid: number; mode: string; granted: boolean }>(
-          "SELECT pid,mode,granted FROM pg_locks WHERE relation='items'::regclass AND pid = ANY($1::int[])",
-          [[pid, competitorPid]],
-        );
-        expect(
-          locks.rows.some(
-            (x) =>
-              x.pid === pid &&
-              x.mode === (order === "creation-first" ? "ShareUpdateExclusiveLock" : "AccessExclusiveLock") &&
-              x.granted,
-          ),
-          JSON.stringify(locks.rows),
-        ).toBe(true);
-        expect(
-          locks.rows.some(
-            (x) =>
-              x.pid === competitorPid &&
-              x.mode === (order === "creation-first" ? "AccessExclusiveLock" : "AccessShareLock") &&
-              !x.granted,
-          ),
-          JSON.stringify(locks.rows),
-        ).toBe(true);
         release();
         const [a] = await firstSettled,
           [b] = await secondSettled;

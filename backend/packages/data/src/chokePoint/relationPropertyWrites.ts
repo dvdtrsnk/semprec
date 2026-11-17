@@ -100,7 +100,10 @@ export async function createRelationPropertyWithClient(
     assertRelationSideCreatable(inverseOwner!, input.inverse.ownerProcess, context, "inverse");
   }
 
-  const targetDatabase = await databasesStore.getDatabase(client, input.targetDatabaseId);
+  // Held to commit: a delete of the target waits for this creation, or this read waits for the delete and then
+  // misses the row. A creation that commits first can still leave its relation naming a database the purge then
+  // deletes (docs/architecture/transactions-and-side-effects.md).
+  const targetDatabase = await databasesStore.getDatabaseForKeyShare(client, input.targetDatabaseId);
   if (!targetDatabase) {
     throw new ValidationError(`Target database ${input.targetDatabaseId} does not exist`, {
       field: "targetDatabaseId",

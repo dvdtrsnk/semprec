@@ -534,7 +534,7 @@ describe("choke-point countItemsBatch (issue #1709)", () => {
     });
   });
 
-  it("never names another tenant's item as a group, even through a dangling edge", async () => {
+  it("never names another tenant's item as a group, since the schema refuses an edge to one", async () => {
     const otherTenant = await createTestTenant(admin);
     const foreign = await runInTenant(otherTenant, async () => {
       await seedSystem(pool);
@@ -555,14 +555,20 @@ describe("choke-point countItemsBatch (issue #1709)", () => {
       });
       // The malformed edge sits the way the stored one does: the person on the same side, the company on the other.
       const [itemA, itemB] = edge.itemA === linked.id ? [dangling.id, foreign.id] : [foreign.id, dangling.id];
-      // Raw SQL: a relation write refuses an endpoint of another tenant, so only a malformed edge points at one.
-      await withTransaction(pool, (client) =>
-        client.query("INSERT INTO item_relations (relation_definition_id, item_a, item_b) VALUES ($1, $2, $3)", [
-          edge.relationDefinitionId,
-          itemA,
-          itemB,
-        ]),
-      );
+      // Raw SQL: a relation write refuses an endpoint of another tenant, and so does the endpoint's key to items of
+      // the edge's tenant, so the malformed edge cannot be stored at all.
+      await expect(
+        withTransaction(pool, (client) =>
+          client.query("INSERT INTO item_relations (relation_definition_id, item_a, item_b) VALUES ($1, $2, $3)", [
+            edge.relationDefinitionId,
+            itemA,
+            itemB,
+          ]),
+        ),
+      ).rejects.toMatchObject({
+        code: "23503",
+        constraint: itemB === foreign.id ? "item_relations_item_b_tenant_fkey" : "item_relations_item_a_tenant_fkey",
+      });
 
       expect(await count([{ databaseId: people.id, groupBy: "companies" }])).toEqual([
         {

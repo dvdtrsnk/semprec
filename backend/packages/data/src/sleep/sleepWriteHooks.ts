@@ -226,7 +226,7 @@ async function lockPlansHoldingDays(
       `SELECT id, properties -> 'wakeDays' AS wake_days FROM items
         WHERE database_id = $1 AND id <> $2 AND deleted_at IS NULL AND properties -> 'wakeDays' ?| $3::text[]
         ORDER BY id
-          FOR UPDATE`,
+          FOR NO KEY UPDATE`,
       [databaseId, itemId, days],
     );
     return rows.map((row) => ({

@@ -211,7 +211,7 @@ function holdTransaction(hold: (client: PoolClient) => Promise<unknown>) {
 }
 
 function lockRow(client: PoolClient, id: string): Promise<unknown> {
-  return client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE", [tasksId, id]);
+  return client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR NO KEY UPDATE", [tasksId, id]);
 }
 
 async function expectBackendLive(identity: Identity): Promise<void> {

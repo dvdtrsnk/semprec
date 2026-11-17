@@ -140,7 +140,7 @@ async function getQueueHealthCounts(client: Queryable, tenantOnly: boolean): Pro
   };
 }
 
-/** `item_automation.item_id` has no FK (items is partitioned), so grouping uses a plain join. */
+/** Grouped by the item's database; only automation rows of live items count. */
 async function getItemAutomationErrorCounts(client: Queryable): Promise<ItemAutomationErrorCount[]> {
   const { rows } = await client.query<{ database_id: string; error_count: string }>(
     `SELECT i.database_id, count(*) AS error_count

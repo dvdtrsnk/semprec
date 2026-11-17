@@ -12,8 +12,10 @@ import {
   createTestTenant,
   getTenantZeroId,
   getTestPool,
+  insertItemsWithIds,
   resetDatabase,
 } from "../testSupport/testDb.js";
+import { withTransaction } from "../db/pool.js";
 
 let adminPool: Pool;
 let pool: Pool;
@@ -26,10 +28,17 @@ function validUpdates(count: number): Buffer[] {
   return updates;
 }
 
+/** An item of the current tenant for a raw `docs` row to name (docs.item_id has a key to items). */
+async function newItemId(): Promise<string> {
+  const id = randomUUID();
+  await withTransaction(pool, (client) => insertItemsWithIds(client, [id]));
+  return id;
+}
+
 async function seedDocWithUpdates(tenantId: string, updates: Buffer[]): Promise<string> {
   return runInTenant(tenantId, async () => {
     const { rows } = await pool.query<{ id: string }>("INSERT INTO docs (item_id) VALUES ($1) RETURNING id", [
-      randomUUID(),
+      await newItemId(),
     ]);
     const docId = rows[0]!.id;
     for (const update of updates) {
@@ -129,7 +138,7 @@ describe("doc sweeps run per tenant (issue #985)", () => {
       runInTenant(tenantId, async () => {
         const { rows } = await pool.query<{ id: string }>(
           "INSERT INTO docs (item_id, history_available_from) VALUES ($1, now() - interval '400 days') RETURNING id",
-          [randomUUID()],
+          [await newItemId()],
         );
         const docId = rows[0]!.id;
         const state = Buffer.from(Y.encodeStateAsUpdate(new Y.Doc()));

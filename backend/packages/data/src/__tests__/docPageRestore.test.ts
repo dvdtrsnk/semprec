@@ -339,7 +339,7 @@ describe("page.restoreVersion (issue #1617): restoring a page to an earlier vers
     const restorePool = await createRuntimeRolePool(pool, "semprec_data");
     const deletePool = await createRuntimeRolePool(pool, "semprec_data");
     const restoring = observeStatementPid(restorePool, /FROM doc_snapshots\b[\s\S]*FOR UPDATE/i);
-    const deleting = observeStatementPid(deletePool, /FROM items\b[\s\S]*FOR UPDATE/i);
+    const deleting = observeStatementPid(deletePool, /FROM items\b[\s\S]*FOR NO KEY UPDATE/i);
     let release!: () => void;
     let ready!: (pid: number) => void;
     const hold = new Promise<void>((resolve) => {
@@ -423,7 +423,7 @@ describe("page.restoreVersion (issue #1617): restoring a page to an earlier vers
     const before = await updateCount(page.docId);
     const deletingPool = await createRuntimeRolePool(pool, "semprec_data");
     const restoringPool = await createRuntimeRolePool(pool, "semprec_data");
-    const competing = observeStatementPid(restoringPool, /FROM items\b[\s\S]*FOR UPDATE/i);
+    const competing = observeStatementPid(restoringPool, /FROM items\b[\s\S]*FOR NO KEY UPDATE/i);
     let release!: () => void;
     let ready!: (pid: number) => void;
     const hold = new Promise<void>((resolve) => {

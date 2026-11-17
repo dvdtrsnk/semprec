@@ -114,7 +114,10 @@ async function announceRelation(
   }
 }
 
-/** Rejects a dangling, soft-deleted, or wrong-database endpoint with `validation_failed`; partitioned `items` cannot carry the FK. */
+/**
+ * Rejects a dangling, soft-deleted, or wrong-database endpoint with `validation_failed`. The edge's foreign keys
+ * would accept a trashed or wrong-database endpoint and refuse a missing one with a constraint error instead.
+ */
 async function assertRelationEndpointValid(
   client: PoolClient,
   databaseId: string,

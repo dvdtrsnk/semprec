@@ -573,7 +573,7 @@ describe("rollup engine", () => {
     const holder = await pool.connect();
     try {
       await holder.query("BEGIN");
-      await holder.query("SELECT id FROM items WHERE id = $1 FOR UPDATE", [project.id]);
+      await holder.query("SELECT id FROM items WHERE id = $1 FOR NO KEY UPDATE", [project.id]);
       const { rows: holderRows } = await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
       const holderPid = holderRows[0]!.pid;
 

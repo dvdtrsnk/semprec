@@ -83,7 +83,7 @@ export async function indexItem(
      FROM items i JOIN databases d ON d.id = i.database_id
      WHERE i.id = $1 AND i.database_id = ANY($2::uuid[]) AND i.deleted_at IS NULL
        AND d.owner_module_id IS DISTINCT FROM $3
-     FOR UPDATE OF i`,
+     FOR NO KEY UPDATE OF i`,
     [itemId, databaseIds, EMAILS_MODULE_ID],
   );
   const item = rows[0];

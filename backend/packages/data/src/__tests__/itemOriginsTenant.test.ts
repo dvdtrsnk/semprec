@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTestPool, insertItemsWithIds, resetDatabase } from "../testSupport/testDb.js";
 import { createRuntimeRolePool, createTestTenant, withTenantTransaction } from "../testSupport/tenantFixtures.js";
 
 let adminPool: Pool;
@@ -23,6 +23,9 @@ describe("item_origins tenant isolation", () => {
     const tenantA = await createTestTenant(adminPool);
     const tenantB = await createTestTenant(adminPool);
     const itemId = randomUUID();
+    const otherItemId = randomUUID();
+    // An origin names an item of its own tenant; the second is the item the refused write below names.
+    await withTenantTransaction(adminPool, tenantA, (client) => insertItemsWithIds(client, [itemId, otherItemId]));
     // Raw insert: this test targets the table's row-level security, not the confirm path that writes it.
     await withTenantTransaction(runtimePool, tenantA, (client) =>
       client.query(
@@ -47,9 +50,9 @@ describe("item_origins tenant isolation", () => {
         client.query(
           `INSERT INTO item_origins (tenant_id, item_id, proposal_id, captured_at, capture_channel, capture_time_basis)
            VALUES ($1, $2, $3, now(), 'inbox', 'inboxCapture')`,
-          [tenantA, randomUUID(), randomUUID()],
+          [tenantA, otherItemId, randomUUID()],
         ),
       ),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/row-level security/);
   });
 });

@@ -1623,7 +1623,7 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
       await runtime.end();
     }
     expect(statements.length).toBeGreaterThan(0);
-    expect(statements.some((sql) => sql.includes("FOR UPDATE OF i"))).toBe(false);
+    expect(statements.some((sql) => sql.includes("UPDATE OF i"))).toBe(false);
   });
 
   it("a source whose type was deleted out from under it is marked needsClarification, the same path as no type at all", async () => {
@@ -1984,7 +1984,7 @@ describe("semprec.tick re-checks the proposal under lock before writing it", () 
         if (
           !fired &&
           typeof text === "string" &&
-          text.includes("FOR UPDATE") &&
+          /FOR (NO KEY )?UPDATE/.test(text) &&
           Array.isArray(params) &&
           params.includes(cardId)
         ) {
@@ -2556,7 +2556,7 @@ describe("semprec.tick brackets computeProposal outside any transaction", () => 
         await after();
       }),
     );
-  const LOCKED_READ = "FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE";
+  const LOCKED_READ = "FROM items WHERE database_id = $1 AND id = $2 FOR NO KEY UPDATE";
   const FINGERPRINT_READ = "COALESCE(b.content_hash";
 
   it("holds the source through the proposal commit before a competing edit", async () => {

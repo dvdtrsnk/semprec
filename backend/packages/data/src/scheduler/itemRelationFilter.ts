@@ -29,12 +29,10 @@ export function parseItemRelationFilterConfig(raw: unknown): ItemRelationFilterC
 }
 
 /**
- * `items` is partitioned by `database_id`, so the related-item lookup must pin it (resolved from the
- * other side's property) to prune partitions. A plain join condition is not enough: with fresh stats
- * the planner hashes every partition and filters afterwards. The LATERAL subquery with `OFFSET 0`
- * cannot be pulled up, so it runs as the inner side of a parameterized nested loop and the Append
- * prunes at run time. `deleted_at IS NULL` keeps a soft-deleted folder from counting. Exported so
- * tests can EXPLAIN it.
+ * The related item must belong to the other side's database (resolved from its property). The
+ * LATERAL subquery with `OFFSET 0` cannot be pulled up, so it runs as the inner side of a
+ * parameterized nested loop: one primary-key probe per edge. `deleted_at IS NULL` keeps a
+ * soft-deleted folder from counting. Exported so tests can EXPLAIN it.
  */
 export const ITEM_RELATION_FILTER_QUERY = `
   SELECT related.properties ->> $2 AS value

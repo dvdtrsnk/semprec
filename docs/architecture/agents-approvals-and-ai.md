@@ -22,7 +22,8 @@ run. See also [data-model-and-writes.md](data-model-and-writes.md), [transaction
 - Every choke-point call that records or checks `ai_agent` ownership first calls `assertAuthenticatedAgentIdentity`
   (`backend/packages/data/src/chokePoint/authorization.ts`): an agent actor without `agentProjectItemId`, or whose id
   is not a live Projects item, is refused `403 owner_violation`. Any future column storing an agent identity is
-  verified the same way, fresh on every mutating call (items are partitioned, so no FK can do it).
+  verified the same way, fresh on every mutating call: a foreign key to `items` accepts a trashed item and an item of
+  any database, so it cannot do it.
 - Writes of an `/mcp` client on a human token are recorded as `writerKind: 'agent'` without run ids, so agent audits
   include them.
 - `humanWriterUserId` reaches item create/update hook contexts only for a `restSession` actor without
@@ -186,7 +187,8 @@ The project set on a mail thread never takes part in a send decision.
 - `agent_database_grants` (tenant, project item, database, access `none|read|write`) decides an agent project's access
   (`backend/packages/data/src/agentGrants/`). Defaults: a non-sensitive system database is always `write` (rows
   ignored); a sensitive database without a row is `none`; a user-created database without a row is `write`. Only
-  `agentDatabaseGrantsAdminStore.ts` writes rows (user routes), plus item purge cleanup in `deleteItemDependents`.
+  `agentDatabaseGrantsAdminStore.ts` writes rows (user routes); a purged project's rows go through their foreign key
+  (data-model-and-writes.md, *Storage*).
 - `assertAgentDatabaseAccess` runs in the transaction of the guarded read or write, locking the decision row
   `FOR SHARE`, so a revoke of an existing row waits for passed checks. Never pre-check in the gateway.
 - Guarded paths: item get/list/query/view query, relation list, item create/patch/delete/restore (cascade databases

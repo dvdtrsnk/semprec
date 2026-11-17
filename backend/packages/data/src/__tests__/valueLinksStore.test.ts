@@ -5,6 +5,7 @@ import {
   createRuntimeRolePool,
   createTestTenant,
   getTestPool,
+  insertItemsWithIds,
   resetDatabase,
   withTenantTransaction,
 } from "../testSupport/testDb.js";
@@ -25,6 +26,16 @@ async function countRows(table: "value_links" | "value_link_sources"): Promise<n
   return Number(rows[0]?.n);
 }
 
+/** Items with exactly these ids in tenant zero, since a value link and an item source must name an existing item. */
+async function seedItems(...ids: string[]): Promise<void> {
+  await withTransaction(pool, (client) => insertItemsWithIds(client, ids));
+}
+
+/** The same in another tenant, through the runtime pool the test writes with. */
+async function seedTenantItems(runtimePool: Pool, tenant: string, ...ids: string[]): Promise<void> {
+  await withTenantTransaction(runtimePool, tenant, (client) => insertItemsWithIds(client, ids));
+}
+
 describe("value links store (issue #1403)", () => {
   beforeAll(() => {
     pool = getTestPool();
@@ -42,6 +53,7 @@ describe("value links store (issue #1403)", () => {
     const itemId = randomUUID();
     const sourceA = randomUUID();
     const sourceB = randomUUID();
+    await seedItems(itemId, sourceA, sourceB);
     const inserted = await withTransaction(pool, (client) =>
       insertValueLink(client, {
         itemId,
@@ -78,6 +90,7 @@ describe("value links store (issue #1403)", () => {
 
   it("allows one link per item and property key", async () => {
     const itemId = randomUUID();
+    await seedItems(itemId);
     const input = { itemId, propertyKey: "projects", ruleKey: "r", sources: [] };
     await withTransaction(pool, (client) => insertValueLink(client, input));
     await expect(withTransaction(pool, (client) => insertValueLink(client, input))).rejects.toMatchObject({
@@ -101,16 +114,20 @@ describe("value links store (issue #1403)", () => {
   });
 
   it("rejects a source whose columns do not match its kind", async () => {
+    const itemId = randomUUID();
+    const existingSource = randomUUID();
+    await seedItems(itemId, existingSource);
+    // Raw SQL: the store cannot write a link whose sources break the kind check this test provokes.
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO value_links (item_id, property_key, rule_key) VALUES ($1, 'p', 'r') RETURNING id`,
-      [randomUUID()],
+      [itemId],
     );
     const linkId = rows[0]?.id;
     for (const [kind, sourceItemId, domain] of [
       ["item", null, null],
-      ["item", randomUUID(), "example.com"],
+      ["item", existingSource, "example.com"],
       ["senderDomain", null, null],
-      ["senderDomain", randomUUID(), "example.com"],
+      ["senderDomain", existingSource, "example.com"],
     ] as const) {
       await expect(
         pool.query(
@@ -125,11 +142,12 @@ describe("value links store (issue #1403)", () => {
   });
 
   it("refuses the same source listed twice for one link, per kind", async () => {
-    const sourceItemId = randomUUID();
+    const [itemId, sourceItemId] = [randomUUID(), randomUUID()];
+    await seedItems(itemId, sourceItemId);
     await expect(
       withTransaction(pool, (client) =>
         insertValueLink(client, {
-          itemId: randomUUID(),
+          itemId,
           propertyKey: "p",
           ruleKey: "r",
           sources: [
@@ -142,7 +160,7 @@ describe("value links store (issue #1403)", () => {
     await expect(
       withTransaction(pool, (client) =>
         insertValueLink(client, {
-          itemId: randomUUID(),
+          itemId,
           propertyKey: "p",
           ruleKey: "r",
           sources: [
@@ -156,9 +174,11 @@ describe("value links store (issue #1403)", () => {
   });
 
   it("deletes a link's sources with the link", async () => {
+    const itemId = randomUUID();
+    await seedItems(itemId);
     const inserted = await withTransaction(pool, (client) =>
       insertValueLink(client, {
-        itemId: randomUUID(),
+        itemId,
         propertyKey: "p",
         ruleKey: "r",
         sources: [{ kind: "senderDomain", domain: "example.com", sourcePropertyKey: "p" }],
@@ -169,22 +189,29 @@ describe("value links store (issue #1403)", () => {
     expect(await countRows("value_link_sources")).toBe(0);
   });
 
-  it("lets two tenants hold a link on the same item id and property key, each seeing only its own", async () => {
+  it("lets two tenants hold a link on the same property key, each seeing only its own", async () => {
     const adminPool = pool;
     const runtimePool = await createRuntimeRolePool(adminPool, "semprec_data");
     try {
       const tenantA = await createTestTenant(adminPool);
       const tenantB = await createTestTenant(adminPool);
-      const itemId = randomUUID();
-      const input = { itemId, propertyKey: "p", ruleKey: "r", sources: [] };
-      const linkA = await withTenantTransaction(runtimePool, tenantA, (client) => insertValueLink(client, input));
-      const linkB = await withTenantTransaction(runtimePool, tenantB, (client) => insertValueLink(client, input));
+      // Item ids are unique across tenants and a link must name an item of its own tenant, so each tenant has one.
+      const [itemA, itemB] = [randomUUID(), randomUUID()];
+      await seedTenantItems(runtimePool, tenantA, itemA);
+      await seedTenantItems(runtimePool, tenantB, itemB);
+      const input = { propertyKey: "p", ruleKey: "r", sources: [] };
+      const linkA = await withTenantTransaction(runtimePool, tenantA, (client) =>
+        insertValueLink(client, { ...input, itemId: itemA }),
+      );
+      const linkB = await withTenantTransaction(runtimePool, tenantB, (client) =>
+        insertValueLink(client, { ...input, itemId: itemB }),
+      );
 
       const seenByA = await withTenantTransaction(runtimePool, tenantA, (client) =>
-        listValueLinksByItemIds(client, [itemId]),
+        listValueLinksByItemIds(client, [itemA, itemB]),
       );
       const seenByB = await withTenantTransaction(runtimePool, tenantB, (client) =>
-        listValueLinksByItemIds(client, [itemId]),
+        listValueLinksByItemIds(client, [itemA, itemB]),
       );
       expect(seenByA.map((link) => link.id)).toEqual([linkA.link.id]);
       expect(seenByB.map((link) => link.id)).toEqual([linkB.link.id]);
@@ -200,16 +227,23 @@ describe("value links store (issue #1403)", () => {
       const tenantA = await createTestTenant(adminPool);
       const tenantB = await createTestTenant(adminPool);
       const [from, to, unrelated] = [randomUUID(), randomUUID(), randomUUID()];
+      // A source must be an item of the link's tenant, so tenant B's link names its own item, not `from`.
+      const foreignFrom = randomUUID();
+      await seedTenantItems(runtimePool, tenantA, from, to, unrelated);
+      await seedTenantItems(runtimePool, tenantB, foreignFrom);
       const source = (sourceItemId: string, sourcePropertyKey = "project") =>
         ({ kind: "item", sourceItemId, sourcePropertyKey }) as const;
-      const insert = (tenant: string, sources: ReturnType<typeof source>[]) =>
-        withTenantTransaction(runtimePool, tenant, (client) =>
-          insertValueLink(client, { itemId: randomUUID(), propertyKey: "projects", ruleKey: "r", sources }),
+      const insert = async (tenant: string, sources: ReturnType<typeof source>[]) => {
+        const itemId = randomUUID();
+        await seedTenantItems(runtimePool, tenant, itemId);
+        return withTenantTransaction(runtimePool, tenant, (client) =>
+          insertValueLink(client, { itemId, propertyKey: "projects", ruleKey: "r", sources }),
         );
+      };
       const moved = await insert(tenantA, [source(from), source(from, "company")]);
       const merged = await insert(tenantA, [source(from), source(to)]);
       const untouched = await insert(tenantA, [source(unrelated)]);
-      const foreign = await insert(tenantB, [source(from)]);
+      const foreign = await insert(tenantB, [source(foreignFrom)]);
 
       const count = await withTenantTransaction(runtimePool, tenantA, (client) =>
         moveValueLinkItemSources(client, from, to),
@@ -224,10 +258,17 @@ describe("value links store (issue #1403)", () => {
       expect(await sourcesOf(tenantA, moved.link.id)).toEqual([`${to} company`, `${to} project`].sort());
       expect(await sourcesOf(tenantA, merged.link.id)).toEqual([`${to} project`]);
       expect(await sourcesOf(tenantA, untouched.link.id)).toEqual([`${unrelated} project`]);
-      expect(await sourcesOf(tenantB, foreign.link.id)).toEqual([`${from} project`]);
+      expect(await sourcesOf(tenantB, foreign.link.id)).toEqual([`${foreignFrom} project`]);
       expect(
         await withTenantTransaction(runtimePool, tenantA, (client) => moveValueLinkItemSources(client, from, to)),
       ).toBe(0);
+      // Tenant B's source is invisible to tenant A, so moving it from tenant A touches nothing.
+      expect(
+        await withTenantTransaction(runtimePool, tenantA, (client) =>
+          moveValueLinkItemSources(client, foreignFrom, to),
+        ),
+      ).toBe(0);
+      expect(await sourcesOf(tenantB, foreign.link.id)).toEqual([`${foreignFrom} project`]);
     } finally {
       await runtimePool.end();
     }
@@ -239,15 +280,19 @@ describe("value links store (issue #1403)", () => {
     try {
       const tenantA = await createTestTenant(adminPool);
       const [from, to] = [randomUUID(), randomUUID()];
-      const insert = (ruleKey: string) =>
-        withTenantTransaction(runtimePool, tenantA, (client) =>
+      await seedTenantItems(runtimePool, tenantA, from, to);
+      const insert = async (ruleKey: string) => {
+        const itemId = randomUUID();
+        await seedTenantItems(runtimePool, tenantA, itemId);
+        return withTenantTransaction(runtimePool, tenantA, (client) =>
           insertValueLink(client, {
-            itemId: randomUUID(),
+            itemId,
             propertyKey: "projects",
             ruleKey,
             sources: [{ kind: "item", sourceItemId: from, sourcePropertyKey: "project" }],
           }),
         );
+      };
       const ofRule = await insert("ruleOne");
       const ofOtherRule = await insert("ruleTwo");
       const sourceItemOf = (linkId: string) =>
@@ -287,6 +332,20 @@ describe("value links store (issue #1403)", () => {
       const holderTwice = randomUUID();
       const holderOther = randomUUID();
       const domainOnly = randomUUID();
+      // A source must be an item of the link's tenant, so tenant B's link names its own item, not `source`.
+      const [foreignHolder, foreignSource] = [randomUUID(), randomUUID()];
+      await seedTenantItems(
+        runtimePool,
+        tenantA,
+        source,
+        other,
+        holderOn,
+        holderBroken,
+        holderTwice,
+        holderOther,
+        domainOnly,
+      );
+      await seedTenantItems(runtimePool, tenantB, foreignHolder, foreignSource);
       const itemSource = (sourceItemId: string, sourcePropertyKey = "project") =>
         ({ kind: "item", sourceItemId, sourcePropertyKey }) as const;
       const insert = (tenant: string, itemId: string, input: Partial<Parameters<typeof insertValueLink>[1]>) =>
@@ -305,7 +364,7 @@ describe("value links store (issue #1403)", () => {
       await insert(tenantA, domainOnly, {
         sources: [{ kind: "senderDomain", domain: "example.com", sourcePropertyKey: "x" }],
       });
-      await insert(tenantB, randomUUID(), { sources: [itemSource(source)] });
+      await insert(tenantB, foreignHolder, { sources: [itemSource(foreignSource)] });
 
       const listed = await withTenantTransaction(runtimePool, tenantA, (client) =>
         listValueLinksBySourceItem(client, source),
@@ -316,6 +375,19 @@ describe("value links store (issue #1403)", () => {
       expect(
         await withTenantTransaction(runtimePool, tenantA, (client) => listValueLinksBySourceItem(client, randomUUID())),
       ).toEqual([]);
+      // Tenant B's link to its own source exists, but tenant A sees it as no link at all.
+      expect(
+        await withTenantTransaction(runtimePool, tenantA, (client) =>
+          listValueLinksBySourceItem(client, foreignSource),
+        ),
+      ).toEqual([]);
+      expect(
+        (
+          await withTenantTransaction(runtimePool, tenantB, (client) =>
+            listValueLinksBySourceItem(client, foreignSource),
+          )
+        ).map((link) => link.itemId),
+      ).toEqual([foreignHolder]);
     } finally {
       await runtimePool.end();
     }
@@ -327,6 +399,7 @@ describe("value links store (issue #1403)", () => {
       const [itemOne, itemTwo] = [randomUUID(), randomUUID()].sort();
       if (!itemOne || !itemTwo) throw new Error("Two item ids are expected");
       const event = randomUUID();
+      await seedTenantItems(runtimePool, tenant, itemOne, itemTwo, event);
       const insert = (itemId: string, propertyKey: string, ruleKey: string) =>
         withTenantTransaction(runtimePool, tenant, (client) =>
           insertValueLink(client, {

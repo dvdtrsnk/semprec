@@ -477,7 +477,7 @@ describe("default calendar create hook (issue #1761)", () => {
         await client.query("DELETE FROM items WHERE database_id = $1", [calendars.id]);
         await client.query("DELETE FROM properties WHERE database_id = $1", [calendars.id]);
         await client.query("DELETE FROM views WHERE database_id = $1", [calendars.id]);
-        await databasesStore.dropDatabaseWithPartition(client, calendars.id);
+        await databasesStore.deleteDatabaseWithItems(client, calendars.id);
         await client.query("DELETE FROM items WHERE id = $1", [calendars.ownerProjectItemId]);
       });
     }

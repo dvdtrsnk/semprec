@@ -23,21 +23,13 @@ import type { ActionQueueAffinity } from "../scheduler/actions.js";
 import type { ChokePointDeps } from "./chokePointDeps.js";
 import { assertDatabaseNotArchived } from "./databaseGuards.js";
 import { enqueueRollupRecomputeForEdge } from "../rollup/recompute.js";
-import { FILES_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
-import { deleteRecordingRequestForFile } from "../transcription/recordingIntake.js";
 import { TRANSCRIPTION_PREPARE_COMPUTED_KEY } from "../transcription/transcriptionComputedKeys.js";
 import * as blobsStore from "../blobs/blobsStore.js";
-import * as docsStore from "../docs/docsStore.js";
 import * as inboxAttachmentsStore from "../inbox/inboxAttachmentsStore.js";
-import * as itemOriginsStore from "../inbox/itemOriginsStore.js";
-import * as itemAutomationStore from "../library/itemAutomationStore.js";
-import * as taskRecurrenceStore from "../tasks/taskRecurrenceStore.js";
-import { deleteKeptDate } from "../projects/projectKeptDateStore.js";
 import type { WriterIdentity } from "./writerKind.js";
 import { assertWriterDatabaseAccess } from "../agentGrants/agentDatabaseAccess.js";
 import { hideClosedRollupValuesForWriter } from "../agentGrants/closedSensitiveAggregationAccess.js";
 import { assertWriterCascadeAccess, collectCascadeRows } from "./itemSubtreeAccess.js";
-import { deleteAgentDatabaseGrantsForProject } from "../agentGrants/agentDatabaseGrantsStore.js";
 
 /** `system` when the caller supplied none. */
 function hookWriterFields(writer: WriterIdentity | undefined, actingUserId: string | undefined) {
@@ -149,7 +141,7 @@ export async function itemDeleteWithClient(
 /**
  * The rows of `subtree` in `root`'s cascade epoch: `deleted_at` equal to the root's, compared by
  * Postgres at full microsecond precision (an `ItemRow` keeps only milliseconds, which could match a
- * row trashed separately in the same millisecond). Locked `FOR UPDATE` in root-first order, the order
+ * row trashed separately in the same millisecond). Locked `FOR NO KEY UPDATE` in root-first order, the order
  * the cascades write in, so a concurrent trash or restore waits instead of changing the epoch.
  *
  * Also returns the epoch as six-digit UTC text for the restore hooks' `deletedAtExact`, read in the
@@ -165,7 +157,7 @@ async function lockCascadeEpochRowIds(
       WHERE database_id = ANY($1::uuid[]) AND id = ANY($2::uuid[])
         AND deleted_at = (SELECT deleted_at FROM items WHERE database_id = $3 AND id = $4)
       ORDER BY array_position($2::uuid[], id)
-      FOR UPDATE`,
+      FOR NO KEY UPDATE`,
     [[...new Set(subtree.map((row) => row.databaseId))], subtree.map((row) => row.id), root.databaseId, root.id],
   );
   const epoch = rows.find((row) => row.id === root.id)?.deleted_at_exact;
@@ -271,10 +263,11 @@ function derivedBlobIds(row: ItemRow): string[] {
 }
 
 /**
- * Deletes every row that points at a just-purged item. Partitioned `items` cannot be an FK target,
- * so nothing else removes them: edges, curated-view memberships, idempotency reservation, doc,
- * recurrence rule, automation state, origin, search-index row, Inbox attachments, value links and
- * sources naming it, transcript action item states and an agent project's grants. Must run in the
+ * Removes the dependents of a just-purged item whose removal does more than delete a row: the value-link sources
+ * naming it (with each link left without a source; the links' items refetch after commit), its Inbox attachments,
+ * and the blobs those attachments or the item reference. Rows that are only data (edges, view memberships, doc,
+ * search row, recurrence, automation, origin, ...) went with the item through their `ON DELETE CASCADE` keys; the
+ * keys of the rows removed here are checked at commit, so they may outlive the item until then. Must run in the
  * purge's transaction after `itemsStore.hardDeleteItem` removed `row`; the blob checks rely on that.
  *
  * Attachment blobs (with previews and reduced copies) and a Files item's blob are released only when
@@ -282,10 +275,6 @@ function derivedBlobIds(row: ItemRow): string[] {
  * Returns the `storage_key` of every deleted blob row so the caller removes bytes after commit.
  */
 export async function deleteItemDependents(client: PoolClient, row: ItemRow): Promise<{ blobStorageKeys: string[] }> {
-  await client.query("DELETE FROM item_relations WHERE item_a = $1 OR item_b = $1", [row.id]);
-  // The item's own value links (sources cascade), every source naming it, and each link left without
-  // a source; the links' items refetch after commit.
-  await valueLinksStore.deleteValueLinksByItemId(client, row.id);
   const detached = await valueLinksStore.deleteValueLinkSourcesBySourceItem(client, row.id);
   await valueLinksStore.deleteValueLinksWithoutSources(
     client,
@@ -302,23 +291,6 @@ export async function deleteItemDependents(client: PoolClient, row: ItemRow): Pr
       }),
     );
   }
-  await client.query("DELETE FROM view_items WHERE item_id = $1", [row.id]);
-  await client.query("DELETE FROM idempotency_keys WHERE item_id = $1 AND database_id = $2", [row.id, row.databaseId]);
-  await docsStore.deleteDocByItemId(client, row.id);
-  await taskRecurrenceStore.deleteTaskRecurrence(client, row.id);
-  await deleteKeptDate(client, row.id);
-  await itemAutomationStore.deleteItemAutomation(client, row.id);
-  const database = await databasesStore.getDatabase(client, row.databaseId);
-  if (database?.system && database.ownerModuleId === FILES_MODULE_ID)
-    await deleteRecordingRequestForFile(client, row.id);
-  if (database?.system && database.ownerModuleId === PROJECTS_MODULE_ID)
-    await deleteAgentDatabaseGrantsForProject(client, row.id);
-  await itemOriginsStore.deleteItemOrigin(client, row.id);
-  await client.query("DELETE FROM item_search_index WHERE item_id = $1", [row.id]);
-  await client.query(
-    "DELETE FROM transcript_action_item_states WHERE tenant_id = app_tenant_default() AND transcript_item_id = $1",
-    [row.id],
-  );
 
   const blobStorageKeys: string[] = [];
   // The attachment rows go first: a row still present would keep its blob referenced.
@@ -399,7 +371,7 @@ export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
      *
      * Each removed row's dependents (`deleteItemDependents`) go with it, then its purge hooks run; a
      * hook's rejection rolls back the whole call. Afterwards each now-empty inline database owned by a
-     * removed item (never the root's own database) is dropped with its partition. Returns the removed ids
+     * removed item (never the root's own database) is deleted. Returns the removed ids
      * (empty if the root was not eligible) and the deleted blobs' storage keys, whose bytes the caller
      * removes after commit.
      */
@@ -477,7 +449,7 @@ export function createItemTrashOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
             "SELECT NOT EXISTS (SELECT 1 FROM items WHERE database_id = $1) AS empty",
             [id],
           );
-          if (rows[0]?.empty === true) await databasesStore.dropDatabaseWithPartition(client, id);
+          if (rows[0]?.empty === true) await databasesStore.deleteDatabaseWithItems(client, id);
         }
         return { purgedItemIds, blobStorageKeys };
       });

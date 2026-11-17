@@ -168,7 +168,7 @@ run_seed() {
 
 # Reads the catalog of the migrated database and refuses the release while any tenancy invariant
 # (backend/packages/data/src/db/tenancyInvariants.ts) is broken, such as a runtime role given
-# BYPASSRLS, a dropped policy or a grant on an items partition. Same unit properties and migrate URL
+# BYPASSRLS, a dropped policy or a foreign key on a bare item id. Same unit properties and migrate URL
 # as run_migrations; runs before activation, so a violation leaves `current` and the services untouched.
 verify_tenancy() {
   systemd-run --quiet --wait --pipe --collect \
