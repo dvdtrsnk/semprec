@@ -1399,6 +1399,12 @@ describe("full-text search over Emails", () => {
     expect(await search(emailsId, "nonexistentword")).not.toContain(itemId);
   });
 
+  it("indexes text that carries U+0000, as text extracted from a PDF can", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const itemId = await indexedEmail(emailsId, "Contract\u0000annex\u0000");
+    expect(await search(emailsId, "annex")).toContain(itemId);
+  });
+
   it("ranks a more recently indexed match above an older one with identical text relevance", async () => {
     const emailsId = await databaseIdFor("emails");
     const olderId = await indexedEmail(emailsId, "quarterly report");

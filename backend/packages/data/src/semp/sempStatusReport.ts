@@ -75,6 +75,9 @@ async function readAiBudgetProblem(
  * its queue counts as `detail`. `resolvedRecent` is left to `getSempStatusReport`, so summary and overview
  * never run that read.
  */
+
+/** A finding's claim is model output; the status text shows its start. */
+const GUIDANCE_CLAIM_MAX_LENGTH = 200;
 export async function readSempStatusReport(pool: Pool) {
   const { report, problemKinds } = await readSempStatus(pool, async () => null);
   return { report, problemKinds };
@@ -205,6 +208,19 @@ async function readSempStatus<Extra>(
         .parse(runs.rows)
         .map((row) => [row.root, row]),
     );
+    // A project usually has several findings at once; the claim of each tells their rows apart.
+    const findings = await client.query<Record<string, unknown>>(
+      `SELECT id, left(btrim(payload->>'claim'), ${GUIDANCE_CLAIM_MAX_LENGTH}) AS claim
+         FROM agent_guidance_drift_findings
+        WHERE tenant_id = app_tenant_default() AND id = ANY($1::uuid[])`,
+      [problems.filter((p) => p.kind === "guidanceDrift").map((p) => p.source_id)],
+    );
+    const claimByFindingId = new Map(
+      z
+        .array(z.object({ id: z.uuid(), claim: z.string().nullable() }))
+        .parse(findings.rows)
+        .flatMap((row) => (row.claim ? [[row.id, row.claim] as const] : [])),
+    );
     const budgetProblem = await readAiBudgetProblem(client, locale === "cs" ? "cs" : "en");
     const label = (key: string) =>
       resolveCatalogLabel(undefined, locale === "cs" ? catalogs.cs : catalogs.en, catalogs.en, key);
@@ -285,14 +301,21 @@ async function readSempStatus<Extra>(
         const rawCause = heartbeat?.error_code ?? message?.error_code ?? run?.error_code;
         const cause = rawCause && causes.has(rawCause) ? rawCause : "generic";
         const projectName = itemName(problem.project_item_id);
+        const claim = kind === "guidanceDrift" ? claimByFindingId.get(problem.source_id) : undefined;
         const replacements: Record<string, string> = {
           sourceName: itemName(problem.source_id),
           projectName,
           threadName: message?.thread_title ?? "",
           cause: label(`status.cause.${cause}`),
+          claim: claim ?? "",
         };
         const render = (field: "title" | "text" | "shortText") => {
-          const catalogField = kind === "reply" && field === "text" && !message?.thread_title ? "textUnnamed" : field;
+          const catalogField =
+            kind === "reply" && field === "text" && !message?.thread_title
+              ? "textUnnamed"
+              : claim !== undefined && field === "text"
+                ? "textClaim"
+                : field;
           return renderLabel(`status.${kind}.${catalogField}`, replacements);
         };
         const actions: StatusAction[] = [];

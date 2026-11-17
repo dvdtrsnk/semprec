@@ -15,12 +15,18 @@ const mailboxRow = z.object({
   failing_since: z.date().nullable(),
   initial_sync_completed_at: z.date().nullable(),
   last_failure_kind: z.enum(MAIL_SYNC_FAILURE_KINDS).nullable(),
+  synced_message_count: z.number().int().nullable(),
 });
 
 async function readMailboxes(client: PoolClient, id: string | null) {
   const result = await client.query<Record<string, unknown>>(
     `SELECT i.id, i.properties, s.sync_mode, s.last_successful_sync_at, s.failing_since,
-            s.initial_sync_completed_at, s.last_failure_kind
+            s.initial_sync_completed_at, s.last_failure_kind,
+            -- Counted only while the first sync runs, to show its progress; a synced mailbox costs no count.
+            CASE WHEN s.initial_sync_completed_at IS NULL THEN
+              (SELECT count(*)::int FROM mail_message_meta m
+                WHERE m.tenant_id = i.tenant_id AND m.mailbox_item_id = i.id)
+            END AS synced_message_count
        FROM items i JOIN databases d ON d.id = i.database_id AND d.tenant_id = i.tenant_id
        LEFT JOIN mail_account_sync_state s ON s.item_id = i.id AND s.tenant_id = i.tenant_id
       WHERE i.tenant_id = app_tenant_default() AND d.system AND d.owner_module_id = 'mailboxes'
@@ -54,6 +60,7 @@ async function readMailboxes(client: PoolClient, id: string | null) {
       syncMode,
       syncStatus,
       initialSyncInProgress: row.initial_sync_completed_at === null,
+      syncedMessageCount: row.synced_message_count,
       lastSuccessfulSyncAt: row.last_successful_sync_at?.toISOString() ?? null,
       failingSince: row.failing_since?.toISOString() ?? null,
       reason: syncStatus === "error" || syncStatus === "needsReauthorization" ? row.last_failure_kind : null,
