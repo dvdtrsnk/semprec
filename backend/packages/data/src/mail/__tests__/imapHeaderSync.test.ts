@@ -103,6 +103,7 @@ it("persists IMAP Reply-To and each bulk signal through the adapter and folder s
       "",
       "Auto-Submitted: no\r\n",
     ];
+    vi.spyOn(connection, "search").mockResolvedValue(rawHeaders.map((_, index) => index + 1));
     const fetch = vi.spyOn(connection, "fetch").mockImplementation(async function* () {
       for (let index = 0; index < rawHeaders.length; index++) {
         yield {

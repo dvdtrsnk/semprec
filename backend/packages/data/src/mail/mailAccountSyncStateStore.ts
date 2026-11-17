@@ -454,17 +454,23 @@ export async function recordGraphSubscriptionRenewal(
 export interface RecordImapActivityInput {
   itemId: string;
   nextExpectedActivityAt: Date;
+  /** `false` while a backfill still has messages left, so the account keeps reporting its initial sync. */
+  completesInitialSync: boolean;
 }
 
+/** The pass ensured the account's sync state row in this transaction, so a missing row is a defect. */
 export async function recordImapActivity(client: Queryable, input: RecordImapActivityInput): Promise<void> {
-  await client.query(
+  const result = await client.query(
     `UPDATE mail_account_sync_state
      SET last_error = NULL, last_activity_at = now(), next_expected_activity_at = $2,
-         last_successful_sync_at = now(), initial_sync_completed_at = COALESCE(initial_sync_completed_at, now()),
+         last_successful_sync_at = now(),
+         initial_sync_completed_at = CASE WHEN $3::boolean THEN COALESCE(initial_sync_completed_at, now())
+                                          ELSE initial_sync_completed_at END,
          failing_since = NULL, last_failure_kind = NULL
      WHERE item_id = $1`,
-    [input.itemId, input.nextExpectedActivityAt],
+    [input.itemId, input.nextExpectedActivityAt, input.completesInitialSync],
   );
+  requireAffectedRows(result, `IMAP activity of item ${input.itemId}`);
 }
 
 /** Also pushes `next_expected_activity_at` out so the sweep does not hammer a broken account. */

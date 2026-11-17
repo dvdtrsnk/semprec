@@ -286,7 +286,11 @@ export class ImapFlowMailClient implements ImapMailClient {
   }
 
   private async downloadText(uid: number, part: string): Promise<string> {
-    const { content } = await this.providerCall(() => this.client.download(String(uid), part, { uid: true }));
+    // imapflow answers an empty part (a 0-byte body, as iCloud stores some) without a `content` stream.
+    const { content }: { content?: Readable } = await this.providerCall(() =>
+      this.client.download(String(uid), part, { uid: true }),
+    );
+    if (content === undefined) return "";
     const chunks: Buffer[] = [];
     for await (const chunk of this.providerStream(() => content)) chunks.push(chunk as Buffer);
     return Buffer.concat(chunks).toString("utf8");
@@ -308,11 +312,16 @@ export class ImapFlowMailClient implements ImapMailClient {
     let primary: { value: unknown } | undefined;
     const observed: unknown[] = [];
     try {
-      const result = await this.client.download(String(uid), part, {
+      const result: { content?: Readable } = await this.client.download(String(uid), part, {
         uid: true,
         maxBytes: MAX_ATTACHMENT_BYTES,
       });
       content = result.content;
+      // An empty part comes without a stream; it is a complete, empty attachment.
+      if (content === undefined) {
+        completed = true;
+        return;
+      }
       for await (const chunk of content) {
         const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         offset = this.nextAttachmentOffset(offset, bytes.length);
@@ -481,14 +490,24 @@ export class ImapFlowMailClient implements ImapMailClient {
     };
   }
 
-  async fetchMessagesSince(path: string, sinceUid: number): Promise<ImapFetchedMessage[]> {
+  async fetchMessagesSince(path: string, sinceUid: number, limit: number): Promise<ImapFetchedMessage[]> {
     await this.providerCall(() => this.client.mailboxOpen(path));
+    // "*" in a range can include one message below sinceUid on an empty-range edge case.
+    const found = await this.providerCall(() => this.client.search({ uid: `${sinceUid}:*` }, { uid: true }));
+    const uids = (found === false ? [] : found)
+      .filter((uid) => uid >= sinceUid)
+      .sort((a, b) => a - b)
+      .slice(0, limit);
+    const [first] = uids;
+    if (first === undefined) return [];
+    // The batch is a prefix of every UID from sinceUid up, so the range holds exactly these messages.
+    const range = `${first}:${uids[uids.length - 1]}`;
     const raws: FetchMessageObject[] = [];
     // No `source: true` (see walkBodyStructure); only bounded metadata is fetched here.
     // `labels: true` is a no-op on non-Gmail servers.
     for await (const raw of this.providerStream(() =>
       this.client.fetch(
-        `${sinceUid}:*`,
+        range,
         {
           uid: true,
           envelope: true,
@@ -509,7 +528,6 @@ export class ImapFlowMailClient implements ImapMailClient {
         { uid: true },
       ),
     )) {
-      if (raw.uid < sinceUid) continue; // "*" in a range can include one message below sinceUid on an empty-range edge case
       raws.push(raw);
     }
     // Parsed after the FETCH ends: imapflow keeps it open until every response is read, so a
