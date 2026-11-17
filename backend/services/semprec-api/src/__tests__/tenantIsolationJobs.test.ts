@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { escapeIdentifier, type Pool } from "pg";
+import { escapeIdentifier, type Pool, type PoolClient } from "pg";
 import * as Y from "yjs";
 import { z } from "zod";
 import { replayApprovedGenericOperation } from "@semprec/application";
@@ -183,11 +183,7 @@ interface GlobalSystemTaskCase {
 
 type TaskCase = TenantTaskCase | SystemTaskCase | GlobalSystemTaskCase;
 
-interface TableFingerprint {
-  count: number;
-  md5: string;
-}
-type Fingerprint = Record<string, TableFingerprint>;
+type Fingerprint = Record<string, { count: number; md5: string }>;
 
 interface JobOutcome {
   /** `null` once the job completed and graphile-worker deleted its row. */
@@ -195,9 +191,9 @@ interface JobOutcome {
   lastError: string | null;
 }
 
+const COMPLETED: JobOutcome = { attempts: null, lastError: null };
 const UUID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 
-let previousScope: string | undefined;
 let adminPool: Pool;
 let pool: Pool;
 let taskList: TaskList;
@@ -205,17 +201,30 @@ let tenantTables: string[];
 let chokePoint: ChokePoint;
 let docStore: DocStore;
 let blobRoot: string;
-const previousEnv = new Map<string, string | undefined>();
 const VAPID_ENV = ["VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT"] as const;
 const APNS_ENV = ["APNS_TEAM_ID", "APNS_KEY_ID", "APNS_PRIVATE_KEY_PATH", "APNS_TOPIC"] as const;
+const ENV_OVERRIDES = [
+  "SEMPREC_TENANT_SCOPE",
+  "AI_GATEWAY_INTERNAL_TOKEN",
+  "FILES_STORAGE_DIR",
+  "MAIL_ATTACHMENTS_DIR",
+  ...VAPID_ENV,
+  ...APNS_ENV,
+] as const;
+const previousEnv = new Map<string, string | undefined>();
 let tenantA: Tenant;
 let tenantB: Tenant;
 let tenantZero: Tenant;
 const titlePortCalls: { tenantId: string | null; input: AiGatewayCompletionInput }[] = [];
+
+function scopeTenantId(): string | null {
+  const scope = currentTenantScope();
+  return scope?.kind === "tenant" ? scope.tenantId : null;
+}
+
 const titlePort: AiGatewayClientPort = {
   async complete(input) {
-    const scope = currentTenantScope();
-    titlePortCalls.push({ tenantId: scope?.kind === "tenant" ? scope.tenantId : null, input });
+    titlePortCalls.push({ tenantId: scopeTenantId(), input });
     return { content: { title: "Tenant title" }, usage: { inputTokens: 1, outputTokens: 1 } };
   },
 };
@@ -244,36 +253,68 @@ async function loadTenantTables(): Promise<string[]> {
   return rows.map((row) => row.relname);
 }
 
-async function fingerprint(tenant: Tenant): Promise<Fingerprint> {
+/** Runs `query` once per tenant table inside the tenant's scope. */
+function perTenantTable<T>(tenant: Tenant, query: (client: PoolClient, table: string) => Promise<T>) {
   return runInTenant(tenant.tenantId, () =>
     withTransaction(pool, async (client) => {
-      const result: Fingerprint = {};
-      for (const table of tenantTables) {
-        // `table` comes from pg_class, never from input; a table name cannot be a bind parameter.
-        const { rows } = await client.query<{ count: number; md5: string }>(
-          `SELECT count(*)::int AS count, md5(COALESCE(string_agg(t::text, E'\\n' ORDER BY t::text), '')) AS md5
-             FROM ${escapeIdentifier(table)} t`,
-        );
-        const row = rows[0];
-        if (!row) throw new Error(`fingerprint: no aggregate row for ${table}`);
-        result[table] = { count: row.count, md5: row.md5 };
-      }
+      const result: Array<[string, T]> = [];
+      for (const table of tenantTables) result.push([table, await query(client, table)]);
       return result;
     }),
   );
 }
 
-async function notifications(tenant: Tenant): Promise<Map<string, string>> {
-  return runInTenant(tenant.tenantId, async () => {
-    const { rows } = await pool.query<{ id: string; user_id: string }>("SELECT id, user_id FROM notifications");
-    return new Map(rows.map((row) => [row.id, row.user_id]));
+async function fingerprint(tenant: Tenant): Promise<Fingerprint> {
+  const entries = await perTenantTable(tenant, async (client, table) => {
+    // `table` comes from pg_class, never from input; a table name cannot be a bind parameter.
+    const { rows } = await client.query<{ count: number; md5: string }>(
+      `SELECT count(*)::int AS count, md5(COALESCE(string_agg(t::text, E'\\n' ORDER BY t::text), '')) AS md5
+         FROM ${escapeIdentifier(table)} t`,
+    );
+    const row = rows[0];
+    if (!row) throw new Error(`fingerprint: no aggregate row for ${table}`);
+    return { count: row.count, md5: row.md5 };
   });
+  return Object.fromEntries(entries);
 }
 
-async function expectNewNotificationsAddressedTo(tenant: Tenant, before: Map<string, string>): Promise<void> {
-  const after = await notifications(tenant);
-  const added = [...after].filter(([id]) => !before.has(id)).map(([, userId]) => userId);
-  expect(added.filter((userId) => userId !== tenant.userId)).toEqual([]);
+async function tablesMentioning(tenant: Tenant, markers: string[]): Promise<string[]> {
+  const patterns = markers.map((marker) => `%${marker}%`);
+  const entries = await perTenantTable(tenant, async (client, table) => {
+    // `table` comes from pg_class, never from input; a table name cannot be a bind parameter.
+    const { rows } = await client.query<{ found: boolean }>(
+      `SELECT EXISTS (SELECT 1 FROM ${escapeIdentifier(table)} t WHERE t::text LIKE ANY($1)) AS found`,
+      [patterns],
+    );
+    return rows[0]?.found === true;
+  });
+  return entries.filter(([, found]) => found).map(([table]) => table);
+}
+
+function inTenant<T>(tenant: Tenant, fn: () => Promise<T>): Promise<T> {
+  return runInTenant(tenant.tenantId, fn);
+}
+
+async function rows<T extends Record<string, unknown>>(
+  tenant: Tenant,
+  sql: string,
+  params: unknown[] = [],
+): Promise<T[]> {
+  return inTenant(tenant, async () => (await pool.query<T>(sql, params)).rows);
+}
+
+async function expectRows(tenant: Tenant, sql: string, params: unknown[], expected: unknown[]): Promise<void> {
+  expect(await rows(tenant, sql, params)).toEqual(expected);
+}
+
+async function notifications(tenant: Tenant): Promise<Array<{ id: string; user_id: string; kind: string }>> {
+  return rows(tenant, "SELECT id, user_id, kind FROM notifications");
+}
+
+async function expectNewNotificationsAddressedTo(tenant: Tenant, before: Array<{ id: string }>): Promise<void> {
+  const seen = new Set(before.map((row) => row.id));
+  const added = (await notifications(tenant)).filter((row) => !seen.has(row.id));
+  expect(added.map((row) => row.user_id).filter((userId) => userId !== tenant.userId)).toEqual([]);
 }
 
 async function jobOutcome(jobKey: string): Promise<JobOutcome> {
@@ -282,7 +323,7 @@ async function jobOutcome(jobKey: string): Promise<JobOutcome> {
     [jobKey],
   );
   const row = rows[0];
-  if (!row) return { attempts: null, lastError: null };
+  if (!row) return COMPLETED;
   return { attempts: row.attempts, lastError: row.last_error?.replace(UUID_PATTERN, "<id>") ?? null };
 }
 
@@ -291,57 +332,56 @@ async function removeJob(jobKey: string): Promise<void> {
   await adminPool.query("SELECT graphile_worker.remove_job($1)", [jobKey]);
 }
 
+async function queuedJobs(): Promise<Array<{ id: string; key: string | null; task_identifier: string }>> {
+  return (
+    await adminPool.query<{ id: string; key: string | null; task_identifier: string }>(
+      "SELECT id::text AS id, key, task_identifier FROM graphile_worker.jobs",
+    )
+  ).rows;
+}
+
 /** The `jobs` view carries no tenant, so a job any run enqueued anywhere counts. */
-interface SideEffectSnapshot {
-  fingerprint: Fingerprint;
-  notificationIds: ReadonlySet<string>;
-  jobIds: ReadonlySet<string>;
+async function sideEffectSnapshot(tenant: Tenant) {
+  return {
+    fingerprint: await fingerprint(tenant),
+    notificationIds: new Set((await notifications(tenant)).map((row) => row.id)),
+    jobIds: new Set((await queuedJobs()).map((job) => job.id)),
+  };
 }
 
-/** Stated without ids so two runs naming different ids compare equal. */
-interface SideEffects {
-  rowCountDeltas: Record<string, number>;
-  /** Includes rows updated in place. */
-  changedTables: string[];
-  notificationKinds: string[];
-  queuedJobs: string[];
-}
-
-async function sideEffectSnapshot(tenant: Tenant): Promise<SideEffectSnapshot> {
-  const notificationIds = new Set((await notifications(tenant)).keys());
-  const { rows } = await adminPool.query<{ id: string }>("SELECT id::text AS id FROM graphile_worker.jobs");
-  return { fingerprint: await fingerprint(tenant), notificationIds, jobIds: new Set(rows.map((row) => row.id)) };
-}
-
-async function sideEffectsSince(tenant: Tenant, before: SideEffectSnapshot, ownJobKey: string): Promise<SideEffects> {
-  const after = await sideEffectSnapshot(tenant);
+/** Stated without ids so two runs naming different ids compare equal; changed tables include in-place updates. */
+async function sideEffectsSince(
+  tenant: Tenant,
+  before: Awaited<ReturnType<typeof sideEffectSnapshot>>,
+  ownJobKey: string,
+) {
+  const after = await fingerprint(tenant);
   const rowCountDeltas = Object.fromEntries(
-    Object.entries(after.fingerprint)
+    Object.entries(after)
       .map(([table, { count }]): [string, number] => [table, count - (before.fingerprint[table]?.count ?? 0)])
       .filter(([, delta]) => delta !== 0),
   );
-  const changedTables = Object.entries(after.fingerprint)
+  const changedTables = Object.entries(after)
     .filter(([table, { md5 }]) => before.fingerprint[table]?.md5 !== md5)
     .map(([table]) => table)
     .sort();
-  const notificationKinds = await runInTenant(tenant.tenantId, async () => {
-    const { rows } = await pool.query<{ id: string; kind: string }>("SELECT id, kind FROM notifications");
-    return rows
-      .filter((row) => !before.notificationIds.has(row.id))
-      .map((row) => row.kind)
-      .sort();
-  });
-  const { rows: jobs } = await adminPool.query<{ id: string; key: string | null; task_identifier: string }>(
-    "SELECT id::text AS id, key, task_identifier FROM graphile_worker.jobs",
-  );
-  const queuedJobs = jobs
+  const notificationKinds = (await notifications(tenant))
+    .filter((row) => !before.notificationIds.has(row.id))
+    .map((row) => row.kind)
+    .sort();
+  const queued = (await queuedJobs())
     .filter((job) => !before.jobIds.has(job.id) && job.key !== ownJobKey)
     .map((job) => job.task_identifier)
     .sort();
-  return { rowCountDeltas, changedTables, notificationKinds, queuedJobs };
+  return { rowCountDeltas, changedTables, notificationKinds, queuedJobs: queued };
 }
 
-async function runInBObserved(name: string, payload: Payload): Promise<{ outcome: JobOutcome; effects: SideEffects }> {
+const NO_EFFECTS = {
+  outcome: COMPLETED,
+  effects: { rowCountDeltas: {}, changedTables: [], notificationKinds: [], queuedJobs: [] },
+};
+
+async function runInBObserved(name: string, payload: Payload) {
   const before = await sideEffectSnapshot(tenantB);
   const jobKey = await runJobIn(tenantB, name, payload);
   const outcome = await jobOutcome(jobKey);
@@ -352,7 +392,14 @@ async function runInBObserved(name: string, payload: Payload): Promise<{ outcome
 
 async function runJobIn(tenant: Tenant, name: string, payload: Payload): Promise<string> {
   const jobKey = randomUUID();
-  await runInTenant(tenant.tenantId, () => enqueueJob(pool, name, payload, { jobKey }));
+  await inTenant(tenant, () => enqueueJob(pool, name, payload, { jobKey }));
+  await runOnce({ pgPool: pool, taskList });
+  return jobKey;
+}
+
+async function runSystemJob(name: string): Promise<string> {
+  const jobKey = randomUUID();
+  await runAsSystem("test:enqueue-system-job", () => enqueueJob(pool, name, {}, { jobKey }));
   await runOnce({ pgPool: pool, taskList });
   return jobKey;
 }
@@ -367,41 +414,12 @@ function withRandomIds(value: unknown): unknown {
 }
 
 function randomizedPayload(payload: Payload): Payload {
-  const randomized = withRandomIds(payload);
-  if (typeof randomized !== "object" || randomized === null || Array.isArray(randomized)) {
-    throw new Error("withRandomIds: expected an object payload");
-  }
-  return Object.fromEntries(Object.entries(randomized));
+  return z.record(z.string(), z.unknown()).parse(withRandomIds(payload));
 }
 
 function tenancyOf(name: string): TaskTenancy {
   const declared: Readonly<Record<string, TaskTenancy>> = TASK_TENANCY;
   return Object.hasOwn(declared, name) ? (declared[name] ?? "tenant") : "tenant";
-}
-
-async function tablesMentioning(tenant: Tenant, markers: string[]): Promise<string[]> {
-  const patterns = markers.map((marker) => `%${marker}%`);
-  return runInTenant(tenant.tenantId, () =>
-    withTransaction(pool, async (client) => {
-      const mentioning: string[] = [];
-      for (const table of tenantTables) {
-        // `table` comes from pg_class, never from input; a table name cannot be a bind parameter.
-        const { rows } = await client.query<{ found: boolean }>(
-          `SELECT EXISTS (SELECT 1 FROM ${escapeIdentifier(table)} t WHERE t::text LIKE ANY($1)) AS found`,
-          [patterns],
-        );
-        if (rows[0]?.found) mentioning.push(table);
-      }
-      return mentioning;
-    }),
-  );
-}
-
-async function runSystemJob(name: string): Promise<string> {
-  const jobKey = randomUUID();
-  await runAsSystem("test:enqueue-system-job", () => enqueueJob(pool, name, {}, { jobKey }));
-  await runOnce({ pgPool: pool, taskList });
-  return jobKey;
 }
 
 async function discardQueuedJobs(): Promise<void> {
@@ -410,22 +428,10 @@ async function discardQueuedJobs(): Promise<void> {
   );
 }
 
-function requirePayloadString(payload: Payload, field: string): string {
+function str(payload: Payload, field: string): string {
   const value = payload[field];
   if (typeof value !== "string") throw new Error(`expected payload field ${field} to be a string`);
   return value;
-}
-
-function inTenant<T>(tenant: Tenant, fn: () => Promise<T>): Promise<T> {
-  return runInTenant(tenant.tenantId, fn);
-}
-
-async function rows<T extends Record<string, unknown>>(
-  tenant: Tenant,
-  sql: string,
-  params: unknown[] = [],
-): Promise<T[]> {
-  return inTenant(tenant, async () => (await pool.query<T>(sql, params)).rows);
 }
 
 function useVapidConfiguration(): void {
@@ -441,16 +447,8 @@ function useUnconfiguredApns(): void {
   for (const name of APNS_ENV) delete process.env[name];
 }
 
-function restoreApnsConfiguration(): void {
-  for (const name of APNS_ENV) {
-    const value = previousEnv.get(name);
-    if (value === undefined) delete process.env[name];
-    else process.env[name] = value;
-  }
-}
-
-function restoreVapidConfiguration(): void {
-  for (const name of VAPID_ENV) {
+function restoreEnv(names: readonly string[]): void {
+  for (const name of names) {
     const value = previousEnv.get(name);
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
@@ -504,7 +502,7 @@ async function stopFeedFixture(): Promise<void> {
   await new Promise<void>((resolve) => fixture.server.close(() => resolve()));
 }
 
-async function requireModuleDatabaseId(tenant: Tenant, moduleId: string): Promise<string> {
+async function moduleDatabaseId(tenant: Tenant, moduleId: string): Promise<string> {
   const database = await inTenant(tenant, () =>
     withTransaction(pool, (client) => getDatabaseByModuleId(client, moduleId)),
   );
@@ -512,9 +510,25 @@ async function requireModuleDatabaseId(tenant: Tenant, moduleId: string): Promis
   return database.id;
 }
 
+/** Inside a tenant scope. */
+async function propertyId(databaseId: string, key: string): Promise<string> {
+  const property = (await chokePoint.listProperties(databaseId)).find((entry) => entry.key === key);
+  if (!property) throw new Error(`expected the ${key} property to be seeded`);
+  return property.id;
+}
+
+/** Inside a tenant scope; a user relation through the choke point. */
+async function relate(databaseId: string, key: string, callerItemId: string, targetItemId: string): Promise<void> {
+  await chokePoint.createRelation({
+    relationPropertyId: await propertyId(databaseId, key),
+    callerItemId,
+    targetItemId,
+  });
+}
+
 /** The fanout job reads the real clock; with the mute on, a run at night would hold the push until wake time. */
 async function switchSleepMuteOff(tenant: Tenant): Promise<void> {
-  const databaseId = await requireModuleDatabaseId(tenant, "sleepSettings");
+  const databaseId = await moduleDatabaseId(tenant, "sleepSettings");
   await inTenant(tenant, async () => {
     const { items } = await chokePoint.listItems(databaseId, { limit: 2 });
     const settings = items[0];
@@ -530,27 +544,62 @@ async function seededSemprecProjectItemId(tenant: Tenant): Promise<string> {
   return row.id;
 }
 
-async function createMailbox(tenant: Tenant, syncMode: "imap" | "gmail_api" = "imap"): Promise<string> {
-  const mailboxesId = await requireModuleDatabaseId(tenant, "mailboxes");
+async function createMailbox(tenant: Tenant): Promise<string> {
+  const mailboxesId = await moduleDatabaseId(tenant, "mailboxes");
   return inTenant(tenant, () =>
     withTransaction(pool, async (client) => {
       const mailbox = await createItemWithClient(client, {
         databaseId: mailboxesId,
         properties: { name: `Mailbox ${randomUUID()}`, provider: "generic" },
       });
-      await storeCredential(client, {
-        itemId: mailbox.id,
-        credentialType: syncMode === "gmail_api" ? "oauth2_refresh_token" : "app_password",
-        plaintext: "s3cr3t",
-      });
-      await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode });
+      await storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" });
+      await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" });
       return mailbox.id;
     }),
   );
 }
 
-async function createEmail(tenant: Tenant): Promise<{ emailsDatabaseId: string; itemId: string }> {
-  const emailsDatabaseId = await requireModuleDatabaseId(tenant, "emails");
+/** A message ingested into the mailbox's Inbox folder as mail sync stores it, with the thread item it joined. */
+async function ingestMessage(
+  client: PoolClient,
+  mailboxItemId: string,
+  content: { subject?: string; bodyText?: string } = {},
+) {
+  const ids = await resolveMailModuleIds(client);
+  const folderItemId = await ensureFolderItem(client, {
+    foldersDatabaseId: ids.foldersDatabaseId,
+    mailboxItemId,
+    mailboxRelationPropertyId: await propertyId(ids.foldersDatabaseId, "mailbox"),
+    providerId: "INBOX",
+    name: "Inbox",
+    behavior: "folder",
+    specialPurpose: "inbox",
+  });
+  const ingested = await ingestEmailMessage(client, {
+    emailsDatabaseId: ids.emailsDatabaseId,
+    filesDatabaseId: ids.filesDatabaseId,
+    folderRelationPropertyId: await propertyId(ids.emailsDatabaseId, "folder"),
+    attachmentsRelationPropertyId: await propertyId(ids.emailsDatabaseId, "attachments"),
+    folderItemId,
+    mailboxItemId,
+    messageId: `<${randomUUID()}@example.test>`,
+    envelope: { from: { address: "sender@example.test" } },
+    ...content,
+    attachments: [],
+    storage: new LocalFsBlobStorageWriter(join(blobRoot, "mail")),
+    storageKeyPrefix: mailboxItemId,
+  });
+  const { rows: threads } = await client.query<{ item_id: string }>(
+    "SELECT t.item_id FROM mail_message_meta m JOIN mail_threads t ON t.id = m.thread_id WHERE m.item_id = $1",
+    [ingested.itemId],
+  );
+  const threadItemId = threads[0]?.item_id;
+  if (!threadItemId) throw new Error("expected the ingested message to have a thread item");
+  return { ids, itemId: ingested.itemId, threadItemId };
+}
+
+async function createEmail(tenant: Tenant): Promise<string> {
+  const emailsDatabaseId = await moduleDatabaseId(tenant, "emails");
   const item = await inTenant(tenant, () =>
     withTransaction(pool, (client) =>
       createItemWithClient(
@@ -563,7 +612,7 @@ async function createEmail(tenant: Tenant): Promise<{ emailsDatabaseId: string; 
       ),
     ),
   );
-  return { emailsDatabaseId, itemId: item.id };
+  return item.id;
 }
 
 /** A daily heartbeat running an api-affinity action that finds nothing to do. */
@@ -584,9 +633,7 @@ async function createRetrySweepHeartbeat(tenant: Tenant): Promise<string> {
   return heartbeat.id;
 }
 
-async function createRollupFixture(
-  tenant: Tenant,
-): Promise<{ projectsId: string; projectId: string; rollupPropertyId: string }> {
+async function createRollupFixture(tenant: Tenant) {
   return inTenant(tenant, async () => {
     const projects = await chokePoint.createDatabase({ name: `Projects ${randomUUID()}` });
     const tasks = await chokePoint.createDatabase({ name: `Tasks ${randomUUID()}` });
@@ -615,8 +662,10 @@ async function createRollupFixture(
   });
 }
 
-async function expectRollupCount(tenant: Tenant, projectsId: string, projectId: string): Promise<void> {
-  const project = await inTenant(tenant, () => chokePoint.getItem(projectsId, projectId));
+async function expectRollupCount(tenant: Tenant, payload: Payload): Promise<void> {
+  const project = await inTenant(tenant, () =>
+    chokePoint.getItem(str(payload, "projectsId"), str(payload, "projectId")),
+  );
   expect(project?.computed.taskCount).toBe(1);
 }
 
@@ -626,65 +675,37 @@ async function createReadyExport(tenant: Tenant): Promise<string> {
   );
   await discardQueuedJobs();
   const jobKey = await runJobIn(tenant, CORE_TASK_NAMES.TENANT_EXPORT, { exportId: requested.export.id });
-  expect(await jobOutcome(jobKey)).toEqual({ attempts: null, lastError: null });
+  expect(await jobOutcome(jobKey)).toEqual(COMPLETED);
   return requested.export.id;
-}
-
-async function createItemWithAutomation(tenant: Tenant): Promise<{ databaseId: string; itemId: string }> {
-  return inTenant(tenant, async () => {
-    const database = await chokePoint.createDatabase({ name: `Library ${randomUUID()}` });
-    const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
-    await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
-    return { databaseId: database.id, itemId: item.id };
-  });
 }
 
 /**
  * The link queues the person's `lastContact` recompute; it is removed here, so only the job under test can
  * set the value.
  */
-async function createPersonWithEvent(
-  tenant: Tenant,
-  date: string,
-  timeFrom?: string,
-): Promise<{ personId: string; eventId: string }> {
-  const peopleId = await requireModuleDatabaseId(tenant, "people");
-  const eventsId = await requireModuleDatabaseId(tenant, "events");
+async function createPersonWithEvent(tenant: Tenant, date: string, timeFrom?: string) {
+  const peopleId = await moduleDatabaseId(tenant, "people");
+  const eventsId = await moduleDatabaseId(tenant, "events");
   return inTenant(tenant, async () => {
     const person = await chokePoint.createItem({ databaseId: peopleId, properties: { name: "Contact" } });
     const event = await chokePoint.createItem({
       databaseId: eventsId,
       properties: { name: "Meeting", date, ...(timeFrom === undefined ? {} : { timeFrom }) },
     });
-    const peopleProperty = (await chokePoint.listProperties(eventsId)).find((property) => property.key === "people");
-    if (!peopleProperty) throw new Error("expected Events.people to be seeded");
-    await chokePoint.createRelation({
-      relationPropertyId: peopleProperty.id,
-      callerItemId: event.id,
-      targetItemId: person.id,
-    });
+    await relate(eventsId, "people", event.id, person.id);
     await removeJob(`people-last-contact:${person.id}`);
     return { personId: person.id, eventId: event.id };
   });
 }
 
-async function lastContactOf(tenant: Tenant, personId: string): Promise<unknown> {
-  const found = await rows<{ last_contact: unknown }>(
+async function itemProperty(tenant: Tenant, itemId: string, key: string): Promise<unknown> {
+  const found = await rows<{ value: unknown }>(
     tenant,
-    "SELECT properties -> 'lastContact' AS last_contact FROM items WHERE id = $1",
-    [personId],
+    "SELECT properties -> $2::text AS value FROM items WHERE id = $1",
+    [itemId, key],
   );
-  return found[0]?.last_contact;
-}
-
-async function hiddenUntilOf(tenant: Tenant, taskId: string): Promise<unknown> {
-  const found = await rows<{ hidden_until: unknown }>(
-    tenant,
-    "SELECT properties -> 'hiddenUntil' AS hidden_until FROM items WHERE id = $1",
-    [taskId],
-  );
-  if (found.length !== 1) throw new Error("expected the task to exist");
-  return found[0]?.hidden_until ?? null;
+  if (found.length !== 1) throw new Error("expected the item to exist");
+  return found[0]?.value ?? null;
 }
 
 const PAST_EVENT_DATE = "2025-06-15";
@@ -701,10 +722,7 @@ let recordedInvalidations: RecordedInvalidation[] = [];
 function recordInvalidations(): void {
   const recorded: RecordedInvalidation[] = [];
   recordedInvalidations = recorded;
-  setInvalidationHook((event) => {
-    const scope = currentTenantScope();
-    recorded.push({ tenantId: scope?.kind === "tenant" ? scope.tenantId : null, event });
-  });
+  setInvalidationHook((event) => recorded.push({ tenantId: scopeTenantId(), event }));
 }
 
 function stopRecordingInvalidations(): RecordedInvalidation[] {
@@ -712,30 +730,13 @@ function stopRecordingInvalidations(): RecordedInvalidation[] {
   return recordedInvalidations;
 }
 
-async function createProjectWithTask(tenant: Tenant): Promise<string> {
-  const projectsId = await requireModuleDatabaseId(tenant, "projects");
-  const tasksId = await requireModuleDatabaseId(tenant, "tasks");
-  return inTenant(tenant, async () => {
-    const project = await chokePoint.createItem({ databaseId: projectsId, properties: { name: "Project" } });
-    const task = await chokePoint.createItem({ databaseId: tasksId, properties: { name: "Project task" } });
-    const projectProperty = (await chokePoint.listProperties(tasksId)).find((property) => property.key === "project");
-    if (!projectProperty) throw new Error("expected Tasks.project to be seeded");
-    await chokePoint.createRelation({
-      relationPropertyId: projectProperty.id,
-      callerItemId: task.id,
-      targetItemId: project.id,
-    });
-    return project.id;
-  });
-}
-
 /**
  * The stored `hiddenUntil` a task holds once its Event ends. The move is written directly because the choke
  * point would recompute the task at once; in production only the clock reveals it.
  */
 async function createTaskHiddenInPassedEvent(tenant: Tenant): Promise<string> {
-  const eventsId = await requireModuleDatabaseId(tenant, "events");
-  const tasksId = await requireModuleDatabaseId(tenant, "tasks");
+  const eventsId = await moduleDatabaseId(tenant, "events");
+  const tasksId = await moduleDatabaseId(tenant, "tasks");
   return inTenant(tenant, async () => {
     const hostEvent = await chokePoint.createItem({
       databaseId: eventsId,
@@ -767,33 +768,32 @@ async function createExpiredTrash(tenant: Tenant): Promise<SeededWork> {
     ]);
     return { databaseId: database.id, itemId: item.id };
   });
-  return marked([itemId, databaseId], async () => {
-    expect(await rows(tenant, "SELECT 1 FROM items WHERE id = $1 AND database_id = $2", [itemId, databaseId])).toEqual(
-      [],
-    );
-  });
+  return marked([itemId, databaseId], () =>
+    expectRows(tenant, "SELECT 1 FROM items WHERE id = $1 AND database_id = $2", [itemId, databaseId], []),
+  );
 }
 
 const CALENDAR_SEND_EVENT_INVITATION_TASK = "calendarSendEventInvitation";
+const CALENDAR_SEND_INVITATION_REPLY_TASK = "calendarSendInvitationReply";
+const MAIL_SYNC_THREAD_TASK_PEOPLE_TASK = "mailSyncThreadTaskPeople";
+const MAIL_TRIAGE_THREAD_PROJECT_TASK = "mailTriageThreadProject";
+const SLEEP_RESYNC_TASK = "sleep.resync";
 
-interface InvitationSend {
+const invitationSends: Array<{
   tenantId: string | null;
   mailboxId: string;
   method: string | null;
   from: string;
   recipients: string[];
-}
-
-const invitationSends: InvitationSend[] = [];
+}> = [];
 
 /** Records each message with its mailbox and the tenant scope of the sending job instead of sending it. */
 const invitationTransports: MailTransportFactory = {
   async forMailbox(mailboxId) {
     return {
       async send(message) {
-        const scope = currentTenantScope();
         invitationSends.push({
-          tenantId: scope?.kind === "tenant" ? scope.tenantId : null,
+          tenantId: scopeTenantId(),
           mailboxId,
           method: /^Content-Type: text\/calendar; method=(\w+)/im.exec(message.raw.toString("utf8"))?.[1] ?? null,
           from: message.envelope.from,
@@ -805,52 +805,22 @@ const invitationTransports: MailTransportFactory = {
   },
 };
 
-const threadTaskPeopleTasks = new Map<string, string>();
+/** Seeds and returns by the payload's key what a case's expectDone checks against. */
+const seededByKey = new Map<string, Record<string, string>>();
 
-const MAIL_SYNC_THREAD_TASK_PEOPLE_TASK = "mailSyncThreadTaskPeople";
+function seeded(payload: Payload, key: string): Record<string, string> {
+  const value = seededByKey.get(str(payload, key));
+  if (!value) throw new Error(`expected the case to have seeded ${key}`);
+  return value;
+}
 
 /** A thread with a task made from it, and a person then linked as the message's sender, whom the task's people do not include yet. */
-async function seedThreadTaskWithNewPerson(
-  tenant: Tenant,
-): Promise<{ threadItemId: string; personId: string; taskId: string }> {
+async function seedThreadTaskWithNewPerson(tenant: Tenant) {
   const mailboxItemId = await createMailbox(tenant);
-  const peopleDatabaseId = await requireModuleDatabaseId(tenant, "people");
+  const peopleDatabaseId = await moduleDatabaseId(tenant, "people");
   return inTenant(tenant, () =>
     withTransaction(pool, async (client) => {
-      const ids = await resolveMailModuleIds(client);
-      const propertyId = async (databaseId: string, key: string): Promise<string> => {
-        const property = (await chokePoint.listProperties(databaseId)).find((entry) => entry.key === key);
-        if (!property) throw new Error(`expected the ${key} property to be seeded`);
-        return property.id;
-      };
-      const folderItemId = await ensureFolderItem(client, {
-        foldersDatabaseId: ids.foldersDatabaseId,
-        mailboxItemId,
-        mailboxRelationPropertyId: await propertyId(ids.foldersDatabaseId, "mailbox"),
-        providerId: "INBOX",
-        name: "Inbox",
-        behavior: "folder",
-        specialPurpose: "inbox",
-      });
-      const ingested = await ingestEmailMessage(client, {
-        emailsDatabaseId: ids.emailsDatabaseId,
-        filesDatabaseId: ids.filesDatabaseId,
-        folderRelationPropertyId: await propertyId(ids.emailsDatabaseId, "folder"),
-        attachmentsRelationPropertyId: await propertyId(ids.emailsDatabaseId, "attachments"),
-        folderItemId,
-        mailboxItemId,
-        messageId: `<${randomUUID()}@example.test>`,
-        envelope: { from: { address: "sender@example.test" } },
-        attachments: [],
-        storage: new LocalFsBlobStorageWriter(join(blobRoot, "mail")),
-        storageKeyPrefix: mailboxItemId,
-      });
-      const thread = await client.query<{ item_id: string }>(
-        `SELECT t.item_id FROM mail_message_meta m JOIN mail_threads t ON t.id = m.thread_id WHERE m.item_id = $1`,
-        [ingested.itemId],
-      );
-      const threadItemId = thread.rows[0]?.item_id;
-      if (!threadItemId) throw new Error("expected the ingested message to have a thread item");
+      const { ids, itemId, threadItemId } = await ingestMessage(client, mailboxItemId);
       const task = await createThreadTask(
         client,
         { threadItemId, name: `Task ${randomUUID()}` },
@@ -864,7 +834,7 @@ async function seedThreadTaskWithNewPerson(
         client,
         {
           relationPropertyId: await propertyId(ids.emailsDatabaseId, "senderPeople"),
-          callerItemId: ingested.itemId,
+          callerItemId: itemId,
           targetItemId: person.id,
         },
         { ownerProcess: "emails" },
@@ -887,23 +857,6 @@ async function tasksWithPerson(tenant: Tenant, personId: string): Promise<string
   return found.map((row) => row.task_id);
 }
 
-const SLEEP_RESYNC_TASK = "sleep.resync";
-
-async function seedIosRegistration(tenant: Tenant): Promise<string> {
-  const deviceToken = randomUUID();
-  await inTenant(tenant, async () => {
-    await revokeAllPushSubscriptionsForUser(pool, tenant.userId);
-    await upsertApnsSubscription(pool, {
-      userId: tenant.userId,
-      sessionId: null,
-      platform: "ios",
-      deviceToken,
-      apnsEnvironment: "sandbox",
-    });
-  });
-  return deviceToken;
-}
-
 async function activeApnsTokens(tenant: Tenant): Promise<string[]> {
   const found = await rows<{ device_token: string }>(
     tenant,
@@ -913,56 +866,70 @@ async function activeApnsTokens(tenant: Tenant): Promise<string[]> {
   return found.map((row) => row.device_token);
 }
 
-function sleepResyncSends(): RecordedBackgroundPush[] {
-  return [...backgroundPushes.sent];
+/** Every tenant gets an active iOS registration, so a job that pushed for another tenant would have one to send to. */
+function resyncCase(kind: string): TenantTaskCase {
+  return {
+    tenancy: "tenant",
+    async seed(tenant) {
+      useUnconfiguredApns();
+      for (const other of [tenantA, tenantB]) {
+        await inTenant(other, async () => {
+          await revokeAllPushSubscriptionsForUser(pool, other.userId);
+          await upsertApnsSubscription(pool, {
+            userId: other.userId,
+            sessionId: null,
+            platform: "ios",
+            deviceToken: randomUUID(),
+            apnsEnvironment: "sandbox",
+          });
+        });
+      }
+      backgroundPushes.sent.length = 0;
+      return { tenantId: tenant.tenantId };
+    },
+    async expectDone(tenant) {
+      const tokens = await activeApnsTokens(tenant);
+      expect(tokens).toHaveLength(1);
+      expect(backgroundPushes.sent).toEqual([{ deviceToken: tokens[0], data: { kind } }]);
+    },
+  };
 }
 
-interface SeededInvitation {
-  eventId: string;
-  personId: string;
-  mailboxId: string;
-  organizerEmail: string;
-  attendeeEmail: string;
+/** A mailbox item whose addresses are written through the system key, as mailbox setup writes them. */
+async function createAddressedMailbox(client: PoolClient, databaseId: string, addresses: string) {
+  return createItemWithClient(
+    client,
+    { databaseId, properties: { name: `Mailbox ${randomUUID()}`, provider: "generic", addresses } },
+    { allowedSystemKeys: ["addresses"] },
+  );
 }
 
 /** The invitation is stored through the system writer, as the invitation code stores it. */
-async function seedInvitation(tenant: Tenant): Promise<SeededInvitation> {
-  const mailboxesId = await requireModuleDatabaseId(tenant, "mailboxes");
-  const peopleId = await requireModuleDatabaseId(tenant, "people");
-  const eventsId = await requireModuleDatabaseId(tenant, "events");
-  const organizerEmail = `organizer-${randomUUID()}@example.test`;
+async function seedInvitation(tenant: Tenant) {
+  const mailboxesId = await moduleDatabaseId(tenant, "mailboxes");
+  const peopleId = await moduleDatabaseId(tenant, "people");
+  const eventsId = await moduleDatabaseId(tenant, "events");
   const attendeeEmail = `attendee-${randomUUID()}@example.test`;
-  const mailboxId = await inTenant(tenant, () =>
-    withTransaction(pool, async (client) => {
-      const mailbox = await createItemWithClient(
-        client,
-        {
-          databaseId: mailboxesId,
-          properties: { name: `Mailbox ${randomUUID()}`, provider: "generic", addresses: organizerEmail },
-        },
-        { allowedSystemKeys: ["addresses"] },
-      );
-      return mailbox.id;
-    }),
-  );
+  const mailboxAddress = `organizer-${randomUUID()}@example.test`;
   return inTenant(tenant, async () => {
+    const mailboxId = (
+      await withTransaction(pool, (client) => createAddressedMailbox(client, mailboxesId, mailboxAddress))
+    ).id;
     const person = await chokePoint.createItem({ databaseId: peopleId, properties: { name: "Invitee" } });
     const event = await chokePoint.createItem({
       databaseId: eventsId,
       properties: { name: "Isolation meeting", date: "2099-01-15", timeFrom: "09:00", timeTo: "10:00" },
     });
-    const peopleProperty = (await chokePoint.listProperties(eventsId)).find((property) => property.key === "people");
-    if (!peopleProperty) throw new Error("expected Events.people to be seeded");
     await chokePoint.createRelation(
       {
-        relationPropertyId: peopleProperty.id,
+        relationPropertyId: await propertyId(eventsId, "people"),
         callerItemId: event.id,
         targetItemId: person.id,
         metadata: { invitation: { status: "pending", email: attendeeEmail, mailboxId } },
       },
       SYSTEM_WRITER,
     );
-    return { eventId: event.id, personId: person.id, mailboxId, organizerEmail, attendeeEmail };
+    return { eventId: event.id, personId: person.id, mailboxId, mailboxAddress, attendeeEmail };
   });
 }
 
@@ -977,71 +944,36 @@ async function invitationSentAt(tenant: Tenant, eventId: string, personId: strin
   return found[0]?.sent_at ?? null;
 }
 
-const CALENDAR_SEND_INVITATION_REPLY_TASK = "calendarSendInvitationReply";
-
-const ANSWERED_INVITATION_KEYS = [
-  "title",
-  "startsAt",
-  "endsAt",
-  "allDay",
-  "organizerEmail",
-  "status",
-  "kind",
-  "uid",
-  "sequence",
-  "respondedAt",
-] as const;
-
-interface SeededInvitationReply {
-  invitationId: string;
-  mailboxId: string;
-  organizerEmail: string;
-  mailboxAddress: string;
-  respondedAt: string;
-}
-
-async function seedAnsweredInvitation(tenant: Tenant): Promise<SeededInvitationReply> {
-  const mailboxesId = await requireModuleDatabaseId(tenant, "mailboxes");
-  const invitationsId = await requireModuleDatabaseId(tenant, "invitations");
+async function seedAnsweredInvitation(tenant: Tenant) {
+  const mailboxesId = await moduleDatabaseId(tenant, "mailboxes");
+  const invitationsId = await moduleDatabaseId(tenant, "invitations");
   const organizerEmail = `organizer-${randomUUID()}@example.test`;
   const mailboxAddress = `mailbox-${randomUUID()}@example.test`;
   const respondedAt = new Date().toISOString();
-  const mailboxProperty = (await inTenant(tenant, () => chokePoint.listProperties(invitationsId))).find(
-    (property) => property.key === "mailbox",
-  );
-  if (!mailboxProperty) throw new Error("expected Invitations.mailbox to be seeded");
+  const mailboxPropertyId = await inTenant(tenant, () => propertyId(invitationsId, "mailbox"));
+  const properties = {
+    title: "Isolation invitation",
+    startsAt: "2099-01-15T09:00:00.000Z",
+    endsAt: "2099-01-15T10:00:00.000Z",
+    allDay: false,
+    organizerEmail,
+    status: "accepted",
+    kind: "invite",
+    uid: `${randomUUID()}@example.test`,
+    sequence: 0,
+    respondedAt,
+  };
   const ids = await inTenant(tenant, () =>
     withTransaction(pool, async (client) => {
-      const mailbox = await createItemWithClient(
-        client,
-        {
-          databaseId: mailboxesId,
-          properties: { name: `Mailbox ${randomUUID()}`, provider: "generic", addresses: mailboxAddress },
-        },
-        { allowedSystemKeys: ["addresses"] },
-      );
+      const mailbox = await createAddressedMailbox(client, mailboxesId, mailboxAddress);
       const invitation = await createItemWithClient(
         client,
-        {
-          databaseId: invitationsId,
-          properties: {
-            title: "Isolation invitation",
-            startsAt: "2099-01-15T09:00:00.000Z",
-            endsAt: "2099-01-15T10:00:00.000Z",
-            allDay: false,
-            organizerEmail,
-            status: "accepted",
-            kind: "invite",
-            uid: `${randomUUID()}@example.test`,
-            sequence: 0,
-            respondedAt,
-          },
-        },
-        { allowedSystemKeys: ANSWERED_INVITATION_KEYS, systemOwnerProcess: CALENDAR_MODULE_ID },
+        { databaseId: invitationsId, properties },
+        { allowedSystemKeys: Object.keys(properties), systemOwnerProcess: CALENDAR_MODULE_ID },
       );
       await createRelationWithClient(
         client,
-        { relationPropertyId: mailboxProperty.id, callerItemId: invitation.id, targetItemId: mailbox.id },
+        { relationPropertyId: mailboxPropertyId, callerItemId: invitation.id, targetItemId: mailbox.id },
         { ownerProcess: CALENDAR_MODULE_ID },
       );
       return { invitationId: invitation.id, mailboxId: mailbox.id };
@@ -1050,18 +982,12 @@ async function seedAnsweredInvitation(tenant: Tenant): Promise<SeededInvitationR
   return { ...ids, organizerEmail, mailboxAddress, respondedAt };
 }
 
-const seededReplies = new Map<string, SeededInvitationReply>();
-
-const MAIL_TRIAGE_THREAD_PROJECT_TASK = "mailTriageThreadProject";
-
 interface TriageQuestion {
   tenantId: string | null;
   offeredProjectIds: string[];
 }
 
 const triageQuestions: TriageQuestion[] = [];
-
-const triageProjects = new Map<string, string>();
 
 /** The project the latest seed made; earlier cases leave projects behind. */
 let triageProjectName = "";
@@ -1070,80 +996,16 @@ const offeredProjects = z.array(z.object({ id: z.uuid(), name: z.string() }));
 
 const triageGateway: AiGatewayClientPort = {
   async complete(input) {
-    const scope = currentTenantScope();
     const message = input.messages[0];
     const text = typeof message?.content === "string" ? message.content : "";
     const offered = offeredProjects.parse(
       JSON.parse(text.slice(text.indexOf("Candidate projects: ") + "Candidate projects: ".length)),
     );
-    triageQuestions.push({
-      tenantId: scope?.kind === "tenant" ? scope.tenantId : null,
-      offeredProjectIds: offered.map((project) => project.id),
-    });
+    triageQuestions.push({ tenantId: scopeTenantId(), offeredProjectIds: offered.map((project) => project.id) });
     const chosen = offered.find((project) => project.name === triageProjectName);
-    return {
-      content: { projectId: chosen?.id ?? null, confidence: 0.95 },
-      usage: { inputTokens: 1, outputTokens: 1 },
-    };
+    return { content: { projectId: chosen?.id ?? null, confidence: 0.95 }, usage: { inputTokens: 1, outputTokens: 1 } };
   },
 };
-
-async function seedTriageThread(tenant: Tenant): Promise<{ threadItemId: string }> {
-  const mailboxItemId = await createMailbox(tenant);
-  const projectsDatabaseId = await requireModuleDatabaseId(tenant, "projects");
-  triageProjectName = `Isolation project ${randomUUID()}`;
-  const projectId = (
-    await inTenant(tenant, () =>
-      chokePoint.createItem({
-        databaseId: projectsDatabaseId,
-        properties: { name: triageProjectName, status: "inProgress" },
-      }),
-    )
-  ).id;
-  const threadItemId = await inTenant(tenant, () =>
-    withTransaction(pool, async (client) => {
-      const ids = await resolveMailModuleIds(client);
-      const propertyId = async (databaseId: string, key: string): Promise<string> => {
-        const property = (await chokePoint.listProperties(databaseId)).find((entry) => entry.key === key);
-        if (!property) throw new Error(`expected the ${key} property to be seeded`);
-        return property.id;
-      };
-      const folderItemId = await ensureFolderItem(client, {
-        foldersDatabaseId: ids.foldersDatabaseId,
-        mailboxItemId,
-        mailboxRelationPropertyId: await propertyId(ids.foldersDatabaseId, "mailbox"),
-        providerId: "INBOX",
-        name: "Inbox",
-        behavior: "folder",
-        specialPurpose: "inbox",
-      });
-      const ingested = await ingestEmailMessage(client, {
-        emailsDatabaseId: ids.emailsDatabaseId,
-        filesDatabaseId: ids.filesDatabaseId,
-        folderRelationPropertyId: await propertyId(ids.emailsDatabaseId, "folder"),
-        attachmentsRelationPropertyId: await propertyId(ids.emailsDatabaseId, "attachments"),
-        folderItemId,
-        mailboxItemId,
-        messageId: `<${randomUUID()}@example.test>`,
-        subject: "Question about the isolation project",
-        envelope: { from: { address: "sender@example.test" } },
-        bodyText: "Please advise.",
-        attachments: [],
-        storage: new LocalFsBlobStorageWriter(join(blobRoot, "mail")),
-        storageKeyPrefix: mailboxItemId,
-      });
-      const { rows: threads } = await client.query<{ item_id: string }>(
-        "SELECT t.item_id FROM mail_message_meta m JOIN mail_threads t ON t.id = m.thread_id WHERE m.item_id = $1",
-        [ingested.itemId],
-      );
-      const row = threads[0];
-      if (!row) throw new Error("expected the ingested message to have a thread item");
-      return row.item_id;
-    }),
-  );
-  triageProjects.set(threadItemId, projectId);
-  return { threadItemId };
-}
 
 let journalDaysSeeded = 0;
 
@@ -1152,7 +1014,7 @@ const cases: Record<string, TaskCase> = {
     tenancy: "tenant",
     async seed(tenant) {
       titlePortCalls.length = 0;
-      return runInTenant(tenant.tenantId, () =>
+      return inTenant(tenant, () =>
         withTransaction(pool, async (client) => {
           const turn = await sendSempMessage(client, { text: "Tenant question", context: [], hasContext: false });
           expect(await claimSempMessage(client, turn.threadId, turn.assistantMessageId)).toBe(true);
@@ -1179,9 +1041,12 @@ const cases: Record<string, TaskCase> = {
       );
     },
     async expectDone(tenant, payload) {
-      expect(
-        await rows(tenant, "SELECT title FROM semp_threads WHERE id = $1", [requirePayloadString(payload, "threadId")]),
-      ).toEqual([{ title: "Tenant title" }]);
+      await expectRows(
+        tenant,
+        "SELECT title FROM semp_threads WHERE id = $1",
+        [str(payload, "threadId")],
+        [{ title: "Tenant title" }],
+      );
       expect(titlePortCalls).toHaveLength(1);
       expect(titlePortCalls[0]).toMatchObject({
         tenantId: tenant.tenantId,
@@ -1202,19 +1067,19 @@ const cases: Record<string, TaskCase> = {
     tenancy: "tenant",
     expectedError: /Value link rule is unavailable/,
     async seed(tenant) {
-      return inTenant(tenant, async () => {
-        const areas = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
-        if (!areas) throw new Error("Areas database was not seeded");
-        const source = await chokePoint.createItem({ databaseId: areas.id, properties: { name: "Link source" } });
-        return { ruleKey: "unconfigured.fixture", sourceItemId: source.id, hop: 1 };
-      });
+      const areasId = await moduleDatabaseId(tenant, "areas");
+      const source = await inTenant(tenant, () =>
+        chokePoint.createItem({ databaseId: areasId, properties: { name: "Link source" } }),
+      );
+      return { ruleKey: "unconfigured.fixture", sourceItemId: source.id, hop: 1 };
     },
     async expectDone(tenant, payload) {
-      expect(
-        await rows<{ name: string }>(tenant, "SELECT properties->>'name' AS name FROM items WHERE id = $1", [
-          requirePayloadString(payload, "sourceItemId"),
-        ]),
-      ).toEqual([{ name: "Link source" }]);
+      await expectRows(
+        tenant,
+        "SELECT properties->>'name' AS name FROM items WHERE id = $1",
+        [str(payload, "sourceItemId")],
+        [{ name: "Link source" }],
+      );
     },
   },
   [CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE]: {
@@ -1228,11 +1093,12 @@ const cases: Record<string, TaskCase> = {
       return { heartbeatId, triggeredByRunId: run.id };
     },
     async expectDone(tenant, payload) {
-      expect(
-        await rows(tenant, "SELECT last_error FROM project_heartbeats WHERE id = $1", [
-          requirePayloadString(payload, "heartbeatId"),
-        ]),
-      ).toEqual([{ last_error: null }]);
+      await expectRows(
+        tenant,
+        "SELECT last_error FROM project_heartbeats WHERE id = $1",
+        [str(payload, "heartbeatId")],
+        [{ last_error: null }],
+      );
     },
   },
   [CORE_TASK_NAMES.ITEM_SEARCH_BACKFILL]: {
@@ -1252,33 +1118,26 @@ const cases: Record<string, TaskCase> = {
       });
     },
     async expectDone(tenant, payload) {
-      expect(
-        await rows<{ title: string; matches: boolean }>(
-          tenant,
-          `SELECT i.properties ->> 'title' AS title,
-             s.search_vector @@ plainto_tsquery('czech', 'Legacy searchable') AS matches
-           FROM items i JOIN item_search_index s ON s.item_id = i.id
-           WHERE i.database_id = $1`,
-          [requirePayloadString(payload, "databaseId")],
-        ),
-      ).toEqual([{ title: "Legacy searchable", matches: true }]);
+      await expectRows(
+        tenant,
+        `SELECT i.properties ->> 'title' AS title,
+           s.search_vector @@ plainto_tsquery('czech', 'Legacy searchable') AS matches
+         FROM items i JOIN item_search_index s ON s.item_id = i.id
+         WHERE i.database_id = $1`,
+        [str(payload, "databaseId")],
+        [{ title: "Legacy searchable", matches: true }],
+      );
     },
   },
   [CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS]: {
     tenancy: "tenant",
     async seed(tenant) {
+      const projectsId = await moduleDatabaseId(tenant, "projects");
+      const tasksId = await moduleDatabaseId(tenant, "tasks");
       return inTenant(tenant, async () => {
-        const projectsId = await requireModuleDatabaseId(tenant, "projects");
-        const tasksId = await requireModuleDatabaseId(tenant, "tasks");
         const project = await chokePoint.createItem({ databaseId: projectsId, properties: { name: "Původní" } });
         const task = await chokePoint.createItem({ databaseId: tasksId, properties: { name: "Závislý úkol" } });
-        const projectProperty = (await chokePoint.listProperties(tasksId)).find((p) => p.key === "project");
-        if (!projectProperty) throw new Error("expected Tasks.project");
-        await chokePoint.createRelation({
-          relationPropertyId: projectProperty.id,
-          callerItemId: task.id,
-          targetItemId: project.id,
-        });
+        await relate(tasksId, "project", task.id, project.id);
         // A stale dependent document: the title is written directly so only this job rebuilds it.
         const renamed = await pool.query(
           "UPDATE items SET properties = properties || jsonb_build_object('name', 'Přejmenovaný') WHERE id = $1",
@@ -1289,42 +1148,41 @@ const cases: Record<string, TaskCase> = {
       });
     },
     async expectDone(tenant, payload) {
-      expect(
-        await rows<{ matches: boolean }>(
-          tenant,
-          `SELECT s.search_vector @@ plainto_tsquery('czech_simple', 'Přejmenovaný') AS matches
-           FROM item_relations r JOIN item_search_index s ON s.item_id = CASE WHEN r.item_a = $1 THEN r.item_b ELSE r.item_a END
-           WHERE r.item_a = $1 OR r.item_b = $1`,
-          [requirePayloadString(payload, "itemId")],
-        ),
-      ).toEqual([{ matches: true }]);
+      await expectRows(
+        tenant,
+        `SELECT s.search_vector @@ plainto_tsquery('czech_simple', 'Přejmenovaný') AS matches
+         FROM item_relations r JOIN item_search_index s ON s.item_id = CASE WHEN r.item_a = $1 THEN r.item_b ELSE r.item_a END
+         WHERE r.item_a = $1 OR r.item_b = $1`,
+        [str(payload, "itemId")],
+        [{ matches: true }],
+      );
     },
   },
   [CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT]: {
     tenancy: "tenant",
     async seed(tenant) {
+      const databaseId = await moduleDatabaseId(tenant, "tasks");
       return inTenant(tenant, async () => {
-        const databaseId = await requireModuleDatabaseId(tenant, "tasks");
         const item = await chokePoint.createItem({ databaseId, properties: { name: "Isolated page" } });
         await writePageTextBlocks(pool, item.id, ["Stránka tenanta A"]);
         return { itemId: item.id };
       });
     },
     async expectDone(tenant, payload) {
-      expect(
-        await rows<{ page_text: string | null }>(tenant, "SELECT page_text FROM item_search_index WHERE item_id = $1", [
-          requirePayloadString(payload, "itemId"),
-        ]),
-      ).toEqual([{ page_text: "Stránka tenanta A" }]);
+      await expectRows(
+        tenant,
+        "SELECT page_text FROM item_search_index WHERE item_id = $1",
+        [str(payload, "itemId")],
+        [{ page_text: "Stránka tenanta A" }],
+      );
     },
   },
   [CORE_TASK_NAMES.PAGE_TITLE_MIRROR]: {
     tenancy: "tenant",
     async seed(tenant) {
+      const databaseId = await moduleDatabaseId(tenant, "tasks");
       return inTenant(tenant, async () => {
-        const databaseId = await requireModuleDatabaseId(tenant, "tasks");
         const host = await chokePoint.createItem({ databaseId, properties: { name: "Mirror host" } });
-        const docStore = createDocStore(pool);
         const created = await docStore.createSubpage({ parent: { itemId: host.id }, title: "Before" }, "user");
         const blockId = created.pages[0]?.blockId;
         const doc = await docStore.getDoc(host.id);
@@ -1339,14 +1197,13 @@ const cases: Record<string, TaskCase> = {
       });
     },
     async expectDone(tenant, payload) {
-      expect(
-        await rows<{ title: string }>(
-          tenant,
-          `SELECT i.properties ->> 'title' AS title FROM items i JOIN databases d ON d.id = i.database_id
-           WHERE d.owner_module_id = 'pages' AND i.properties ->> 'parentItemId' = $1`,
-          [requirePayloadString(payload, "itemId")],
-        ),
-      ).toEqual([{ title: "Stránka tenanta A" }]);
+      await expectRows(
+        tenant,
+        `SELECT i.properties ->> 'title' AS title FROM items i JOIN databases d ON d.id = i.database_id
+         WHERE d.owner_module_id = 'pages' AND i.properties ->> 'parentItemId' = $1`,
+        [str(payload, "itemId")],
+        [{ title: "Stránka tenanta A" }],
+      );
     },
   },
   [CORE_TASK_NAMES.ROLLUP_RECOMPUTE]: {
@@ -1355,26 +1212,12 @@ const cases: Record<string, TaskCase> = {
       const fixture = await createRollupFixture(tenant);
       return { ...fixture, itemId: fixture.projectId };
     },
-    async expectDone(tenant, payload) {
-      await expectRollupCount(
-        tenant,
-        requirePayloadString(payload, "projectsId"),
-        requirePayloadString(payload, "projectId"),
-      );
-    },
+    expectDone: expectRollupCount,
   },
   [CORE_TASK_NAMES.ROLLUP_RECOMPUTE_FULL]: {
     tenancy: "tenant",
-    async seed(tenant) {
-      return { ...(await createRollupFixture(tenant)) };
-    },
-    async expectDone(tenant, payload) {
-      await expectRollupCount(
-        tenant,
-        requirePayloadString(payload, "projectsId"),
-        requirePayloadString(payload, "projectId"),
-      );
-    },
+    seed: createRollupFixture,
+    expectDone: expectRollupCount,
   },
   [CORE_TASK_NAMES.PROPERTY_TYPE_MIGRATION]: {
     tenancy: "tenant",
@@ -1394,13 +1237,14 @@ const cases: Record<string, TaskCase> = {
       });
     },
     async expectDone(tenant, payload) {
-      expect(
-        await rows(tenant, "SELECT migration_status FROM properties WHERE id = $1", [
-          requirePayloadString(payload, "propertyId"),
-        ]),
-      ).toEqual([{ migration_status: "partial" }]);
+      await expectRows(
+        tenant,
+        "SELECT migration_status FROM properties WHERE id = $1",
+        [str(payload, "propertyId")],
+        [{ migration_status: "partial" }],
+      );
       const good = await inTenant(tenant, () =>
-        chokePoint.getItem(requirePayloadString(payload, "databaseId"), requirePayloadString(payload, "goodItemId")),
+        chokePoint.getItem(str(payload, "databaseId"), str(payload, "goodItemId")),
       );
       expect(good?.properties.score).toBe(42);
     },
@@ -1416,15 +1260,20 @@ const cases: Record<string, TaskCase> = {
   [CORE_TASK_NAMES.LIBRARY_METADATA_PROCESS]: {
     tenancy: "tenant",
     async seed(tenant) {
-      const { databaseId, itemId } = await createItemWithAutomation(tenant);
-      return { itemId, databaseId, config: { source: "tmdb", coverKey: "cover" } };
+      return inTenant(tenant, async () => {
+        const database = await chokePoint.createDatabase({ name: `Library ${randomUUID()}` });
+        const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
+        await withTransaction(pool, (client) => ensureItemAutomation(client, item.id));
+        return { itemId: item.id, databaseId: database.id, config: { source: "tmdb", coverKey: "cover" } };
+      });
     },
     async expectDone(tenant, payload) {
-      expect(
-        await rows(tenant, "SELECT status FROM item_automation WHERE item_id = $1", [
-          requirePayloadString(payload, "itemId"),
-        ]),
-      ).toEqual([{ status: "done" }]);
+      await expectRows(
+        tenant,
+        "SELECT status FROM item_automation WHERE item_id = $1",
+        [str(payload, "itemId")],
+        [{ status: "done" }],
+      );
     },
   },
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC]: {
@@ -1434,15 +1283,19 @@ const cases: Record<string, TaskCase> = {
     },
     expectedError: /^No IMAP adapter configured for this composition root$/,
     async expectDone(tenant, payload) {
-      const mailboxItemId = requirePayloadString(payload, "mailboxItemId");
-      expect(
-        await rows(tenant, "SELECT last_error FROM mail_account_sync_state WHERE item_id = $1", [mailboxItemId]),
-      ).toEqual([{ last_error: "No IMAP adapter configured for this composition root" }]);
-      expect(
-        await rows(tenant, "SELECT user_id FROM notifications WHERE kind = 'mail_sync_error' AND source_id = $1", [
-          mailboxItemId,
-        ]),
-      ).toEqual([{ user_id: tenant.userId }]);
+      const mailboxItemId = str(payload, "mailboxItemId");
+      await expectRows(
+        tenant,
+        "SELECT last_error FROM mail_account_sync_state WHERE item_id = $1",
+        [mailboxItemId],
+        [{ last_error: "No IMAP adapter configured for this composition root" }],
+      );
+      await expectRows(
+        tenant,
+        "SELECT user_id FROM notifications WHERE kind = 'mail_sync_error' AND source_id = $1",
+        [mailboxItemId],
+        [{ user_id: tenant.userId }],
+      );
     },
   },
   [CORE_TASK_NAMES.MAILBOX_REMOVAL]: {
@@ -1450,36 +1303,7 @@ const cases: Record<string, TaskCase> = {
     async seed(tenant) {
       const mailboxItemId = await createMailbox(tenant);
       await inTenant(tenant, async () => {
-        await withTransaction(pool, async (client) => {
-          const ids = await resolveMailModuleIds(client);
-          const propertyId = async (databaseId: string, key: string): Promise<string> => {
-            const property = (await chokePoint.listProperties(databaseId)).find((entry) => entry.key === key);
-            if (!property) throw new Error(`expected the ${key} property to be seeded`);
-            return property.id;
-          };
-          const folderItemId = await ensureFolderItem(client, {
-            foldersDatabaseId: ids.foldersDatabaseId,
-            mailboxItemId,
-            mailboxRelationPropertyId: await propertyId(ids.foldersDatabaseId, "mailbox"),
-            providerId: "INBOX",
-            name: "Inbox",
-            behavior: "folder",
-            specialPurpose: "inbox",
-          });
-          await ingestEmailMessage(client, {
-            emailsDatabaseId: ids.emailsDatabaseId,
-            filesDatabaseId: ids.filesDatabaseId,
-            folderRelationPropertyId: await propertyId(ids.emailsDatabaseId, "folder"),
-            attachmentsRelationPropertyId: await propertyId(ids.emailsDatabaseId, "attachments"),
-            folderItemId,
-            mailboxItemId,
-            messageId: `<${randomUUID()}@example.test>`,
-            envelope: { from: { address: "sender@example.test" } },
-            attachments: [],
-            storage: new LocalFsBlobStorageWriter(join(blobRoot, "mail")),
-            storageKeyPrefix: mailboxItemId,
-          });
-        });
+        await withTransaction(pool, (client) => ingestMessage(client, mailboxItemId));
         // The removal queues this job itself; the driver discards it. An empty affinity map routes the
         // removal's heartbeats to the default queue.
         if (!(await removeMailbox(pool, mailboxItemId, { queueAffinity: new Map() }))) {
@@ -1489,23 +1313,22 @@ const cases: Record<string, TaskCase> = {
       return { mailboxItemId };
     },
     async expectDone(tenant, payload) {
-      expect(
-        await rows(
-          tenant,
-          `SELECT d.owner_module_id AS module FROM items i JOIN databases d ON d.id = i.database_id
-            WHERE i.id <> $1 AND i.deleted_at = (SELECT m.deleted_at FROM items m WHERE m.id = $1)
-            ORDER BY d.owner_module_id`,
-          [requirePayloadString(payload, "mailboxItemId")],
-        ),
-      ).toEqual([{ module: "emails" }, { module: "folders" }]);
+      await expectRows(
+        tenant,
+        `SELECT d.owner_module_id AS module FROM items i JOIN databases d ON d.id = i.database_id
+          WHERE i.id <> $1 AND i.deleted_at = (SELECT m.deleted_at FROM items m WHERE m.id = $1)
+          ORDER BY d.owner_module_id`,
+        [str(payload, "mailboxItemId")],
+        [{ module: "emails" }, { module: "folders" }],
+      );
     },
   },
   [CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS]: {
     tenancy: "tenant",
     async seed(tenant) {
       const address = `${randomUUID()}@example.test`;
-      const peopleDatabaseId = await requireModuleDatabaseId(tenant, "people");
-      const { itemId } = await createEmail(tenant);
+      const peopleDatabaseId = await moduleDatabaseId(tenant, "people");
+      const itemId = await createEmail(tenant);
       const personId = await inTenant(tenant, () =>
         withTransaction(pool, async (client) => {
           const role = await client.query<{ name: string; bypass: boolean; superuser: boolean }>(
@@ -1531,32 +1354,36 @@ const cases: Record<string, TaskCase> = {
       await inTenant(tenant, () =>
         action({ peopleDatabaseId }, { heartbeatId: "test", projectItemId: "test", itemId: personId }),
       );
-      expect(await rows(tenant, "SELECT item_id FROM person_email_index WHERE email = $1", [address])).toEqual([
-        { item_id: personId },
-      ]);
-      expect(
-        await rows(tenant, "SELECT id FROM item_relations WHERE item_a = $1 AND item_b = $2", [itemId, personId]),
-      ).toEqual([]);
+      await expectRows(
+        tenant,
+        "SELECT item_id FROM person_email_index WHERE email = $1",
+        [address],
+        [{ item_id: personId }],
+      );
+      await expectRows(
+        tenant,
+        "SELECT id FROM item_relations WHERE item_a = $1 AND item_b = $2",
+        [itemId, personId],
+        [],
+      );
       return { personId, addresses: [address] };
     },
     async expectDone(tenant, payload) {
-      const personId = requirePayloadString(payload, "personId");
       const parsed = z.object({ addresses: z.array(z.string()).length(1) }).parse(payload);
-      expect(
-        await rows(
-          tenant,
-          `SELECT p.key FROM item_relations r JOIN relation_definitions d ON d.id = r.relation_definition_id
-           JOIN properties p ON p.id = d.property_id_a JOIN mail_message_meta m ON m.item_id = r.item_a
-           WHERE r.item_b = $1 AND m.envelope @> $2::jsonb ORDER BY p.key`,
-          [personId, JSON.stringify({ from: { address: parsed.addresses[0] } })],
-        ),
-      ).toEqual([{ key: "recipientsPeople" }, { key: "senderPeople" }]);
+      await expectRows(
+        tenant,
+        `SELECT p.key FROM item_relations r JOIN relation_definitions d ON d.id = r.relation_definition_id
+         JOIN properties p ON p.id = d.property_id_a JOIN mail_message_meta m ON m.item_id = r.item_a
+         WHERE r.item_b = $1 AND m.envelope @> $2::jsonb ORDER BY p.key`,
+        [str(payload, "personId"), JSON.stringify({ from: { address: parsed.addresses[0] } })],
+        [{ key: "recipientsPeople" }, { key: "senderPeople" }],
+      );
     },
   },
   [CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE]: {
     tenancy: "tenant",
     async seed(tenant) {
-      const journalId = await requireModuleDatabaseId(tenant, JOURNAL_MODULE_ID);
+      const journalId = await moduleDatabaseId(tenant, JOURNAL_MODULE_ID);
       // A day of its own per seed, so the computed list cannot predate this case.
       const referenceDate = new Date(Date.UTC(2000, 0, 1 + journalDaysSeeded++));
       const day = await inTenant(tenant, () =>
@@ -1567,11 +1394,12 @@ const cases: Record<string, TaskCase> = {
       return { journalDayItemId: day.id };
     },
     async expectDone(tenant, payload) {
-      expect(
-        await rows(tenant, "SELECT computed -> 'inboxItems' AS inbox_items FROM items WHERE id = $1", [
-          requirePayloadString(payload, "journalDayItemId"),
-        ]),
-      ).toEqual([{ inbox_items: [] }]);
+      await expectRows(
+        tenant,
+        "SELECT computed -> 'inboxItems' AS inbox_items FROM items WHERE id = $1",
+        [str(payload, "journalDayItemId")],
+        [{ inbox_items: [] }],
+      );
     },
   },
   [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: {
@@ -1597,11 +1425,12 @@ const cases: Record<string, TaskCase> = {
       });
     },
     async expectDone(tenant, payload) {
-      expect(
-        await rows(tenant, "SELECT execution_status FROM approval_requests WHERE id = $1", [
-          requirePayloadString(payload, "approvalRequestId"),
-        ]),
-      ).toEqual([{ execution_status: "conflict" }]);
+      await expectRows(
+        tenant,
+        "SELECT execution_status FROM approval_requests WHERE id = $1",
+        [str(payload, "approvalRequestId")],
+        [{ execution_status: "conflict" }],
+      );
     },
   },
   [CORE_TASK_NAMES.NOTIFICATION_FANOUT]: {
@@ -1632,13 +1461,13 @@ const cases: Record<string, TaskCase> = {
       });
     },
     async expectDone(tenant, payload) {
-      const deliveries = await rows<{ settled: boolean }>(
+      await expectRows(
         tenant,
         `SELECT (delivered_at IS NOT NULL OR failed_permanently_at IS NOT NULL) AS settled
            FROM push_deliveries WHERE notification_id = $1`,
-        [requirePayloadString(payload, "notificationId")],
+        [str(payload, "notificationId")],
+        [{ settled: true }],
       );
-      expect(deliveries).toEqual([{ settled: true }]);
     },
   },
   [CORE_TASK_NAMES.PUSH_DISMISS]: {
@@ -1683,50 +1512,15 @@ const cases: Record<string, TaskCase> = {
     },
     async expectDone(tenant) {
       // `not-configured` does not revoke.
-      expect(
-        await rows(
-          tenant,
-          "SELECT count(*)::int AS active FROM push_subscriptions WHERE user_id = $1 AND channel = 'apns' AND revoked_at IS NULL",
-          [tenant.userId],
-        ),
-      ).toEqual([{ active: 1 }]);
+      expect(await activeApnsTokens(tenant)).toHaveLength(1);
     },
   },
-  [SLEEP_RESYNC_TASK]: {
-    tenancy: "tenant",
-    async seed(tenant) {
-      // Every tenant gets an active iOS registration, so a job that pushed for another tenant would have a
-      // registration to send to; the spy shows which one each run sent to.
-      useUnconfiguredApns();
-      for (const other of [tenantA, tenantB]) await seedIosRegistration(other);
-      backgroundPushes.sent.length = 0;
-      return { tenantId: tenant.tenantId };
-    },
-    async expectDone(tenant) {
-      const tokens = await activeApnsTokens(tenant);
-      expect(tokens).toHaveLength(1);
-      expect(sleepResyncSends()).toEqual([{ deviceToken: tokens[0], data: { kind: "sleepResync" } }]);
-    },
-  },
-  [CORE_TASK_NAMES.REMINDERS_RESYNC]: {
-    tenancy: "tenant",
-    async seed(tenant) {
-      // As for `sleep.resync`.
-      useUnconfiguredApns();
-      for (const other of [tenantA, tenantB]) await seedIosRegistration(other);
-      backgroundPushes.sent.length = 0;
-      return { tenantId: tenant.tenantId };
-    },
-    async expectDone(tenant) {
-      const tokens = await activeApnsTokens(tenant);
-      expect(tokens).toHaveLength(1);
-      expect(sleepResyncSends()).toEqual([{ deviceToken: tokens[0], data: { kind: "remindersResync" } }]);
-    },
-  },
+  [SLEEP_RESYNC_TASK]: resyncCase("sleepResync"),
+  [CORE_TASK_NAMES.REMINDERS_RESYNC]: resyncCase("remindersResync"),
   [CORE_TASK_NAMES.MCP_SERVER_SYNC]: {
     tenancy: "tenant",
     async seed(tenant) {
-      const databaseId = await requireModuleDatabaseId(tenant, "mcpServers");
+      const databaseId = await moduleDatabaseId(tenant, "mcpServers");
       // No connection config: the sync stops at the connection factory without network and records
       // `syncStatus: error`, which the job accepts.
       const server = await inTenant(tenant, () =>
@@ -1737,11 +1531,7 @@ const cases: Record<string, TaskCase> = {
       return { mcpServerItemId: server.id, actingUserId: tenant.userId };
     },
     async expectDone(tenant, payload) {
-      expect(
-        await rows(tenant, "SELECT properties ->> 'syncStatus' AS sync_status FROM items WHERE id = $1", [
-          requirePayloadString(payload, "mcpServerItemId"),
-        ]),
-      ).toEqual([{ sync_status: "error" }]);
+      expect(await itemProperty(tenant, str(payload, "mcpServerItemId"), "syncStatus")).toBe("error");
     },
   },
   [MAIL_SYNC_THREAD_TASK_PEOPLE_TASK]: {
@@ -1749,12 +1539,11 @@ const cases: Record<string, TaskCase> = {
     async seed(tenant) {
       const { threadItemId, personId, taskId } = await seedThreadTaskWithNewPerson(tenant);
       expect(await tasksWithPerson(tenant, personId)).toEqual([]);
-      threadTaskPeopleTasks.set(personId, taskId);
+      seededByKey.set(personId, { taskId });
       return { threadItemId, personId };
     },
     async expectDone(tenant, payload) {
-      const personId = requirePayloadString(payload, "personId");
-      expect(await tasksWithPerson(tenant, personId)).toEqual([threadTaskPeopleTasks.get(personId)]);
+      expect(await tasksWithPerson(tenant, str(payload, "personId"))).toEqual([seeded(payload, "personId").taskId]);
     },
   },
   [CORE_TASK_NAMES.TENANT_EXPORT]: {
@@ -1766,11 +1555,12 @@ const cases: Record<string, TaskCase> = {
       return { exportId: requested.export.id };
     },
     async expectDone(tenant, payload) {
-      expect(
-        await rows(tenant, "SELECT status FROM tenant_exports WHERE id = $1", [
-          requirePayloadString(payload, "exportId"),
-        ]),
-      ).toEqual([{ status: "ready" }]);
+      await expectRows(
+        tenant,
+        "SELECT status FROM tenant_exports WHERE id = $1",
+        [str(payload, "exportId")],
+        [{ status: "ready" }],
+      );
     },
   },
 
@@ -1785,11 +1575,14 @@ const cases: Record<string, TaskCase> = {
           heartbeatId,
         ]),
       );
-      return marked([heartbeatId], async () => {
-        expect(
-          await rows(tenant, "SELECT status FROM heartbeat_occurrences WHERE heartbeat_id = $1", [heartbeatId]),
-        ).toEqual([{ status: "succeeded" }]);
-      });
+      return marked([heartbeatId], () =>
+        expectRows(
+          tenant,
+          "SELECT status FROM heartbeat_occurrences WHERE heartbeat_id = $1",
+          [heartbeatId],
+          [{ status: "succeeded" }],
+        ),
+      );
     },
   },
   [CORE_TASK_NAMES.DOC_COMPACTION_SWEEP]: {
@@ -1803,18 +1596,16 @@ const cases: Record<string, TaskCase> = {
         for (let i = 0; i < DEFAULT_COMPACTION_THRESHOLD; i++) {
           await docStore.putBlock(item.id, { id: `b${i}`, flavour: "paragraph" }, "user");
         }
-        const found = await pool.query<{ id: string }>("SELECT id FROM docs WHERE item_id = $1", [item.id]);
-        const doc = found.rows[0];
-        if (!doc) throw new Error("expected the item to have a doc");
-        return doc.id;
+        return requireDocId(item.id);
       });
       return marked([docId], async () => {
-        expect(await rows(tenant, "SELECT count(*)::int AS count FROM doc_updates WHERE doc_id = $1", [docId])).toEqual(
+        await expectRows(
+          tenant,
+          "SELECT count(*)::int AS count FROM doc_updates WHERE doc_id = $1",
+          [docId],
           [{ count: 0 }],
         );
-        expect(await rows(tenant, "SELECT 1 AS present FROM doc_snapshots WHERE doc_id = $1", [docId])).toEqual([
-          { present: 1 },
-        ]);
+        await expectRows(tenant, "SELECT 1 AS present FROM doc_snapshots WHERE doc_id = $1", [docId], [{ present: 1 }]);
       });
     },
   },
@@ -1826,27 +1617,24 @@ const cases: Record<string, TaskCase> = {
         const database = await chokePoint.createDatabase({ name: `History ${randomUUID()}` });
         const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
         await docStore.putBlock(item.id, { id: "root", flavour: "page" }, "user");
-        const found = await pool.query<{ id: string }>("SELECT id FROM docs WHERE item_id = $1", [item.id]);
-        const doc = found.rows[0];
-        if (!doc) throw new Error("expected the item to have a doc");
+        const id = await requireDocId(item.id);
         // No production writer moves the history baseline into the past.
-        await pool.query("UPDATE docs SET history_available_from = now() - interval '40 days' WHERE id = $1", [doc.id]);
+        await pool.query("UPDATE docs SET history_available_from = now() - interval '40 days' WHERE id = $1", [id]);
         await pool.query(
           `UPDATE doc_snapshot_history SET represented_at = now() - interval '40 days'
             WHERE doc_id = $1 AND through_update_id = 0`,
-          [doc.id],
+          [id],
         );
-        return doc.id;
+        return id;
       });
-      return marked([docId], async () => {
-        expect(
-          await rows(
-            tenant,
-            "SELECT history_available_from > now() - interval '39 days' AS rebaselined FROM docs WHERE id = $1",
-            [docId],
-          ),
-        ).toEqual([{ rebaselined: true }]);
-      });
+      return marked([docId], () =>
+        expectRows(
+          tenant,
+          "SELECT history_available_from > now() - interval '39 days' AS rebaselined FROM docs WHERE id = $1",
+          [docId],
+          [{ rebaselined: true }],
+        ),
+      );
     },
   },
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: {
@@ -1855,11 +1643,14 @@ const cases: Record<string, TaskCase> = {
     async seed(tenant) {
       const mailboxItemId = await createMailbox(tenant);
       // The sweep enqueues the mailbox's sync, which fails for want of a transport.
-      return marked([mailboxItemId], async () => {
-        expect(
-          await rows(tenant, "SELECT last_error FROM mail_account_sync_state WHERE item_id = $1", [mailboxItemId]),
-        ).toEqual([{ last_error: "No IMAP adapter configured for this composition root" }]);
-      });
+      return marked([mailboxItemId], () =>
+        expectRows(
+          tenant,
+          "SELECT last_error FROM mail_account_sync_state WHERE item_id = $1",
+          [mailboxItemId],
+          [{ last_error: "No IMAP adapter configured for this composition root" }],
+        ),
+      );
     },
   },
   [CORE_TASK_NAMES.MAIL_OAUTH_STATES_SWEEP]: {
@@ -1876,34 +1667,24 @@ const cases: Record<string, TaskCase> = {
           [stateId, tenant.userId, randomUUID(), Buffer.from("ciphertext"), Buffer.from("nonce")],
         ),
       );
-      return marked([stateId], async () => {
-        expect(await rows(tenant, "SELECT 1 FROM mail_oauth_states WHERE id = $1", [stateId])).toEqual([]);
-      });
+      return marked([stateId], () =>
+        expectRows(tenant, "SELECT 1 FROM mail_oauth_states WHERE id = $1", [stateId], []),
+      );
     },
   },
   [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: {
     tenancy: "system",
     touchesTenantTables: true,
     async seed(tenant) {
-      const { itemId } = await createEmail(tenant);
+      const itemId = await createEmail(tenant);
       await inTenant(tenant, () => pool.query("DELETE FROM item_search_index WHERE item_id = $1", [itemId]));
-      return marked([itemId], async () => {
-        expect(await rows(tenant, "SELECT 1 AS present FROM item_search_index WHERE item_id = $1", [itemId])).toEqual([
-          { present: 1 },
-        ]);
-      });
+      return marked([itemId], () =>
+        expectRows(tenant, "SELECT 1 AS present FROM item_search_index WHERE item_id = $1", [itemId], [{ present: 1 }]),
+      );
     },
   },
-  [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP]: {
-    tenancy: "system",
-    touchesTenantTables: true,
-    seed: createExpiredTrash,
-  },
-  [CORE_TASK_NAMES.TRASH_PURGE]: {
-    tenancy: "system",
-    touchesTenantTables: true,
-    seed: createExpiredTrash,
-  },
+  [CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP]: { tenancy: "system", touchesTenantTables: true, seed: createExpiredTrash },
+  [CORE_TASK_NAMES.TRASH_PURGE]: { tenancy: "system", touchesTenantTables: true, seed: createExpiredTrash },
   [CORE_TASK_NAMES.BLOBS_UNREFERENCED_SWEEP]: {
     tenancy: "system",
     touchesTenantTables: true,
@@ -1917,9 +1698,7 @@ const cases: Record<string, TaskCase> = {
           [blobId, `${tenant.tenantId}/blobs/${randomUUID()}`],
         ),
       );
-      return marked([blobId], async () => {
-        expect(await rows(tenant, "SELECT 1 FROM blobs WHERE id = $1", [blobId])).toEqual([]);
-      });
+      return marked([blobId], () => expectRows(tenant, "SELECT 1 FROM blobs WHERE id = $1", [blobId], []));
     },
   },
   [CORE_TASK_NAMES.PEOPLE_LAST_CONTACT_RECOMPUTE]: {
@@ -1929,13 +1708,20 @@ const cases: Record<string, TaskCase> = {
       return { personId };
     },
     async expectDone(tenant, payload) {
-      expect(await lastContactOf(tenant, requirePayloadString(payload, "personId"))).toBe(PAST_EVENT_DATE);
+      expect(await itemProperty(tenant, str(payload, "personId"), "lastContact")).toBe(PAST_EVENT_DATE);
     },
   },
   [CORE_TASK_NAMES.DERIVED_VALUES_INVALIDATE]: {
     tenancy: "tenant",
     async seed(tenant) {
-      const projectItemId = await createProjectWithTask(tenant);
+      const projectsId = await moduleDatabaseId(tenant, "projects");
+      const tasksId = await moduleDatabaseId(tenant, "tasks");
+      const projectItemId = await inTenant(tenant, async () => {
+        const project = await chokePoint.createItem({ databaseId: projectsId, properties: { name: "Project" } });
+        const task = await chokePoint.createItem({ databaseId: tasksId, properties: { name: "Project task" } });
+        await relate(tasksId, "project", task.id, project.id);
+        return project.id;
+      });
       // Started after the fixture's own writes, so only the job under test is recorded.
       recordInvalidations();
       return { projectItemId };
@@ -1945,9 +1731,8 @@ const cases: Record<string, TaskCase> = {
       // `Tasks.project` is the inverse side: the project is `item_a`, its task `item_b`.
       const tasks = await rows<{ id: string; database_id: string; updated_at: Date }>(
         tenant,
-        `SELECT i.id, i.database_id, i.updated_at FROM item_relations r JOIN items i ON i.id = r.item_b
-         WHERE r.item_a = $1`,
-        [requirePayloadString(payload, "projectItemId")],
+        "SELECT i.id, i.database_id, i.updated_at FROM item_relations r JOIN items i ON i.id = r.item_b WHERE r.item_a = $1",
+        [str(payload, "projectItemId")],
       );
       expect(tasks).toHaveLength(1);
       expect(announced).toEqual(
@@ -1968,11 +1753,11 @@ const cases: Record<string, TaskCase> = {
     tenancy: "tenant",
     async seed(tenant) {
       const taskId = await createTaskHiddenInPassedEvent(tenant);
-      expect(await hiddenUntilOf(tenant, taskId)).not.toBeNull();
+      expect(await itemProperty(tenant, taskId, "hiddenUntil")).not.toBeNull();
       return { taskId };
     },
     async expectDone(tenant, payload) {
-      expect(await hiddenUntilOf(tenant, requirePayloadString(payload, "taskId"))).toBeNull();
+      expect(await itemProperty(tenant, str(payload, "taskId"), "hiddenUntil")).toBeNull();
     },
   },
   [CORE_TASK_NAMES.AI_BUDGET_RESET]: {
@@ -1993,7 +1778,7 @@ const cases: Record<string, TaskCase> = {
       const start = instantToWallClock(new Date(Date.now() - 60 * 60 * 1000), zone);
       const { personId, eventId } = await createPersonWithEvent(tenant, start.date, start.time);
       return marked([personId, eventId], async () => {
-        expect(await lastContactOf(tenant, personId)).toBe(start.date);
+        expect(await itemProperty(tenant, personId, "lastContact")).toBe(start.date);
       });
     },
   },
@@ -2002,9 +1787,9 @@ const cases: Record<string, TaskCase> = {
     touchesTenantTables: true,
     async seed(tenant) {
       const feed = await ensureFeedFixture();
-      const databaseId = await requireModuleDatabaseId(tenant, "calendars");
-      const calendarId = await inTenant(tenant, async () => {
-        const created = await withTransaction(pool, (client) =>
+      const databaseId = await moduleDatabaseId(tenant, "calendars");
+      const calendar = await inTenant(tenant, () =>
+        withTransaction(pool, (client) =>
           createItemWithClient(
             client,
             {
@@ -2018,19 +1803,21 @@ const cases: Record<string, TaskCase> = {
             },
             { allowedSystemKeys: ["kind"], systemOwnerProcess: CALENDAR_MODULE_ID },
           ),
-        );
-        return created.id;
-      });
+        ),
+      );
       // As the superuser: the write rule refuses an `http` address with a port, which a local server is.
       await adminPool.query(
         "UPDATE items SET properties = jsonb_set(properties, '{subscriptionUrl}', to_jsonb($2::text)) WHERE id = $1",
-        [calendarId, `http://127.0.0.1:${feed.port}/${calendarId}.ics`],
+        [calendar.id, `http://127.0.0.1:${feed.port}/${calendar.id}.ics`],
       );
-      return marked([calendarId], async () => {
-        expect(feed.consumed).toContain(calendarId);
-        expect(await rows(tenant, "SELECT calendar_item_id, etag, last_status FROM calendar_feed_state", [])).toEqual([
-          { calendar_item_id: calendarId, etag: '"v1"', last_status: 200 },
-        ]);
+      return marked([calendar.id], async () => {
+        expect(feed.consumed).toContain(calendar.id);
+        await expectRows(
+          tenant,
+          "SELECT calendar_item_id, etag, last_status FROM calendar_feed_state",
+          [],
+          [{ calendar_item_id: calendar.id, etag: '"v1"', last_status: 200 }],
+        );
       });
     },
   },
@@ -2050,11 +1837,14 @@ const cases: Record<string, TaskCase> = {
         ]);
         return page.pageItemId;
       });
-      return marked([pageItemId], async () => {
-        expect(
-          await rows(tenant, "SELECT deleted_at IS NOT NULL AS trashed FROM items WHERE id = $1", [pageItemId]),
-        ).toEqual([{ trashed: true }]);
-      });
+      return marked([pageItemId], () =>
+        expectRows(
+          tenant,
+          "SELECT deleted_at IS NOT NULL AS trashed FROM items WHERE id = $1",
+          [pageItemId],
+          [{ trashed: true }],
+        ),
+      );
     },
   },
   [CORE_TASK_NAMES.OBSERVABILITY_CHECK_SYSTEM]: {
@@ -2062,19 +1852,20 @@ const cases: Record<string, TaskCase> = {
     touchesTenantTables: true,
     async seed(tenant) {
       const mailboxItemId = await createMailbox(tenant);
+      const checkKey = `process:mailsync:${mailboxItemId}`;
       return marked([mailboxItemId], async () => {
-        expect(
-          await rows(tenant, "SELECT status FROM tenant_observability_checks WHERE check_key = $1", [
-            `process:mailsync:${mailboxItemId}`,
-          ]),
-        ).toEqual([{ status: "alerting" }]);
-        expect(
-          await rows(
-            tenant,
-            "SELECT user_id FROM notifications WHERE kind = 'mail_sync_stalled' AND source_id IN (SELECT id::text FROM tenant_observability_checks WHERE check_key = $1)",
-            [`process:mailsync:${mailboxItemId}`],
-          ),
-        ).toEqual([{ user_id: tenant.userId }]);
+        await expectRows(
+          tenant,
+          "SELECT status FROM tenant_observability_checks WHERE check_key = $1",
+          [checkKey],
+          [{ status: "alerting" }],
+        );
+        await expectRows(
+          tenant,
+          "SELECT user_id FROM notifications WHERE kind = 'mail_sync_stalled' AND source_id IN (SELECT id::text FROM tenant_observability_checks WHERE check_key = $1)",
+          [checkKey],
+          [{ user_id: tenant.userId }],
+        );
       });
     },
   },
@@ -2093,11 +1884,9 @@ const cases: Record<string, TaskCase> = {
         );
         return minted.run.id;
       });
-      return marked([runId], async () => {
-        expect(await rows(tenant, "SELECT status FROM agent_runs WHERE id = $1", [runId])).toEqual([
-          { status: "done" },
-        ]);
-      });
+      return marked([runId], () =>
+        expectRows(tenant, "SELECT status FROM agent_runs WHERE id = $1", [runId], [{ status: "done" }]),
+      );
     },
   },
   [CORE_TASK_NAMES.AGENT_RUN_EVENTS_RETENTION]: {
@@ -2120,14 +1909,18 @@ const cases: Record<string, TaskCase> = {
         return { runId: run.id, messageId: message.id };
       });
       return marked([runId], async () => {
-        expect(
-          await rows(tenant, "SELECT 1 FROM agent_run_events WHERE agent_run_id = $1 AND id = $2", [runId, messageId]),
-        ).toEqual([]);
-        expect(
-          await rows(tenant, "SELECT kind FROM agent_run_events WHERE agent_run_id = $1 AND kind = 'compaction'", [
-            runId,
-          ]),
-        ).toEqual([{ kind: "compaction" }]);
+        await expectRows(
+          tenant,
+          "SELECT 1 FROM agent_run_events WHERE agent_run_id = $1 AND id = $2",
+          [runId, messageId],
+          [],
+        );
+        await expectRows(
+          tenant,
+          "SELECT kind FROM agent_run_events WHERE agent_run_id = $1 AND kind = 'compaction'",
+          [runId],
+          [{ kind: "compaction" }],
+        );
       });
     },
   },
@@ -2143,9 +1936,9 @@ const cases: Record<string, TaskCase> = {
                  now() - interval '31 days', 'recovered')`,
         [problemId, tenant.tenantId, tenant.userId, randomUUID(), `mail:sync:${problemId}`],
       );
-      return marked([problemId], async () => {
-        expect(await rows(tenant, "SELECT 1 FROM semp_problems WHERE id = $1", [problemId])).toEqual([]);
-      });
+      return marked([problemId], () =>
+        expectRows(tenant, "SELECT 1 FROM semp_problems WHERE id = $1", [problemId], []),
+      );
     },
   },
   [CORE_TASK_NAMES.TENANT_EXPORT_EXPIRY_SWEEP]: {
@@ -2161,9 +1954,7 @@ const cases: Record<string, TaskCase> = {
           WHERE id = $1`,
         [exportId],
       );
-      return marked([exportId], async () => {
-        expect(await rows(tenant, "SELECT 1 FROM tenant_exports WHERE id = $1", [exportId])).toEqual([]);
-      });
+      return marked([exportId], () => expectRows(tenant, "SELECT 1 FROM tenant_exports WHERE id = $1", [exportId], []));
     },
   },
   [CORE_TASK_NAMES.TENANT_PURGE]: {
@@ -2182,16 +1973,11 @@ const cases: Record<string, TaskCase> = {
         const remaining = Object.entries(await fingerprint(tenant)).filter(([, table]) => table.count > 0);
         expect(remaining).toEqual([]);
         // Global tables, outside every fingerprint.
-        const { rows: tenantRows } = await adminPool.query<{ present: number }>(
-          "SELECT 1 AS present FROM tenants WHERE id = $1",
-          [tenant.tenantId],
-        );
-        expect(tenantRows).toEqual([]);
-        const { rows: tombstones } = await adminPool.query<{ tenant_id: string }>(
-          "SELECT tenant_id FROM tenant_deletions WHERE tenant_id = $1",
-          [tenant.tenantId],
-        );
-        expect(tombstones).toEqual([{ tenant_id: tenant.tenantId }]);
+        const global = async (sql: string) => (await adminPool.query(sql, [tenant.tenantId])).rows;
+        expect(await global("SELECT 1 AS present FROM tenants WHERE id = $1")).toEqual([]);
+        expect(await global("SELECT tenant_id FROM tenant_deletions WHERE tenant_id = $1")).toEqual([
+          { tenant_id: tenant.tenantId },
+        ]);
       });
     },
   },
@@ -2207,7 +1993,7 @@ const cases: Record<string, TaskCase> = {
         }),
       };
       // A probe outside the task catalogs counts as a tenant task; it touches no table.
-      await runInTenant(tenantA.tenantId, () => enqueueJob(pool, identifier, {}, { jobKey, maxAttempts: 1 }));
+      await inTenant(tenantA, () => enqueueJob(pool, identifier, {}, { jobKey, maxAttempts: 1 }));
       await runOnce({ pgPool: pool }, failingTaskList);
       expect(await jobOutcome(jobKey)).toEqual({ attempts: 1, lastError: "probe failure" });
       // graphile-worker 0.17.3 has no public way to age a failed job past the prune's 7-day retention.
@@ -2217,7 +2003,7 @@ const cases: Record<string, TaskCase> = {
       );
       expect(aged.rowCount).toBe(1);
       return async () => {
-        expect(await jobOutcome(jobKey)).toEqual({ attempts: null, lastError: null });
+        expect(await jobOutcome(jobKey)).toEqual(COMPLETED);
       };
     },
   },
@@ -2225,28 +2011,21 @@ const cases: Record<string, TaskCase> = {
     tenancy: "tenant",
     async seed(tenant) {
       invitationSends.length = 0;
-      const { eventId, personId, mailboxId, attendeeEmail } = await seedInvitation(tenant);
+      const { eventId, personId, mailboxId, mailboxAddress, attendeeEmail } = await seedInvitation(tenant);
+      seededByKey.set(eventId, { mailboxAddress });
       return { method: "REQUEST", eventId, personId, mailboxId, attendeeEmail };
     },
     async expectDone(tenant, payload) {
-      const eventId = requirePayloadString(payload, "eventId");
-      const personId = requirePayloadString(payload, "personId");
-      const mailboxId = requirePayloadString(payload, "mailboxId");
-      const mailbox = await rows<{ addresses: string }>(
-        tenant,
-        "SELECT properties ->> 'addresses' AS addresses FROM items WHERE id = $1",
-        [mailboxId],
-      );
       expect(invitationSends).toEqual([
         {
           tenantId: tenant.tenantId,
-          mailboxId,
+          mailboxId: str(payload, "mailboxId"),
           method: "REQUEST",
-          from: mailbox[0]?.addresses,
-          recipients: [requirePayloadString(payload, "attendeeEmail")],
+          from: seeded(payload, "eventId").mailboxAddress,
+          recipients: [str(payload, "attendeeEmail")],
         },
       ]);
-      expect(typeof (await invitationSentAt(tenant, eventId, personId))).toBe("string");
+      expect(typeof (await invitationSentAt(tenant, str(payload, "eventId"), str(payload, "personId")))).toBe("string");
       invitationSends.length = 0;
     },
   },
@@ -2254,20 +2033,19 @@ const cases: Record<string, TaskCase> = {
     tenancy: "tenant",
     async seed(tenant) {
       invitationSends.length = 0;
-      const seeded = await seedAnsweredInvitation(tenant);
-      seededReplies.set(seeded.invitationId, seeded);
-      return { invitationId: seeded.invitationId, response: "accepted", respondedAt: seeded.respondedAt };
+      const { invitationId, respondedAt, ...rest } = await seedAnsweredInvitation(tenant);
+      seededByKey.set(invitationId, rest);
+      return { invitationId, response: "accepted", respondedAt };
     },
     async expectDone(tenant, payload) {
-      const seeded = seededReplies.get(requirePayloadString(payload, "invitationId"));
-      if (!seeded) throw new Error("expected the reply case to have seeded the invitation");
+      const reply = seeded(payload, "invitationId");
       expect(invitationSends).toEqual([
         {
           tenantId: tenant.tenantId,
-          mailboxId: seeded.mailboxId,
+          mailboxId: reply.mailboxId,
           method: "REPLY",
-          from: seeded.mailboxAddress,
-          recipients: [seeded.organizerEmail],
+          from: reply.mailboxAddress,
+          recipients: [reply.organizerEmail],
         },
       ]);
       invitationSends.length = 0;
@@ -2277,23 +2055,40 @@ const cases: Record<string, TaskCase> = {
     tenancy: "tenant",
     async seed(tenant) {
       triageQuestions.length = 0;
-      return seedTriageThread(tenant);
+      const mailboxItemId = await createMailbox(tenant);
+      const projectsDatabaseId = await moduleDatabaseId(tenant, "projects");
+      triageProjectName = `Isolation project ${randomUUID()}`;
+      const project = await inTenant(tenant, () =>
+        chokePoint.createItem({
+          databaseId: projectsDatabaseId,
+          properties: { name: triageProjectName, status: "inProgress" },
+        }),
+      );
+      const { threadItemId } = await inTenant(tenant, () =>
+        withTransaction(pool, (client) =>
+          ingestMessage(client, mailboxItemId, {
+            subject: "Question about the isolation project",
+            bodyText: "Please advise.",
+          }),
+        ),
+      );
+      seededByKey.set(threadItemId, { projectId: project.id });
+      return { threadItemId };
     },
     async expectDone(tenant, payload) {
-      const threadItemId = requirePayloadString(payload, "threadItemId");
-      const projectId = triageProjects.get(threadItemId);
-      expect(
-        await rows(
-          tenant,
-          `SELECT CASE WHEN r.item_a = $1 THEN r.item_b ELSE r.item_a END AS project_id
-             FROM item_relations r JOIN relation_definitions d ON d.id = r.relation_definition_id
-             JOIN properties p ON p.id IN (d.property_id_a, d.property_id_b) AND p.key = 'project'
-             JOIN databases db ON db.id = p.database_id AND db.owner_module_id = 'threads'
-            WHERE r.item_a = $1 OR r.item_b = $1`,
-          [threadItemId],
-        ),
-      ).toEqual([{ project_id: projectId }]);
-      expect(await rows(tenant, "SELECT 1 FROM value_links WHERE item_id = $1", [threadItemId])).toEqual([]);
+      const threadItemId = str(payload, "threadItemId");
+      const { projectId } = seeded(payload, "threadItemId");
+      await expectRows(
+        tenant,
+        `SELECT CASE WHEN r.item_a = $1 THEN r.item_b ELSE r.item_a END AS project_id
+           FROM item_relations r JOIN relation_definitions d ON d.id = r.relation_definition_id
+           JOIN properties p ON p.id IN (d.property_id_a, d.property_id_b) AND p.key = 'project'
+           JOIN databases db ON db.id = p.database_id AND db.owner_module_id = 'threads'
+          WHERE r.item_a = $1 OR r.item_b = $1`,
+        [threadItemId],
+        [{ project_id: projectId }],
+      );
+      await expectRows(tenant, "SELECT 1 FROM value_links WHERE item_id = $1", [threadItemId], []);
       expect(triageQuestions).toHaveLength(1);
       const [question] = triageQuestions;
       expect(question?.tenantId).toBe(tenant.tenantId);
@@ -2308,35 +2103,84 @@ const cases: Record<string, TaskCase> = {
   },
 };
 
-function isTenantCase(c: TaskCase): c is TenantTaskCase {
-  return c.tenancy === "tenant";
-}
-
-function isSystemCase(c: TaskCase): c is SystemTaskCase {
-  return c.tenancy === "system" && c.touchesTenantTables;
-}
-
-function isGlobalSystemCase(c: TaskCase): c is GlobalSystemTaskCase {
-  return c.tenancy === "system" && !c.touchesTenantTables;
+/** Inside a tenant scope. */
+async function requireDocId(itemId: string): Promise<string> {
+  const found = await pool.query<{ id: string }>("SELECT id FROM docs WHERE item_id = $1", [itemId]);
+  const doc = found.rows[0];
+  if (!doc) throw new Error("expected the item to have a doc");
+  return doc.id;
 }
 
 function casesWhere<T extends TaskCase>(guard: (c: TaskCase) => c is T): Array<[string, T]> {
   return Object.entries(cases).flatMap(([name, c]): Array<[string, T]> => (guard(c) ? [[name, c]] : []));
 }
 
-const ENV_OVERRIDES = [
-  "AI_GATEWAY_INTERNAL_TOKEN",
-  "FILES_STORAGE_DIR",
-  "MAIL_ATTACHMENTS_DIR",
-  ...VAPID_ENV,
-  ...APNS_ENV,
-] as const;
+/**
+ * For the B-side run of a job naming A's rows, what besides A's unchanged fingerprint shows that nothing of A was
+ * reached: `quiet` jobs end with no effect in B at all, and the recorder or registration they would have reached
+ * stays untouched.
+ */
+const FOREIGN_RUN_CHECKS: Record<string, { quiet?: boolean; check?: () => Promise<void> }> = {
+  [CORE_TASK_NAMES.SEMP_THREAD_TITLE]: {
+    quiet: true,
+    async check() {
+      expect(titlePortCalls).toEqual([]);
+      titlePortCalls.length = 0;
+    },
+  },
+  [CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS]: { quiet: true },
+  [CALENDAR_SEND_EVENT_INVITATION_TASK]: { quiet: true, check: async () => expect(invitationSends).toEqual([]) },
+  [CALENDAR_SEND_INVITATION_REPLY_TASK]: { quiet: true, check: async () => expect(invitationSends).toEqual([]) },
+  [MAIL_TRIAGE_THREAD_PROJECT_TASK]: { quiet: true, check: async () => expect(triageQuestions).toEqual([]) },
+  [SLEEP_RESYNC_TASK]: {
+    // Both tenants have an active iOS registration and the payload names A: only the scope check keeps B's job
+    // from pushing.
+    async check() {
+      expect(backgroundPushes.sent).toEqual([]);
+      expect(await activeApnsTokens(tenantA)).toHaveLength(1);
+      expect(await activeApnsTokens(tenantB)).toHaveLength(1);
+    },
+  },
+  // A's registration is global data; only the user check keeps B's job from reaching it.
+  [CORE_TASK_NAMES.PUSH_DISMISS]: { check: async () => expect(await pushRegistrationRevoked(tenantA)).toBe(false) },
+  // No fingerprint shows announcements.
+  [CORE_TASK_NAMES.DERIVED_VALUES_INVALIDATE]: {
+    quiet: true,
+    check: async () => expect(stopRecordingInvalidations()).toEqual([]),
+  },
+  [CORE_TASK_NAMES.AI_BUDGET_RESET]: {
+    // The job announces for the tenant it runs in, whatever its payload names.
+    async check() {
+      const bStatus = { tenantId: tenantB.tenantId, event: { scope: "sempStatus" } };
+      expect(stopRecordingInvalidations()).toEqual([bStatus, bStatus]);
+    },
+  },
+};
 
-describe("background task isolation across two tenants: api runtime (issue #1056)", () => {
+/** Settles `cleanup` after `body`, keeping a failure of `body` primary over one of `cleanup`. */
+async function settled(body: () => Promise<void>, cleanup: () => Promise<void> | void): Promise<void> {
+  let failure: { error: unknown } | undefined;
+  try {
+    await body();
+  } catch (error) {
+    failure = { error };
+  }
+  try {
+    await cleanup();
+  } catch (error) {
+    if (failure) {
+      // eslint-disable-next-line preserve-caught-error
+      throw new AggregateError([failure.error, error], "Scenario cleanup failed", { cause: failure.error });
+    }
+    throw error;
+  }
+  if (failure) throw failure.error;
+}
+
+describe("background task isolation across two tenants: api runtime", () => {
   beforeAll(async () => {
-    previousScope = process.env.SEMPREC_TENANT_SCOPE;
-    process.env.SEMPREC_TENANT_SCOPE = "strict";
     for (const name of ENV_OVERRIDES) previousEnv.set(name, process.env[name]);
+    process.env.SEMPREC_TENANT_SCOPE = "strict";
     blobRoot = await mkdtemp(join(tmpdir(), "semprec-api-isolation-"));
     // `createApiActionRegistry` refuses to build without a gateway token.
     process.env.AI_GATEWAY_INTERNAL_TOKEN = randomUUID();
@@ -2358,7 +2202,6 @@ describe("background task isolation across two tenants: api runtime (issue #1056
     chokePoint = createChokePoint(pool);
     docStore = createDocStore(pool);
 
-    const actionRegistry = createApiActionRegistry(pool, moduleRegistry);
     const gmailAdapters = createMailSyncAdapters({
       pool,
       env: { GMAIL_OAUTH_CLIENT_ID: "test-client", GMAIL_OAUTH_CLIENT_SECRET: "test-secret" },
@@ -2375,7 +2218,7 @@ describe("background task isolation across two tenants: api runtime (issue #1056
     });
     const coreTaskList = createApiCoreTaskList(
       pool,
-      actionRegistry,
+      createApiActionRegistry(pool, moduleRegistry),
       undefined,
       { loadGmailLabels: gmailAdapters.loadGmailLabels },
       undefined,
@@ -2400,8 +2243,7 @@ describe("background task isolation across two tenants: api runtime (issue #1056
   });
 
   afterEach(async () => {
-    restoreVapidConfiguration();
-    restoreApnsConfiguration();
+    restoreEnv([...VAPID_ENV, ...APNS_ENV]);
     await stopFeedFixture();
   });
 
@@ -2413,153 +2255,126 @@ describe("background task isolation across two tenants: api runtime (issue #1056
     await pool?.end();
     await adminPool?.end();
     if (blobRoot !== undefined) await rm(blobRoot, { recursive: true, force: true });
-    for (const [name, value] of previousEnv) {
-      if (value === undefined) delete process.env[name];
-      else process.env[name] = value;
-    }
-    if (previousScope === undefined) delete process.env.SEMPREC_TENANT_SCOPE;
-    else process.env.SEMPREC_TENANT_SCOPE = previousScope;
+    restoreEnv(ENV_OVERRIDES);
   });
 
   it("purges rendered audio through the queued tenant sweep while preserving another tenant's live bytes", async () => {
     const first = await buildTenant(await createTestTenant(adminPool));
     const second = await buildTenant(await createTestTenant(adminPool));
     const root = join(blobRoot, "files");
-    let primary: unknown;
-    let failed = false;
-    try {
-      const a = await runTranscriptionFixture(
-        { mode: "failure", source: "ogg", tenantId: first.tenantId, storageRoot: root },
-        adminPool,
-      );
-      const b = await runTranscriptionFixture(
-        { mode: "failure", source: "ogg", tenantId: second.tenantId, storageRoot: root },
-        adminPool,
-      );
-      const inspect = async (tenant: Tenant, itemId: string) =>
-        inTenant(tenant, async () => {
-          const files = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "files"));
-          if (!files) throw new Error("Missing Files database");
-          const item = await chokePoint.getItem(files.id, itemId);
-          if (!item) throw new Error("Missing rendered source");
-          const original = z.object({ blobId: z.uuid() }).parse(item.properties.file).blobId;
-          const prepare = z
-            .object({ normalizedBlobId: z.uuid(), playbackBlobId: z.uuid() })
-            .parse(item.computed.prepare);
-          const ids = [original, prepare.normalizedBlobId, prepare.playbackBlobId];
-          expect(new Set(ids).size).toBe(3);
-          const found = await withTransaction(pool, (client) =>
-            client.query<Record<string, unknown>>(
-              "SELECT id, storage_key FROM blobs WHERE id = ANY($1::uuid[]) ORDER BY id",
-              [ids],
-            ),
-          );
-          const blobs = z.array(z.object({ id: z.uuid(), storage_key: z.string() })).parse(found.rows);
-          expect(blobs).toHaveLength(3);
-          for (const blob of blobs) {
-            expect(blob.storage_key.startsWith(`${tenant.tenantId}/`)).toBe(true);
-            expect((await readFile(join(root, blob.storage_key))).length).toBeGreaterThan(0);
-          }
-          return { filesId: files.id, ids, blobs };
-        });
-      const aBefore = await inspect(first, a.result.fileItemId);
-      const bBefore = await inspect(second, b.result.fileItemId);
-      expect(aBefore.ids).toContain(a.result.playbackBlobId);
-      expect(bBefore.ids).toContain(b.result.playbackBlobId);
-      await inTenant(first, async () => {
-        await chokePoint.softDeleteItem(aBefore.filesId, a.result.fileItemId);
-        await pool.query("UPDATE items SET deleted_at = now() - interval '31 days' WHERE id = $1", [
-          a.result.fileItemId,
-        ]);
-      });
-      await discardQueuedJobs();
-      const actualStorage = new LocalFsBlobStorageWriter(root);
-      const observed: Array<{ key: string; remaining: number }> = [];
-      const storage: BlobStorageWriter = {
-        writeStream: (key, source, options) => actualStorage.writeStream(key, source, options),
-        readStream: (key, range) => actualStorage.readStream(key, range),
-        async delete(key) {
-          const rows = await adminPool.query("SELECT id FROM blobs WHERE storage_key = $1", [key]);
-          observed.push({ key, remaining: rows.rows.length });
-          await actualStorage.delete(key);
-        },
-      };
-      const registry = createApiActionRegistry(pool, moduleRegistry);
-      const tasks = createApiCoreTaskList(
-        pool,
-        registry,
-        undefined,
-        undefined,
-        undefined,
-        moduleRegistry,
-        undefined,
-        replayApprovedGenericOperation,
-        storage,
-      );
-      const key = randomUUID();
-      await runAsSystem("test:enqueue-rendered-purge", () =>
-        enqueueJob(pool, CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP, {}, { jobKey: key }),
-      );
-      await runOnce({ pgPool: pool, taskList: tasks });
-      expect(await jobOutcome(key)).toEqual({ attempts: null, lastError: null });
-      for (const blob of aBefore.blobs) {
-        expect(observed).toContainEqual({ key: blob.storage_key, remaining: 0 });
-        await expect(readFile(join(root, blob.storage_key))).rejects.toMatchObject({ code: "ENOENT" });
-      }
-      expect(await inTenant(first, () => chokePoint.getItem(aBefore.filesId, a.result.fileItemId))).toBeNull();
-      expect(
-        await inTenant(first, () =>
-          withTransaction(pool, (client) =>
-            client.query("SELECT id FROM blobs WHERE id = ANY($1::uuid[])", [aBefore.ids]),
+    const blobsOf = (tenant: Tenant, ids: string[]) =>
+      inTenant(tenant, async () =>
+        z
+          .array(z.object({ id: z.uuid(), storage_key: z.string() }))
+          .parse(
+            (await pool.query("SELECT id, storage_key FROM blobs WHERE id = ANY($1::uuid[]) ORDER BY id", [ids])).rows,
           ),
-        ).then((result) => result.rows),
-      ).toEqual([]);
-      const bAfter = await inspect(second, b.result.fileItemId);
-      expect(bAfter.blobs).toEqual(bBefore.blobs);
-      expect(observed.some((entry) => bBefore.blobs.some((blob) => blob.storage_key === entry.key))).toBe(false);
-    } catch (error) {
-      primary = error;
-      failed = true;
-    }
-    try {
-      await adminPool.query("UPDATE tenants SET status = 'suspended' WHERE id = ANY($1::uuid[])", [
-        [first.tenantId, second.tenantId],
-      ]);
-    } catch (error) {
-      if (failed) process.stderr.write(`Could not suspend fixture tenants: ${String(error)}\n`);
-      else {
-        primary = error;
-        failed = true;
+      );
+    const inspect = async (tenant: Tenant, itemId: string) => {
+      const filesId = await moduleDatabaseId(tenant, "files");
+      const item = await inTenant(tenant, () => chokePoint.getItem(filesId, itemId));
+      if (!item) throw new Error("Missing rendered source");
+      const original = z.object({ blobId: z.uuid() }).parse(item.properties.file).blobId;
+      const prepare = z.object({ normalizedBlobId: z.uuid(), playbackBlobId: z.uuid() }).parse(item.computed.prepare);
+      const ids = [original, prepare.normalizedBlobId, prepare.playbackBlobId];
+      expect(new Set(ids).size).toBe(3);
+      const blobs = await blobsOf(tenant, ids);
+      expect(blobs).toHaveLength(3);
+      for (const blob of blobs) {
+        expect(blob.storage_key.startsWith(`${tenant.tenantId}/`)).toBe(true);
+        expect((await readFile(join(root, blob.storage_key))).length).toBeGreaterThan(0);
       }
-    }
-    if (failed) {
-      if (primary instanceof Error) throw primary;
-      throw new Error("Rendered purge scenario failed with a non-error value", { cause: primary });
-    }
+      return { filesId, ids, blobs };
+    };
+    await settled(
+      async () => {
+        const [a, b] = [
+          await runTranscriptionFixture(
+            { mode: "failure", source: "ogg", tenantId: first.tenantId, storageRoot: root },
+            adminPool,
+          ),
+          await runTranscriptionFixture(
+            { mode: "failure", source: "ogg", tenantId: second.tenantId, storageRoot: root },
+            adminPool,
+          ),
+        ];
+        const aBefore = await inspect(first, a.result.fileItemId);
+        const bBefore = await inspect(second, b.result.fileItemId);
+        expect(aBefore.ids).toContain(a.result.playbackBlobId);
+        expect(bBefore.ids).toContain(b.result.playbackBlobId);
+        await inTenant(first, async () => {
+          await chokePoint.softDeleteItem(aBefore.filesId, a.result.fileItemId);
+          await pool.query("UPDATE items SET deleted_at = now() - interval '31 days' WHERE id = $1", [
+            a.result.fileItemId,
+          ]);
+        });
+        await discardQueuedJobs();
+        const actualStorage = new LocalFsBlobStorageWriter(root);
+        const observed: Array<{ key: string; remaining: number }> = [];
+        const storage: BlobStorageWriter = {
+          writeStream: (key, source, options) => actualStorage.writeStream(key, source, options),
+          readStream: (key, range) => actualStorage.readStream(key, range),
+          async delete(key) {
+            const found = await adminPool.query("SELECT id FROM blobs WHERE storage_key = $1", [key]);
+            observed.push({ key, remaining: found.rows.length });
+            await actualStorage.delete(key);
+          },
+        };
+        const tasks = createApiCoreTaskList(
+          pool,
+          createApiActionRegistry(pool, moduleRegistry),
+          undefined,
+          undefined,
+          undefined,
+          moduleRegistry,
+          undefined,
+          replayApprovedGenericOperation,
+          storage,
+        );
+        const key = randomUUID();
+        await runAsSystem("test:enqueue-rendered-purge", () =>
+          enqueueJob(pool, CORE_TASK_NAMES.ITEM_TRASH_PURGE_SWEEP, {}, { jobKey: key }),
+        );
+        await runOnce({ pgPool: pool, taskList: tasks });
+        expect(await jobOutcome(key)).toEqual(COMPLETED);
+        for (const blob of aBefore.blobs) {
+          expect(observed).toContainEqual({ key: blob.storage_key, remaining: 0 });
+          await expect(readFile(join(root, blob.storage_key))).rejects.toMatchObject({ code: "ENOENT" });
+        }
+        expect(await inTenant(first, () => chokePoint.getItem(aBefore.filesId, a.result.fileItemId))).toBeNull();
+        expect(await blobsOf(first, aBefore.ids)).toEqual([]);
+        expect((await inspect(second, b.result.fileItemId)).blobs).toEqual(bBefore.blobs);
+        expect(observed.some((entry) => bBefore.blobs.some((blob) => blob.storage_key === entry.key))).toBe(false);
+      },
+      async () => {
+        await adminPool.query("UPDATE tenants SET status = 'suspended' WHERE id = ANY($1::uuid[])", [
+          [first.tenantId, second.tenantId],
+        ]);
+      },
+    );
   });
 
-  it("has exactly one case per task of the api affinity set", async () => {
+  it("has exactly one case per task of the api affinity set, each with the task's declared tenancy", async () => {
     const set = (await resolveTaskAffinitySets(await loadFullModuleRegistry())).api;
     const withoutCase = [...set].filter((name) => !Object.hasOwn(cases, name)).sort();
     const outsideSet = Object.keys(cases)
       .filter((name) => !set.has(name))
       .sort();
     expect({ withoutCase, outsideSet }).toEqual({ withoutCase: [], outsideSet: [] });
-  });
-
-  it.each(Object.keys(cases))("%s: its case matches the task's declared tenancy", (name) => {
-    expect(cases[name]?.tenancy).toBe(tenancyOf(name));
+    const mismatched = Object.entries(cases).filter(([name, c]) => c.tenancy !== tenancyOf(name));
+    expect(mismatched.map(([name]) => name)).toEqual([]);
   });
 
   describe("tenant tasks", () => {
-    const tenantCases = casesWhere(isTenantCase);
+    const tenantCases = casesWhere((c): c is TenantTaskCase => c.tenancy === "tenant");
 
     it.each(tenantCases)(
       "%s (a): a job of A naming A's rows runs and changes nothing of B or tenant zero",
       async (name, c) => {
         const payload = await c.seed(tenantA);
         await discardQueuedJobs();
-        const beforeA = name === CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE ? await fingerprint(tenantA) : undefined;
+        const refusesWithoutWrites = name === CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE;
+        const beforeA = refusesWithoutWrites ? await fingerprint(tenantA) : undefined;
         const beforeB = await fingerprint(tenantB);
         const beforeZero = await fingerprint(tenantZero);
         const notificationsBefore = await notifications(tenantA);
@@ -2570,9 +2385,9 @@ describe("background task isolation across two tenants: api runtime (issue #1056
         await removeJob(jobKey);
         if (c.expectedError) {
           expect(outcome.lastError).toMatch(c.expectedError);
-          if (name === CORE_TASK_NAMES.VALUE_LINKS_PROPAGATE) expect(outcome.attempts).toBe(1);
+          if (refusesWithoutWrites) expect(outcome.attempts).toBe(1);
         } else {
-          expect(outcome).toEqual({ attempts: null, lastError: null });
+          expect(outcome).toEqual(COMPLETED);
         }
         await c.expectDone(tenantA, payload);
         if (beforeA) expect(await fingerprint(tenantA)).toEqual(beforeA);
@@ -2593,65 +2408,9 @@ describe("background task isolation across two tenants: api runtime (issue #1056
         const random = await runInBObserved(name, randomizedPayload(payload));
 
         expect(foreign).toEqual(random);
-        if (name === CORE_TASK_NAMES.SEMP_THREAD_TITLE) {
-          expect(titlePortCalls).toEqual([]);
-          expect(foreign).toEqual({
-            outcome: { attempts: null, lastError: null },
-            effects: { rowCountDeltas: {}, changedTables: [], notificationKinds: [], queuedJobs: [] },
-          });
-          titlePortCalls.length = 0;
-        }
-        if (name === CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS) {
-          expect(foreign).toEqual({
-            outcome: { attempts: null, lastError: null },
-            effects: { rowCountDeltas: {}, changedTables: [], notificationKinds: [], queuedJobs: [] },
-          });
-        }
-        if (name === CALENDAR_SEND_EVENT_INVITATION_TASK) {
-          expect(invitationSends).toEqual([]);
-          expect(foreign).toEqual({
-            outcome: { attempts: null, lastError: null },
-            effects: { rowCountDeltas: {}, changedTables: [], notificationKinds: [], queuedJobs: [] },
-          });
-        }
-        if (name === CALENDAR_SEND_INVITATION_REPLY_TASK) {
-          expect(invitationSends).toEqual([]);
-          expect(foreign).toEqual({
-            outcome: { attempts: null, lastError: null },
-            effects: { rowCountDeltas: {}, changedTables: [], notificationKinds: [], queuedJobs: [] },
-          });
-        }
-        if (name === MAIL_TRIAGE_THREAD_PROJECT_TASK) {
-          expect(triageQuestions).toEqual([]);
-          expect(foreign).toEqual({
-            outcome: { attempts: null, lastError: null },
-            effects: { rowCountDeltas: {}, changedTables: [], notificationKinds: [], queuedJobs: [] },
-          });
-        }
-        if (name === SLEEP_RESYNC_TASK) {
-          // Both tenants have an active iOS registration and the payload names A: only the scope check keeps
-          // B's job from pushing.
-          expect(sleepResyncSends()).toEqual([]);
-          expect(await activeApnsTokens(tenantA)).toHaveLength(1);
-          expect(await activeApnsTokens(tenantB)).toHaveLength(1);
-        }
-        if (name === CORE_TASK_NAMES.PUSH_DISMISS) {
-          // A's registration is global data; only the user check keeps B's job from reaching it.
-          expect(await pushRegistrationRevoked(tenantA)).toBe(false);
-        }
-        if (name === CORE_TASK_NAMES.DERIVED_VALUES_INVALIDATE) {
-          // No fingerprint shows announcements.
-          expect(stopRecordingInvalidations()).toEqual([]);
-          expect(foreign).toEqual({
-            outcome: { attempts: null, lastError: null },
-            effects: { rowCountDeltas: {}, changedTables: [], notificationKinds: [], queuedJobs: [] },
-          });
-        }
-        if (name === CORE_TASK_NAMES.AI_BUDGET_RESET) {
-          // The job announces for the tenant it runs in, whatever its payload names.
-          const bStatus = { tenantId: tenantB.tenantId, event: { scope: "sempStatus" } };
-          expect(stopRecordingInvalidations()).toEqual([bStatus, bStatus]);
-        }
+        const extra = FOREIGN_RUN_CHECKS[name];
+        if (extra?.quiet) expect(foreign).toEqual(NO_EFFECTS);
+        await extra?.check?.();
         expect(await fingerprint(tenantA)).toEqual(beforeA);
       },
     );
@@ -2659,63 +2418,54 @@ describe("background task isolation across two tenants: api runtime (issue #1056
 
   it("publishes the title registry case's committed invalidation for its tenant", async () => {
     const titleCase = cases[CORE_TASK_NAMES.SEMP_THREAD_TITLE];
-    if (!titleCase || !isTenantCase(titleCase)) throw new Error("Missing title tenant case");
+    if (titleCase?.tenancy !== "tenant") throw new Error("Missing title tenant case");
     const payload = await titleCase.seed(tenantA);
     await discardQueuedJobs();
     const listener = await adminPool.connect();
     const observed: { tenantId: string; threadId: string }[] = [];
+    const envelope = z.object({
+      tenantId: z.string(),
+      message: z.object({ type: z.literal("invalidation"), scope: z.literal("sempThread"), threadId: z.string() }),
+    });
     listener.on("notification", (notification) => {
       if (notification.channel !== REALTIME_CHANNEL || !notification.payload) return;
-      const parsed: unknown = JSON.parse(notification.payload);
-      const envelope = z
-        .object({
-          tenantId: z.string(),
-          message: z.object({ type: z.literal("invalidation"), scope: z.literal("sempThread"), threadId: z.string() }),
-        })
-        .safeParse(parsed);
-      if (envelope.success)
-        observed.push({ tenantId: envelope.data.tenantId, threadId: envelope.data.message.threadId });
+      const parsed = envelope.safeParse(JSON.parse(notification.payload));
+      if (parsed.success) observed.push({ tenantId: parsed.data.tenantId, threadId: parsed.data.message.threadId });
     });
-    let failure: { error: unknown } | undefined;
-    try {
-      await listener.query(`LISTEN ${REALTIME_CHANNEL}`);
-      wireRealtimeHooks(pool);
-      const jobKey = await runJobIn(tenantA, CORE_TASK_NAMES.SEMP_THREAD_TITLE, payload);
-      expect(await jobOutcome(jobKey)).toEqual({ attempts: null, lastError: null });
-      await titleCase.expectDone(tenantA, payload);
-      const threadId = requirePayloadString(payload, "threadId");
-      const repeatedKey = await runJobIn(tenantA, CORE_TASK_NAMES.SEMP_THREAD_TITLE, payload);
-      expect(await jobOutcome(repeatedKey)).toEqual({ attempts: null, lastError: null });
-      expect(titlePortCalls).toEqual([]);
-      expect(await rows(tenantA, "SELECT title FROM semp_threads WHERE id = $1", [threadId])).toEqual([
-        { title: "Tenant title" },
-      ]);
-      const deadline = Date.now() + 5_000;
-      while (
-        !observed.some((event) => event.tenantId === tenantA.tenantId && event.threadId === threadId) &&
-        Date.now() < deadline
-      )
-        await sleep(25);
-      expect(observed).toContainEqual({ tenantId: tenantA.tenantId, threadId });
-      expect(observed.filter((event) => event.tenantId === tenantB.tenantId)).toEqual([]);
-    } catch (error) {
-      failure = { error };
-    }
-    try {
-      listener.release(true);
-    } catch (error) {
-      if (failure) {
-        // Keep the assertion failure primary while retaining the cleanup failure.
-        // eslint-disable-next-line preserve-caught-error
-        throw new AggregateError([failure.error, error], "Title invalidation cleanup failed", { cause: failure.error });
-      }
-      throw error;
-    }
-    if (failure) throw failure.error;
+    await settled(
+      async () => {
+        await listener.query(`LISTEN ${REALTIME_CHANNEL}`);
+        wireRealtimeHooks(pool);
+        expect(await jobOutcome(await runJobIn(tenantA, CORE_TASK_NAMES.SEMP_THREAD_TITLE, payload))).toEqual(
+          COMPLETED,
+        );
+        await titleCase.expectDone(tenantA, payload);
+        const threadId = str(payload, "threadId");
+        expect(await jobOutcome(await runJobIn(tenantA, CORE_TASK_NAMES.SEMP_THREAD_TITLE, payload))).toEqual(
+          COMPLETED,
+        );
+        expect(titlePortCalls).toEqual([]);
+        await expectRows(
+          tenantA,
+          "SELECT title FROM semp_threads WHERE id = $1",
+          [threadId],
+          [{ title: "Tenant title" }],
+        );
+        const deadline = Date.now() + 5_000;
+        while (
+          !observed.some((event) => event.tenantId === tenantA.tenantId && event.threadId === threadId) &&
+          Date.now() < deadline
+        )
+          await sleep(25);
+        expect(observed).toContainEqual({ tenantId: tenantA.tenantId, threadId });
+        expect(observed.filter((event) => event.tenantId === tenantB.tenantId)).toEqual([]);
+      },
+      () => listener.release(true),
+    );
   });
 
   describe("system tasks", () => {
-    it.each(casesWhere(isSystemCase))(
+    it.each(casesWhere((c): c is SystemTaskCase => c.tenancy === "system" && c.touchesTenantTables))(
       "%s: with work due in two tenants, one run does each tenant's work in that tenant only",
       async (name, c) => {
         await discardQueuedJobs();
@@ -2727,9 +2477,8 @@ describe("background task isolation across two tenants: api runtime (issue #1056
         const firstNotificationsBefore = await notifications(first);
         const secondNotificationsBefore = await notifications(second);
 
-        const jobKey = await runSystemJob(name);
+        expect(await jobOutcome(await runSystemJob(name))).toEqual(COMPLETED);
 
-        expect(await jobOutcome(jobKey)).toEqual({ attempts: null, lastError: null });
         await firstWork.check();
         await secondWork.check();
         expect(await tablesMentioning(second, firstWork.markers)).toEqual([]);
@@ -2740,7 +2489,7 @@ describe("background task isolation across two tenants: api runtime (issue #1056
       },
     );
 
-    it.each(casesWhere(isGlobalSystemCase))(
+    it.each(casesWhere((c): c is GlobalSystemTaskCase => c.tenancy === "system" && !c.touchesTenantTables))(
       "%s: a run touching no tenant table leaves A, B and tenant zero unchanged",
       async (name, c) => {
         await discardQueuedJobs();
@@ -2748,9 +2497,8 @@ describe("background task isolation across two tenants: api runtime (issue #1056
         const tenants = [tenantA, tenantB, tenantZero];
         const before = await Promise.all(tenants.map((tenant) => fingerprint(tenant)));
 
-        const jobKey = await runSystemJob(name);
+        expect(await jobOutcome(await runSystemJob(name))).toEqual(COMPLETED);
 
-        expect(await jobOutcome(jobKey)).toEqual({ attempts: null, lastError: null });
         await check();
         expect(await Promise.all(tenants.map((tenant) => fingerprint(tenant)))).toEqual(before);
       },

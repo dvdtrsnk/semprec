@@ -14,7 +14,7 @@ import { seedSystem } from "../../seed/seedSystem.js";
 import { createPool, withTransaction } from "../../db/pool.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { runInTenant } from "@semprec/shared";
-import { getDatabaseByModuleId, renameDatabase } from "../../chokePoint/databasesStore.js";
+import { renameDatabase } from "../../chokePoint/databasesStore.js";
 import { createItemWithClient, updateItemWithClient } from "../../chokePoint/itemWrites.js";
 import { createBlob } from "../../blobs/blobsStore.js";
 import { createActionQueueAffinity } from "../../scheduler/actions.js";
@@ -66,6 +66,67 @@ import type { ItemRow } from "../../types.js";
 
 let pool: Pool;
 let viewTypeRegistry: ViewTypeRegistry;
+let inboxId: string;
+let typesId: string;
+let proposalsId: string;
+
+/**
+ * The inbox custom-route handler factories, exercised directly against the functions they wrap; HTTP auth and mounting
+ * are covered by `customRouteMount.test.ts` and `routeMatrix.test.ts` in `semprec-api`.
+ */
+
+type RouteContext = Parameters<ReturnType<typeof createConfirmProposalRouteHandler>>[0];
+type RouteResult = Awaited<ReturnType<ReturnType<typeof createConfirmProposalRouteHandler>>>;
+type Step = ProposalStep;
+
+/** Higher than any version a card reaches in a test, so it never equals the version a card holds. */
+const STALE_VERSION = "999999999";
+const EVENT_DATE = "2024-03-01T12:00:00.000Z";
+const PROJECT_ID = "00000000-0000-4000-8000-0000000000a1";
+const TASK_TYPE = { name: "Task", emoji: "☑️", processingMethod: "database", targetDatabase: "tasks" } as const;
+
+/** Runs `body` inside tenant zero, as a request does: relation writes queue value-link propagation there. */
+function inTenant<T>(body: () => Promise<T>): Promise<T> {
+  return runInTenant(getTenantZeroId(), body);
+}
+
+function failureOf(promise: Promise<unknown>): Promise<unknown> {
+  return promise.then(
+    () => null,
+    (error: unknown) => error,
+  );
+}
+
+async function withTimeout<T>(promise: Promise<T>, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), 10000);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+/** Polls `check` every 20 ms, up to 100 times; true once it held. */
+async function pollUntil(check: () => Promise<boolean>): Promise<boolean> {
+  for (let i = 0; i < 100; i++) {
+    if (await check()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return false;
+}
 
 async function databaseIdFor(moduleId: string): Promise<string> {
   const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [moduleId]);
@@ -73,28 +134,311 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   return rows[0].id;
 }
 
-/**
- * The inbox custom-route handler factories, exercised directly against the functions they wrap; HTTP auth and mounting
- * are covered by `customRouteMount.test.ts` and `routeMatrix.test.ts` in `semprec-api`.
- */
+async function propertyIdFor(databaseId: string, key: string): Promise<string> {
+  const { rows } = await pool.query<{ id: string }>("SELECT id FROM properties WHERE database_id = $1 AND key = $2", [
+    databaseId,
+    key,
+  ]);
+  if (!rows[0]) throw new Error(`Property '${key}' was not seeded`);
+  return rows[0].id;
+}
+
+function createDataPool(options: { statementTimeoutMs?: number } = {}): Pool {
+  return createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data", ...options });
+}
+
+/** The runtime role neither bypasses row-level security nor is a superuser. */
+async function expectRuntimeRole(runtime: Pool): Promise<void> {
+  const role = await runtime.query<{ name: string; bypass: boolean; superuser: boolean }>(
+    "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
+  );
+  expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
+}
+
+/** Runs `fn` inside tenant zero against a fresh runtime-role pool and ends the pool, reporting a failure of either. */
+async function withDataPool(fn: (dataPool: Pool) => Promise<void>): Promise<void> {
+  const dataPool = createDataPool();
+  const failures: unknown[] = [];
+  try {
+    await expectRuntimeRole(dataPool);
+    await inTenant(() => fn(dataPool));
+  } catch (error) {
+    failures.push(error);
+  }
+  try {
+    await dataPool.end();
+  } catch (error) {
+    failures.push(error);
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "Runtime-role test and settlement failed");
+}
+
+type ItemInvalidation = Extract<InvalidationEvent, { scope: "item" }>;
+
+async function itemInvalidations(run: () => Promise<unknown>): Promise<ItemInvalidation[]> {
+  const events: InvalidationEvent[] = [];
+  setInvalidationHook((event) => events.push(event));
+  try {
+    await run();
+  } finally {
+    setInvalidationHook(() => {});
+  }
+  return events.filter((event): event is ItemInvalidation => event.scope === "item");
+}
+
+async function cardInvalidations(run: () => Promise<unknown>): Promise<InboxCardsInvalidationEvent[]> {
+  const events: InboxCardsInvalidationEvent[] = [];
+  setInboxCardsInvalidationHook((event) => events.push(event));
+  try {
+    await run();
+  } finally {
+    setInboxCardsInvalidationHook(() => {});
+  }
+  return events;
+}
+
+function createInboxType(
+  input: Omit<CreateInboxTypeInput, "inboxItemTypesDatabaseId">,
+  runtime: Pool = pool,
+): Promise<ItemRow> {
+  return withTransaction(runtime, (client) =>
+    createInboxTypeWithClient(client, { inboxItemTypesDatabaseId: typesId, ...input }),
+  );
+}
+
+function createInboxItem(typeId: string, text: string, runtime: Pool = pool): Promise<ItemRow> {
+  return withTransaction(runtime, (client) =>
+    createInboxItemWithClient(client, {
+      inboxDatabaseId: inboxId,
+      date: "2026-08-28",
+      time: "09:00",
+      text,
+      type: typeId,
+    }),
+  );
+}
+
+async function runTick(itemId: string, compute: ComputeSemprecProposalFn, runtime: Pool = pool): Promise<void> {
+  await createSemprecTickAction(runtime, compute)(
+    { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
+    { heartbeatId: "hb", projectItemId: "proj", itemId },
+  );
+}
+
+/** A Task inbox item and the card the tick proposes for it; `beforeTick` prepares the item the tick then reads. */
+async function createDatabaseProposal(
+  text: string,
+  beforeTick: (inboxItemId: string) => Promise<void> = async () => {},
+): Promise<string> {
+  const type = await createInboxType(TASK_TYPE);
+  const item = await createInboxItem(type.id, text);
+  await beforeTick(item.id);
+  await runTick(item.id, async () => ({ properties: { name: text } }));
+  const { rows } = await pool.query<{ id: string }>(
+    `SELECT id FROM items WHERE database_id = $1 ORDER BY updated_at DESC LIMIT 1`,
+    [proposalsId],
+  );
+  return rows[0]!.id;
+}
+
+/** Attaches the blob to the Inbox item, as a camera capture does, and answers the attachment's id. */
+async function attachBlob(inboxItemId: string, blobId: string): Promise<string> {
+  return withTransaction(pool, async (client) => {
+    await insertInboxAttachments(client, inboxItemId, [{ blobId, source: "camera" }]);
+    const [attachment] = await listInboxAttachments(client, [inboxItemId]);
+    if (!attachment) throw new Error("The attachment was not stored");
+    return attachment.attachmentId;
+  });
+}
+
+async function onlyInboxItemId(): Promise<string> {
+  const { rows } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [inboxId]);
+  if (rows.length !== 1 || !rows[0]) throw new Error(`Expected one Inbox item, found ${rows.length}`);
+  return rows[0].id;
+}
+
+/** Writes card properties the tick of a test does not produce (a status, an envelope, results), through the choke point. */
+async function patchCard(cardId: string, propertiesPatch: Record<string, unknown>): Promise<void> {
+  await withTransaction(pool, (client) =>
+    updateItemWithClient(
+      client,
+      { databaseId: proposalsId, itemId: cardId, propertiesPatch },
+      { allowedSystemKeys: Object.keys(propertiesPatch) },
+    ),
+  );
+}
+
+async function storedCard(cardId: string): Promise<ItemRow> {
+  const card = await itemsStore.getItemById(pool, proposalsId, cardId);
+  if (!card) throw new Error(`Card ${cardId} is missing`);
+  return card;
+}
+
+/** The stored fields of a card: an update's answer also carries the write's own metadata, which a read of the row has not. */
+function storedFields(item: ItemRow) {
+  return { id: item.id, properties: item.properties, updatedAt: item.updatedAt };
+}
+
+function historyOf(item: ItemRow): unknown[] {
+  return z.array(z.unknown()).parse(item.properties.history);
+}
+
+function itemOf(answer: RouteResult): ItemRow {
+  if (!("item" in answer)) throw new Error("expected an item answer");
+  return answer.item;
+}
+
+async function listedCardIds(): Promise<string[]> {
+  const userId = (await createTenantZeroUser(pool)).id;
+  const answer = await createInboxCardsRouteHandler(pool)({ identity: { user: { id: userId, locale: "en" } } });
+  if (!("body" in answer)) throw new Error("expected a raw JSON body");
+  const body = z.object({ cards: z.array(z.object({ cardId: z.string() })) }).parse(answer.body);
+  return body.cards.map((card) => card.cardId);
+}
+
+function confirm(cardId: string, body: unknown = {}): Promise<RouteResult> {
+  return createConfirmProposalRouteHandler(pool)({ params: { id: cardId }, body });
+}
+
+function updateValues(cardId: string, body: unknown, extra: Partial<RouteContext> = {}): Promise<RouteResult> {
+  return createUpdateProposalValuesRouteHandler(pool)({ params: { id: cardId }, body, ...extra });
+}
+
+/** A card whose primary name the user has edited. */
+async function editedCard(): Promise<string> {
+  const cardId = await createDatabaseProposal("Buy milk");
+  await updateValues(cardId, { set: { primary: { name: "Buy oat milk" } } });
+  return cardId;
+}
+
+/** `graphile_worker.jobs` is a read-only view, so the delete goes to the table behind it. */
+async function clearRecomputeJobs(): Promise<void> {
+  await pool.query(
+    `DELETE FROM graphile_worker._private_jobs
+     WHERE task_id IN (SELECT id FROM graphile_worker._private_tasks WHERE identifier = 'journalInboxRecompute')`,
+  );
+}
+
+async function recomputeJobCount(): Promise<number> {
+  const { rows } = await pool.query<{ n: number }>(
+    "SELECT count(*)::int AS n FROM graphile_worker.jobs WHERE task_identifier = 'journalInboxRecompute'",
+  );
+  return rows[0]!.n;
+}
 
 /** The `file` value of a Files item (a blob that exists): the Files editor schema requires it, so a Files card needs one to confirm. */
-async function newFileValue(client: PoolClient): Promise<{ blobId: string }> {
-  const blob = await createBlob(client, {
-    mimeType: "application/pdf",
-    byteSize: 12,
-    storageKey: `blobs/${randomUUID()}`,
-  });
+async function newFileValue(mimeType = "application/pdf"): Promise<{ blobId: string }> {
+  const blob = await withTransaction(pool, (client) =>
+    createBlob(client, { mimeType, byteSize: 12, storageKey: `blobs/${randomUUID()}` }),
+  );
   return { blobId: blob.id };
 }
 
-const PROJECT_ID = "00000000-0000-4000-8000-0000000000a1";
+async function anyItem(itemId: string): Promise<ItemRow> {
+  const [item] = await itemsStore.getItemsByIdsIncludingDeleted(pool, [itemId]);
+  if (!item) throw new Error(`Item ${itemId} is missing`);
+  return item;
+}
 
-describe("inbox custom route handlers (issue #239)", () => {
-  let inboxId: string;
-  let typesId: string;
-  let proposalsId: string;
+async function createIn(databaseId: string, properties: Record<string, unknown>): Promise<string> {
+  const item = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId, properties }));
+  return item.id;
+}
 
+/** Writes the edge of the relation `key` of `databaseId` from `callerItemId` to `targetItemId`. */
+async function relate(
+  databaseId: string,
+  key: string,
+  callerItemId: string,
+  targetItemId: string,
+  metadata?: Record<string, unknown>,
+): Promise<void> {
+  const relationPropertyId = await propertyIdFor(databaseId, key);
+  await withTransaction(pool, (client) =>
+    createRelationWithClient(client, {
+      relationPropertyId,
+      callerItemId,
+      targetItemId,
+      ...(metadata ? { metadata } : {}),
+    }),
+  );
+}
+
+async function edgeExists(a: string, b: string): Promise<boolean> {
+  const { rows } = await pool.query<{ n: number }>(
+    "SELECT count(*)::int AS n FROM item_relations WHERE (item_a = $1 AND item_b = $2) OR (item_a = $2 AND item_b = $1)",
+    [a, b],
+  );
+  return rows[0]!.n > 0;
+}
+
+function stepsEnvelope(target: string, steps: Step[]): Record<string, unknown> {
+  const primary = steps.find((step) => step.role === "primary");
+  return { entityKind: "database", target, properties: primary?.properties ?? {}, operations: steps };
+}
+
+function linkEvent(eventId: string) {
+  return { entityKind: "relation" as const, target: eventId, properties: { propertyKey: "event" } };
+}
+
+async function createTranscript(name: string): Promise<string> {
+  const transcriptsId = await databaseIdFor("transcripts");
+  const transcript = await inTenant(() =>
+    withTransaction(pool, (client) =>
+      createItemWithClient(
+        client,
+        { databaseId: transcriptsId, properties: { name, date: EVENT_DATE } },
+        { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
+      ),
+    ),
+  );
+  return transcript.id;
+}
+
+async function onlyTranscriptCardId(): Promise<string> {
+  const { rows } = await pool.query<{ id: string }>(
+    "SELECT id FROM items WHERE database_id = $1 AND properties->>'kind' = 'transcript' AND deleted_at IS NULL",
+    [proposalsId],
+  );
+  if (rows.length !== 1 || !rows[0]) throw new Error(`Expected one transcript card, found ${rows.length}`);
+  return rows[0].id;
+}
+
+/** A transcript without a matching Event, and the card that proposes to create one. */
+async function createUnmatchedTranscriptCard(name = "Weekly sync"): Promise<{ cardId: string; transcriptId: string }> {
+  const transcriptId = await createTranscript(name);
+  await inTenant(() =>
+    withTransaction(pool, (client) => matchTranscriptToEvent(client, { transcriptId, durationSeconds: 3600 })),
+  );
+  return { cardId: await onlyTranscriptCardId(), transcriptId };
+}
+
+/** A transcript with one speaker, its Event with a participant person, and the card that proposes that person for the speaker. */
+async function createSpeakerCard() {
+  const transcriptsId = await databaseIdFor("transcripts");
+  const eventsId = await databaseIdFor("events");
+  const transcriptId = await createTranscript("Speaker fixture");
+  const personId = await createIn(await databaseIdFor("people"), { name: "Alice" });
+  const eventId = await createIn(eventsId, { name: "Meeting", type: "meeting", date: EVENT_DATE });
+  await inTenant(async () => {
+    // The suggestion is proposed only for a person who took part in the transcript's Event.
+    await relate(eventsId, "people", eventId, personId);
+    await relate(transcriptsId, "event", transcriptId, eventId);
+    await withTransaction(pool, async (client) => {
+      await itemsStore.writeComputed(client, transcriptsId, transcriptId, "segments", [
+        { speaker: "SPEAKER_01", text: "Hello", startsAt: 0, endsAt: 1 },
+      ]);
+      await proposeSpeakerMappings(client, {
+        transcriptId,
+        suggestions: [{ speaker: "SPEAKER_01", personId, reason: "Recognized from the discussion" }],
+      });
+    });
+  });
+  return { cardId: await onlyTranscriptCardId(), transcriptId, personId, eventId };
+}
+
+describe("inbox custom route handlers", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     viewTypeRegistry = createViewTypeRegistry();
@@ -109,52 +453,19 @@ describe("inbox custom route handlers (issue #239)", () => {
     await pool?.end();
   });
 
-  async function createDatabaseProposal(text: string): Promise<string> {
-    const type = await withTransaction(pool, (client) =>
-      createInboxTypeWithClient(client, {
-        inboxItemTypesDatabaseId: typesId,
-        name: "Task",
-        emoji: "☑️",
-        processingMethod: "database",
-        targetDatabase: "tasks",
-      }),
-    );
-    const item = await withTransaction(pool, (client) =>
-      createInboxItemWithClient(client, {
-        inboxDatabaseId: inboxId,
-        date: "2026-08-28",
-        time: "09:00",
-        text,
-        type: type.id,
-      }),
-    );
-    const computeProposal: ComputeSemprecProposalFn = async () => ({ properties: { name: text } });
-    const handler = createSemprecTickAction(pool, computeProposal);
-    await handler(
-      { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
-      { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
-    );
-    const { rows } = await pool.query<{ id: string }>(
-      `SELECT id FROM items WHERE database_id = $1 ORDER BY updated_at DESC LIMIT 1`,
-      [proposalsId],
-    );
-    return rows[0]!.id;
-  }
-
+  /**
+   * Confirms the card on one runtime-role connection and, while that transaction is still open, unlinks the file from
+   * the project on another: the unlink waits for the confirm and commits after it. Both backends must be gone once
+   * their pools end.
+   */
   async function confirmWhileUnlinkWaits(
     proposalId: string,
     relationPropertyId: string,
     fileId: string,
     projectId: string,
-  ) {
-    const confirmPool = createPool(process.env.TEST_DATABASE_URL ?? "", {
-      role: "semprec_data",
-      statementTimeoutMs: 8000,
-    });
-    const unlinkPool = createPool(process.env.TEST_DATABASE_URL ?? "", {
-      role: "semprec_data",
-      statementTimeoutMs: 8000,
-    });
+  ): Promise<RouteResult> {
+    const confirmPool = createDataPool({ statementTimeoutMs: 8000 });
+    const unlinkPool = createDataPool({ statementTimeoutMs: 8000 });
     confirmPool.options.max = 1;
     unlinkPool.options.max = 1;
     const failures: unknown[] = [];
@@ -167,110 +478,63 @@ describe("inbox custom route handlers (issue #239)", () => {
       if (!rows[0]) throw new Error("Missing owned confirm backend");
       identities.push(rows[0]);
     };
-    let allowConfirm!: () => void;
-    let allowUnlink!: () => void;
-    let confirmed!: (pid: number) => void;
-    let unlinking!: (pid: number) => void;
-    let unlinked!: () => void;
-    const confirmGate = new Promise<void>((resolve) => {
-      allowConfirm = resolve;
-    });
-    const unlinkGate = new Promise<void>((resolve) => {
-      allowUnlink = resolve;
-    });
-    const confirmReady = new Promise<number>((resolve) => {
-      confirmed = resolve;
-    });
-    const unlinkReady = new Promise<number>((resolve) => {
-      unlinking = resolve;
-    });
-    const unlinkDone = new Promise<void>((resolve) => {
-      unlinked = resolve;
-    });
-    const wait = async <T>(promise: Promise<T>): Promise<T> => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        return await Promise.race([
-          promise,
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(() => reject(new Error("Owned confirm overlap timed out")), 10000);
+    const confirmGate = deferred();
+    const unlinkGate = deferred();
+    const confirmReady = deferred<number>();
+    const unlinkReady = deferred<number>();
+    const unlinkDone = deferred();
+    const wait = <T>(promise: Promise<T>) => withTimeout(promise, "Owned confirm overlap timed out");
+    /** Waits for `ready`, failing if `work` settles first. */
+    const reached = <T>(ready: Promise<T>, work: Promise<unknown>, message: string) =>
+      wait(
+        Promise.race([
+          ready,
+          work.then(() => {
+            throw new Error(message);
           }),
-        ]);
-      } finally {
-        if (timer) clearTimeout(timer);
-      }
-    };
+        ]),
+      );
     let confirmWork: Promise<unknown> | undefined;
     let unlinkWork: Promise<unknown> | undefined;
-    let response: Awaited<ReturnType<ReturnType<typeof createConfirmProposalRouteHandler>>> | undefined;
+    let response: RouteResult | undefined;
     try {
-      for (const runtime of [confirmPool, unlinkPool]) {
-        const role = await runtime.query<{ name: string; bypass: boolean; superuser: boolean }>(
-          "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
-        );
-        expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
-      }
-      confirmWork = runInTenant(getTenantZeroId(), () =>
+      await expectRuntimeRole(confirmPool);
+      await expectRuntimeRole(unlinkPool);
+      confirmWork = inTenant(() =>
         withTransaction(confirmPool, async (client) => {
           const { rows } = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
           await confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposalId);
-          confirmed(rows[0]!.pid);
-          await confirmGate;
+          confirmReady.resolve(rows[0]!.pid);
+          await confirmGate.promise;
         }),
       );
       void confirmWork.catch(() => {});
-      const confirmPid = await wait(
-        Promise.race([
-          confirmReady,
-          confirmWork.then(() => {
-            throw new Error("Confirm ended before barrier");
-          }),
-        ]),
-      );
+      const confirmPid = await reached(confirmReady.promise, confirmWork, "Confirm ended before barrier");
       await capture(confirmPid);
-      unlinkWork = runInTenant(getTenantZeroId(), () =>
+      unlinkWork = inTenant(() =>
         withTransaction(unlinkPool, async (client) => {
           const { rows } = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
-          unlinking(rows[0]!.pid);
+          unlinkReady.resolve(rows[0]!.pid);
           await deleteRelationWithClient(client, { relationPropertyId, callerItemId: fileId, targetItemId: projectId });
-          unlinked();
-          await unlinkGate;
+          unlinkDone.resolve();
+          await unlinkGate.promise;
         }),
       );
       void unlinkWork.catch(() => {});
-      const unlinkPid = await wait(
-        Promise.race([
-          unlinkReady,
-          unlinkWork.then(() => {
-            throw new Error("Unlink ended before barrier");
-          }),
-        ]),
-      );
+      const unlinkPid = await reached(unlinkReady.promise, unlinkWork, "Unlink ended before barrier");
       await capture(unlinkPid);
-      let blocked = false;
-      for (let i = 0; i < 100; i++) {
+      const blocked = await pollUntil(async () => {
         const { rows } = await pool.query<{ blocked: boolean }>(
           "SELECT $1::int = ANY(pg_blocking_pids($2::int)) AS blocked",
           [confirmPid, unlinkPid],
         );
-        if (rows[0]?.blocked) {
-          blocked = true;
-          break;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
+        return rows[0]?.blocked === true;
+      });
       expect(blocked).toBe(true);
-      allowConfirm();
+      confirmGate.resolve();
       await wait(confirmWork);
-      await wait(
-        Promise.race([
-          unlinkDone,
-          unlinkWork.then(() => {
-            throw new Error("Unlink committed before barrier");
-          }),
-        ]),
-      );
-      response = await runInTenant(getTenantZeroId(), () =>
+      await reached(unlinkDone.promise, unlinkWork, "Unlink committed before barrier");
+      response = await inTenant(() =>
         createConfirmProposalRouteHandler(confirmPool)({ params: { id: proposalId }, body: {} }),
       );
       if (!("item" in response) || !response.results) throw new Error("Missing committed result");
@@ -278,8 +542,8 @@ describe("inbox custom route handlers (issue #239)", () => {
     } catch (error) {
       failures.push(error);
     } finally {
-      allowConfirm();
-      allowUnlink();
+      confirmGate.resolve();
+      unlinkGate.resolve();
       const pending = [confirmWork, unlinkWork].filter((value): value is Promise<unknown> => value !== undefined);
       try {
         const outcomes = await wait(Promise.allSettled(pending));
@@ -297,152 +561,93 @@ describe("inbox custom route handlers (issue #239)", () => {
     }
     if (failures.length === 0) {
       for (const identity of identities) {
-        let absent = false;
-        for (let i = 0; i < 100; i++) {
+        const gone = await pollUntil(async () => {
           const { rows } = await pool.query<{ present: boolean }>(
             "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND backend_start = $2::timestamptz AND datname = $3) AS present",
             [identity.pid, identity.started, identity.db],
           );
-          if (rows[0]?.present === false) {
-            absent = true;
-            break;
-          }
-          await new Promise((resolve) => setTimeout(resolve, 20));
-        }
-        if (!absent) failures.push(new Error(`Owned confirm backend ${identity.pid} remains active`));
+          return rows[0]?.present === false;
+        });
+        if (!gone) failures.push(new Error(`Owned confirm backend ${identity.pid} remains active`));
       }
     }
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, "Confirm overlap or settlement failed");
     if (!response) throw new Error("Missing overlap result");
-    console.info(
-      "Owned confirm and unlink settlement",
-      JSON.stringify({ identities, blocker: identities[0]?.pid, waiter: identities[1]?.pid, absent: true }),
-    );
     return response;
   }
 
   describe("createConfirmProposalRouteHandler", () => {
-    it.each([false, true])(
-      "attributes a confirmed page block to the user with existing block=%s",
-      async (existingBlock) => {
-        const dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
-        const failures: unknown[] = [];
-        try {
-          const role = await dataPool.query<{ name: string; bypass: boolean; superuser: boolean }>(
-            "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
+    it.each([false, true])("attributes a confirmed page block to the user with existing block=%s", (existingBlock) =>
+      withDataPool(async (dataPool) => {
+        const type = await createInboxType({ name: "Note", emoji: "N", processingMethod: "pageContent" }, dataPool);
+        const source = await createInboxItem(type.id, "A thought", dataPool);
+        const chokePoint = createChokePoint(dataPool);
+        const custom = await chokePoint.createDatabase({ name: "Custom page" });
+        const page = await chokePoint.createItem({ databaseId: custom.id, properties: {} });
+        await runTick(
+          source.id,
+          async () => ({ target: page.id, properties: { flavour: "paragraph", fields: { content: "A thought" } } }),
+          dataPool,
+        );
+        const proposal = await withTransaction(dataPool, async (client) => {
+          const { rows } = await client.query<{ id: string }>(
+            "SELECT id FROM items WHERE database_id = $1 AND deleted_at IS NULL",
+            [proposalsId],
           );
-          expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
-          await runInTenant(getTenantZeroId(), async () => {
-            const type = await withTransaction(dataPool, (client) =>
-              createInboxTypeWithClient(client, {
-                inboxItemTypesDatabaseId: typesId,
-                name: "Note",
-                emoji: "N",
-                processingMethod: "pageContent",
-              }),
-            );
-            const source = await withTransaction(dataPool, (client) =>
-              createInboxItemWithClient(client, {
-                inboxDatabaseId: inboxId,
-                date: "2026-08-28",
-                time: "09:00",
-                text: "A thought",
-                type: type.id,
-              }),
-            );
-            const chokePoint = createChokePoint(dataPool);
-            const custom = await chokePoint.createDatabase({ name: "Custom page" });
-            const page = await chokePoint.createItem({ databaseId: custom.id, properties: {} });
-            const tick = createSemprecTickAction(dataPool, async () => ({
-              target: page.id,
-              properties: { flavour: "paragraph", fields: { content: "A thought" } },
-            }));
-            await tick(
-              {
-                inboxDatabaseId: inboxId,
-                inboxItemTypesDatabaseId: typesId,
-                processingProposalsDatabaseId: proposalsId,
-              },
-              { heartbeatId: "hb", projectItemId: "proj", itemId: source.id },
-            );
-            const proposal = await withTransaction(dataPool, async (client) => {
-              const { rows } = await client.query<{ id: string }>(
-                "SELECT id FROM items WHERE database_id = $1 AND deleted_at IS NULL",
-                [proposalsId],
-              );
-              expect(rows).toHaveLength(1);
-              return rows[0]!.id;
-            });
-            const docs = createDocStore(dataPool);
-            if (existingBlock) {
-              await docs.putBlock(
-                page.id,
-                { id: proposal, flavour: "paragraph", fields: { content: "Before" } },
-                "user",
-              );
-            }
-            const response = await createConfirmProposalRouteHandler(dataPool)({ params: { id: proposal }, body: {} });
-            expect(response.status).toBe(200);
-            if (!("item" in response)) throw new Error("Expected item response");
-            expect(response.results).toEqual([
-              expect.objectContaining({
-                ref: "primary",
-                itemId: page.id,
-                databaseKey: null,
-                role: "primary",
-                blockIds: existingBlock ? [] : [proposal],
-                followUp: null,
-              }),
-            ]);
-            expect(response.item.properties.results).toEqual(response.results);
-            const replay = await createConfirmProposalRouteHandler(dataPool)({ params: { id: proposal }, body: {} });
-            if (!("item" in replay)) throw new Error("Expected item response");
-            expect(replay.results).toEqual(response.results);
-            expect(replay.item.updatedAt).toBe(response.item.updatedAt);
-            const updates = await withTransaction(dataPool, async (client) => {
-              const { rows } = await client.query<{ created_by: string }>(
-                "SELECT u.created_by FROM doc_updates u JOIN docs d ON d.id = u.doc_id WHERE d.item_id = $1",
-                [page.id],
-              );
-              return rows;
-            });
-            expect(updates).toEqual(
-              existingBlock ? [{ created_by: "user" }, { created_by: "user" }] : [{ created_by: "user" }],
-            );
-            expect(await docs.getBlock(page.id, proposal)).toMatchObject({ content: "A thought", "sys:id": proposal });
-          });
-        } catch (error) {
-          failures.push(error);
+          expect(rows).toHaveLength(1);
+          return rows[0]!.id;
+        });
+        const docs = createDocStore(dataPool);
+        if (existingBlock) {
+          await docs.putBlock(page.id, { id: proposal, flavour: "paragraph", fields: { content: "Before" } }, "user");
         }
-        try {
-          await dataPool.end();
-        } catch (error) {
-          failures.push(error);
-        }
-        if (failures.length === 1) throw failures[0];
-        if (failures.length > 1) throw new AggregateError(failures, "Page test and settlement failed");
-      },
+        const handler = createConfirmProposalRouteHandler(dataPool);
+        const response = await handler({ params: { id: proposal }, body: {} });
+        expect(response.status).toBe(200);
+        if (!("item" in response)) throw new Error("Expected item response");
+        expect(response.results).toEqual([
+          expect.objectContaining({
+            ref: "primary",
+            itemId: page.id,
+            databaseKey: null,
+            role: "primary",
+            blockIds: existingBlock ? [] : [proposal],
+            followUp: null,
+          }),
+        ]);
+        expect(response.item.properties.results).toEqual(response.results);
+        const replay = await handler({ params: { id: proposal }, body: {} });
+        if (!("item" in replay)) throw new Error("Expected item response");
+        expect(replay.results).toEqual(response.results);
+        expect(replay.item.updatedAt).toBe(response.item.updatedAt);
+        const updates = await withTransaction(dataPool, async (client) => {
+          const { rows } = await client.query<{ created_by: string }>(
+            "SELECT u.created_by FROM doc_updates u JOIN docs d ON d.id = u.doc_id WHERE d.item_id = $1",
+            [page.id],
+          );
+          return rows;
+        });
+        expect(updates).toEqual(
+          existingBlock ? [{ created_by: "user" }, { created_by: "user" }] : [{ created_by: "user" }],
+        );
+        expect(await docs.getBlock(page.id, proposal)).toMatchObject({ content: "A thought", "sys:id": proposal });
+      }),
     );
+
     it("records the file and follow-up task with project labels and current versions", async () => {
       const proposalId = await createDatabaseProposal("Seed");
-      await withTransaction(pool, async (client) => {
-        const projects = await getDatabaseByModuleId(client, "projects");
-        const files = await getDatabaseByModuleId(client, "files");
-        if (!projects || !files) throw new Error("Missing project or files database");
-        const project = await createItemWithClient(client, {
-          databaseId: projects.id,
-          properties: { name: "Project" },
-        });
-        const file = await newFileValue(client);
-        const operations = [
+      const projectId = await createIn(await databaseIdFor("projects"), { name: "Project" });
+      const file = await newFileValue();
+      await patchCard(proposalId, {
+        proposal: stepsEnvelope(await databaseIdFor("files"), [
           {
             ref: "file",
             op: "create",
             databaseKey: "files",
             role: "primary",
             properties: { name: "Document", file },
-            relations: { projects: [project.id] },
+            relations: { projects: [projectId] },
           },
           {
             ref: "task",
@@ -450,31 +655,13 @@ describe("inbox custom route handlers (issue #239)", () => {
             databaseKey: "tasks",
             role: "secondary",
             properties: { name: "Follow up" },
-            relations: { project: [project.id] },
+            relations: { project: [projectId] },
           },
-        ];
-        await updateItemWithClient(
-          client,
-          {
-            databaseId: proposalsId,
-            itemId: proposalId,
-            propertiesPatch: {
-              proposal: {
-                entityKind: "database",
-                target: files.id,
-                properties: { name: "Document", file },
-                operations,
-              },
-            },
-          },
-          { allowedSystemKeys: ["proposal"] },
-        );
+        ]),
       });
-      const handler = createConfirmProposalRouteHandler(pool);
       // In a tenant scope, as a request is: the task's Tasks.project edge queues value-link propagation.
-      const response = await runInTenant(getTenantZeroId(), () => handler({ params: { id: proposalId }, body: {} }));
+      const response = await inTenant(() => confirm(proposalId));
       if (!("item" in response) || !response.results) throw new Error("Missing confirmed results");
-      expect(response.results).toHaveLength(2);
       expect(response.results).toEqual([
         expect.objectContaining({
           ref: "file",
@@ -492,170 +679,70 @@ describe("inbox custom route handlers (issue #239)", () => {
         }),
       ]);
       expect(response.item.properties.resultItemId).toBe(response.results[0]!.itemId);
-      const ids = response.results.map((result) => result.itemId);
-      const { rows } = await pool.query<{ id: string; updated_at: Date }>(
-        "SELECT id, updated_at FROM items WHERE id = ANY($1::uuid[])",
-        [ids],
-      );
-      for (const result of response.results)
-        expect(result.updatedAt).toBe(rows.find((row) => row.id === result.itemId)?.updated_at.toISOString());
+      for (const result of response.results) expect(result.updatedAt).toBe((await anyItem(result.itemId)).updatedAt);
     });
 
     it.each(["created", "reused-empty", "reused-linked", "unlink-first", "overlap"] as const)(
       "reports only retained or created file relations: %s",
       async (mode) => {
-        const reuse = mode !== "created";
+        const unlinked = mode === "reused-empty" || mode === "unlink-first";
         const proposalId = await createDatabaseProposal("Attachment");
-        const fixture = await withTransaction(pool, async (client) => {
-          const files = await getDatabaseByModuleId(client, "files");
-          const tasks = await getDatabaseByModuleId(client, "tasks");
-          const projects = await getDatabaseByModuleId(client, "projects");
-          if (!files || !tasks || !projects) throw new Error("Missing databases");
-          const sourceProperty = await propertiesStore.getPropertyByKey(client, proposalsId, "sourceInbox");
-          if (!sourceProperty) throw new Error("Missing source relation");
-          const sourceRelation = await relationsStore.getRelationDefinitionByPropertyId(client, sourceProperty.id);
-          if (!sourceRelation) throw new Error("Missing source definition");
-          const sourceEdges = await relationsStore.listRelationsForItem(client, sourceRelation.id, proposalId);
-          if (sourceEdges.length !== 1) throw new Error("Missing source item");
-          const sourceId = relationsStore.otherSide(sourceEdges[0]!, proposalId);
-          const project = await createItemWithClient(client, {
-            databaseId: projects.id,
-            properties: { name: "Project" },
-          });
-          const blob = await createBlob(client, {
-            mimeType: "application/pdf",
-            byteSize: 12,
-            storageKey: `test/${randomUUID()}`,
-          });
-          const existing = reuse
-            ? await createItemWithClient(client, {
-                databaseId: files.id,
-                properties: { name: "Existing", file: { blobId: blob.id } },
-              })
-            : null;
-          if (["reused-linked", "unlink-first", "overlap"].includes(mode) && existing) {
-            const property = await propertiesStore.getPropertyByKey(client, files.id, "projects");
-            if (!property) throw new Error("Missing projects relation");
-            await createRelationWithClient(client, {
-              relationPropertyId: property.id,
-              callerItemId: existing.id,
-              targetItemId: project.id,
-            });
-          }
-          await insertInboxAttachments(client, sourceId, [{ blobId: blob.id, source: "camera" }]);
-          const attachment = (await listInboxAttachments(client, [sourceId]))[0];
-          if (!attachment) throw new Error("Missing attachment");
-          await updateItemWithClient(
-            client,
+        const filesId = await databaseIdFor("files");
+        const relationPropertyId = await propertyIdFor(filesId, "projects");
+        const projectId = await createIn(await databaseIdFor("projects"), { name: "Project" });
+        const { blobId } = await newFileValue();
+        const existingId =
+          mode === "created" ? undefined : await createIn(filesId, { name: "Existing", file: { blobId } });
+        if (existingId && mode !== "reused-empty") await relate(filesId, "projects", existingId, projectId);
+        const attachmentId = await attachBlob(await onlyInboxItemId(), blobId);
+        await patchCard(proposalId, {
+          proposal: stepsEnvelope(await databaseIdFor("tasks"), [
+            { ref: "task", op: "create", databaseKey: "tasks", role: "primary", properties: { name: "Task" } },
             {
-              databaseId: proposalsId,
-              itemId: proposalId,
-              propertiesPatch: {
-                proposal: {
-                  entityKind: "database",
-                  target: tasks.id,
-                  properties: { name: "Task" },
-                  operations: [
-                    { ref: "task", op: "create", databaseKey: "tasks", role: "primary", properties: { name: "Task" } },
-                    {
-                      ref: "file",
-                      op: "fileFromAttachment",
-                      role: "secondary",
-                      properties: { attachmentId: attachment.attachmentId, name: "File" },
-                      relations: { projects: [project.id] },
-                    },
-                  ],
-                },
-              },
+              ref: "file",
+              op: "fileFromAttachment",
+              role: "secondary",
+              properties: { attachmentId, name: "File" },
+              relations: { projects: [projectId] },
             },
-            { allowedSystemKeys: ["proposal"] },
-          );
-          const property = await propertiesStore.getPropertyByKey(client, files.id, "projects");
-          if (!property) throw new Error("Missing projects relation");
-          return {
-            filesId: files.id,
-            projectId: project.id,
-            existingId: existing?.id,
-            relationPropertyId: property.id,
-          };
+          ]),
         });
-        const oldFile = fixture.existingId
-          ? await pool.query<{ properties: Record<string, unknown>; updated_at: Date }>(
+        const fileRow = async (id: string) =>
+          (
+            await pool.query<{ properties: Record<string, unknown>; updated_at: Date }>(
               "SELECT properties, updated_at FROM items WHERE id = $1",
-              [fixture.existingId],
+              [id],
             )
-          : null;
-        const handler = createConfirmProposalRouteHandler(pool);
-        let unlinkedFirstResult: Awaited<ReturnType<ReturnType<typeof createConfirmProposalRouteHandler>>> | undefined;
-        if (mode === "unlink-first") {
-          const unlinkPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
-          const failures: unknown[] = [];
-          try {
-            const role = await unlinkPool.query<{ name: string; bypass: boolean; superuser: boolean }>(
-              "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
+          ).rows;
+        const oldFile = existingId ? await fileRow(existingId) : null;
+        let result: RouteResult | undefined;
+        if (mode === "overlap") {
+          result = await confirmWhileUnlinkWaits(proposalId, relationPropertyId, existingId!, projectId);
+        } else if (mode === "unlink-first") {
+          await withDataPool(async (dataPool) => {
+            await withTransaction(dataPool, (client) =>
+              deleteRelationWithClient(client, {
+                relationPropertyId,
+                callerItemId: existingId!,
+                targetItemId: projectId,
+              }),
             );
-            expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
-            await runInTenant(getTenantZeroId(), () =>
-              withTransaction(unlinkPool, (client) =>
-                deleteRelationWithClient(client, {
-                  relationPropertyId: fixture.relationPropertyId,
-                  callerItemId: fixture.existingId!,
-                  targetItemId: fixture.projectId,
-                }),
-              ),
-            );
-            unlinkedFirstResult = await runInTenant(getTenantZeroId(), () =>
-              createConfirmProposalRouteHandler(unlinkPool)({ params: { id: proposalId }, body: {} }),
-            );
-          } catch (error) {
-            failures.push(error);
-          }
-          try {
-            await unlinkPool.end();
-          } catch (error) {
-            failures.push(error);
-          }
-          if (failures.length === 1) throw failures[0];
-          if (failures.length > 1) throw new AggregateError(failures, "Unlink control or settlement failed");
+            result = await createConfirmProposalRouteHandler(dataPool)({ params: { id: proposalId }, body: {} });
+          });
+        } else {
+          result = await confirm(proposalId);
         }
-        const result =
-          mode === "overlap"
-            ? await confirmWhileUnlinkWaits(
-                proposalId,
-                fixture.relationPropertyId,
-                fixture.existingId!,
-                fixture.projectId,
-              )
-            : mode === "unlink-first"
-              ? unlinkedFirstResult
-              : await handler({ params: { id: proposalId }, body: {} });
-        if (!result) throw new Error("Missing confirmation result");
-        if (!("item" in result) || !result.results) throw new Error("Missing results");
+        if (!result || !("item" in result) || !result.results) throw new Error("Missing results");
         const file = result.results.find((entry) => entry.ref === "file");
         if (!file) throw new Error("Missing file result");
-        expect(file.linkLabels).toEqual(mode === "reused-empty" || mode === "unlink-first" ? [] : ["Project"]);
-        if (reuse) {
-          expect(file.itemId).toBe(fixture.existingId);
-          const unchanged = await pool.query<{ properties: Record<string, unknown>; updated_at: Date }>(
-            "SELECT properties, updated_at FROM items WHERE id = $1",
-            [fixture.existingId],
-          );
-          expect(unchanged.rows).toEqual(oldFile?.rows);
+        expect(file.linkLabels).toEqual(unlinked ? [] : ["Project"]);
+        if (existingId) {
+          expect(file.itemId).toBe(existingId);
+          expect(await fileRow(existingId)).toEqual(oldFile);
         }
-        const edges = await withTransaction(pool, async (client) => {
-          const property = await propertiesStore.getPropertyByKey(client, fixture.filesId, "projects");
-          if (!property) throw new Error("Missing project relation");
-          const definition = await relationsStore.getRelationDefinitionByPropertyId(client, property.id);
-          if (!definition) throw new Error("Missing project definition");
-          return (await relationsStore.listRelationsForItem(client, definition.id, file.itemId)).map((edge) =>
-            relationsStore.otherSide(edge, file.itemId),
-          );
-        });
-        expect(edges).toEqual(
-          mode === "reused-empty" || mode === "unlink-first" || mode === "overlap" ? [] : [fixture.projectId],
-        );
+        expect(await edgeExists(file.itemId, projectId)).toBe(!unlinked && mode !== "overlap");
         expect(result.item.properties.results).toEqual(result.results);
-        const replay = await handler({ params: { id: proposalId }, body: {} });
+        const replay = await confirm(proposalId);
         if (!("item" in replay)) throw new Error("Missing replay");
         expect(replay.results).toEqual(result.results);
       },
@@ -663,83 +750,44 @@ describe("inbox custom route handlers (issue #239)", () => {
 
     it("rejects malformed persisted confirmation results without changing the confirmed card", async () => {
       const proposalId = await createDatabaseProposal("Malformed stored result");
-      const handler = createConfirmProposalRouteHandler(pool);
-      await handler({ params: { id: proposalId }, body: {} });
-      await withTransaction(pool, (client) =>
-        updateItemWithClient(
-          client,
-          {
-            databaseId: proposalsId,
-            itemId: proposalId,
-            propertiesPatch: { results: [{ ref: 42 }] },
-          },
-          { allowedSystemKeys: ["results"] },
-        ),
-      );
-      const before = await pool.query<{ properties: Record<string, unknown>; updated_at: Date }>(
-        "SELECT properties, updated_at FROM items WHERE id = $1",
-        [proposalId],
-      );
-      const countsBefore = await pool.query<{ items: string; jobs: string }>(
-        "SELECT (SELECT count(*) FROM items)::text AS items, (SELECT count(*) FROM graphile_worker.jobs)::text AS jobs",
-      );
-      await expect(handler({ params: { id: proposalId }, body: {} })).rejects.toThrow();
-      const countsAfter = await pool.query<{ items: string; jobs: string }>(
-        "SELECT (SELECT count(*) FROM items)::text AS items, (SELECT count(*) FROM graphile_worker.jobs)::text AS jobs",
-      );
-      expect(countsAfter.rows).toEqual(countsBefore.rows);
-      const after = await pool.query<{ properties: Record<string, unknown>; updated_at: Date }>(
-        "SELECT properties, updated_at FROM items WHERE id = $1",
-        [proposalId],
-      );
-      expect(after.rows).toEqual(before.rows);
+      await confirm(proposalId);
+      await patchCard(proposalId, { results: [{ ref: 42 }] });
+      const snapshot = async () =>
+        (
+          await pool.query<{ properties: Record<string, unknown>; updated_at: Date; items: string; jobs: string }>(
+            `SELECT properties, updated_at, (SELECT count(*) FROM items)::text AS items,
+                    (SELECT count(*) FROM graphile_worker.jobs)::text AS jobs
+             FROM items WHERE id = $1`,
+            [proposalId],
+          )
+        ).rows;
+      const before = await snapshot();
+
+      await expect(confirm(proposalId)).rejects.toThrow();
+
+      expect(await snapshot()).toEqual(before);
     });
 
     it("records a secondary updated item under its own step reference", async () => {
       const proposalId = await createDatabaseProposal("Seed");
-      const taskId = await withTransaction(pool, async (client) => {
-        const files = await getDatabaseByModuleId(client, "files");
-        const tasks = await getDatabaseByModuleId(client, "tasks");
-        if (!files || !tasks) throw new Error("Files or Tasks missing");
-        const task = await createItemWithClient(client, { databaseId: tasks.id, properties: { name: "Before" } });
-        const file = await newFileValue(client);
-        await updateItemWithClient(
-          client,
+      const taskId = await createIn(await databaseIdFor("tasks"), { name: "Before" });
+      const file = await newFileValue();
+      await patchCard(proposalId, {
+        proposal: stepsEnvelope(await databaseIdFor("files"), [
+          { ref: "file", op: "create", databaseKey: "files", role: "primary", properties: { name: "Document", file } },
           {
-            databaseId: proposalsId,
-            itemId: proposalId,
-            propertiesPatch: {
-              proposal: {
-                entityKind: "database",
-                target: files.id,
-                properties: { name: "Document", file },
-                operations: [
-                  {
-                    ref: "file",
-                    op: "create",
-                    databaseKey: "files",
-                    role: "primary",
-                    properties: { name: "Document", file },
-                  },
-                  {
-                    ref: "task",
-                    op: "update",
-                    itemId: task.id,
-                    role: "secondary",
-                    properties: { name: "After" },
-                    before: { properties: { name: "Before" } },
-                    after: { properties: { name: "After" } },
-                  },
-                ],
-              },
-            },
+            ref: "task",
+            op: "update",
+            itemId: taskId,
+            role: "secondary",
+            properties: { name: "After" },
+            before: { properties: { name: "Before" } },
+            after: { properties: { name: "After" } },
           },
-          { allowedSystemKeys: ["proposal"] },
-        );
-        return task.id;
+        ]),
       });
-      const response = await createConfirmProposalRouteHandler(pool)({ params: { id: proposalId }, body: {} });
-      if (!("item" in response) || !response.results) throw new Error("Missing confirmed results");
+      const response = await confirm(proposalId);
+      if (!("item" in response)) throw new Error("Missing confirmed results");
       expect(response.results).toEqual([
         expect.objectContaining({ ref: "file", role: "primary", databaseKey: "files" }),
         expect.objectContaining({
@@ -754,148 +802,73 @@ describe("inbox custom route handlers (issue #239)", () => {
 
     it("does not report a transcription enqueue for an audio File confirm", async () => {
       const proposalId = await createDatabaseProposal("Audio");
-      await withTransaction(pool, async (client) => {
-        const files = await getDatabaseByModuleId(client, "files");
-        if (!files) throw new Error("Files database missing");
-        const blob = await createBlob(client, { mimeType: "audio/mp4", byteSize: 12, storageKey: "audio/test.m4a" });
-        await updateItemWithClient(
-          client,
-          {
-            databaseId: proposalsId,
-            itemId: proposalId,
-            propertiesPatch: {
-              proposal: {
-                entityKind: "database",
-                target: files.id,
-                properties: { name: "Audio", type: "audio", file: { blobId: blob.id } },
-              },
-            },
-          },
-          { allowedSystemKeys: ["proposal"] },
-        );
+      const file = await newFileValue("audio/mp4");
+      const target = await databaseIdFor("files");
+      await patchCard(proposalId, {
+        proposal: { entityKind: "database", target, properties: { name: "Audio", type: "audio", file } },
       });
       const queued = () =>
         pool.query<{ n: number }>(
           "SELECT count(*)::int AS n FROM graphile_worker.jobs WHERE task_identifier = 'transcriptionJob'",
         );
       const before = await queued();
-      const response = await createConfirmProposalRouteHandler(pool)({ params: { id: proposalId }, body: {} });
+      const response = await confirm(proposalId);
       if (!("item" in response)) throw new Error("Missing item result");
       expect(response.results).toEqual([expect.objectContaining({ databaseKey: "files", followUp: null })]);
       expect((await queued()).rows).toEqual(before.rows);
     });
 
-    it("returns the transcript item for a confirmed transcript relation", async () => {
-      const dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
-      const failures: unknown[] = [];
-      try {
-        const role = await dataPool.query<{ name: string; bypass: boolean; superuser: boolean }>(
-          "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
-        );
-        expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
-        await runInTenant(getTenantZeroId(), async () => {
-          const transcriptId = await databaseIdFor("transcripts");
-          const eventsId = await databaseIdFor("events");
-          const { transcript, event, cardId } = await withTransaction(dataPool, async (client) => {
-            const transcript = await createItemWithClient(
-              client,
-              { databaseId: transcriptId, properties: { name: "Meeting", date: "2024-03-01T12:00:00.000Z" } },
-              { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
-            );
-            await matchTranscriptToEvent(client, { transcriptId: transcript.id, durationSeconds: 60 });
-            const { rows } = await client.query<{ id: string }>(
-              "SELECT id FROM items WHERE database_id = $1 AND properties->>'kind' = 'transcript'",
-              [proposalsId],
-            );
-            if (!rows[0]) throw new Error("Missing transcript proposal");
-            const event = await createItemWithClient(client, {
-              databaseId: eventsId,
-              properties: { name: "Meeting", type: "meeting", date: "2024-03-01T12:00:00.000Z" },
-            });
-            return { transcript, event, cardId: rows[0].id };
-          });
-          await withTransaction(dataPool, (client) =>
-            reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId, {
-              message: "Link the existing event",
-              entityKind: "relation",
-              target: event.id,
-              properties: { propertyKey: "event" },
-            }),
-          );
-          const response = await createConfirmProposalRouteHandler(dataPool)({ params: { id: cardId }, body: {} });
-          if (!("item" in response)) throw new Error("Missing item result");
-          expect(response.results).toEqual([
-            expect.objectContaining({ itemId: transcript.id, role: "primary", linkLabels: ["Meeting"] }),
-          ]);
-          expect(response.item.properties.resultItemId).toBe(event.id);
+    it("returns the transcript item for a confirmed transcript relation", () =>
+      withDataPool(async (dataPool) => {
+        const { cardId, transcriptId } = await createUnmatchedTranscriptCard("Meeting");
+        const eventId = await createIn(await databaseIdFor("events"), {
+          name: "Meeting",
+          type: "meeting",
+          date: EVENT_DATE,
         });
-      } catch (error) {
-        failures.push(error);
-      }
-      try {
-        await dataPool.end();
-      } catch (error) {
-        failures.push(error);
-      }
-      if (failures.length === 1) throw failures[0];
-      if (failures.length > 1) throw new AggregateError(failures, "Transcript test and settlement failed");
-    });
+        await withTransaction(dataPool, (client) =>
+          reviseProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId, {
+            message: "Link the existing event",
+            ...linkEvent(eventId),
+          }),
+        );
+        const response = await createConfirmProposalRouteHandler(dataPool)({ params: { id: cardId }, body: {} });
+        if (!("item" in response)) throw new Error("Missing item result");
+        expect(response.results).toEqual([
+          expect.objectContaining({ itemId: transcriptId, role: "primary", linkLabels: ["Meeting"] }),
+        ]);
+        expect(response.item.properties.resultItemId).toBe(eventId);
+      }));
 
     it("refuses a task card without a name with a ValidationError naming the field, and creates no task", async () => {
       const proposalId = await createDatabaseProposal("Buy milk");
-      const tasks = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "tasks"));
-      if (!tasks) throw new Error("Tasks database missing");
-      await withTransaction(pool, (client) =>
-        updateItemWithClient(
-          client,
-          {
-            databaseId: proposalsId,
-            itemId: proposalId,
-            propertiesPatch: { proposal: { entityKind: "database", target: tasks.id, properties: {} } },
-          },
-          { allowedSystemKeys: ["proposal"] },
-        ),
-      );
+      const tasksId = await databaseIdFor("tasks");
+      await patchCard(proposalId, { proposal: { entityKind: "database", target: tasksId, properties: {} } });
       const countTasks = async () =>
-        (await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [tasks.id]))
+        (await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [tasksId]))
           .rows[0]?.n;
       const before = await countTasks();
 
-      const error = await createConfirmProposalRouteHandler(pool)({ params: { id: proposalId }, body: {} }).then(
-        () => null,
-        (err: unknown) => err,
-      );
+      const error = await failureOf(confirm(proposalId));
 
       expect(error).toBeInstanceOf(ValidationError);
       expect(error).toMatchObject({ status: 400, details: { field: "name" } });
       expect(await countTasks()).toBe(before);
     });
 
-    describe("an MCP server confirm (issue gh-1976)", () => {
+    describe("an MCP server confirm", () => {
       async function createServerCard(): Promise<string> {
         const proposalId = await createDatabaseProposal("Server");
-        await withTransaction(pool, async (client) => {
-          const servers = await getDatabaseByModuleId(client, "mcpServers");
-          if (!servers) throw new Error("MCP servers database missing");
-          await updateItemWithClient(
-            client,
-            {
-              databaseId: proposalsId,
-              itemId: proposalId,
-              propertiesPatch: {
-                proposal: {
-                  entityKind: "database",
-                  target: servers.id,
-                  properties: {
-                    name: "Server",
-                    active: false,
-                    connectionConfig: { transport: "http", url: "https://mcp.example.com/mcp" },
-                  },
-                },
-              },
+        await patchCard(proposalId, {
+          proposal: {
+            entityKind: "database",
+            target: await databaseIdFor("mcpServers"),
+            properties: {
+              name: "Server",
+              active: false,
+              connectionConfig: { transport: "http", url: "https://mcp.example.com/mcp" },
             },
-            { allowedSystemKeys: ["proposal"] },
-          );
+          },
         });
         return proposalId;
       }
@@ -919,21 +892,19 @@ describe("inbox custom route handlers (issue #239)", () => {
           identity: { user: { id: userId } },
         });
 
-        if (!("item" in response)) throw new Error("Missing item result");
-        const serverId = z.string().parse(response.item.properties.resultItemId);
-        expect(response.results).toEqual([expect.objectContaining({ itemId: serverId, followUp: "mcpSyncQueued" })]);
+        const serverId = z.string().parse(itemOf(response).properties.resultItemId);
+        expect(response).toMatchObject({
+          results: [expect.objectContaining({ itemId: serverId, followUp: "mcpSyncQueued" })],
+        });
         expect(await queuedSyncs()).toEqual([
           { key: `mcp-server-sync-${serverId}`, payload: { mcpServerItemId: serverId, actingUserId: userId } },
         ]);
       });
 
       it("queues nothing and reports no follow-up when the request carries no identity", async () => {
-        const proposalId = await createServerCard();
+        const response = await confirm(await createServerCard());
 
-        const response = await createConfirmProposalRouteHandler(pool)({ params: { id: proposalId }, body: {} });
-
-        if (!("item" in response)) throw new Error("Missing item result");
-        expect(response.results).toEqual([expect.objectContaining({ followUp: null })]);
+        expect(response).toMatchObject({ results: [expect.objectContaining({ followUp: null })] });
         expect(await queuedSyncs()).toEqual([]);
       });
     });
@@ -941,93 +912,48 @@ describe("inbox custom route handlers (issue #239)", () => {
     it("records Event and Journal calendar days in their confirmation results", async () => {
       const eventCard = await createDatabaseProposal("Event");
       const journalCard = await createDatabaseProposal("Journal");
-      await withTransaction(pool, async (client) => {
-        const events = await getDatabaseByModuleId(client, "events");
-        const journal = await getDatabaseByModuleId(client, "journal");
-        if (!events || !journal) throw new Error("Events or Journal missing");
-        const day = await getOrCreateJournalItem(client, journal.id, "day", new Date("2026-08-28T12:00:00Z"), "UTC");
-        await updateItemWithClient(
-          client,
-          {
-            databaseId: proposalsId,
-            itemId: eventCard,
-            propertiesPatch: {
-              proposal: {
-                entityKind: "database",
-                target: events.id,
-                properties: { name: "Meeting", type: "meeting", date: "2026-08-28T12:00:00.000Z" },
-              },
-            },
-          },
-          { allowedSystemKeys: ["proposal"] },
-        );
-        await updateItemWithClient(
-          client,
-          {
-            databaseId: proposalsId,
-            itemId: journalCard,
-            propertiesPatch: {
-              proposal: {
-                entityKind: "pageContent",
-                target: day.id,
-                properties: { flavour: "paragraph", fields: { content: "Entry" } },
-              },
-            },
-          },
-          { allowedSystemKeys: ["proposal"] },
-        );
+      const journalId = await databaseIdFor("journal");
+      const day = await withTransaction(pool, (client) =>
+        getOrCreateJournalItem(client, journalId, "day", new Date("2026-08-28T12:00:00Z"), "UTC"),
+      );
+      await patchCard(eventCard, {
+        proposal: {
+          entityKind: "database",
+          target: await databaseIdFor("events"),
+          properties: { name: "Meeting", type: "meeting", date: "2026-08-28T12:00:00.000Z" },
+        },
       });
-      const handler = createConfirmProposalRouteHandler(pool);
-      const event = await handler({ params: { id: eventCard }, body: {} });
-      const journal = await handler({ params: { id: journalCard }, body: {} });
-      if (!("item" in event) || !("item" in journal)) throw new Error("Missing item result");
-      expect(event.results).toEqual([expect.objectContaining({ databaseKey: "events", date: "2026-08-28" })]);
-      expect(journal.results).toEqual([
-        expect.objectContaining({ databaseKey: "journal", date: "2026-08-28", blockIds: [journalCard] }),
-      ]);
+      await patchCard(journalCard, {
+        proposal: {
+          entityKind: "pageContent",
+          target: day.id,
+          properties: { flavour: "paragraph", fields: { content: "Entry" } },
+        },
+      });
+      const event = await confirm(eventCard);
+      const journal = await confirm(journalCard);
+      expect(event).toMatchObject({
+        results: [expect.objectContaining({ databaseKey: "events", date: "2026-08-28" })],
+      });
+      expect(journal).toMatchObject({
+        results: [expect.objectContaining({ databaseKey: "journal", date: "2026-08-28", blockIds: [journalCard] })],
+      });
     });
 
     it("rolls back all results and the created file when a later step fails", async () => {
       const proposalId = await createDatabaseProposal("Seed");
-      const files = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "files"));
-      if (!files) throw new Error("Files database missing");
-      const file = await withTransaction(pool, (client) => newFileValue(client));
-      await withTransaction(pool, (client) =>
-        updateItemWithClient(
-          client,
-          {
-            databaseId: proposalsId,
-            itemId: proposalId,
-            propertiesPatch: {
-              proposal: {
-                entityKind: "database",
-                target: files.id,
-                properties: { name: "Document", file },
-                operations: [
-                  {
-                    ref: "file",
-                    op: "create",
-                    databaseKey: "files",
-                    role: "primary",
-                    properties: { name: "Document", file },
-                  },
-                  {
-                    ref: "task",
-                    op: "create",
-                    databaseKey: "tasks",
-                    role: "secondary",
-                    properties: { name: "Follow up" },
-                  },
-                ],
-              },
-            },
-          },
-          { allowedSystemKeys: ["proposal"] },
-        ),
-      );
-      const before = await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
-        files.id,
-      ]);
+      const filesId = await databaseIdFor("files");
+      const file = await newFileValue();
+      await patchCard(proposalId, {
+        proposal: stepsEnvelope(filesId, [
+          { ref: "file", op: "create", databaseKey: "files", role: "primary", properties: { name: "Document", file } },
+          { ref: "task", op: "create", databaseKey: "tasks", role: "secondary", properties: { name: "Follow up" } },
+        ]),
+      });
+      const fileCount = async () =>
+        (await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [filesId]))
+          .rows;
+      const before = await fileCount();
       // Fixed trigger forces the later Tasks step to fail after the Files step has written.
       await pool.query(`CREATE FUNCTION test_fail_result_task() RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN IF NEW.database_id = (SELECT id FROM databases WHERE owner_module_id = 'tasks') THEN
@@ -1055,104 +981,59 @@ describe("inbox custom route handlers (issue #239)", () => {
       }
       if (failures.length === 1) throw failures[0];
       if (failures.length > 1) throw new AggregateError(failures, "Confirm rollback test or cleanup failed");
-      const after = await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM items WHERE database_id = $1", [
-        files.id,
-      ]);
-      expect(after.rows).toEqual(before.rows);
-      const card = await pool.query<{ properties: Record<string, unknown> }>(
-        "SELECT properties FROM items WHERE id = $1",
-        [proposalId],
-      );
-      expect(card.rows[0]!.properties.status).toBe("proposed");
-      expect(card.rows[0]!.properties.results).toBeUndefined();
+      expect(await fileCount()).toEqual(before);
+      const card = await storedCard(proposalId);
+      expect(card.properties.status).toBe("proposed");
+      expect(card.properties.results).toBeUndefined();
     });
 
     it("confirms a pending proposal, a thin mapping onto confirmProposalWithClient", async () => {
-      const proposalId = await createDatabaseProposal("Buy milk");
-      const handler = createConfirmProposalRouteHandler(pool);
-
-      const result = await handler({ params: { id: proposalId }, body: {} });
+      const result = await confirm(await createDatabaseProposal("Buy milk"));
 
       expect(result.status).toBe(200);
-      expect("item" in result && result.item.properties.status).toBe("confirmed");
-      expect("item" in result && typeof result.item.properties.resultItemId).toBe("string");
+      expect(itemOf(result).properties.status).toBe("confirmed");
+      expect(typeof itemOf(result).properties.resultItemId).toBe("string");
     });
 
     it("addresses realtime invalidation to the authenticated user", async () => {
       const proposalId = await createDatabaseProposal("Buy milk");
-      const handler = createConfirmProposalRouteHandler(pool);
       const userId = randomUUID();
-      const events: InvalidationEvent[] = [];
-      setInvalidationHook((event) => events.push(event));
-      try {
-        await handler({ params: { id: proposalId }, body: {}, identity: { user: { id: userId } } });
-      } finally {
-        setInvalidationHook(() => {});
-      }
-      const itemEvents = events.filter((event) => event.scope === "item");
-      expect(itemEvents.length).toBeGreaterThanOrEqual(2);
-      expect(itemEvents.every((event) => event.userId === userId)).toBe(true);
-    });
 
-    it("rejects a request with no `id` path parameter", async () => {
-      const handler = createConfirmProposalRouteHandler(pool);
-      await expect(handler({ params: {}, body: {} })).rejects.toThrow(ValidationError);
-    });
-
-    it("rejects an unknown proposal id", async () => {
-      const handler = createConfirmProposalRouteHandler(pool);
-      await expect(handler({ params: { id: "00000000-0000-0000-0000-000000000000" }, body: {} })).rejects.toThrow(
-        NotFoundError,
+      const events = await itemInvalidations(() =>
+        createConfirmProposalRouteHandler(pool)({
+          params: { id: proposalId },
+          body: {},
+          identity: { user: { id: userId } },
+        }),
       );
+
+      expect(events.length).toBeGreaterThanOrEqual(2);
+      expect(events.every((event) => event.userId === userId)).toBe(true);
     });
 
     it("rejects a credential missing a plaintext", async () => {
       const proposalId = await createDatabaseProposal("Buy milk");
-      const handler = createConfirmProposalRouteHandler(pool);
 
-      await expect(
-        handler({ params: { id: proposalId }, body: { credential: { credentialType: "bearer_token" } } }),
-      ).rejects.toThrow(ValidationError);
+      await expect(confirm(proposalId, { credential: { credentialType: "bearer_token" } })).rejects.toThrow(
+        ValidationError,
+      );
     });
   });
 
-  describe("createRejectProposalRouteHandler (issue #1845)", () => {
-    async function listedCardIds(): Promise<string[]> {
-      const userId = (await createTenantZeroUser(pool)).id;
-      const answer = await createInboxCardsRouteHandler(pool)({ identity: { user: { id: userId, locale: "en" } } });
-      if (!("body" in answer)) throw new Error("expected a raw JSON body");
-      const body = z.object({ cards: z.array(z.object({ cardId: z.string() })) }).parse(answer.body);
-      return body.cards.map((card) => card.cardId);
-    }
-
-    /** Sets a card's stored `status` through the choke point: `needsClarification` has no producer in the tick of these tests. */
-    async function setStatus(cardId: string, status: string): Promise<void> {
-      await withTransaction(pool, (client) =>
-        updateItemWithClient(
-          client,
-          { databaseId: proposalsId, itemId: cardId, propertiesPatch: { status } },
-          { allowedSystemKeys: ["status"] },
-        ),
-      );
-    }
-
-    function historyOf(item: ItemRow): unknown[] {
-      return z.array(z.unknown()).parse(item.properties.history);
-    }
-
+  describe("createRejectProposalRouteHandler", () => {
     async function reject(proposalId: string, body: unknown = {}): Promise<ItemRow> {
       const answer = await createRejectProposalRouteHandler(pool)({ params: { id: proposalId }, body });
       expect(answer.status).toBe(200);
-      if (!("item" in answer)) throw new Error("expected an item answer");
-      return answer.item;
+      return itemOf(answer);
     }
 
     it.each(["proposed", "needsClarification", "invalid"])(
       "closes a %s card: status rejected, one rejected history entry, gone from the card list",
       async (status) => {
         const proposalId = await createDatabaseProposal("Buy milk");
-        if (status !== "proposed") await setStatus(proposalId, status);
-        const before = await itemsStore.getItemById(pool, proposalsId, proposalId);
+        // `needsClarification` has no producer in the tick of these tests.
+        if (status !== "proposed") await patchCard(proposalId, { status });
+        const before = await storedCard(proposalId);
         expect(await listedCardIds()).toContain(proposalId);
 
         const item = await reject(proposalId);
@@ -1160,30 +1041,14 @@ describe("inbox custom route handlers (issue #239)", () => {
         expect(item.id).toBe(proposalId);
         expect(item.properties.status).toBe("rejected");
         const history = historyOf(item);
-        expect(history).toHaveLength(historyOf(before!).length + 1);
+        expect(history).toHaveLength(historyOf(before).length + 1);
         expect(history.at(-1)).toMatchObject({ author: "user", message: "Rejected by user.", kind: "rejected" });
         expect(await listedCardIds()).not.toContain(proposalId);
       },
     );
 
     it("closes a transcript card", async () => {
-      const cardId = await runInTenant(getTenantZeroId(), () =>
-        withTransaction(pool, async (client) => {
-          const transcriptsId = await databaseIdFor("transcripts");
-          const transcript = await createItemWithClient(
-            client,
-            { databaseId: transcriptsId, properties: { name: "Standup", date: "2026-08-28T08:00:00.000Z" } },
-            { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
-          );
-          await matchTranscriptToEvent(client, { transcriptId: transcript.id, durationSeconds: 60 });
-          const { rows } = await client.query<{ id: string }>(
-            "SELECT id FROM items WHERE database_id = $1 AND properties->>'kind' = 'transcript'",
-            [proposalsId],
-          );
-          if (!rows[0]) throw new Error("matchTranscriptToEvent stored no card");
-          return rows[0].id;
-        }),
-      );
+      const { cardId } = await createUnmatchedTranscriptCard();
       expect(await listedCardIds()).toContain(cardId);
 
       const item = await reject(cardId);
@@ -1193,25 +1058,15 @@ describe("inbox custom route handlers (issue #239)", () => {
       expect(await listedCardIds()).not.toContain(cardId);
     });
 
-    it("stores the supplied message as the text of the history entry", async () => {
-      const proposalId = await createDatabaseProposal("Buy milk");
-
-      const item = await reject(proposalId, { message: "Already done by hand" });
-
-      expect(historyOf(item).at(-1)).toMatchObject({
-        author: "user",
-        message: "Already done by hand",
-        kind: "rejected",
-      });
-    });
-
-    it("accepts a null body as a reject without a message", async () => {
-      const proposalId = await createDatabaseProposal("Buy milk");
-
-      const item = await reject(proposalId, null);
+    it.each([
+      ["the supplied message", { message: "Already done by hand" }, "Already done by hand"],
+      ["a null body, without a message", null, "Rejected by user."],
+      ["a message of exactly the length cap", { message: "x".repeat(1000) }, "x".repeat(1000)],
+    ])("rejects for %s and stores the text of the history entry", async (_label, body, message) => {
+      const item = await reject(await createDatabaseProposal("Buy milk"), body);
 
       expect(item.properties.status).toBe("rejected");
-      expect(historyOf(item).at(-1)).toMatchObject({ message: "Rejected by user." });
+      expect(historyOf(item).at(-1)).toMatchObject({ author: "user", message, kind: "rejected" });
     });
 
     it("answers a repeated call with the same card and adds no second history entry", async () => {
@@ -1220,45 +1075,21 @@ describe("inbox custom route handlers (issue #239)", () => {
 
       const second = await reject(proposalId, { message: "Changed my mind about the reason" });
 
-      // The first answer is the update's result and the second a read of the stored row, so only their stored fields compare.
-      expect({ id: second.id, properties: second.properties, updatedAt: second.updatedAt }).toEqual({
-        id: first.id,
-        properties: first.properties,
-        updatedAt: first.updatedAt,
-      });
+      expect(storedFields(second)).toEqual(storedFields(first));
       expect(historyOf(second)).toHaveLength(historyOf(first).length);
     });
 
     it("refuses a confirmed card with validation_failed on status and writes nothing", async () => {
       const proposalId = await createDatabaseProposal("Buy milk");
-      await createConfirmProposalRouteHandler(pool)({ params: { id: proposalId }, body: {} });
-      const before = await itemsStore.getItemById(pool, proposalsId, proposalId);
+      await confirm(proposalId);
+      const before = await storedCard(proposalId);
 
       await expect(
         createRejectProposalRouteHandler(pool)({ params: { id: proposalId }, body: {} }),
       ).rejects.toMatchObject({ status: 400, code: "validation_failed", details: { field: "status" } });
 
-      expect(await itemsStore.getItemById(pool, proposalsId, proposalId)).toEqual(before);
-      expect(before?.properties.status).toBe("confirmed");
-    });
-
-    it("answers 404 for an unknown card id", async () => {
-      await expect(
-        createRejectProposalRouteHandler(pool)({ params: { id: randomUUID() }, body: {} }),
-      ).rejects.toBeInstanceOf(NotFoundError);
-    });
-
-    it("answers 404 for a soft-deleted card", async () => {
-      const proposalId = await createDatabaseProposal("Buy milk");
-      await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, proposalsId, proposalId));
-
-      await expect(
-        createRejectProposalRouteHandler(pool)({ params: { id: proposalId }, body: {} }),
-      ).rejects.toBeInstanceOf(NotFoundError);
-    });
-
-    it("rejects a request with no `id` path parameter", async () => {
-      await expect(createRejectProposalRouteHandler(pool)({ params: {}, body: {} })).rejects.toThrow(ValidationError);
+      expect(await storedCard(proposalId)).toEqual(before);
+      expect(before.properties.status).toBe("confirmed");
     });
 
     it.each([
@@ -1280,92 +1111,29 @@ describe("inbox custom route handlers (issue #239)", () => {
       const card = await itemsStore.getItemById(pool, proposalsId, proposalId);
       expect(card?.properties.status).toBe("proposed");
     });
-
-    it("accepts a message of exactly the length cap", async () => {
-      const proposalId = await createDatabaseProposal("Buy milk");
-
-      const item = await reject(proposalId, { message: "x".repeat(1000) });
-
-      expect(item.properties.status).toBe("rejected");
-    });
   });
 
-  describe("createReopenProposalRouteHandler (issue #1937)", () => {
-    /** Higher than any version a card reaches in a test, so it never equals the version a card holds. */
-    const STALE_VERSION = "999999999";
-
-    async function storedCard(cardId: string): Promise<ItemRow> {
-      const card = await itemsStore.getItemById(pool, proposalsId, cardId);
-      if (!card) throw new Error(`Card ${cardId} is missing`);
-      return card;
-    }
-
-    function historyOf(item: ItemRow): unknown[] {
-      return z.array(z.unknown()).parse(item.properties.history);
-    }
-
-    /** The stored fields of a card: an update's answer also carries the write's own metadata, which a read of the row has not. */
-    function storedFields(item: ItemRow) {
-      return { id: item.id, properties: item.properties, updatedAt: item.updatedAt };
-    }
-
-    async function listedCardIds(): Promise<string[]> {
-      const userId = (await createTenantZeroUser(pool)).id;
-      const answer = await createInboxCardsRouteHandler(pool)({ identity: { user: { id: userId, locale: "en" } } });
-      if (!("body" in answer)) throw new Error("expected a raw JSON body");
-      const body = z.object({ cards: z.array(z.object({ cardId: z.string() })) }).parse(answer.body);
-      return body.cards.map((card) => card.cardId);
-    }
-
-    /** Writes properties the tick of these tests never produces (a status, a stored envelope), through the choke point. */
-    async function patchCard(cardId: string, propertiesPatch: Record<string, unknown>): Promise<void> {
-      await withTransaction(pool, (client) =>
-        updateItemWithClient(
-          client,
-          { databaseId: proposalsId, itemId: cardId, propertiesPatch },
-          { allowedSystemKeys: Object.keys(propertiesPatch) },
-        ),
-      );
-    }
-
+  describe("createReopenProposalRouteHandler", () => {
     async function reject(cardId: string): Promise<ItemRow> {
-      const answer = await createRejectProposalRouteHandler(pool)({ params: { id: cardId }, body: {} });
-      if (!("item" in answer)) throw new Error("expected an item answer");
-      return answer.item;
+      return itemOf(await createRejectProposalRouteHandler(pool)({ params: { id: cardId }, body: {} }));
     }
 
     async function reopen(cardId: string, body: unknown = {}): Promise<ItemRow> {
       const answer = await createReopenProposalRouteHandler(pool)({ params: { id: cardId }, body });
       expect(answer.status).toBe(200);
-      if (!("item" in answer)) throw new Error("expected an item answer");
-      return answer.item;
+      return itemOf(answer);
     }
 
     async function writtenState(): Promise<{ items: string[]; recomputeJobs: number }> {
       const items = await pool.query<{ id: string; updated_at: Date }>("SELECT id, updated_at FROM items ORDER BY id");
-      const jobs = await pool.query<{ n: number }>(
-        "SELECT count(*)::int AS n FROM graphile_worker.jobs WHERE task_identifier = 'journalInboxRecompute'",
-      );
       return {
         items: items.rows.map((row) => `${row.id} ${row.updated_at.toISOString()}`),
-        recomputeJobs: jobs.rows[0]!.n,
+        recomputeJobs: await recomputeJobCount(),
       };
     }
 
-    /** `graphile_worker.jobs` is a read-only view, so the delete goes to the table behind it. */
-    async function clearRecomputeJobs(): Promise<void> {
-      await pool.query(
-        `DELETE FROM graphile_worker._private_jobs
-         WHERE task_id IN (SELECT id FROM graphile_worker._private_tasks WHERE identifier = 'journalInboxRecompute')`,
-      );
-    }
-
     it("returns a rejected card to proposed with the same proposal and overrides, and lists it again", async () => {
-      const cardId = await createDatabaseProposal("Buy milk");
-      await createUpdateProposalValuesRouteHandler(pool)({
-        params: { id: cardId },
-        body: { set: { primary: { name: "Buy oat milk" } } },
-      });
+      const cardId = await editedCard();
       const open = await storedCard(cardId);
       const rejected = await reject(cardId);
       expect(await listedCardIds()).not.toContain(cardId);
@@ -1390,16 +1158,9 @@ describe("inbox custom route handlers (issue #239)", () => {
       const cardId = await createDatabaseProposal("Buy milk");
       await reject(cardId);
       await clearRecomputeJobs();
-      const events: InboxCardsInvalidationEvent[] = [];
-      setInboxCardsInvalidationHook((event) => events.push(event));
-      try {
-        await reopen(cardId);
-      } finally {
-        setInboxCardsInvalidationHook(() => {});
-      }
 
-      expect(events).toEqual([{ op: "updated", cardId }]);
-      expect((await writtenState()).recomputeJobs).toBe(1);
+      expect(await cardInvalidations(() => reopen(cardId))).toEqual([{ op: "updated", cardId }]);
+      expect(await recomputeJobCount()).toBe(1);
     });
 
     it("answers a second reopen with the same card, adds no history entry and writes nothing", async () => {
@@ -1466,124 +1227,84 @@ describe("inbox custom route handlers (issue #239)", () => {
       expect(await writtenState()).toEqual(state);
     });
 
-    it("reopens a rejected card when ifVersion is its current version", async () => {
-      const cardId = await createDatabaseProposal("Buy milk");
-      await reject(cardId);
-      const { version } = await storedCard(cardId);
+    it("reopens a rejected card for a null body and for an ifVersion that is its current version", async () => {
+      const nullBody = await createDatabaseProposal("Buy milk");
+      const current = await createDatabaseProposal("Buy bread");
+      await reject(nullBody);
+      await reject(current);
 
-      const item = await reopen(cardId, { ifVersion: version });
-
-      expect(item.properties.status).toBe("proposed");
+      expect((await reopen(nullBody, null)).properties.status).toBe("proposed");
+      expect((await reopen(current, { ifVersion: (await storedCard(current)).version })).properties.status).toBe(
+        "proposed",
+      );
     });
 
-    it("makes the card invalid when its stored envelope no longer validates, and keeps the envelope", async () => {
+    it.each<
+      [string, () => Promise<Record<string, unknown>>, (patch: Record<string, unknown>) => Record<string, unknown>]
+    >([
+      [
+        // An envelope the tick would refuse (`unknownProperty` is no Tasks property); the tick never stores one.
+        "makes the card invalid when its stored envelope no longer validates, and keeps the envelope",
+        async () => ({
+          proposal: {
+            entityKind: "database",
+            target: await databaseIdFor("tasks"),
+            properties: { unknownProperty: "x" },
+          },
+        }),
+        ({ proposal }) => ({ status: "invalid", proposal }),
+      ],
+      [
+        "makes the card invalid when it holds no stored envelope",
+        async () => ({ proposal: null }),
+        () => ({ status: "invalid", proposal: null }),
+      ],
+      [
+        "clears the invalidReason a card kept from before it was discarded",
+        async () => ({
+          invalidReason: { code: "targetDeleted", field: "project", itemId: randomUUID(), label: "Gone" },
+        }),
+        () => ({ status: "proposed", invalidReason: null }),
+      ],
+      [
+        // The id of an Inbox item that does not exist stands for the deleted source the tick marked the card with.
+        "keeps the card invalid with its sourceDeleted reason while the source Inbox item is still deleted",
+        async () => ({ invalidReason: { code: "sourceDeleted", field: "", itemId: randomUUID(), label: "Gone" } }),
+        ({ invalidReason }) => ({ status: "invalid", invalidReason }),
+      ],
+      [
+        "clears a sourceDeleted reason when its Inbox item is live again, and returns the card to proposed",
+        async () => ({
+          invalidReason: { code: "sourceDeleted", field: "", itemId: await onlyInboxItemId(), label: "Back" },
+        }),
+        () => ({ status: "proposed", invalidReason: null }),
+      ],
+    ])("%s", async (_name, build, expected) => {
       const cardId = await createDatabaseProposal("Buy milk");
-      const tasksId = await databaseIdFor("tasks");
-      // An envelope the tick would refuse (`unknownProperty` is no Tasks property); the tick of these tests never stores one.
-      const envelope = { entityKind: "database", target: tasksId, properties: { unknownProperty: "x" } };
-      await patchCard(cardId, { proposal: envelope, status: "rejected" });
+      const patch = await build();
+      await patchCard(cardId, { ...patch, status: "rejected" });
 
       const item = await reopen(cardId);
 
-      expect(item.properties.status).toBe("invalid");
-      expect(item.properties.proposal).toEqual(envelope);
+      expect(item.properties).toMatchObject(expected(patch));
       expect(historyOf(item).at(-1)).toMatchObject({ kind: "reopened" });
+      expect((await storedCard(cardId)).properties).toMatchObject(expected(patch));
       expect(await listedCardIds()).toContain(cardId);
-    });
-
-    it("makes the card invalid when it holds no stored envelope", async () => {
-      const cardId = await createDatabaseProposal("Buy milk");
-      await patchCard(cardId, { proposal: null, status: "rejected" });
-
-      const item = await reopen(cardId);
-
-      expect(item.properties.status).toBe("invalid");
-      expect(item.properties.proposal).toBeNull();
-    });
-
-    it("clears the invalidReason a card kept from before it was discarded", async () => {
-      const cardId = await createDatabaseProposal("Buy milk");
-      const invalidReason = { code: "targetDeleted", field: "project", itemId: randomUUID(), label: "Gone" };
-      await patchCard(cardId, { invalidReason, status: "rejected" });
-
-      const item = await reopen(cardId);
-
-      expect(item.properties.status).toBe("proposed");
-      expect(item.properties.invalidReason).toBeNull();
-    });
-
-    it("keeps the card invalid with its sourceDeleted reason while the source Inbox item is still deleted", async () => {
-      const cardId = await createDatabaseProposal("Buy milk");
-      // The id of an Inbox item that does not exist stands for the deleted source the tick marked the card with.
-      const invalidReason = { code: "sourceDeleted", field: "", itemId: randomUUID(), label: "Gone" };
-      await patchCard(cardId, { invalidReason, status: "rejected" });
-
-      const item = await reopen(cardId);
-
-      expect(item.properties.status).toBe("invalid");
-      expect(item.properties.invalidReason).toEqual(invalidReason);
-      expect(historyOf(item).at(-1)).toMatchObject({ kind: "reopened" });
-      expect(await storedCard(cardId)).toMatchObject({ properties: { status: "invalid", invalidReason } });
-    });
-
-    it("clears a sourceDeleted reason when its Inbox item is live again, and returns the card to proposed", async () => {
-      const cardId = await createDatabaseProposal("Buy milk");
-      const { rows } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [inboxId]);
-      const invalidReason = { code: "sourceDeleted", field: "", itemId: rows[0]!.id, label: "Back" };
-      await patchCard(cardId, { invalidReason, status: "rejected" });
-
-      const item = await reopen(cardId);
-
-      expect(item.properties.status).toBe("proposed");
-      expect(item.properties.invalidReason).toBeNull();
     });
 
     it("leaves a rejected card locked for the tick: its source is not recomputed", async () => {
       const cardId = await createDatabaseProposal("Buy milk");
-      const { rows } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [inboxId]);
-      const sourceId = rows[0]!.id;
+      const sourceId = await onlyInboxItemId();
       const rejected = await reject(cardId);
       await pool.query('UPDATE items SET properties = properties || \'{"text": "Buy oat milk"}\' WHERE id = $1', [
         sourceId,
       ]); // raw: the text of the source changes, which the fingerprint gate would otherwise answer with a recompute
 
-      await createSemprecTickAction(pool, async () => {
+      await runTick(sourceId, async () => {
         throw new Error("A rejected card must not be recomputed");
-      })(
-        { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
-        { heartbeatId: "hb", projectItemId: "proj", itemId: sourceId },
-      );
+      });
 
       expect(storedFields(await storedCard(cardId))).toEqual(storedFields(rejected));
-    });
-
-    it("answers 404 for an unknown card id", async () => {
-      await expect(
-        createReopenProposalRouteHandler(pool)({ params: { id: randomUUID() }, body: {} }),
-      ).rejects.toBeInstanceOf(NotFoundError);
-    });
-
-    it("answers 404 for a soft-deleted card", async () => {
-      const cardId = await createDatabaseProposal("Buy milk");
-      await reject(cardId);
-      await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, proposalsId, cardId));
-
-      await expect(createReopenProposalRouteHandler(pool)({ params: { id: cardId }, body: {} })).rejects.toBeInstanceOf(
-        NotFoundError,
-      );
-    });
-
-    it("rejects a request with no `id` path parameter", async () => {
-      await expect(createReopenProposalRouteHandler(pool)({ params: {}, body: {} })).rejects.toThrow(ValidationError);
-    });
-
-    it("accepts a null body as a reopen without ifVersion", async () => {
-      const cardId = await createDatabaseProposal("Buy milk");
-      await reject(cardId);
-
-      const item = await reopen(cardId, null);
-
-      expect(item.properties.status).toBe("proposed");
     });
 
     it.each([
@@ -1606,10 +1327,7 @@ describe("inbox custom route handlers (issue #239)", () => {
     });
   });
 
-  describe("createReopenProposalRouteHandler on a confirmed card (issue #1943)", () => {
-    /** Higher than any version a card reaches in a test, so it never equals the version a card holds. */
-    const STALE_VERSION = "999999999";
-    const EVENT_DATE = "2024-03-01T12:00:00.000Z";
+  describe("createReopenProposalRouteHandler on a confirmed card", () => {
     let tasksId: string;
     let transcriptsId: string;
     let eventsId: string;
@@ -1622,39 +1340,15 @@ describe("inbox custom route handlers (issue #239)", () => {
       peopleId = await databaseIdFor("people");
     });
 
-    type Step = ProposalStep;
-
     /** A test that runs inside tenant zero, which the relation writes need for the value-link propagation they trigger. */
     function tenantIt(name: string, body: () => Promise<void>): void {
-      it(name, () => runInTenant(getTenantZeroId(), body));
-    }
-
-    function storedFields(item: ItemRow) {
-      return { id: item.id, properties: item.properties, updatedAt: item.updatedAt };
-    }
-
-    async function storedCard(cardId: string): Promise<ItemRow> {
-      const card = await itemsStore.getItemById(pool, proposalsId, cardId);
-      if (!card) throw new Error(`Card ${cardId} is missing`);
-      return card;
-    }
-
-    async function anyItem(itemId: string): Promise<ItemRow> {
-      const [item] = await itemsStore.getItemsByIdsIncludingDeleted(pool, [itemId]);
-      if (!item) throw new Error(`Item ${itemId} is missing`);
-      return item;
-    }
-
-    async function createIn(databaseId: string, properties: Record<string, unknown>): Promise<string> {
-      const item = await withTransaction(pool, (client) => createItemWithClient(client, { databaseId, properties }));
-      return item.id;
+      it(name, () => inTenant(body));
     }
 
     async function confirmCard(cardId: string, body: Record<string, unknown> = {}): Promise<ItemRow> {
-      const answer = await createConfirmProposalRouteHandler(pool)({ params: { id: cardId }, body });
-      if (!("item" in answer)) throw new Error("expected an item answer");
-      expect(answer.item.properties.status).toBe("confirmed");
-      return answer.item;
+      const item = itemOf(await confirm(cardId, body));
+      expect(item.properties.status).toBe("confirmed");
+      return item;
     }
 
     function callReopen(cardId: string, body: unknown = {}) {
@@ -1674,18 +1368,6 @@ describe("inbox custom route handlers (issue #239)", () => {
         [cardId],
       );
       return rows.map((row) => row.item_id);
-    }
-
-    async function edgeExists(a: string, b: string): Promise<boolean> {
-      const { rows } = await pool.query<{ n: number }>(
-        "SELECT count(*)::int AS n FROM item_relations WHERE (item_a = $1 AND item_b = $2) OR (item_a = $2 AND item_b = $1)",
-        [a, b],
-      );
-      return rows[0]!.n > 0;
-    }
-
-    function historyOf(item: ItemRow): unknown[] {
-      return z.array(z.unknown()).parse(item.properties.history);
     }
 
     async function writtenState(): Promise<string[]> {
@@ -1717,11 +1399,6 @@ describe("inbox custom route handlers (issue #239)", () => {
         ),
       );
       return card.id;
-    }
-
-    function stepsEnvelope(target: string, steps: Step[]): Record<string, unknown> {
-      const primary = steps.find((step) => step.role === "primary");
-      return { entityKind: "database", target, properties: primary?.properties ?? {}, operations: steps };
     }
 
     tenantIt(
@@ -1768,105 +1445,72 @@ describe("inbox custom route handlers (issue #239)", () => {
     tenantIt("lists the reopened card in GET /api/inbox/cards again", async () => {
       const cardId = await createDatabaseProposal("Buy milk");
       await confirmCard(cardId);
-      const userId = (await createTenantZeroUser(pool)).id;
-      const listed = async (): Promise<string[]> => {
-        const answer = await createInboxCardsRouteHandler(pool)({ identity: { user: { id: userId, locale: "en" } } });
-        if (!("body" in answer)) throw new Error("expected a raw JSON body");
-        return z
-          .object({ cards: z.array(z.object({ cardId: z.string() })) })
-          .parse(answer.body)
-          .cards.map((card) => card.cardId);
-      };
-      expect(await listed()).not.toContain(cardId);
+      expect(await listedCardIds()).not.toContain(cardId);
 
       await reopenCard(cardId);
 
-      expect(await listed()).toContain(cardId);
+      expect(await listedCardIds()).toContain(cardId);
     });
 
     tenantIt("announces the card to the stack and queues the Journal recompute", async () => {
       const cardId = await createDatabaseProposal("Buy milk");
       await confirmCard(cardId);
-      await pool.query(
-        `DELETE FROM graphile_worker._private_jobs
-         WHERE task_id IN (SELECT id FROM graphile_worker._private_tasks WHERE identifier = 'journalInboxRecompute')`,
-      ); // raw: the view over the jobs is read-only (graphile-worker 0.16); a job queued afterwards is the reopen's own
-      const events: InboxCardsInvalidationEvent[] = [];
-      setInboxCardsInvalidationHook((event) => events.push(event));
-      try {
-        await reopenCard(cardId);
-      } finally {
-        setInboxCardsInvalidationHook(() => {});
-      }
+      await clearRecomputeJobs(); // a job queued afterwards is the reopen's own
 
-      expect(events).toEqual([{ op: "updated", cardId }]);
-      const jobs = await pool.query<{ n: number }>(
-        "SELECT count(*)::int AS n FROM graphile_worker.jobs WHERE task_identifier = 'journalInboxRecompute'",
-      );
-      expect(jobs.rows[0]!.n).toBe(1);
+      expect(await cardInvalidations(() => reopenCard(cardId))).toEqual([{ op: "updated", cardId }]);
+      expect(await recomputeJobCount()).toBe(1);
     });
 
-    tenantIt(
-      "answers 409 version_conflict with the task when it was edited after the confirmation, and changes nothing",
-      async () => {
-        const cardId = await createDatabaseProposal("Buy milk");
-        const taskId = z.string().parse((await confirmCard(cardId)).properties.resultItemId);
-        await withTransaction(pool, (client) =>
-          updateItemWithClient(client, {
-            databaseId: tasksId,
-            itemId: taskId,
-            propertiesPatch: { name: "Buy oat milk" },
-          }),
-        );
-        const before = await writtenState();
-        const card = await storedCard(cardId);
+    it.each<[string, (taskId: string) => Promise<unknown>, Record<string, unknown>]>([
+      [
+        "was edited",
+        (taskId) =>
+          withTransaction(pool, (client) =>
+            updateItemWithClient(client, {
+              databaseId: tasksId,
+              itemId: taskId,
+              propertiesPatch: { name: "Buy oat milk" },
+            }),
+          ),
+        { databaseKey: "tasks", label: "Buy milk" },
+      ],
+      [
+        "was moved to the trash",
+        (taskId) => withTransaction(pool, (client) => itemsStore.softDeleteItem(client, tasksId, taskId)),
+        {},
+      ],
+      [
+        "was deleted for good",
+        async (taskId) => {
+          const task = await anyItem(taskId);
+          await withTransaction(pool, async (client) => {
+            await deleteItemDependents(client, task);
+            await client.query("DELETE FROM items WHERE id = $1", [taskId]); // raw: the purge of an expired Trash row
+          });
+        },
+        { databaseKey: "tasks" },
+      ],
+    ])(
+      "answers 409 version_conflict with the created task when it %s after the confirmation, and changes nothing",
+      (_name, change, details) =>
+        inTenant(async () => {
+          const cardId = await createDatabaseProposal("Buy milk");
+          const taskId = z.string().parse((await confirmCard(cardId)).properties.resultItemId);
+          await change(taskId);
+          const before = await writtenState();
+          const card = await storedCard(cardId);
 
-        await expect(callReopen(cardId)).rejects.toMatchObject({
-          status: 409,
-          code: "version_conflict",
-          details: { itemId: taskId, databaseKey: "tasks", label: "Buy milk" },
-        });
+          await expect(callReopen(cardId)).rejects.toMatchObject({
+            status: 409,
+            code: "version_conflict",
+            details: { itemId: taskId, ...details },
+          });
 
-        expect(await writtenState()).toEqual(before);
-        expect(await storedCard(cardId)).toEqual(card);
-        expect(card.properties.status).toBe("confirmed");
-        expect((await anyItem(taskId)).properties.name).toBe("Buy oat milk");
-      },
+          expect(await writtenState()).toEqual(before);
+          expect(await storedCard(cardId)).toEqual(card);
+          expect(card.properties.status).toBe("confirmed");
+        }),
     );
-
-    tenantIt("answers 409 when the created task was moved to the trash after the confirmation", async () => {
-      const cardId = await createDatabaseProposal("Buy milk");
-      const taskId = z.string().parse((await confirmCard(cardId)).properties.resultItemId);
-      await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, tasksId, taskId));
-      const before = await writtenState();
-
-      await expect(callReopen(cardId)).rejects.toMatchObject({
-        status: 409,
-        code: "version_conflict",
-        details: { itemId: taskId },
-      });
-
-      expect(await writtenState()).toEqual(before);
-    });
-
-    tenantIt("answers 409 when the created task was deleted for good after the confirmation", async () => {
-      const cardId = await createDatabaseProposal("Buy milk");
-      const taskId = z.string().parse((await confirmCard(cardId)).properties.resultItemId);
-      const task = await anyItem(taskId);
-      await withTransaction(pool, async (client) => {
-        await deleteItemDependents(client, task);
-        await client.query("DELETE FROM items WHERE id = $1", [taskId]); // raw: the purge of an expired Trash row
-      });
-      const before = await writtenState();
-
-      await expect(callReopen(cardId)).rejects.toMatchObject({
-        status: 409,
-        code: "version_conflict",
-        details: { itemId: taskId, databaseKey: "tasks" },
-      });
-
-      expect(await writtenState()).toEqual(before);
-    });
 
     tenantIt(
       "checks ifVersion after the status: a stale one answers 409 with the card, the current one reopens it",
@@ -2079,63 +1723,6 @@ describe("inbox custom route handlers (issue #239)", () => {
     });
 
     describe("transcript cards", () => {
-      async function createTranscript(name: string): Promise<string> {
-        return withTransaction(pool, async (client) => {
-          const transcript = await createItemWithClient(
-            client,
-            { databaseId: transcriptsId, properties: { name, date: EVENT_DATE } },
-            { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
-          );
-          return transcript.id;
-        });
-      }
-
-      async function propertyIdFor(databaseId: string, key: string): Promise<string> {
-        const { rows } = await pool.query<{ id: string }>(
-          "SELECT id FROM properties WHERE database_id = $1 AND key = $2",
-          [databaseId, key],
-        );
-        if (!rows[0]) throw new Error(`Property '${key}' was not seeded`);
-        return rows[0].id;
-      }
-
-      async function onlyTranscriptCardId(): Promise<string> {
-        const { rows } = await pool.query<{ id: string }>(
-          "SELECT id FROM items WHERE database_id = $1 AND properties->>'kind' = 'transcript' AND deleted_at IS NULL",
-          [proposalsId],
-        );
-        if (rows.length !== 1 || !rows[0]) throw new Error(`Expected one transcript card, found ${rows.length}`);
-        return rows[0].id;
-      }
-
-      /** A transcript with one speaker, its Event with a participant person, and the card that proposes that person for the speaker. */
-      async function createSpeakerCard() {
-        const transcriptId = await createTranscript("Speaker fixture");
-        const personId = await createIn(peopleId, { name: "Alice" });
-        const eventId = await createIn(eventsId, { name: "Meeting", type: "meeting", date: EVENT_DATE });
-        await withTransaction(pool, async (client) => {
-          await itemsStore.writeComputed(client, transcriptsId, transcriptId, "segments", [
-            { speaker: "SPEAKER_01", text: "Hello", startsAt: 0, endsAt: 1 },
-          ]);
-          // The suggestion is proposed only for a person who took part in the transcript's Event.
-          await createRelationWithClient(client, {
-            relationPropertyId: await propertyIdFor(eventsId, "people"),
-            callerItemId: eventId,
-            targetItemId: personId,
-          });
-          await createRelationWithClient(client, {
-            relationPropertyId: await propertyIdFor(transcriptsId, "event"),
-            callerItemId: transcriptId,
-            targetItemId: eventId,
-          });
-          await proposeSpeakerMappings(client, {
-            transcriptId,
-            suggestions: [{ speaker: "SPEAKER_01", personId, reason: "Recognized from the discussion" }],
-          });
-        });
-        return { cardId: await onlyTranscriptCardId(), transcriptId, personId, eventId };
-      }
-
       /** The transcript's edges to `personId` through its `speakers` relation: the derived `people` links to the same person are not these. */
       async function speakerEdgeMetadata(transcriptId: string, personId: string): Promise<unknown[]> {
         const { rows } = await pool.query<{ metadata: unknown }>(
@@ -2450,17 +2037,7 @@ describe("inbox custom route handlers (issue #239)", () => {
         const newArea = await createIn(await databaseIdFor("areas"), { name: "New" });
         const projectsDb = await databaseIdFor("projects");
         const projectId = await createIn(projectsDb, { name: "Before" });
-        const areaProperty = await withTransaction(pool, (client) =>
-          propertiesStore.getPropertyByKey(client, projectsDb, "area"),
-        );
-        if (!areaProperty) throw new Error("Projects has no area property");
-        await withTransaction(pool, (client) =>
-          createRelationWithClient(client, {
-            relationPropertyId: areaProperty.id,
-            callerItemId: projectId,
-            targetItemId: oldArea,
-          }),
-        );
+        await relate(projectsDb, "area", projectId, oldArea);
         const cardId = await createCardWith(
           stepsEnvelope(projectsDb, [
             {
@@ -2494,17 +2071,7 @@ describe("inbox custom route handlers (issue #239)", () => {
         const newArea = await createIn(await databaseIdFor("areas"), { name: "New" });
         const projectsDb = await databaseIdFor("projects");
         const projectId = await createIn(projectsDb, { name: "Project" });
-        const areaProperty = await withTransaction(pool, (client) =>
-          propertiesStore.getPropertyByKey(client, projectsDb, "area"),
-        );
-        if (!areaProperty) throw new Error("Projects has no area property");
-        await withTransaction(pool, (client) =>
-          createRelationWithClient(client, {
-            relationPropertyId: areaProperty.id,
-            callerItemId: projectId,
-            targetItemId: oldArea,
-          }),
-        );
+        await relate(projectsDb, "area", projectId, oldArea);
         const cardId = await createCardWith(
           stepsEnvelope(projectsDb, [
             {
@@ -2591,18 +2158,8 @@ describe("inbox custom route handlers (issue #239)", () => {
         const areaId = await createIn(await databaseIdFor("areas"), { name: "Area" });
         const projectsDb = await databaseIdFor("projects");
         const projectId = await createIn(projectsDb, { name: "Project" });
-        const areaProperty = await withTransaction(pool, (client) =>
-          propertiesStore.getPropertyByKey(client, projectsDb, "area"),
-        );
-        if (!areaProperty) throw new Error("Projects has no area property");
         // The user linked the pair by hand before the card was confirmed; the confirm writes the same pair again.
-        await withTransaction(pool, (client) =>
-          createRelationWithClient(client, {
-            relationPropertyId: areaProperty.id,
-            callerItemId: projectId,
-            targetItemId: areaId,
-          }),
-        );
+        await relate(projectsDb, "area", projectId, areaId);
         const cardId = await createCardWith(
           stepsEnvelope(await databaseIdFor("companies"), [
             { ref: "company", op: "create", databaseKey: "companies", role: "primary", properties: { name: "Acme" } },
@@ -2623,18 +2180,7 @@ describe("inbox custom route handlers (issue #239)", () => {
         const eventId = await createIn(eventsDb, { name: "Meeting", type: "meeting", date: EVENT_DATE });
         const alice = await createIn(peopleDb, { name: "Alice" });
         const bob = await createIn(peopleDb, { name: "Bob" });
-        const peopleProperty = await withTransaction(pool, (client) =>
-          propertiesStore.getPropertyByKey(client, eventsDb, "people"),
-        );
-        if (!peopleProperty) throw new Error("Events has no people property");
-        await withTransaction(pool, (client) =>
-          createRelationWithClient(client, {
-            relationPropertyId: peopleProperty.id,
-            callerItemId: eventId,
-            targetItemId: alice,
-            metadata: { role: "attendee" },
-          }),
-        );
+        await relate(eventsDb, "people", eventId, alice, { role: "attendee" });
         const cardId = await createCardWith(
           stepsEnvelope(eventsDb, [
             {
@@ -2746,63 +2292,19 @@ describe("inbox custom route handlers (issue #239)", () => {
       }
 
       async function cardWithAttachmentMove(): Promise<{ cardId: string; inboxItemId: string }> {
-        const type = await withTransaction(pool, (client) =>
-          createInboxTypeWithClient(client, {
-            inboxItemTypesDatabaseId: typesId,
-            name: "Task",
-            emoji: "☑️",
-            processingMethod: "database",
-            targetDatabase: "tasks",
-          }),
-        );
-        const item = await withTransaction(pool, (client) =>
-          createInboxItemWithClient(client, {
-            inboxDatabaseId: inboxId,
-            date: "2026-08-28",
-            time: "09:00",
-            text: "Pay the invoice",
-            type: type.id,
-          }),
-        );
-        const attachmentId = await withTransaction(pool, async (client) => {
-          const blob = await createBlob(client, {
-            mimeType: "application/pdf",
-            byteSize: 2048,
-            storageKey: `blobs/${randomUUID()}`,
-          });
-          await insertInboxAttachments(client, item.id, [{ blobId: blob.id, source: "camera" }]);
-          const [attachment] = await listInboxAttachments(client, [item.id]);
-          if (!attachment) throw new Error("The attachment was not stored");
-          return attachment.attachmentId;
+        const { blobId } = await newFileValue();
+        let attachmentId = "";
+        // The attachment exists when the tick reads the item, as it does for a capture.
+        const cardId = await createDatabaseProposal("Pay the invoice", async (itemId) => {
+          attachmentId = await attachBlob(itemId, blobId);
         });
-        await createSemprecTickAction(pool, async () => ({ properties: { name: "Pay the invoice" } }))(
-          { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
-          { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
-        );
-        const { rows } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [proposalsId]);
-        const cardId = rows[0]!.id;
-        const steps: Step[] = [
+        const inboxItemId = await onlyInboxItemId();
+        const envelope = stepsEnvelope(tasksId, [
           { ref: "task", op: "create", databaseKey: "tasks", role: "primary", properties: { name: "Pay the invoice" } },
-          {
-            ref: "file",
-            op: "fileFromAttachment",
-            role: "secondary",
-            properties: { attachmentId, name: "Invoice" },
-          },
-        ];
-        const envelope = stepsEnvelope(tasksId, steps);
-        await withTransaction(pool, (client) =>
-          updateItemWithClient(
-            client,
-            {
-              databaseId: proposalsId,
-              itemId: cardId,
-              propertiesPatch: { proposal: envelope, aiProposal: envelope },
-            },
-            { allowedSystemKeys: ["proposal", "aiProposal"] },
-          ),
-        );
-        return { cardId, inboxItemId: item.id };
+          { ref: "file", op: "fileFromAttachment", role: "secondary", properties: { attachmentId, name: "Invoice" } },
+        ]);
+        await patchCard(cardId, { proposal: envelope, aiProposal: envelope });
+        return { cardId, inboxItemId };
       }
 
       tenantIt("reverses the other steps, keeps the Files item live and lists it in keptItems", async () => {
@@ -2852,19 +2354,12 @@ describe("inbox custom route handlers (issue #239)", () => {
 
     tenantIt("removes the credential stored for a created MCP server, and trashes the server", async () => {
       const cardId = await createDatabaseProposal("seed");
-      const mcpServersId = await databaseIdFor("mcpServers");
       const envelope = {
         entityKind: "database",
-        target: mcpServersId,
+        target: await databaseIdFor("mcpServers"),
         properties: { name: "Remote tool", connectionConfig: { transport: "sse", url: "https://mcp.example.com/sse" } },
       };
-      await withTransaction(pool, (client) =>
-        updateItemWithClient(
-          client,
-          { databaseId: proposalsId, itemId: cardId, propertiesPatch: { proposal: envelope, aiProposal: envelope } },
-          { allowedSystemKeys: ["proposal", "aiProposal"] },
-        ),
-      );
+      await patchCard(cardId, { proposal: envelope, aiProposal: envelope });
       const confirmed = await confirmCard(cardId, { credential: { credentialType: "api_key", plaintext: "sk-test" } });
       const serverId = z.string().parse(confirmed.properties.resultItemId);
       expect(await withTransaction(pool, (client) => hasCredential(client, serverId))).toBe(true);
@@ -2875,76 +2370,44 @@ describe("inbox custom route handlers (issue #239)", () => {
       expect((await anyItem(serverId)).deletedAt).not.toBeNull();
     });
 
-    tenantIt("refuses a confirmed card that recorded no results, and changes nothing", async () => {
-      const cardId = await createDatabaseProposal("Buy milk");
-      await withTransaction(pool, (client) =>
-        updateItemWithClient(
-          client,
-          { databaseId: proposalsId, itemId: cardId, propertiesPatch: { status: "confirmed" } },
-          { allowedSystemKeys: ["status"] },
-        ),
-      );
-      const before = await storedCard(cardId);
-
-      await expect(callReopen(cardId)).rejects.toMatchObject({
-        status: 400,
-        code: "validation_failed",
-        details: { field: "results" },
-      });
-
-      expect(await storedCard(cardId)).toEqual(before);
-    });
-
-    tenantIt("refuses a confirmed card with no stored envelope", async () => {
-      const cardId = await createDatabaseProposal("Buy milk");
-      await confirmCard(cardId);
-      await withTransaction(pool, (client) =>
-        updateItemWithClient(
-          client,
-          { databaseId: proposalsId, itemId: cardId, propertiesPatch: { proposal: null } },
-          { allowedSystemKeys: ["proposal"] },
-        ),
-      );
-
-      await expect(callReopen(cardId)).rejects.toMatchObject({
-        status: 400,
-        code: "validation_failed",
-        details: { field: "proposal" },
-      });
-    });
-
-    tenantIt(
-      "refuses a confirmed card whose envelope has an entityKind this release does not know with 409",
-      async () => {
+    it.each<[string, boolean, Record<string, unknown>, Record<string, unknown>]>([
+      [
+        "that recorded no results",
+        false,
+        { status: "confirmed" },
+        { status: 400, code: "validation_failed", details: { field: "results" } },
+      ],
+      [
+        "with no stored envelope",
+        true,
+        { proposal: null },
+        { status: 400, code: "validation_failed", details: { field: "proposal" } },
+      ],
+      [
+        "whose envelope has an entityKind this release does not know",
+        true,
+        { proposal: { entityKind: "futureKind", target: "x", properties: {} } },
+        { status: 409, details: { field: "entityKind" } },
+      ],
+    ])("refuses a confirmed card %s, and changes nothing", (_name, confirmFirst, patch, refusal) =>
+      inTenant(async () => {
         const cardId = await createDatabaseProposal("Buy milk");
-        await confirmCard(cardId);
-        const unknown = { entityKind: "futureKind", target: "x", properties: {} };
-        await withTransaction(pool, (client) =>
-          updateItemWithClient(
-            client,
-            { databaseId: proposalsId, itemId: cardId, propertiesPatch: { proposal: unknown } },
-            { allowedSystemKeys: ["proposal"] },
-          ),
-        );
+        if (confirmFirst) await confirmCard(cardId);
+        await patchCard(cardId, patch);
+        const before = await storedCard(cardId);
 
-        await expect(callReopen(cardId)).rejects.toMatchObject({ status: 409, details: { field: "entityKind" } });
-      },
+        await expect(callReopen(cardId)).rejects.toMatchObject(refusal);
+
+        expect(await storedCard(cardId)).toEqual(before);
+      }),
     );
   });
 
-  describe("ifVersion on confirm and reject (issue #1852)", () => {
-    /** Higher than any version a card reaches in a test, so it never equals the version a card holds. */
-    const STALE_VERSION = "999999999";
+  describe("ifVersion on confirm and reject", () => {
     const handlers = { confirm: createConfirmProposalRouteHandler, reject: createRejectProposalRouteHandler } as const;
     type Action = keyof typeof handlers;
     const ACTIONS: Action[] = ["confirm", "reject"];
     const TERMINAL_STATUS: Record<Action, string> = { confirm: "confirmed", reject: "rejected" };
-
-    async function storedCard(cardId: string): Promise<ItemRow> {
-      const card = await itemsStore.getItemById(pool, proposalsId, cardId);
-      if (!card) throw new Error(`Card ${cardId} is missing`);
-      return card;
-    }
 
     async function writtenState(cardId: string): Promise<{ items: string[]; jobs: number; card: ItemRow }> {
       const items = await pool.query<{ id: string; updated_at: Date }>("SELECT id, updated_at FROM items ORDER BY id");
@@ -2958,11 +2421,6 @@ describe("inbox custom route handlers (issue #239)", () => {
 
     function call(action: Action, cardId: string, body: Record<string, unknown>) {
       return handlers[action](pool)({ params: { id: cardId }, body });
-    }
-
-    function itemOf(answer: Awaited<ReturnType<typeof call>>): ItemRow {
-      if (!("item" in answer)) throw new Error("expected an item answer");
-      return answer.item;
     }
 
     it.each(ACTIONS)(
@@ -3019,30 +2477,30 @@ describe("inbox custom route handlers (issue #239)", () => {
       await expect(call(action, randomUUID(), { ifVersion: STALE_VERSION })).rejects.toBeInstanceOf(NotFoundError);
     });
 
-    it("confirm: a rejected card answers 400 on status with its current status, also with a stale ifVersion", async () => {
-      const cardId = await createDatabaseProposal("Buy milk");
-      await call("reject", cardId, {});
-      const before = await writtenState(cardId);
+    it.each([
+      ["confirm", "reject", "rejected"],
+      ["reject", "confirm", "confirmed"],
+    ] as const)(
+      "%s: a card that is %sed answers 400 on status with its current status, also with a stale ifVersion",
+      async (action, decided, currentStatus) => {
+        const cardId = await createDatabaseProposal("Buy milk");
+        await call(decided, cardId, {});
+        const before = await writtenState(cardId);
 
-      for (const body of [{}, { ifVersion: STALE_VERSION }]) {
-        await expect(call("confirm", cardId, body)).rejects.toMatchObject({
-          status: 400,
-          code: "validation_failed",
-          details: { field: "status", currentStatus: "rejected" },
-        });
-      }
-      expect(await writtenState(cardId)).toEqual(before);
-    });
+        for (const body of [{}, { ifVersion: STALE_VERSION }]) {
+          await expect(call(action, cardId, body)).rejects.toMatchObject({
+            status: 400,
+            code: "validation_failed",
+            details: { field: "status", currentStatus },
+          });
+        }
+        expect(await writtenState(cardId)).toEqual(before);
+      },
+    );
 
     it("confirm: a card that needs clarification answers 400 on status with its current status", async () => {
       const cardId = await createDatabaseProposal("Buy milk");
-      await withTransaction(pool, (client) =>
-        updateItemWithClient(
-          client,
-          { databaseId: proposalsId, itemId: cardId, propertiesPatch: { status: "needsClarification" } },
-          { allowedSystemKeys: ["status"] },
-        ),
-      );
+      await patchCard(cardId, { status: "needsClarification" });
       const { version } = await storedCard(cardId);
 
       await expect(call("confirm", cardId, { ifVersion: version })).rejects.toMatchObject({
@@ -3068,21 +2526,6 @@ describe("inbox custom route handlers (issue #239)", () => {
       });
     });
 
-    it("reject: a confirmed card answers 400 on status with its current status, also with a stale ifVersion", async () => {
-      const cardId = await createDatabaseProposal("Buy milk");
-      await call("confirm", cardId, {});
-      const before = await writtenState(cardId);
-
-      for (const body of [{}, { ifVersion: STALE_VERSION }]) {
-        await expect(call("reject", cardId, body)).rejects.toMatchObject({
-          status: 400,
-          code: "validation_failed",
-          details: { field: "status", currentStatus: "confirmed" },
-        });
-      }
-      expect(await writtenState(cardId)).toEqual(before);
-    });
-
     it.each(ACTIONS)("%s: a malformed ifVersion answers 400 on the field and writes nothing", async (action) => {
       const cardId = await createDatabaseProposal("Buy milk");
       const before = await writtenState(cardId);
@@ -3098,16 +2541,13 @@ describe("inbox custom route handlers (issue #239)", () => {
     });
   });
 
-  describe("createReviseProposalRouteHandler (issue #1870)", () => {
-    const EVENT_DATE = "2024-03-01T12:00:00.000Z";
+  describe("createReviseProposalRouteHandler", () => {
     let dataPool: Pool;
-    let transcriptsId: string;
     let eventsId: string;
     let peopleId: string;
 
     beforeEach(async () => {
-      dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
-      transcriptsId = await databaseIdFor("transcripts");
+      dataPool = createDataPool();
       eventsId = await databaseIdFor("events");
       peopleId = await databaseIdFor("people");
     });
@@ -3115,11 +2555,6 @@ describe("inbox custom route handlers (issue #239)", () => {
     afterEach(async () => {
       await dataPool.end();
     });
-
-    /** Runs `body` inside tenant zero, so everything below goes through the runtime role and its row-level security. */
-    function inTenant<T>(body: () => Promise<T>): Promise<T> {
-      return runInTenant(getTenantZeroId(), body);
-    }
 
     function callRevise(cardId: string, body: unknown, identity?: { user: { id: string } }) {
       return inTenant(() =>
@@ -3135,105 +2570,11 @@ describe("inbox custom route handlers (issue #239)", () => {
       return card;
     }
 
-    function historyOf(card: { properties: Record<string, unknown> }): Array<Record<string, unknown>> {
-      const history = card.properties.history;
-      if (!Array.isArray(history)) throw new Error("Card has no history");
-      return history as Array<Record<string, unknown>>;
-    }
-
-    async function createEvent(name: string): Promise<string> {
-      const event = await inTenant(() =>
-        withTransaction(dataPool, (client) =>
-          createItemWithClient(client, {
-            databaseId: eventsId,
-            properties: { name, type: "meeting", date: EVENT_DATE },
-          }),
-        ),
-      );
-      return event.id;
-    }
-
-    async function createTranscript(name: string): Promise<string> {
-      const transcript = await inTenant(() =>
-        withTransaction(dataPool, (client) =>
-          createItemWithClient(
-            client,
-            { databaseId: transcriptsId, properties: { name, date: EVENT_DATE } },
-            { allowedSystemKeys: ["date"], systemOwnerProcess: TRANSCRIPTION_OWNER_PROCESS },
-          ),
-        ),
-      );
-      return transcript.id;
-    }
-
-    async function onlyTranscriptCardId(): Promise<string> {
-      const { rows } = await pool.query<{ id: string }>(
-        "SELECT id FROM items WHERE database_id = $1 AND properties->>'kind' = 'transcript' AND deleted_at IS NULL",
-        [proposalsId],
-      );
-      if (rows.length !== 1 || !rows[0]) throw new Error(`Expected one transcript card, found ${rows.length}`);
-      return rows[0].id;
-    }
-
-    async function createEventCard(): Promise<string> {
-      const transcriptId = await createTranscript("Weekly sync");
-      await inTenant(() =>
-        withTransaction(dataPool, (client) => matchTranscriptToEvent(client, { transcriptId, durationSeconds: 3600 })),
-      );
-      return onlyTranscriptCardId();
-    }
-
-    async function createSpeakerCard(): Promise<{ cardId: string; personId: string }> {
-      const transcriptId = await createTranscript("Speaker fixture");
-      const person = await inTenant(() =>
-        withTransaction(dataPool, (client) =>
-          createItemWithClient(client, { databaseId: peopleId, properties: { name: "Alice" } }),
-        ),
-      );
-      const meetingId = await createEvent("Meeting");
-      const propertyIdFor = async (databaseId: string, key: string): Promise<string> => {
-        const { rows } = await pool.query<{ id: string }>(
-          "SELECT id FROM properties WHERE database_id = $1 AND key = $2",
-          [databaseId, key],
-        );
-        if (!rows[0]) throw new Error(`Property '${key}' was not seeded`);
-        return rows[0].id;
-      };
-      const eventPeopleId = await propertyIdFor(eventsId, "people");
-      const transcriptEventId = await propertyIdFor(transcriptsId, "event");
-      await inTenant(() =>
-        withTransaction(dataPool, async (client) => {
-          await itemsStore.writeComputed(client, transcriptsId, transcriptId, "segments", [
-            { speaker: "SPEAKER_01", text: "Hello", startsAt: 0, endsAt: 1 },
-          ]);
-          await createRelationWithClient(client, {
-            relationPropertyId: eventPeopleId,
-            callerItemId: meetingId,
-            targetItemId: person.id,
-          });
-          await createRelationWithClient(client, {
-            relationPropertyId: transcriptEventId,
-            callerItemId: transcriptId,
-            targetItemId: meetingId,
-          });
-          await proposeSpeakerMappings(client, {
-            transcriptId,
-            suggestions: [{ speaker: "SPEAKER_01", personId: person.id, reason: "Recognized from the discussion" }],
-          });
-        }),
-      );
-      return { cardId: await onlyTranscriptCardId(), personId: person.id };
-    }
-
-    function linkEvent(eventId: string) {
-      return { entityKind: "relation", target: eventId, properties: { propertyKey: "event" } };
-    }
+    const createEvent = (name: string) => createIn(eventsId, { name, type: "meeting", date: EVENT_DATE });
+    const createEventCard = async () => (await createUnmatchedTranscriptCard()).cardId;
 
     it("runs through the runtime role, which neither bypasses row-level security nor is a superuser", async () => {
-      const role = await dataPool.query<{ name: string; bypass: boolean; superuser: boolean }>(
-        "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
-      );
-      expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
+      await expectRuntimeRole(dataPool);
     });
 
     it("revises a transcript Event card to another live Event without a message", async () => {
@@ -3443,14 +2784,10 @@ describe("inbox custom route handlers (issue #239)", () => {
 
     it("revises a speaker-mapping card to another person", async () => {
       const { cardId } = await createSpeakerCard();
-      const other = await inTenant(() =>
-        withTransaction(dataPool, (client) =>
-          createItemWithClient(client, { databaseId: peopleId, properties: { name: "Bob" } }),
-        ),
-      );
+      const other = await createIn(peopleId, { name: "Bob" });
       const envelope = {
         entityKind: "relation",
-        target: other.id,
+        target: other,
         properties: { propertyKey: "speakers", metadata: { speaker: "SPEAKER_01" } },
       };
 
@@ -3489,127 +2826,49 @@ describe("inbox custom route handlers (issue #239)", () => {
     it("answers an unknown id, an id of another database and a trashed card alike with not found", async () => {
       const cardId = await createEventCard();
       const eventId = await createEvent("Planning");
-      const body = { message: "Note" };
-      const answers: unknown[] = [];
-
-      for (const id of ["00000000-0000-0000-0000-000000000000", eventId]) {
-        const error = await callRevise(id, body).catch((e: unknown) => e);
-        expect(error).toBeInstanceOf(NotFoundError);
-        answers.push({ status: (error as NotFoundError).status, code: (error as NotFoundError).code });
-      }
       await inTenant(() =>
         withTransaction(dataPool, (client) => itemsStore.softDeleteItem(client, proposalsId, cardId)),
       );
-      const trashed = await callRevise(cardId, body).catch((e: unknown) => e);
-      expect(trashed).toBeInstanceOf(NotFoundError);
-      answers.push({ status: (trashed as NotFoundError).status, code: (trashed as NotFoundError).code });
 
-      expect(answers).toEqual([
-        { status: 404, code: "not_found" },
-        { status: 404, code: "not_found" },
-        { status: 404, code: "not_found" },
-      ]);
-    });
-
-    it("rejects a request with no `id` path parameter", async () => {
-      await expect(
-        inTenant(() => createReviseProposalRouteHandler(dataPool)({ params: {}, body: { message: "x" } })),
-      ).rejects.toThrow(ValidationError);
+      for (const id of [randomUUID(), eventId, cardId]) {
+        const error = await failureOf(callRevise(id, { message: "Note" }));
+        expect(error).toBeInstanceOf(NotFoundError);
+        expect(error).toMatchObject({ status: 404, code: "not_found" });
+      }
     });
 
     it("addresses realtime invalidation to the authenticated user", async () => {
       const cardId = await createEventCard();
       const userId = randomUUID();
-      const events: InvalidationEvent[] = [];
-      setInvalidationHook((event) => events.push(event));
-      try {
-        await callRevise(cardId, { message: "Note" }, { user: { id: userId } });
-      } finally {
-        setInvalidationHook(() => {});
-      }
-      const itemEvents = events.filter((event) => event.scope === "item");
-      expect(itemEvents.length).toBeGreaterThanOrEqual(1);
-      expect(itemEvents.every((event) => event.userId === userId)).toBe(true);
+
+      const events = await itemInvalidations(() => callRevise(cardId, { message: "Note" }, { user: { id: userId } }));
+
+      expect(events.length).toBeGreaterThanOrEqual(1);
+      expect(events.every((event) => event.userId === userId)).toBe(true);
     });
   });
 
-  describe("createUpdateProposalValuesRouteHandler (issue #1892)", () => {
-    async function readCard(id: string): Promise<ItemRow> {
-      const card = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, id));
-      if (!card) throw new Error(`card ${id} not found`);
-      return card;
-    }
-
+  describe("createUpdateProposalValuesRouteHandler", () => {
     it("edits the card, a thin mapping onto updateProposalValuesWithClient", async () => {
       const proposalId = await createDatabaseProposal("Buy milk");
-      const handler = createUpdateProposalValuesRouteHandler(pool);
 
-      const result = await handler({
-        params: { id: proposalId },
-        body: { set: { primary: { name: "Buy oat milk" } } },
+      const result = await updateValues(proposalId, { set: { primary: { name: "Buy oat milk" } } });
+
+      expect(result).toMatchObject({ status: 200, warnings: [] });
+      expect(itemOf(result).id).toBe(proposalId);
+      expect(itemOf(result).properties.userEditedKeys).toEqual(["primary.name"]);
+      expect((await storedCard(proposalId)).properties.proposal).toMatchObject({
+        properties: { name: "Buy oat milk" },
       });
-
-      expect(result.status).toBe(200);
-      expect("item" in result && result.item.id).toBe(proposalId);
-      expect("item" in result && result.item.properties.userEditedKeys).toEqual(["primary.name"]);
-      expect("warnings" in result && result.warnings).toEqual([]);
-      expect((await readCard(proposalId)).properties.proposal).toMatchObject({ properties: { name: "Buy oat milk" } });
     });
 
     it("answers a required warning for a field the edit left empty, and saves the card", async () => {
       const proposalId = await createDatabaseProposal("Buy milk");
-      const handler = createUpdateProposalValuesRouteHandler(pool);
 
-      const result = await handler({ params: { id: proposalId }, body: { set: { primary: { name: "" } } } });
+      const result = await updateValues(proposalId, { set: { primary: { name: "" } } });
 
-      expect(result.status).toBe(200);
-      expect("warnings" in result && result.warnings).toEqual([{ field: "name", code: "required" }]);
-      expect((await readCard(proposalId)).properties.proposal).toMatchObject({ properties: { name: "" } });
-    });
-
-    it("passes a current ifVersion through", async () => {
-      const proposalId = await createDatabaseProposal("Buy milk");
-      const handler = createUpdateProposalValuesRouteHandler(pool);
-
-      const result = await handler({
-        params: { id: proposalId },
-        body: { set: { primary: { name: "Buy oat milk" } }, ifVersion: (await readCard(proposalId)).version },
-      });
-
-      expect(result.status).toBe(200);
-    });
-
-    it("answers a stale ifVersion with a version conflict that carries the current card, and writes nothing", async () => {
-      const proposalId = await createDatabaseProposal("Buy milk");
-      const stale = (await readCard(proposalId)).version;
-      const handler = createUpdateProposalValuesRouteHandler(pool);
-      await handler({ params: { id: proposalId }, body: { set: { primary: { name: "First" } } } });
-      const before = await readCard(proposalId);
-
-      const error = await handler({
-        params: { id: proposalId },
-        body: { set: { primary: { name: "Second" } }, ifVersion: stale },
-      }).then(
-        () => null,
-        (err: unknown) => err,
-      );
-
-      expect(error).toBeInstanceOf(ConflictError);
-      expect(error).toMatchObject({ status: 409, code: "version_conflict" });
-      expect(error).toHaveProperty("details.current.id", proposalId);
-      expect(await readCard(proposalId)).toEqual(before);
-    });
-
-    it("rejects a request with no `id` path parameter", async () => {
-      const handler = createUpdateProposalValuesRouteHandler(pool);
-      await expect(handler({ params: {}, body: { set: { primary: { name: "x" } } } })).rejects.toThrow(ValidationError);
-    });
-
-    it("rejects an unknown proposal id", async () => {
-      const handler = createUpdateProposalValuesRouteHandler(pool);
-      await expect(
-        handler({ params: { id: randomUUID() }, body: { set: { primary: { name: "x" } } } }),
-      ).rejects.toThrow(NotFoundError);
+      expect(result).toMatchObject({ status: 200, warnings: [{ field: "name", code: "required" }] });
+      expect((await storedCard(proposalId)).properties.proposal).toMatchObject({ properties: { name: "" } });
     });
 
     it.each([
@@ -3644,275 +2903,168 @@ describe("inbox custom route handlers (issue #239)", () => {
       ["a step with another key beside enabled", { steps: { followup: { enabled: true, name: "x" } } }, "steps"],
     ])("rejects %s with a ValidationError and writes nothing", async (_label, body, field) => {
       const proposalId = await createDatabaseProposal("Buy milk");
-      const before = await readCard(proposalId);
-      const handler = createUpdateProposalValuesRouteHandler(pool);
+      const before = await storedCard(proposalId);
 
-      const error = await handler({ params: { id: proposalId }, body }).then(
-        () => null,
-        (err: unknown) => err,
-      );
+      const error = await failureOf(updateValues(proposalId, body));
 
       expect(error).toBeInstanceOf(ValidationError);
       if (field !== undefined) expect(error).toHaveProperty("details.field", field);
-      expect(await readCard(proposalId)).toEqual(before);
+      expect(await storedCard(proposalId)).toEqual(before);
     });
 
-    it("edits relation lists and step switches, a thin mapping onto updateProposalValuesWithClient (issue #1920)", async () => {
+    it("edits relation lists and step switches, a thin mapping onto updateProposalValuesWithClient", async () => {
       const proposalId = await createDatabaseProposal("Buy milk");
-      const project = await withTransaction(pool, async (client) => {
-        const projects = await getDatabaseByModuleId(client, "projects");
-        if (!projects) throw new Error("Projects database missing");
-        return createItemWithClient(client, { databaseId: projects.id, properties: { name: "Shopping" } });
-      });
-      const handler = createUpdateProposalValuesRouteHandler(pool);
+      const projectId = await createIn(await databaseIdFor("projects"), { name: "Shopping" });
 
-      const result = await handler({
-        params: { id: proposalId },
-        body: { relations: { primary: { project: [project.id] } } },
-      });
+      const result = await updateValues(proposalId, { relations: { primary: { project: [projectId] } } });
 
-      expect(result.status).toBe(200);
-      expect("item" in result && result.item.properties.userEditedKeys).toEqual(["primary.relations.project"]);
-      expect("item" in result && result.item.properties.proposal).toMatchObject({
-        relations: { project: [project.id] },
-      });
-      expect("warnings" in result && result.warnings).toEqual([]);
+      expect(result).toMatchObject({ status: 200, warnings: [] });
+      expect(itemOf(result).properties.userEditedKeys).toEqual(["primary.relations.project"]);
+      expect(itemOf(result).properties.proposal).toMatchObject({ relations: { project: [projectId] } });
     });
 
-    it("refuses to switch the primary step off with a ValidationError and writes nothing", async () => {
+    it.each([
+      [
+        "to switch the primary step off",
+        { steps: { primary: { enabled: false } } },
+        { ref: "primary", field: "enabled" },
+      ],
+      ["a reserved key in set", { set: { primary: { enabled: false } } }, { ref: "primary", field: "enabled" }],
+      [
+        "a relation list for a ref the card does not have",
+        { relations: { followup: { project: [PROJECT_ID] } } },
+        { ref: "followup", field: "followup" },
+      ],
+      [
+        "a step switch for a ref the card does not have",
+        { steps: { followup: { enabled: false } } },
+        { ref: "followup", field: "followup" },
+      ],
+    ])("refuses %s with a ValidationError naming it, and writes nothing", async (_label, body, details) => {
       const proposalId = await createDatabaseProposal("Buy milk");
-      const before = await readCard(proposalId);
+      const before = await storedCard(proposalId);
 
-      const error = await createUpdateProposalValuesRouteHandler(pool)({
-        params: { id: proposalId },
-        body: { steps: { primary: { enabled: false } } },
-      }).then(
-        () => null,
-        (err: unknown) => err,
-      );
+      const error = await failureOf(updateValues(proposalId, body));
 
       expect(error).toBeInstanceOf(ValidationError);
-      expect(error).toHaveProperty("details", { ref: "primary", field: "enabled" });
-      expect(await readCard(proposalId)).toEqual(before);
+      expect(error).toHaveProperty("details", details);
+      expect(await storedCard(proposalId)).toEqual(before);
     });
 
-    it("refuses a relation list or a step switch for a ref the card does not have, naming it", async () => {
+    it("passes a ref named like an Object member in set, relations and steps on as data and refuses it as an unknown ref", async () => {
       const proposalId = await createDatabaseProposal("Buy milk");
-      const before = await readCard(proposalId);
-      const handler = createUpdateProposalValuesRouteHandler(pool);
+      const before = await storedCard(proposalId);
 
-      for (const body of [
-        { relations: { followup: { project: [PROJECT_ID] } } },
-        { steps: { followup: { enabled: false } } },
+      for (const json of [
+        '{"set":{"__proto__":{"name":"x"}}}',
+        `{"relations":{"__proto__":{"project":["${PROJECT_ID}"]}}}`,
+        '{"steps":{"__proto__":{"enabled":false}}}',
       ]) {
-        const error = await handler({ params: { id: proposalId }, body }).then(
-          () => null,
-          (err: unknown) => err,
-        );
-        expect(error).toBeInstanceOf(ValidationError);
-        expect(error).toHaveProperty("details", { ref: "followup", field: "followup" });
+        const body: unknown = JSON.parse(json);
+        await expect(updateValues(proposalId, body)).rejects.toThrow(/no step '__proto__'/);
       }
-      expect(await readCard(proposalId)).toEqual(before);
+      expect(await storedCard(proposalId)).toEqual(before);
     });
 
-    it("refuses a reserved key in set, and a ref named like an Object member in relations and steps", async () => {
-      const proposalId = await createDatabaseProposal("Buy milk");
-      const before = await readCard(proposalId);
-      const handler = createUpdateProposalValuesRouteHandler(pool);
-
-      await expect(
-        handler({ params: { id: proposalId }, body: { set: { primary: { enabled: false } } } }),
-      ).rejects.toMatchObject({ details: { ref: "primary", field: "enabled" } });
-      for (const part of ["relations", "steps"]) {
-        const body: unknown = JSON.parse(
-          part === "relations"
-            ? `{"relations":{"__proto__":{"project":["${PROJECT_ID}"]}}}`
-            : '{"steps":{"__proto__":{"enabled":false}}}',
-        );
-        await expect(handler({ params: { id: proposalId }, body })).rejects.toThrow(/no step '__proto__'/);
-      }
-      expect(await readCard(proposalId)).toEqual(before);
-    });
-
-    it("passes a ref named like an Object member on as data and refuses it as an unknown ref", async () => {
-      const proposalId = await createDatabaseProposal("Buy milk");
-      const before = await readCard(proposalId);
-      const handler = createUpdateProposalValuesRouteHandler(pool);
-      const body: unknown = JSON.parse('{"set":{"__proto__":{"name":"x"}}}');
-
-      await expect(handler({ params: { id: proposalId }, body })).rejects.toThrow(/no step '__proto__'/);
-
-      expect(await readCard(proposalId)).toEqual(before);
-    });
-
-    describe("with an Idempotency-Key (issue gh-1894)", () => {
+    describe("with an Idempotency-Key", () => {
       const userId = randomUUID();
-      const keyed = (key: string) => ({
+      const keyed = (key: string, user = userId) => ({
         req: { headers: { "idempotency-key": key } },
-        identity: { user: { id: userId } },
+        identity: { user: { id: user } },
       });
+      const keyedUpdate = (
+        cardId: string,
+        name: string,
+        key: string,
+        extra: Record<string, unknown> = {},
+        user = userId,
+      ) => inTenant(() => updateValues(cardId, { set: { primary: { name } }, ...extra }, keyed(key, user)));
       const storedRowCount = async (): Promise<number> => {
         const { rows } = await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM idempotent_responses");
         return rows[0]?.n ?? -1;
       };
-      const historyKinds = (card: ItemRow): unknown[] =>
+      const userEdits = async (cardId: string): Promise<number> =>
         z
           .array(z.object({ kind: z.string().optional() }))
-          .parse(card.properties.history)
-          .map((entry) => entry.kind);
+          .parse((await storedCard(cardId)).properties.history)
+          .filter((entry) => entry.kind === "userEdit").length;
 
-      it("applies the edit once and answers the same card to a repeat of the key", async () => {
+      it.each([
+        ["the same card", "Buy oat milk", []],
+        ["the required warnings of the first call", "", [{ field: "name", code: "required" }]],
+      ])("applies the edit once and answers %s to a repeat of the key", async (_label, name, warnings) => {
         const proposalId = await createDatabaseProposal("Buy milk");
-        const handler = createUpdateProposalValuesRouteHandler(pool);
-        const request = {
-          params: { id: proposalId },
-          body: { set: { primary: { name: "Buy oat milk" } } },
-          ...keyed("key-1"),
-        };
 
-        const first = await runInTenant(getTenantZeroId(), () => handler(request));
-        const second = await runInTenant(getTenantZeroId(), () => handler(request));
+        const first = await keyedUpdate(proposalId, name, "key-1");
+        const second = await keyedUpdate(proposalId, name, "key-1");
 
-        expect(first.status).toBe(200);
+        expect(first).toMatchObject({ status: 200, warnings });
         expect(second).toEqual(first);
-        expect("item" in second && second.item.id).toBe(proposalId);
-        expect(historyKinds(await readCard(proposalId)).filter((kind) => kind === "userEdit")).toHaveLength(1);
+        expect(itemOf(second).id).toBe(proposalId);
+        expect(await userEdits(proposalId)).toBe(1);
         expect(await storedRowCount()).toBe(1);
-      });
-
-      it("answers the required warnings of the first call to a repeat of the key (issues gh-1894, #1928)", async () => {
-        const proposalId = await createDatabaseProposal("Buy milk");
-        const handler = createUpdateProposalValuesRouteHandler(pool);
-        const request = {
-          params: { id: proposalId },
-          body: { set: { primary: { name: "" } } },
-          ...keyed("key-warn"),
-        };
-
-        const first = await runInTenant(getTenantZeroId(), () => handler(request));
-        const second = await runInTenant(getTenantZeroId(), () => handler(request));
-
-        expect("warnings" in first && first.warnings).toEqual([{ field: "name", code: "required" }]);
-        expect(second).toEqual(first);
-        expect(historyKinds(await readCard(proposalId)).filter((kind) => kind === "userEdit")).toHaveLength(1);
       });
 
       it("runs the edit again for another user of the tenant with the same key", async () => {
         const proposalId = await createDatabaseProposal("Buy milk");
-        const handler = createUpdateProposalValuesRouteHandler(pool);
-        const asOtherUser = { ...keyed("key-1"), identity: { user: { id: randomUUID() } } };
-        await runInTenant(getTenantZeroId(), () =>
-          handler({ params: { id: proposalId }, body: { set: { primary: { name: "First" } } }, ...keyed("key-1") }),
-        );
+        await keyedUpdate(proposalId, "First", "key-1");
 
-        await runInTenant(getTenantZeroId(), () =>
-          handler({ params: { id: proposalId }, body: { set: { primary: { name: "Second" } } }, ...asOtherUser }),
-        );
+        await keyedUpdate(proposalId, "Second", "key-1", {}, randomUUID());
 
-        const card = await readCard(proposalId);
-        expect(historyKinds(card).filter((kind) => kind === "userEdit")).toHaveLength(2);
-        expect(card.properties.proposal).toMatchObject({ properties: { name: "Second" } });
+        expect(await userEdits(proposalId)).toBe(2);
+        expect((await storedCard(proposalId)).properties.proposal).toMatchObject({ properties: { name: "Second" } });
         expect(await storedRowCount()).toBe(2);
       });
 
-      it("refuses the key of another body and of another card with validation_failed and applies nothing", async () => {
+      it("refuses the key of another body, of another card and one over 255 characters, and applies nothing", async () => {
         const proposalId = await createDatabaseProposal("Buy milk");
         const otherId = await createDatabaseProposal("Buy bread");
-        const handler = createUpdateProposalValuesRouteHandler(pool);
-        await runInTenant(getTenantZeroId(), () =>
-          handler({ params: { id: proposalId }, body: { set: { primary: { name: "A" } } }, ...keyed("key-1") }),
-        );
-        const before = [await readCard(proposalId), await readCard(otherId)];
+        await keyedUpdate(proposalId, "A", "key-1");
+        const before = [await storedCard(proposalId), await storedCard(otherId)];
 
-        const otherBody = await runInTenant(getTenantZeroId(), () =>
-          handler({ params: { id: proposalId }, body: { set: { primary: { name: "B" } } }, ...keyed("key-1") }),
-        ).then(
-          () => null,
-          (err: unknown) => err,
-        );
-        const otherCard = await runInTenant(getTenantZeroId(), () =>
-          handler({ params: { id: otherId }, body: { set: { primary: { name: "A" } } }, ...keyed("key-1") }),
-        ).then(
-          () => null,
-          (err: unknown) => err,
-        );
-
-        for (const error of [otherBody, otherCard]) {
+        for (const attempt of [
+          () => keyedUpdate(proposalId, "B", "key-1"),
+          () => keyedUpdate(otherId, "A", "key-1"),
+          () => keyedUpdate(proposalId, "x", "k".repeat(256)),
+        ]) {
+          const error = await failureOf(attempt());
           expect(error).toBeInstanceOf(ValidationError);
           expect(error).toHaveProperty("details.field", "Idempotency-Key");
         }
-        expect([await readCard(proposalId), await readCard(otherId)]).toEqual(before);
+        expect([await storedCard(proposalId), await storedCard(otherId)]).toEqual(before);
       });
 
-      it("stores nothing for a request without the header", async () => {
+      it("stores nothing for a request without the header, nor for a refused update, so the key can be used again", async () => {
         const proposalId = await createDatabaseProposal("Buy milk");
-        const handler = createUpdateProposalValuesRouteHandler(pool);
-
-        await handler({ params: { id: proposalId }, body: { set: { primary: { name: "Buy oat milk" } } } });
-
+        const stale = (await storedCard(proposalId)).version;
+        await updateValues(proposalId, { set: { primary: { name: "First" } } });
         expect(await storedRowCount()).toBe(0);
-      });
 
-      it("stores nothing for a refused update, so the key can be used again", async () => {
-        const proposalId = await createDatabaseProposal("Buy milk");
-        const handler = createUpdateProposalValuesRouteHandler(pool);
-        const stale = (await readCard(proposalId)).version;
-        await handler({ params: { id: proposalId }, body: { set: { primary: { name: "First" } } } });
-
-        await expect(
-          runInTenant(getTenantZeroId(), () =>
-            handler({
-              params: { id: proposalId },
-              body: { set: { primary: { name: "Second" } }, ifVersion: stale },
-              ...keyed("key-1"),
-            }),
-          ),
-        ).rejects.toThrow(ConflictError);
+        await expect(keyedUpdate(proposalId, "Second", "key-1", { ifVersion: stale })).rejects.toThrow(ConflictError);
         expect(await storedRowCount()).toBe(0);
-        const retried = await runInTenant(getTenantZeroId(), async () =>
-          handler({
-            params: { id: proposalId },
-            body: { set: { primary: { name: "Second" } }, ifVersion: (await readCard(proposalId)).version },
-            ...keyed("key-1"),
-          }),
-        );
+
+        const retried = await keyedUpdate(proposalId, "Second", "key-1", {
+          ifVersion: (await storedCard(proposalId)).version,
+        });
         expect(retried.status).toBe(200);
         expect(await storedRowCount()).toBe(1);
       });
 
-      it("refuses an Idempotency-Key longer than 255 characters before opening a transaction", async () => {
-        const proposalId = await createDatabaseProposal("Buy milk");
-        const before = await readCard(proposalId);
-        const handler = createUpdateProposalValuesRouteHandler(pool);
-
-        const error = await runInTenant(getTenantZeroId(), () =>
-          handler({ params: { id: proposalId }, body: { set: { primary: { name: "x" } } }, ...keyed("k".repeat(256)) }),
-        ).then(
-          () => null,
-          (err: unknown) => err,
-        );
-
-        expect(error).toBeInstanceOf(ValidationError);
-        expect(error).toHaveProperty("details.field", "Idempotency-Key");
-        expect(await readCard(proposalId)).toEqual(before);
-      });
-
       it("fails a keyed request that carries no authenticated user, and applies nothing", async () => {
         const proposalId = await createDatabaseProposal("Buy milk");
-        const before = await readCard(proposalId);
-        const handler = createUpdateProposalValuesRouteHandler(pool);
+        const before = await storedCard(proposalId);
 
         await expect(
-          runInTenant(getTenantZeroId(), () =>
-            handler({
-              params: { id: proposalId },
-              body: { set: { primary: { name: "x" } } },
-              req: { headers: { "idempotency-key": "key-1" } },
-            }),
+          inTenant(() =>
+            updateValues(
+              proposalId,
+              { set: { primary: { name: "x" } } },
+              { req: { headers: { "idempotency-key": "key-1" } } },
+            ),
           ),
         ).rejects.toThrow("needs the authenticated user");
 
-        expect(await readCard(proposalId)).toEqual(before);
+        expect(await storedCard(proposalId)).toEqual(before);
       });
 
       it("fails when the stored response is not a card, instead of answering it", async () => {
@@ -3925,97 +3077,38 @@ describe("inbox custom route handlers (issue #239)", () => {
                    now() + interval '1 hour')`,
           [getTenantZeroId(), userId, hashIdempotentRequest({ proposalId, body })],
         );
-        const handler = createUpdateProposalValuesRouteHandler(pool);
 
-        await expect(
-          runInTenant(getTenantZeroId(), () => handler({ params: { id: proposalId }, body, ...keyed("key-1") })),
-        ).rejects.toThrow(z.ZodError);
+        await expect(inTenant(() => updateValues(proposalId, body, keyed("key-1")))).rejects.toThrow(z.ZodError);
       });
     });
   });
 
-  describe("createResetProposalOverridesRouteHandler (issue #1912)", () => {
-    async function readCard(id: string): Promise<ItemRow> {
-      const card = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, id));
-      if (!card) throw new Error(`card ${id} not found`);
-      return card;
-    }
-    async function editedCard(): Promise<string> {
-      const proposalId = await createDatabaseProposal("Buy milk");
-      await createUpdateProposalValuesRouteHandler(pool)({
-        params: { id: proposalId },
-        body: { set: { primary: { name: "Buy oat milk" } } },
-      });
-      return proposalId;
-    }
+  describe("createResetProposalOverridesRouteHandler", () => {
+    const reset = (cardId: string) =>
+      createResetProposalOverridesRouteHandler(pool)({ params: { id: cardId }, body: {} });
 
     it("returns the card to the assistant's proposal, a thin mapping onto resetProposalOverridesWithClient", async () => {
       const proposalId = await editedCard();
-      const handler = createResetProposalOverridesRouteHandler(pool);
 
-      const result = await handler({ params: { id: proposalId }, body: {} });
+      const result = await reset(proposalId);
 
       expect(result.status).toBe(200);
-      expect("item" in result && result.item.id).toBe(proposalId);
-      expect("item" in result && result.item.properties.userEditedKeys).toEqual([]);
-      const stored = await readCard(proposalId);
+      expect(itemOf(result).id).toBe(proposalId);
+      expect(itemOf(result).properties.userEditedKeys).toEqual([]);
+      const stored = await storedCard(proposalId);
       expect(stored.properties.proposal).toMatchObject({ properties: { name: "Buy milk" } });
       expect(stored.properties.userOverrides).toEqual({});
     });
 
-    it("takes a null body as an empty one", async () => {
-      const proposalId = await editedCard();
-
-      const result = await createResetProposalOverridesRouteHandler(pool)({ params: { id: proposalId }, body: null });
-
-      expect(result.status).toBe(200);
-      expect((await readCard(proposalId)).properties.userEditedKeys).toEqual([]);
-    });
-
-    it("passes a current ifVersion through", async () => {
-      const proposalId = await editedCard();
-
-      const result = await createResetProposalOverridesRouteHandler(pool)({
-        params: { id: proposalId },
-        body: { ifVersion: (await readCard(proposalId)).version },
-      });
-
-      expect(result.status).toBe(200);
-      expect((await readCard(proposalId)).properties.userEditedKeys).toEqual([]);
-    });
-
-    it("answers a stale ifVersion with a version conflict that carries the current card, and writes nothing", async () => {
-      const proposalId = await createDatabaseProposal("Buy milk");
-      const stale = (await readCard(proposalId)).version;
-      await createUpdateProposalValuesRouteHandler(pool)({
-        params: { id: proposalId },
-        body: { set: { primary: { name: "First" } } },
-      });
-      const before = await readCard(proposalId);
-
-      const error = await createResetProposalOverridesRouteHandler(pool)({
-        params: { id: proposalId },
-        body: { ifVersion: stale },
-      }).then(
-        () => null,
-        (err: unknown) => err,
-      );
-
-      expect(error).toBeInstanceOf(ConflictError);
-      expect(error).toMatchObject({ status: 409, code: "version_conflict" });
-      expect(error).toHaveProperty("details.current.id", proposalId);
-      expect(await readCard(proposalId)).toEqual(before);
-    });
-
     it("answers a card with nothing edited unchanged", async () => {
       const proposalId = await createDatabaseProposal("Buy milk");
-      const before = await readCard(proposalId);
+      const before = await storedCard(proposalId);
 
-      const result = await createResetProposalOverridesRouteHandler(pool)({ params: { id: proposalId }, body: {} });
+      const result = await reset(proposalId);
 
       expect(result.status).toBe(200);
-      expect("item" in result && result.item).toEqual(before);
-      expect(await readCard(proposalId)).toEqual(before);
+      expect(itemOf(result)).toEqual(before);
+      expect(await storedCard(proposalId)).toEqual(before);
     });
 
     it("refuses a confirmed card with a ValidationError and writes nothing", async () => {
@@ -4023,133 +3116,44 @@ describe("inbox custom route handlers (issue #239)", () => {
       await withTransaction(pool, (client) =>
         confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposalId),
       );
-      const before = await readCard(proposalId);
+      const before = await storedCard(proposalId);
 
-      const error = await createResetProposalOverridesRouteHandler(pool)({
-        params: { id: proposalId },
-        body: {},
-      }).then(
-        () => null,
-        (err: unknown) => err,
-      );
+      const error = await failureOf(reset(proposalId));
 
       expect(error).toBeInstanceOf(ValidationError);
       expect(error).toHaveProperty("details.field", "status");
-      expect(await readCard(proposalId)).toEqual(before);
-    });
-
-    it("rejects a request with no `id` path parameter", async () => {
-      await expect(createResetProposalOverridesRouteHandler(pool)({ params: {}, body: {} })).rejects.toThrow(
-        ValidationError,
-      );
-    });
-
-    it("rejects an unknown proposal id", async () => {
-      await expect(
-        createResetProposalOverridesRouteHandler(pool)({ params: { id: randomUUID() }, body: {} }),
-      ).rejects.toThrow(NotFoundError);
-    });
-
-    it.each([
-      ["an array body", []],
-      ["a string body", "reset"],
-      ["a numeric ifVersion", { ifVersion: 5 }],
-      ["a null ifVersion", { ifVersion: null }],
-      ["an ifVersion that is no timestamp", { ifVersion: "yesterday" }],
-    ])("rejects %s with a ValidationError and writes nothing", async (_label, body) => {
-      const proposalId = await editedCard();
-      const before = await readCard(proposalId);
-
-      const error = await createResetProposalOverridesRouteHandler(pool)({ params: { id: proposalId }, body }).then(
-        () => null,
-        (err: unknown) => err,
-      );
-
-      expect(error).toBeInstanceOf(ValidationError);
-      expect(await readCard(proposalId)).toEqual(before);
+      expect(await storedCard(proposalId)).toEqual(before);
     });
   });
 
-  describe("createRecomputeProposalRouteHandler (issue gh-1955)", () => {
-    async function readCard(id: string): Promise<ItemRow> {
-      const card = await withTransaction(pool, (client) => itemsStore.getItemById(client, proposalsId, id));
-      if (!card) throw new Error(`card ${id} not found`);
-      return card;
-    }
-    const historyKinds = (card: ItemRow): unknown[] =>
-      z
-        .array(z.object({ kind: z.string().optional() }))
-        .parse(card.properties.history)
-        .map((entry) => entry.kind);
+  describe("createRecomputeProposalRouteHandler", () => {
+    const recompute = (cardId: string, extra: Partial<RouteContext> = {}) =>
+      createRecomputeProposalRouteHandler(pool)({ params: { id: cardId }, body: {}, ...extra });
 
     it("sends the card back to the tick, a thin mapping onto recomputeProposalWithClient", async () => {
       const proposalId = await createDatabaseProposal("Buy milk");
-      const before = await readCard(proposalId);
+      const before = await storedCard(proposalId);
 
-      const result = await createRecomputeProposalRouteHandler(pool)({ params: { id: proposalId }, body: {} });
+      const result = await recompute(proposalId);
 
       expect(result.status).toBe(200);
-      expect("item" in result && result.item.id).toBe(proposalId);
-      expect("item" in result && result.item.properties.status).toBe("computing");
-      const stored = await readCard(proposalId);
+      expect(itemOf(result).id).toBe(proposalId);
+      expect(itemOf(result).properties.status).toBe("computing");
+      const stored = await storedCard(proposalId);
       expect(stored.properties).toMatchObject({ status: "computing", proposal: before.properties.proposal });
-      expect(historyKinds(stored).at(-1)).toBe("recompute");
-    });
-
-    it("takes a null body as an empty one", async () => {
-      const proposalId = await createDatabaseProposal("Buy milk");
-
-      const result = await createRecomputeProposalRouteHandler(pool)({ params: { id: proposalId }, body: null });
-
-      expect(result.status).toBe(200);
-      expect((await readCard(proposalId)).properties.status).toBe("computing");
-    });
-
-    it("passes a current ifVersion through", async () => {
-      const proposalId = await createDatabaseProposal("Buy milk");
-
-      const result = await createRecomputeProposalRouteHandler(pool)({
-        params: { id: proposalId },
-        body: { ifVersion: (await readCard(proposalId)).version },
-      });
-
-      expect(result.status).toBe(200);
-      expect((await readCard(proposalId)).properties.status).toBe("computing");
-    });
-
-    it("answers a stale ifVersion with a version conflict that carries the current card, and writes nothing", async () => {
-      const proposalId = await createDatabaseProposal("Buy milk");
-      const stale = (await readCard(proposalId)).version;
-      await createUpdateProposalValuesRouteHandler(pool)({
-        params: { id: proposalId },
-        body: { set: { primary: { name: "First" } } },
-      });
-      const before = await readCard(proposalId);
-
-      const error = await createRecomputeProposalRouteHandler(pool)({
-        params: { id: proposalId },
-        body: { ifVersion: stale },
-      }).then(
-        () => null,
-        (err: unknown) => err,
-      );
-
-      expect(error).toBeInstanceOf(ConflictError);
-      expect(error).toMatchObject({ status: 409, code: "version_conflict" });
-      expect(error).toHaveProperty("details.current.id", proposalId);
-      expect(await readCard(proposalId)).toEqual(before);
+      expect(historyOf(stored).at(-1)).toMatchObject({ kind: "recompute" });
     });
 
     it("answers a card that is computing already unchanged", async () => {
       const proposalId = await createDatabaseProposal("Buy milk");
-      await createRecomputeProposalRouteHandler(pool)({ params: { id: proposalId }, body: {} });
-      const before = await readCard(proposalId);
+      await recompute(proposalId);
+      const before = await storedCard(proposalId);
 
-      const result = await createRecomputeProposalRouteHandler(pool)({ params: { id: proposalId }, body: {} });
+      const result = await recompute(proposalId);
 
       expect(result.status).toBe(200);
-      expect("item" in result && result.item).toEqual(before);
-      expect(await readCard(proposalId)).toEqual(before);
+      expect(itemOf(result)).toEqual(before);
+      expect(await storedCard(proposalId)).toEqual(before);
     });
 
     it("refuses a confirmed card with the 409 proposal_locked and writes nothing", async () => {
@@ -4157,101 +3161,137 @@ describe("inbox custom route handlers (issue #239)", () => {
       await withTransaction(pool, (client) =>
         confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, proposalId),
       );
-      const before = await readCard(proposalId);
+      const before = await storedCard(proposalId);
 
-      const error = await createRecomputeProposalRouteHandler(pool)({ params: { id: proposalId }, body: {} }).then(
-        () => null,
-        (err: unknown) => err,
-      );
-
-      expect(error).toMatchObject({ status: 409, code: "proposal_locked" });
-      expect(await readCard(proposalId)).toEqual(before);
+      expect(await failureOf(recompute(proposalId))).toMatchObject({ status: 409, code: "proposal_locked" });
+      expect(await storedCard(proposalId)).toEqual(before);
     });
 
     it("addresses the invalidation of the card write to the caller", async () => {
       const proposalId = await createDatabaseProposal("Buy milk");
       const userId = randomUUID();
-      const events: InvalidationEvent[] = [];
-      setInvalidationHook((event) => events.push(event));
-      try {
-        await createRecomputeProposalRouteHandler(pool)({
-          params: { id: proposalId },
-          body: {},
-          identity: { user: { id: userId } },
-        });
-      } finally {
-        setInvalidationHook(() => {});
-      }
 
-      const cardEvents = events.filter((event) => event.scope === "item" && event.itemId === proposalId);
+      const events = await itemInvalidations(() => recompute(proposalId, { identity: { user: { id: userId } } }));
+
+      const cardEvents = events.filter((event) => event.itemId === proposalId);
       expect(cardEvents).toHaveLength(1);
       expect(cardEvents[0]).toMatchObject({ op: "update", userId });
     });
 
-    it("rejects a request with no `id` path parameter", async () => {
-      await expect(createRecomputeProposalRouteHandler(pool)({ params: {}, body: {} })).rejects.toThrow(
-        ValidationError,
-      );
-    });
-
     it("rejects an id that is no UUID with a ValidationError on id", async () => {
-      const error = await createRecomputeProposalRouteHandler(pool)({ params: { id: "not-a-uuid" }, body: {} }).then(
-        () => null,
-        (err: unknown) => err,
-      );
+      const error = await failureOf(recompute("not-a-uuid"));
 
       expect(error).toBeInstanceOf(ValidationError);
       expect(error).toHaveProperty("details.field", "id");
     });
+  });
 
-    it("rejects an unknown proposal id", async () => {
-      await expect(
-        createRecomputeProposalRouteHandler(pool)({ params: { id: randomUUID() }, body: {} }),
-      ).rejects.toThrow(NotFoundError);
-    });
+  describe("the card routes", () => {
+    const CARD_ROUTES = [
+      ["confirm", createConfirmProposalRouteHandler, {}],
+      ["reject", createRejectProposalRouteHandler, {}],
+      ["reopen", createReopenProposalRouteHandler, {}],
+      ["revise", createReviseProposalRouteHandler, { message: "x" }],
+      ["update", createUpdateProposalValuesRouteHandler, { set: { primary: { name: "x" } } }],
+      ["reset", createResetProposalOverridesRouteHandler, {}],
+      ["recompute", createRecomputeProposalRouteHandler, {}],
+    ] as const;
+    const EDIT_ROUTES = CARD_ROUTES.filter(([name]) => ["update", "reset", "recompute"].includes(name));
+
+    it.each(CARD_ROUTES)(
+      "%s: refuses a missing id with a ValidationError, and answers 404 for an unknown card and one in the Trash",
+      async (_name, factory, body) => {
+        const handler = factory(pool);
+        const trashedId = await createDatabaseProposal("Buy milk");
+        await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, proposalsId, trashedId));
+
+        await expect(handler({ params: {}, body })).rejects.toThrow(ValidationError);
+        for (const id of [randomUUID(), trashedId]) {
+          await expect(inTenant(() => handler({ params: { id }, body }))).rejects.toBeInstanceOf(NotFoundError);
+        }
+      },
+    );
+
+    it.each(EDIT_ROUTES)(
+      "%s: answers a stale ifVersion with a version conflict that carries the current card and writes nothing, and applies the current one",
+      async (_name, factory, body) => {
+        const proposalId = await createDatabaseProposal("Buy milk");
+        const stale = (await storedCard(proposalId)).version;
+        await updateValues(proposalId, { set: { primary: { name: "First" } } });
+        const before = await storedCard(proposalId);
+
+        const error = await failureOf(
+          factory(pool)({ params: { id: proposalId }, body: { ...body, ifVersion: stale } }),
+        );
+
+        expect(error).toBeInstanceOf(ConflictError);
+        expect(error).toMatchObject({
+          status: 409,
+          code: "version_conflict",
+          details: { current: { id: proposalId } },
+        });
+        expect(await storedCard(proposalId)).toEqual(before);
+        const applied = await factory(pool)({
+          params: { id: proposalId },
+          body: { ...body, ifVersion: before.version },
+        });
+        expect(applied.status).toBe(200);
+      },
+    );
 
     it.each([
+      ["reset", createResetProposalOverridesRouteHandler, { userEditedKeys: [] }],
+      ["recompute", createRecomputeProposalRouteHandler, { status: "computing" }],
+    ] as const)("%s: takes a null body as an empty one", async (_name, factory, expected) => {
+      const proposalId = await editedCard();
+
+      expect((await factory(pool)({ params: { id: proposalId }, body: null })).status).toBe(200);
+
+      expect((await storedCard(proposalId)).properties).toMatchObject(expected);
+    });
+
+    const MALFORMED_BODIES: Array<[string, unknown]> = [
       ["an array body", []],
-      ["a string body", "recompute"],
+      ["a string body", "reset"],
       ["a numeric ifVersion", { ifVersion: 5 }],
       ["a null ifVersion", { ifVersion: null }],
       ["an ifVersion that is no timestamp", { ifVersion: "yesterday" }],
-      ["an unknown key", { force: true }],
-    ])("rejects %s with a ValidationError, writes nothing and queues no job", async (_label, body) => {
-      const proposalId = await createDatabaseProposal("Buy milk");
-      const before = await readCard(proposalId);
-      const jobsBefore = (await pool.query("SELECT key, revision FROM graphile_worker.jobs ORDER BY id")).rows;
+    ];
+    it.each([
+      ...MALFORMED_BODIES.map(
+        ([label, body]) => ["reset", createResetProposalOverridesRouteHandler, label, body] as const,
+      ),
+      ...[...MALFORMED_BODIES, ["an unknown key", { force: true }] as [string, unknown]].map(
+        ([label, body]) => ["recompute", createRecomputeProposalRouteHandler, label, body] as const,
+      ),
+    ])(
+      "%s: rejects %s with a ValidationError, writes nothing and queues no job",
+      async (_name, factory, _label, body) => {
+        const proposalId = await editedCard();
+        const before = await storedCard(proposalId);
+        const jobs = async () => (await pool.query("SELECT key, revision FROM graphile_worker.jobs ORDER BY id")).rows;
+        const jobsBefore = await jobs();
 
-      const error = await createRecomputeProposalRouteHandler(pool)({ params: { id: proposalId }, body }).then(
-        () => null,
-        (err: unknown) => err,
-      );
+        const error = await failureOf(factory(pool)({ params: { id: proposalId }, body }));
 
-      expect(error).toBeInstanceOf(ValidationError);
-      expect(await readCard(proposalId)).toEqual(before);
-      expect((await pool.query("SELECT key, revision FROM graphile_worker.jobs ORDER BY id")).rows).toEqual(jobsBefore);
-    });
+        expect(error).toBeInstanceOf(ValidationError);
+        expect(await storedCard(proposalId)).toEqual(before);
+        expect(await jobs()).toEqual(jobsBefore);
+      },
+    );
   });
 
-  describe("createProposalOptionsRouteHandler (issue gh-1959)", () => {
+  describe("createProposalOptionsRouteHandler", () => {
     const optionsContext = (id: string, query: string, locale = "en") => ({
       params: { id },
       body: null,
       identity: { user: { id: randomUUID(), locale } },
       req: { headers: {}, url: `/api/proposals/${id}/options${query}` },
     });
-    const failureOf = (promise: Promise<unknown>): Promise<unknown> =>
-      promise.then(
-        () => null,
-        (error: unknown) => error,
-      );
 
     it("answers the options of the field in the caller's locale, a thin mapping onto listProposalOptions", async () => {
       const proposalId = await createDatabaseProposal("Buy milk");
-      const project = await withTransaction(pool, async (client) => {
-        const projects = await getDatabaseByModuleId(client, "projects");
-        return createItemWithClient(client, { databaseId: projects!.id, properties: { name: "Garden" } });
-      });
+      const projectId = await createIn(await databaseIdFor("projects"), { name: "Garden" });
 
       const english = await createProposalOptionsRouteHandler(pool)(optionsContext(proposalId, "?field=project"));
       const czech = await createProposalOptionsRouteHandler(pool)(optionsContext(proposalId, "?field=project", "cs"));
@@ -4261,20 +3301,14 @@ describe("inbox custom route handlers (issue #239)", () => {
         z
           .object({ options: z.array(z.object({ id: z.string().nullable(), label: z.string() })) })
           .parse("body" in result ? result.body : null).options;
-      expect(parse(english)).toContainEqual({ id: project.id, label: "Garden" });
+      expect(parse(english)).toContainEqual({ id: projectId, label: "Garden" });
       expect(parse(english).at(-1)).toEqual({ id: null, label: "No project" });
       expect(parse(czech).at(-1)).toEqual({ id: null, label: "Bez projektu" });
     });
 
     it("lists a done project only with includeDone=true", async () => {
       const proposalId = await createDatabaseProposal("Buy milk");
-      const done = await withTransaction(pool, async (client) => {
-        const projects = await getDatabaseByModuleId(client, "projects");
-        return createItemWithClient(client, {
-          databaseId: projects!.id,
-          properties: { name: "Done one", status: "done" },
-        });
-      });
+      const done = await createIn(await databaseIdFor("projects"), { name: "Done one", status: "done" });
       const idsOf = async (query: string): Promise<Array<string | null>> => {
         const result = await createProposalOptionsRouteHandler(pool)(optionsContext(proposalId, query));
         const body = z
@@ -4283,8 +3317,8 @@ describe("inbox custom route handlers (issue #239)", () => {
         return body.options.map((option) => option.id);
       };
 
-      expect(await idsOf("?field=project")).not.toContain(done.id);
-      expect(await idsOf("?field=project&includeDone=true")).toContain(done.id);
+      expect(await idsOf("?field=project")).not.toContain(done);
+      expect(await idsOf("?field=project&includeDone=true")).toContain(done);
     });
 
     it.each([
@@ -4355,7 +3389,7 @@ describe("inbox custom route handlers (issue #239)", () => {
     });
   });
 
-  describe("createCaptureInboxItemRouteHandler (issue gh-1961)", () => {
+  describe("createCaptureInboxItemRouteHandler", () => {
     const captureContext = (body: unknown, headers: Record<string, string> = {}) => ({
       params: {},
       body,
@@ -4364,15 +3398,6 @@ describe("inbox custom route handlers (issue #239)", () => {
     const validBody = { text: "Call the dentist", date: "2026-08-28", time: "09:30", captureChannel: "typed" } as const;
     const capture = (body: unknown, headers?: Record<string, string>) =>
       createCaptureInboxItemRouteHandler(pool)(captureContext(body, headers));
-    const failureOf = (promise: Promise<unknown>): Promise<unknown> =>
-      promise.then(
-        () => null,
-        (error: unknown) => error,
-      );
-    const itemOf = (result: Awaited<ReturnType<typeof capture>>): ItemRow => {
-      if (!("item" in result)) throw new Error("The route answered no item");
-      return result.item;
-    };
     const createType = (status: "active" | "archived" = "active") =>
       withTransaction(pool, (client) =>
         createInboxTypeWithClient(client, {
@@ -4688,24 +3713,17 @@ describe("inbox custom route handlers (issue #239)", () => {
     });
   });
 
-  describe("createInboxTypesRouteHandler (issue #1439)", () => {
+  describe("createInboxTypesRouteHandler", () => {
     /** The adapter always supplies the caller; this handler reads only its locale. */
-    const callerIn = (locale: string) => ({ identity: { user: { locale } } });
-
-    async function createActiveType(
-      name: string,
-      processing: Pick<CreateInboxTypeInput, "processingMethod" | "targetDatabase">,
-    ): Promise<ItemRow> {
-      return withTransaction(pool, (client) =>
-        createInboxTypeWithClient(client, {
-          inboxItemTypesDatabaseId: typesId,
-          name,
-          emoji: "☑️",
-          status: "active",
-          ...processing,
-        }),
-      );
-    }
+    const typesIn = (locale: string) => createInboxTypesRouteHandler(pool)({ identity: { user: { locale } } });
+    const listing = (
+      type: ItemRow,
+      label: string,
+      targetDatabaseKey: string | null,
+      targetLabel: string | null,
+      processingMethod = "database",
+    ) => ({ id: type.id, emoji: "☑️", label, processingMethod, targetDatabaseKey, targetLabel });
+    const createTaskType = (name: string) => createInboxType({ ...TASK_TYPE, name, status: "active" });
 
     /** A raw UPDATE: the choke point refuses an unknown target, so only an older write could leave this stored state. */
     async function storeTargetDirectly(itemId: string, target: string): Promise<void> {
@@ -4719,115 +3737,52 @@ describe("inbox custom route handlers (issue #239)", () => {
     }
 
     it("lists an active database type with its method, target key and label in cs and en", async () => {
-      const type = await createActiveType("Task", { processingMethod: "database", targetDatabase: "tasks" });
-      const handler = createInboxTypesRouteHandler(pool);
+      const type = await createTaskType("Task");
 
-      expect(await handler(callerIn("cs"))).toEqual({
-        status: 200,
-        body: {
-          types: [
-            {
-              id: type.id,
-              emoji: "☑️",
-              label: "Task",
-              processingMethod: "database",
-              targetDatabaseKey: "tasks",
-              targetLabel: "Úkoly",
-            },
-          ],
-        },
-      });
-      expect(await handler(callerIn("en"))).toEqual({
-        status: 200,
-        body: {
-          types: [
-            {
-              id: type.id,
-              emoji: "☑️",
-              label: "Task",
-              processingMethod: "database",
-              targetDatabaseKey: "tasks",
-              targetLabel: "Tasks",
-            },
-          ],
-        },
-      });
+      expect(await typesIn("cs")).toEqual({ status: 200, body: { types: [listing(type, "Task", "tasks", "Úkoly")] } });
+      expect(await typesIn("en")).toEqual({ status: 200, body: { types: [listing(type, "Task", "tasks", "Tasks")] } });
     });
 
     it("returns a pageContent type with method pageContent and null target key and label", async () => {
-      const type = await createActiveType("Note", { processingMethod: "pageContent" });
+      const type = await createInboxType({
+        name: "Note",
+        emoji: "☑️",
+        processingMethod: "pageContent",
+        status: "active",
+      });
 
-      expect(await createInboxTypesRouteHandler(pool)(callerIn("cs"))).toEqual({
+      expect(await typesIn("cs")).toEqual({
         status: 200,
-        body: {
-          types: [
-            {
-              id: type.id,
-              emoji: "☑️",
-              label: "Note",
-              processingMethod: "pageContent",
-              targetDatabaseKey: null,
-              targetLabel: null,
-            },
-          ],
-        },
+        body: { types: [listing(type, "Note", null, null, "pageContent")] },
       });
     });
 
     it("returns the key itself as the label of a stored target the catalog does not know, without failing the list", async () => {
-      const unknown = await createActiveType("Old", { processingMethod: "database", targetDatabase: "tasks" });
+      const unknown = await createTaskType("Old");
       await storeTargetDirectly(unknown.id, "nonsense");
-      const known = await createActiveType("Task", { processingMethod: "database", targetDatabase: "tasks" });
+      const known = await createTaskType("Task");
 
-      expect(await createInboxTypesRouteHandler(pool)(callerIn("en"))).toEqual({
+      expect(await typesIn("en")).toEqual({
         status: 200,
         body: {
           types: expect.arrayContaining([
-            {
-              id: unknown.id,
-              emoji: "☑️",
-              label: "Old",
-              processingMethod: "database",
-              targetDatabaseKey: "nonsense",
-              targetLabel: "nonsense",
-            },
-            {
-              id: known.id,
-              emoji: "☑️",
-              label: "Task",
-              processingMethod: "database",
-              targetDatabaseKey: "tasks",
-              targetLabel: "Tasks",
-            },
+            listing(unknown, "Old", "nonsense", "nonsense"),
+            listing(known, "Task", "tasks", "Tasks"),
           ]),
         },
       });
     });
 
     it("labels every type that shares a target with that target's label", async () => {
-      const first = await createActiveType("Task", { processingMethod: "database", targetDatabase: "tasks" });
-      const second = await createActiveType("Errand", { processingMethod: "database", targetDatabase: "tasks" });
+      const first = await createTaskType("Task");
+      const second = await createTaskType("Errand");
 
-      expect(await createInboxTypesRouteHandler(pool)(callerIn("cs"))).toEqual({
+      expect(await typesIn("cs")).toEqual({
         status: 200,
         body: {
           types: expect.arrayContaining([
-            {
-              id: first.id,
-              emoji: "☑️",
-              label: "Task",
-              processingMethod: "database",
-              targetDatabaseKey: "tasks",
-              targetLabel: "Úkoly",
-            },
-            {
-              id: second.id,
-              emoji: "☑️",
-              label: "Errand",
-              processingMethod: "database",
-              targetDatabaseKey: "tasks",
-              targetLabel: "Úkoly",
-            },
+            listing(first, "Task", "tasks", "Úkoly"),
+            listing(second, "Errand", "tasks", "Úkoly"),
           ]),
         },
       });
@@ -4836,83 +3791,39 @@ describe("inbox custom route handlers (issue #239)", () => {
     it("uses a target database's own name over its catalog label", async () => {
       const tasksId = await databaseIdFor("tasks");
       await withTransaction(pool, (client) => renameDatabase(client, tasksId, "My tasks"));
-      const type = await createActiveType("Task", { processingMethod: "database", targetDatabase: "tasks" });
+      const type = await createTaskType("Task");
 
-      expect(await createInboxTypesRouteHandler(pool)(callerIn("cs"))).toEqual({
+      expect(await typesIn("cs")).toEqual({
         status: 200,
-        body: {
-          types: [
-            {
-              id: type.id,
-              emoji: "☑️",
-              label: "Task",
-              processingMethod: "database",
-              targetDatabaseKey: "tasks",
-              targetLabel: "My tasks",
-            },
-          ],
-        },
+        body: { types: [listing(type, "Task", "tasks", "My tasks")] },
       });
     });
 
     it("excludes archived types, and the list holds only the active one", async () => {
-      const active = await createActiveType("Task", { processingMethod: "database", targetDatabase: "tasks" });
-      await withTransaction(pool, (client) =>
-        createInboxTypeWithClient(client, {
-          inboxItemTypesDatabaseId: typesId,
-          name: "Old",
-          emoji: "🗑️",
-          status: "archived",
-          processingMethod: "pageContent",
-        }),
-      );
+      const active = await createTaskType("Task");
+      await createInboxType({ name: "Old", emoji: "🗑️", status: "archived", processingMethod: "pageContent" });
 
-      expect(await createInboxTypesRouteHandler(pool)(callerIn("en"))).toEqual({
+      expect(await typesIn("en")).toEqual({
         status: 200,
-        body: {
-          types: [
-            {
-              id: active.id,
-              emoji: "☑️",
-              label: "Task",
-              processingMethod: "database",
-              targetDatabaseKey: "tasks",
-              targetLabel: "Tasks",
-            },
-          ],
-        },
+        body: { types: [listing(active, "Task", "tasks", "Tasks")] },
       });
     });
   });
 
-  describe("createInboxCardsRouteHandler editor schemas (issue #1825)", () => {
+  describe("createInboxCardsRouteHandler editor schemas", () => {
     async function createCard(
       text: string,
       targetDatabase: "tasks" | "projects",
       properties: Record<string, unknown>,
     ): Promise<{ itemId: string; cardId: string }> {
-      const type = await withTransaction(pool, (client) =>
-        createInboxTypeWithClient(client, {
-          inboxItemTypesDatabaseId: typesId,
-          name: `Type of ${targetDatabase}`,
-          emoji: "📌",
-          processingMethod: "database",
-          targetDatabase,
-        }),
-      );
-      const item = await withTransaction(pool, (client) =>
-        createInboxItemWithClient(client, {
-          inboxDatabaseId: inboxId,
-          date: "2026-08-28",
-          time: "09:00",
-          text,
-          type: type.id,
-        }),
-      );
-      await createSemprecTickAction(pool, async () => ({ properties }))(
-        { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
-        { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
-      );
+      const type = await createInboxType({
+        name: `Type of ${targetDatabase}`,
+        emoji: "📌",
+        processingMethod: "database",
+        targetDatabase,
+      });
+      const item = await createInboxItem(type.id, text);
+      await runTick(item.id, async () => ({ properties }));
       const { rows } = await pool.query<{ id: string }>(
         "SELECT p.id FROM items p JOIN item_relations r ON r.item_a = p.id AND r.item_b = $2 WHERE p.database_id = $1",
         [proposalsId, item.id],
@@ -4948,11 +3859,18 @@ describe("inbox custom route handlers (issue #239)", () => {
       return field;
     }
 
-    it("gives a task card the localized task schema: name required and the time of the date hidden by allDay", async () => {
+    /** The listing of `cardId` for a new user of the tenant in `locale`. */
+    async function listedCard(cardId: string, locale = "en"): Promise<ListedCard> {
       const userId = (await createTenantZeroUser(pool)).id;
+      const card = (await listedCards(userId, locale)).find((candidate) => candidate.cardId === cardId);
+      if (!card) throw new Error(`Card ${cardId} is not listed`);
+      return card;
+    }
+
+    it("gives a task card the localized task schema: name required and the time of the date hidden by allDay", async () => {
       const card = await createCard("Buy milk", "tasks", { name: "Buy milk" });
 
-      const listed = (await listedCards(userId, "en")).find((candidate) => candidate.cardId === card.cardId)!;
+      const listed = await listedCard(card.cardId);
 
       expect(listed.editorSchema?.baseKind).toBe("task");
       expect(fieldOf(listed, "name")).toMatchObject({
@@ -4979,27 +3897,22 @@ describe("inbox custom route handlers (issue #239)", () => {
       ["en", "Name", "Date"],
       ["de", "Name", "Date"],
     ])("resolves the labels in the locale %s, English for a locale without a catalog", async (locale, name, date) => {
-      const userId = (await createTenantZeroUser(pool)).id;
       const card = await createCard("Buy milk", "tasks", { name: "Buy milk" });
 
-      const listed = (await listedCards(userId, locale)).find((candidate) => candidate.cardId === card.cardId)!;
+      const listed = await listedCard(card.cardId, locale);
 
       expect(fieldOf(listed, "name")).toMatchObject({ label: name, placeholder: name });
       expect(fieldOf(listed, "date")).toMatchObject({ label: date });
     });
 
     it("gives an invalid task card the schema of the task it edits, follow-up fields included", async () => {
-      const userId = (await createTenantZeroUser(pool)).id;
       const card = await createCard("Buy milk", "tasks", { name: "Buy milk" });
       await withTransaction(pool, (client) => itemsStore.softDeleteItem(client, inboxId, card.itemId));
-      await createSemprecTickAction(pool, async () => {
+      await runTick(card.itemId, async () => {
         throw new Error("The tick must not compute a card whose source was deleted");
-      })(
-        { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
-        { heartbeatId: "hb", projectItemId: "proj", itemId: card.itemId },
-      );
+      });
 
-      const listed = (await listedCards(userId, "en")).find((candidate) => candidate.cardId === card.cardId)!;
+      const listed = await listedCard(card.cardId);
 
       expect(listed).toMatchObject({ cardKind: "invalid", status: "invalid" });
       expect(listed.editorSchema?.baseKind).toBe("task");
@@ -5016,10 +3929,9 @@ describe("inbox custom route handlers (issue #239)", () => {
     });
 
     it("hides the date of a project card for the status longTerm", async () => {
-      const userId = (await createTenantZeroUser(pool)).id;
       const card = await createCard("Kitchen renovation", "projects", { name: "Kitchen renovation" });
 
-      const listed = (await listedCards(userId, "en")).find((candidate) => candidate.cardId === card.cardId)!;
+      const listed = await listedCard(card.cardId);
 
       expect(listed.editorSchema?.baseKind).toBe("project");
       expect(fieldOf(listed, "date")).toMatchObject({
@@ -5080,10 +3992,9 @@ describe("inbox custom route handlers (issue #239)", () => {
       ]);
       const unknown: string[] = [];
       for (const [baseKind, moduleId] of Object.entries(databaseOf)) {
-        const properties = await withTransaction(pool, async (client) => {
-          const database = await getDatabaseByModuleId(client, moduleId);
-          return propertiesStore.listPropertiesByDatabase(client, database!.id);
-        });
+        const properties = await withTransaction(pool, async (client) =>
+          propertiesStore.listPropertiesByDatabase(client, await databaseIdFor(moduleId)),
+        );
         const keys = new Set(properties.map((property) => property.key));
         for (const group of SYSTEM_DATABASES_EDITOR_SCHEMAS[baseKind]!.groups) {
           for (const field of group.fields) {

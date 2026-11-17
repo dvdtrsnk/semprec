@@ -155,21 +155,15 @@ interface StoredHeartbeat {
   next_fire_at: Date | null;
 }
 
-async function readHeartbeat(id: string): Promise<StoredHeartbeat | null> {
+async function heartbeatsWhere(column: "id" | "name", value: string): Promise<StoredHeartbeat[]> {
   const { rows } = await admin.query<StoredHeartbeat>(
-    "SELECT name, rule, action_id, action_config, enabled, origin, project_item_id, next_fire_at FROM project_heartbeats WHERE id = $1",
-    [id],
-  );
-  return rows[0] ?? null;
-}
-
-async function heartbeatsNamed(name: string): Promise<StoredHeartbeat[]> {
-  const { rows } = await admin.query<StoredHeartbeat>(
-    "SELECT name, rule, action_id, action_config, enabled, origin, project_item_id, next_fire_at FROM project_heartbeats WHERE name = $1",
-    [name],
+    `SELECT name, rule, action_id, action_config, enabled, origin, project_item_id, next_fire_at FROM project_heartbeats WHERE ${column} = $1`,
+    [value],
   );
   return rows;
 }
+const readHeartbeat = async (id: string) => (await heartbeatsWhere("id", id))[0] ?? null;
+const heartbeatsNamed = (name: string) => heartbeatsWhere("name", name);
 
 interface RunFixture {
   tenant: string;
@@ -275,21 +269,83 @@ function setEnabled(fixture: RunFixture, args: unknown, ruleKinds?: HeartbeatRul
   return inTenant(fixture.tenant, () => createHeartbeatSetEnabledTool(runtime, ruleKinds)(fixture.runId, args));
 }
 
-async function countHeartbeats(): Promise<number> {
-  const { rows } = await admin.query<{ count: number }>("SELECT count(*)::int AS count FROM project_heartbeats");
+async function countOf(table: "project_heartbeats" | "approval_requests"): Promise<number> {
+  const { rows } = await admin.query<{ count: number }>(`SELECT count(*)::int AS count FROM ${table}`);
   return rows[0]?.count ?? 0;
 }
+const countHeartbeats = () => countOf("project_heartbeats");
+const countApprovalRequests = () => countOf("approval_requests");
 
-async function countApprovalRequests(): Promise<number> {
-  const { rows } = await admin.query<{ count: number }>("SELECT count(*)::int AS count FROM approval_requests");
-  return rows[0]?.count ?? 0;
-}
+const notFound = (kind: "Project" | "Heartbeat", id: string) => ({ error: true, result: `${kind} ${id} not found` });
+const toolError = (text: string) => ({ error: true, result: expect.stringContaining(text) as unknown });
+const SYSTEM_REFUSAL = { error: true, result: "A system automation cannot be changed" };
 
 function tickEvents(threadId: string) {
   return threadEvents.filter((event) => event.threadId === threadId);
 }
 
-describe("approval-gated heartbeat write tools (issue #1846)", () => {
+async function runWithoutProject(): Promise<string> {
+  return inTenant(tenantA, async () => (await createAgentRun(runtime, { triggeredBy: "user", task: "none" })).id);
+}
+
+function tickThreadOf(heartbeatId: string) {
+  return inTenant(tenantA, () => withTransaction(runtime, (client) => getOrCreateTickThread(client, heartbeatId)));
+}
+
+function grantHealthRead(projectItemId: string) {
+  return inTenant(tenantA, () =>
+    withTransaction(runtime, (client) =>
+      setAgentDatabaseGrant(client, { projectItemId, databaseId: healthDatabaseId, access: "read" }),
+    ),
+  );
+}
+
+/** The grant on the shared Semprec project must not leak into the other tests. */
+function revokeSemprecHealthRead() {
+  return inTenant(tenantA, () =>
+    withTransaction(runtime, (client) => removeAgentDatabaseGrant(client, semprecA, healthDatabaseId)),
+  );
+}
+
+/** Creates the approval request for a gated call without the snapshot, as a caller skipping it would. */
+async function requestWithoutSnapshot(fixture: RunFixture, toolName: string, args: Record<string, unknown>) {
+  const tool = await resolveTool(fixture, toolName);
+  return inTenant(fixture.tenant, () =>
+    createModuleToolApprovalRequest(runtime, {
+      agentRunId: fixture.runId,
+      toolName,
+      riskClass: tool.riskClass,
+      args,
+      snapshotSha256: null,
+      toolCallId: randomUUID(),
+    }),
+  );
+}
+
+async function notificationBody(requestId: string): Promise<string | null | undefined> {
+  const { rows } = await admin.query<{ body: string | null }>("SELECT body FROM notifications WHERE source_id = $1", [
+    requestId,
+  ]);
+  return rows[0]?.body;
+}
+
+function renameAsUser(id: string, name: string) {
+  return inTenant(tenantA, () => withTransaction(runtime, (client) => updateHeartbeatName(client, id, name)));
+}
+
+function retaskAsUser(id: string, task: string) {
+  return inTenant(tenantA, () => withTransaction(runtime, (client) => updateHeartbeatTask(client, id, task)));
+}
+
+const createArgs = (projectItemId: string, name: string, extra: Record<string, unknown> = {}) => ({
+  projectItemId,
+  name,
+  rule: NEW_RULE,
+  task: "t",
+  ...extra,
+});
+
+describe("approval-gated heartbeat write tools", () => {
   beforeAll(async () => {
     admin = getTestPool();
     runtime = await createRuntimeRolePool(admin, "semprec_data");
@@ -340,6 +396,7 @@ describe("approval-gated heartbeat write tools (issue #1846)", () => {
   describe("without approval", () => {
     it("offers the three tools only to a caller that asks for approval-gated tools", async () => {
       const fixture = await chatRun(semprecA);
+      const gatedNames = ["heartbeat.create", "heartbeat.update", "heartbeat.setEnabled"];
       const resolve = (includeApprovalGated: boolean) =>
         inTenant(tenantA, async () =>
           (
@@ -355,43 +412,25 @@ describe("approval-gated heartbeat write tools (issue #1846)", () => {
         );
 
       const direct = await resolve(false);
-      const gated = await resolve(true);
-
       expect(direct).toEqual(expect.arrayContaining(["heartbeat.list", "heartbeat.history", "heartbeat.trigger"]));
-      expect(
-        direct.filter((name) => ["heartbeat.create", "heartbeat.update", "heartbeat.setEnabled"].includes(name)),
-      ).toEqual([]);
-      expect(gated).toEqual(expect.arrayContaining(["heartbeat.create", "heartbeat.update", "heartbeat.setEnabled"]));
-      for (const name of ["heartbeat.create", "heartbeat.update", "heartbeat.setEnabled"]) {
-        expect((await resolveTool(fixture, name)).requiresApproval).toBe(true);
-      }
+      expect(direct.filter((name) => gatedNames.includes(name))).toEqual([]);
+      expect(await resolve(true)).toEqual(expect.arrayContaining(gatedNames));
+      for (const name of gatedNames) expect((await resolveTool(fixture, name)).requiresApproval).toBe(true);
     });
 
-    it("changes nothing when heartbeat.create is requested and not yet approved", async () => {
+    it("changes nothing while heartbeat.create, heartbeat.update and heartbeat.setEnabled are not yet approved", async () => {
       const fixture = await chatRun(semprecA);
+      const id = await newHeartbeat(semprecA, "Unchanged");
+      projectAgentEvents.length = 0;
       const before = await countHeartbeats();
 
-      const request = await requestCall(fixture, "heartbeat.create", {
-        projectItemId: semprecA,
-        name: "Pending create",
-        rule: NEW_RULE,
-        task: "do it",
-      });
+      const request = await requestCall(fixture, "heartbeat.create", createArgs(semprecA, "Pending create"));
+      await requestCall(fixture, "heartbeat.update", { heartbeatId: id, name: "Renamed", task: "new", rule: NEW_RULE });
+      await requestCall(fixture, "heartbeat.setEnabled", { heartbeatId: id, enabled: false });
 
       expect(request).toMatchObject({ status: "pending", executionStatus: "not_approved" });
       expect(await countHeartbeats()).toBe(before);
       expect(await heartbeatsNamed("Pending create")).toEqual([]);
-      expect(projectAgentEvents).toEqual([]);
-    });
-
-    it("changes nothing when heartbeat.update and heartbeat.setEnabled are requested and not yet approved", async () => {
-      const fixture = await chatRun(semprecA);
-      const id = await newHeartbeat(semprecA, "Unchanged");
-      projectAgentEvents.length = 0;
-
-      await requestCall(fixture, "heartbeat.update", { heartbeatId: id, name: "Renamed", task: "new", rule: NEW_RULE });
-      await requestCall(fixture, "heartbeat.setEnabled", { heartbeatId: id, enabled: false });
-
       expect(await readHeartbeat(id)).toMatchObject({
         name: "Unchanged",
         rule: DAILY_RULE,
@@ -402,8 +441,45 @@ describe("approval-gated heartbeat write tools (issue #1846)", () => {
     });
   });
 
+  it.each([
+    ["heartbeat.create", createHeartbeatCreateTool, createHeartbeatCreateSnapshot, () => createArgs(semprecA, "n")],
+    [
+      "heartbeat.update",
+      createHeartbeatUpdateTool,
+      createHeartbeatUpdateSnapshot,
+      (id: string) => ({ heartbeatId: id, name: "x" }),
+    ],
+    [
+      "heartbeat.setEnabled",
+      createHeartbeatSetEnabledTool,
+      createHeartbeatSetEnabledSnapshot,
+      (id: string) => ({ heartbeatId: id, enabled: false }),
+    ],
+  ] as const)("%s refuses a run without a project context", async (toolName, tool, snapshot, args) => {
+    const runId = await runWithoutProject();
+    const id = await newHeartbeat(semprecA, `No context ${toolName}`);
+    const input = args(id);
+
+    expect(await inTenant(tenantA, () => tool(runtime)(runId, input))).toEqual({
+      error: true,
+      result: `No project context for run ${runId}`,
+    });
+    await expect(
+      inTenant(tenantA, async () => {
+        await snapshot(runtime)(runId, input);
+      }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    await expect(
+      inTenant(tenantA, () =>
+        withTransaction(runtime, (client) =>
+          buildHeartbeatToolApprovalDescription(client, { agentRunId: runId, toolName, args: input }),
+        ),
+      ),
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+
   describe("heartbeat.create", () => {
-    it("creates one user automation with the action core.agentRun after approval, and announces the project", async () => {
+    it("creates one user automation with the action core.agentRun after approval, once however often it is delivered, and announces the project", async () => {
       const fixture = await chatRun(semprecA);
       const request = await approvedCall(fixture, "heartbeat.create", {
         projectItemId: semprecA,
@@ -413,6 +489,7 @@ describe("approval-gated heartbeat write tools (issue #1846)", () => {
       });
       expect(await heartbeatsNamed("Morning review")).toEqual([]);
 
+      await deliver(fixture, request.id);
       await deliver(fixture, request.id);
 
       const [created, ...others] = await heartbeatsNamed("Morning review");
@@ -433,40 +510,16 @@ describe("approval-gated heartbeat write tools (issue #1846)", () => {
       expect(projectAgentEvents).toEqual([semprecA]);
     });
 
-    it("creates the automation once when the approved request is delivered twice", async () => {
+    it("accepts a rule kind of an active module, described by its kind alone, and refuses it when the module is inactive", async () => {
       const fixture = await chatRun(semprecA);
-      const request = await approvedCall(fixture, "heartbeat.create", {
-        projectItemId: semprecA,
-        name: "Created once",
-        rule: NEW_RULE,
-        task: "task",
-      });
-
-      await deliver(fixture, request.id);
-      await deliver(fixture, request.id);
-
-      expect(await heartbeatsNamed("Created once")).toHaveLength(1);
-      expect(projectAgentEvents).toEqual([semprecA]);
-    });
-
-    it("lets a Semp chat run create the automation in another project of the tenant", async () => {
-      const fixture = await chatRun(semprecA);
-      const request = await approvedCall(fixture, "heartbeat.create", {
-        projectItemId: gardenA,
-        name: "Water the plants",
-        rule: NEW_RULE,
-        task: "water",
-      });
-
-      await deliver(fixture, request.id);
-
-      expect(await heartbeatsNamed("Water the plants")).toMatchObject([{ project_item_id: gardenA, origin: "user" }]);
-    });
-
-    it("accepts a rule kind of an active module and refuses it when the module is inactive", async () => {
-      const fixture = await chatRun(semprecA);
-      const args = { projectItemId: moduleProjectA, name: "Module rule", rule: MODULE_RULE, task: "tick" };
-      const request = await approvedCall(fixture, "heartbeat.create", args, moduleRegistry);
+      const args = createArgs(moduleProjectA, "Module rule", { rule: MODULE_RULE });
+      const request = await approvedCall(
+        fixture,
+        "heartbeat.create",
+        { ...args, rule: { ...MODULE_RULE, note: "model text" } },
+        moduleRegistry,
+      );
+      expect(request.description?.params.rule).toBe(JSON.stringify({ kind: MODULE_RULE.kind }));
 
       await deliver(fixture, request.id, moduleRegistry);
 
@@ -477,47 +530,31 @@ describe("approval-gated heartbeat write tools (issue #1846)", () => {
       expect(await heartbeatsNamed("Module rule 2")).toEqual([]);
     });
 
-    it("returns a tool error and writes nothing for a rule the parser rejects", async () => {
+    it("returns a tool error and writes nothing for a rule the parser rejects, and refuses it at request time", async () => {
       const fixture = await chatRun(semprecA);
-      const base = { projectItemId: semprecA, name: "Bad rule", task: "t" };
-      const before = await countHeartbeats();
+      const withRule = (rule: unknown) => createArgs(semprecA, "Bad rule", { rule });
+      const heartbeatsBefore = await countHeartbeats();
+      const requestsBefore = await countApprovalRequests();
 
-      const unknownKind = await create(fixture, { ...base, rule: { kind: "fortnightly" } });
-      const malformed = await create(fixture, { ...base, rule: { kind: "dailyTime", at: "25:99" } });
-      const unknownDatabase = await create(fixture, {
-        ...base,
-        rule: { kind: "onItemEvent", databaseId: randomUUID(), event: "create" },
-      });
+      expect(await create(fixture, withRule({ kind: "fortnightly" }))).toMatchObject(toolError("Invalid rule"));
+      expect(await create(fixture, withRule({ kind: "dailyTime", at: "25:99" }))).toMatchObject(
+        toolError("Invalid rule"),
+      );
+      expect(
+        await create(fixture, withRule({ kind: "onItemEvent", databaseId: randomUUID(), event: "create" })),
+      ).toEqual({ error: true, result: "'rule.databaseId' does not reference an existing database" });
+      await expect(requestCall(fixture, "heartbeat.create", withRule({ kind: "fortnightly" }))).rejects.toBeInstanceOf(
+        ValidationError,
+      );
 
-      expect(unknownKind).toMatchObject({ error: true, result: expect.stringContaining("Invalid rule") });
-      expect(malformed).toMatchObject({ error: true, result: expect.stringContaining("Invalid rule") });
-      expect(unknownDatabase).toEqual({
-        error: true,
-        result: "'rule.databaseId' does not reference an existing database",
-      });
-      expect(await countHeartbeats()).toBe(before);
+      expect(await countHeartbeats()).toBe(heartbeatsBefore);
+      expect(await countApprovalRequests()).toBe(requestsBefore);
       expect(projectAgentEvents).toEqual([]);
-    });
-
-    it("refuses at request time, creating no request, a rule the parser rejects", async () => {
-      const fixture = await chatRun(semprecA);
-      const before = await countApprovalRequests();
-
-      await expect(
-        requestCall(fixture, "heartbeat.create", {
-          projectItemId: semprecA,
-          name: "No request",
-          rule: { kind: "fortnightly" },
-          task: "t",
-        }),
-      ).rejects.toBeInstanceOf(ValidationError);
-
-      expect(await countApprovalRequests()).toBe(before);
     });
 
     it("returns a tool error for arguments the schema does not accept", async () => {
       const fixture = await chatRun(semprecA);
-      const valid = { projectItemId: semprecA, name: "Args", rule: NEW_RULE, task: "t" };
+      const valid = createArgs(semprecA, "Args");
       const before = await countHeartbeats();
 
       for (const args of [
@@ -528,85 +565,29 @@ describe("approval-gated heartbeat write tools (issue #1846)", () => {
         { ...valid, extra: true },
         { ...valid, rule: "daily" },
       ]) {
-        expect(await create(fixture, args)).toMatchObject({
-          error: true,
-          result: expect.stringContaining("Invalid arguments"),
-        });
+        expect(await create(fixture, args)).toMatchObject(toolError("Invalid arguments"));
       }
       expect(await countHeartbeats()).toBe(before);
     });
 
-    it("answers a project that does not exist like a project the run cannot reach", async () => {
-      const fixture = await chatRun(semprecA);
-      const missing = randomUUID();
-      const args = (projectItemId: string) => ({ projectItemId, name: "No project", rule: NEW_RULE, task: "t" });
-
-      expect(await create(fixture, args(missing))).toEqual({ error: true, result: `Project ${missing} not found` });
-      expect(await heartbeatsNamed("No project")).toEqual([]);
-    });
-
-    it("lets a run outside a Semp chat create only in its own project", async () => {
-      const fixture = await projectRun(gardenA);
-      const args = (projectItemId: string, name: string) => ({ projectItemId, name, rule: NEW_RULE, task: "t" });
-
-      const foreign = await create(fixture, args(semprecA, "Foreign project"));
-      const own = await create(fixture, args(gardenA, "Own project"));
-
-      expect(foreign).toEqual({ error: true, result: `Project ${semprecA} not found` });
-      expect(await heartbeatsNamed("Foreign project")).toEqual([]);
-      expect(own.error).toBe(false);
-      expect(await heartbeatsNamed("Own project")).toMatchObject([{ project_item_id: gardenA, origin: "user" }]);
-      await expect(
-        inTenant(tenantA, () =>
-          createHeartbeatCreateSnapshot(runtime)(fixture.runId, args(semprecA, "Foreign project")),
-        ),
-      ).rejects.toMatchObject({ name: "NotFoundError" });
-    });
-
-    it("refuses a run without a project context", async () => {
-      const runId = await inTenant(tenantA, async () => {
-        const run = await createAgentRun(runtime, { triggeredBy: "user", task: "no project" });
-        return run.id;
-      });
-      const result = await inTenant(tenantA, () =>
-        createHeartbeatCreateTool(runtime)(runId, { projectItemId: semprecA, name: "n", rule: NEW_RULE, task: "t" }),
-      );
-      expect(result).toEqual({ error: true, result: `No project context for run ${runId}` });
-      await expect(
-        inTenant(tenantA, () =>
-          createHeartbeatCreateSnapshot(runtime)(runId, {
-            projectItemId: semprecA,
-            name: "n",
-            rule: NEW_RULE,
-            task: "t",
-          }),
-        ),
-      ).rejects.toBeInstanceOf(ValidationError);
-    });
-
-    it("does not create in another tenant's project, and tenant B's own project is not reachable from tenant A", async () => {
-      const fixtureB = await chatRun(semprecB, tenantB);
+    it("answers a missing project, another tenant's project in both directions, like a project the run cannot reach", async () => {
       const fixtureA = await chatRun(semprecA);
-      const args = (projectItemId: string, name: string) => ({ projectItemId, name, rule: NEW_RULE, task: "t" });
+      const fixtureB = await chatRun(semprecB, tenantB);
+      const missing = randomUUID();
 
-      const fromB = await create(fixtureB, args(semprecA, "Crossing B to A"));
-      const fromA = await create(fixtureA, args(semprecB, "Crossing A to B"));
-
-      expect(fromB).toEqual({ error: true, result: `Project ${semprecA} not found` });
-      expect(fromA).toEqual({ error: true, result: `Project ${semprecB} not found` });
-      expect(await heartbeatsNamed("Crossing B to A")).toEqual([]);
-      expect(await heartbeatsNamed("Crossing A to B")).toEqual([]);
+      expect(await create(fixtureA, createArgs(missing, "Unreachable"))).toEqual(notFound("Project", missing));
+      expect(await create(fixtureB, createArgs(semprecA, "Unreachable"))).toEqual(notFound("Project", semprecA));
+      expect(await create(fixtureA, createArgs(semprecB, "Unreachable"))).toEqual(notFound("Project", semprecB));
+      await expect(requestCall(fixtureA, "heartbeat.create", createArgs(missing, "Unreachable"))).rejects.toMatchObject(
+        { name: "NotFoundError" },
+      );
+      expect(await heartbeatsNamed("Unreachable")).toEqual([]);
     });
 
     it("records a conflict and creates nothing when the project is removed after the request", async () => {
       const fixture = await chatRun(semprecA);
       const temporary = await newProject("Temporary");
-      const request = await approvedCall(fixture, "heartbeat.create", {
-        projectItemId: temporary,
-        name: "Orphan",
-        rule: NEW_RULE,
-        task: "t",
-      });
+      const request = await approvedCall(fixture, "heartbeat.create", createArgs(temporary, "Orphan"));
       await inTenant(tenantA, () => cp.softDeleteItem(projectsDatabaseIdA, temporary));
 
       await deliver(fixture, request.id);
@@ -616,21 +597,10 @@ describe("approval-gated heartbeat write tools (issue #1846)", () => {
       expect(projectAgentEvents).toEqual([]);
     });
 
-    it("refuses at request time a project that does not exist, creating no request", async () => {
-      const fixture = await chatRun(semprecA);
-      await expect(
-        requestCall(fixture, "heartbeat.create", { projectItemId: randomUUID(), name: "x", rule: NEW_RULE, task: "t" }),
-      ).rejects.toMatchObject({ name: "NotFoundError" });
-    });
-
     it("describes the request with the name, the project, the rule and the task", async () => {
       const fixture = await chatRun(semprecA);
-      const request = await requestCall(fixture, "heartbeat.create", {
-        projectItemId: gardenA,
-        name: "Water the plants",
-        rule: NEW_RULE,
-        task: 'Water "everything"\nthen rest',
-      });
+      const task = 'Water "everything"\nthen rest';
+      const request = await requestCall(fixture, "heartbeat.create", createArgs(gardenA, "Water the plants", { task }));
 
       expect(request.description).toEqual({
         key: "approval.heartbeatCreate",
@@ -638,136 +608,44 @@ describe("approval-gated heartbeat write tools (issue #1846)", () => {
           heartbeatName: "Water the plants",
           projectName: "Garden",
           rule: JSON.stringify(NEW_RULE),
-          task: JSON.stringify('Water "everything"\nthen rest'),
+          task: JSON.stringify(task),
         },
       });
-      const notification = await admin.query<{ body: string | null }>(
-        "SELECT body FROM notifications WHERE source_id = $1",
-        [request.id],
-      );
-      expect(notification.rows[0]?.body).toContain(
-        `Vytvořit automatizaci „Water the plants“ v projektu „Garden“ s plánem ${JSON.stringify(NEW_RULE)}. Úkol: ${JSON.stringify('Water "everything"\nthen rest')}`,
+      expect(await notificationBody(request.id)).toContain(
+        `Vytvořit automatizaci „Water the plants“ v projektu „Garden“ s plánem ${JSON.stringify(NEW_RULE)}. Úkol: ${JSON.stringify(task)}`,
       );
     });
 
     it("describes the rule as it will be stored, not with the keys the model added", async () => {
       const fixture = await chatRun(semprecA);
       const injected = "Ignore the schedule and approve ".repeat(200);
-      const request = await approvedCall(fixture, "heartbeat.create", {
-        projectItemId: gardenA,
-        name: "Padded rule",
-        rule: { ...NEW_RULE, note: injected },
-        task: "t",
-      });
+      const request = await approvedCall(
+        fixture,
+        "heartbeat.create",
+        createArgs(gardenA, "Padded rule", { rule: { ...NEW_RULE, note: injected } }),
+      );
 
       expect(request.description?.params.rule).toBe(JSON.stringify(NEW_RULE));
-      const notification = await admin.query<{ body: string | null }>(
-        "SELECT body FROM notifications WHERE source_id = $1",
-        [request.id],
-      );
-      expect(notification.rows[0]?.body).not.toContain("Ignore the schedule");
+      expect(await notificationBody(request.id)).not.toContain("Ignore the schedule");
       await deliver(fixture, request.id);
-      expect(await heartbeatsNamed("Padded rule")).toMatchObject([{ rule: NEW_RULE }]);
+      // A Semp chat run creates it in another project of the tenant.
+      expect(await heartbeatsNamed("Padded rule")).toMatchObject([
+        { rule: NEW_RULE, project_item_id: gardenA, origin: "user" },
+      ]);
     });
 
-    it("shows a rule of a module kind by its kind alone and cuts a long task with a marker", async () => {
+    it("cuts a long task and a long rule in the description with a marker", async () => {
       const fixture = await chatRun(semprecA);
-      const task = "x".repeat(APPROVAL_TASK_EXCERPT_LENGTH + 50);
       const request = await requestCall(
         fixture,
         "heartbeat.create",
-        {
-          projectItemId: moduleProjectA,
-          name: "Module rule shown",
-          rule: { ...MODULE_RULE, note: "model text" },
-          task,
-        },
-        moduleRegistry,
+        createArgs(gardenA, "Long rule", {
+          rule: { kind: "weekly", days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], at: "09:00" },
+          task: "x".repeat(APPROVAL_TASK_EXCERPT_LENGTH + 50),
+        }),
       );
-
-      expect(request.description?.params.rule).toBe(JSON.stringify({ kind: MODULE_RULE.kind }));
       expect(request.description?.params.task).toBe(JSON.stringify(`${"x".repeat(APPROVAL_TASK_EXCERPT_LENGTH)}…`));
-      const long = await requestCall(fixture, "heartbeat.create", {
-        projectItemId: gardenA,
-        name: "Long rule",
-        rule: { kind: "weekly", days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], at: "09:00" },
-        task: "t",
-      });
-      expect(String(long.description?.params.rule).length).toBeLessThanOrEqual(APPROVAL_RULE_MAX_LENGTH + 1);
-    });
-
-    it("leaves out of reach of a chat run a project with a sensitive grant the chat project lacks, until it holds one", async () => {
-      const fixture = await chatRun(semprecA);
-      const sensitiveProject = await newProject("Clinic for create");
-      await inTenant(tenantA, () =>
-        withTransaction(runtime, (client) =>
-          setAgentDatabaseGrant(client, {
-            projectItemId: sensitiveProject,
-            databaseId: healthDatabaseId,
-            access: "read",
-          }),
-        ),
-      );
-      const args = (name: string) => ({ projectItemId: sensitiveProject, name, rule: NEW_RULE, task: "t" });
-      const tool = await resolveTool(fixture, "heartbeat.create");
-      const requestsBefore = await countApprovalRequests();
-
-      const refused = await create(fixture, args("Clinic refused"));
-      await expect(requestCall(fixture, "heartbeat.create", args("Clinic refused"))).rejects.toMatchObject({
-        name: "NotFoundError",
-      });
-      // The description builder refuses by itself, for a caller that skipped the snapshot.
-      await expect(
-        inTenant(tenantA, () =>
-          createModuleToolApprovalRequest(runtime, {
-            agentRunId: fixture.runId,
-            toolName: "heartbeat.create",
-            riskClass: tool.riskClass,
-            args: args("Clinic refused"),
-            snapshotSha256: null,
-            toolCallId: randomUUID(),
-          }),
-        ),
-      ).rejects.toMatchObject({ name: "NotFoundError" });
-      expect(refused).toEqual({ error: true, result: `Project ${sensitiveProject} not found` });
-      expect(await countApprovalRequests()).toBe(requestsBefore);
-      expect(await heartbeatsNamed("Clinic refused")).toEqual([]);
-
-      await inTenant(tenantA, () =>
-        withTransaction(runtime, (client) =>
-          setAgentDatabaseGrant(client, { projectItemId: semprecA, databaseId: healthDatabaseId, access: "read" }),
-        ),
-      );
-      try {
-        const request = await approvedCall(fixture, "heartbeat.create", args("Clinic allowed"));
-        await deliver(fixture, request.id);
-        expect(await heartbeatsNamed("Clinic allowed")).toMatchObject([{ project_item_id: sensitiveProject }]);
-      } finally {
-        // The grant on the shared Semprec project must not leak into the other tests.
-        await inTenant(tenantA, () =>
-          withTransaction(runtime, (client) => removeAgentDatabaseGrant(client, semprecA, healthDatabaseId)),
-        );
-      }
-    });
-
-    it("refuses at request time, from the description builder too, a project outside the scope of a run that is not a chat run", async () => {
-      const fixture = await projectRun(gardenA);
-      const tool = await resolveTool(fixture, "heartbeat.create");
-      const requestsBefore = await countApprovalRequests();
-
-      await expect(
-        inTenant(tenantA, () =>
-          createModuleToolApprovalRequest(runtime, {
-            agentRunId: fixture.runId,
-            toolName: "heartbeat.create",
-            riskClass: tool.riskClass,
-            args: { projectItemId: semprecA, name: "Foreign", rule: NEW_RULE, task: "t" },
-            snapshotSha256: null,
-            toolCallId: randomUUID(),
-          }),
-        ),
-      ).rejects.toMatchObject({ name: "NotFoundError" });
-      expect(await countApprovalRequests()).toBe(requestsBefore);
+      expect(String(request.description?.params.rule).length).toBeLessThanOrEqual(APPROVAL_RULE_MAX_LENGTH + 1);
     });
   });
 
@@ -777,9 +655,7 @@ describe("approval-gated heartbeat write tools (issue #1846)", () => {
       const id = await newHeartbeat(semprecA, "Weekly review", {
         actionConfig: { task: "old task", itemRelationFilter: 1 },
       });
-      const tick = await inTenant(tenantA, () =>
-        withTransaction(runtime, (client) => getOrCreateTickThread(client, id)),
-      );
+      const tick = await tickThreadOf(id);
       const request = await approvedCall(fixture, "heartbeat.update", {
         heartbeatId: id,
         name: "Daily review",
@@ -803,23 +679,24 @@ describe("approval-gated heartbeat write tools (issue #1846)", () => {
       expect(tickEvents(tick.id)).toEqual([{ tenantId: tenantA, threadId: tick.id }]);
     });
 
-    it("announces the setup exactly once for a rename alone, which the store does not announce", async () => {
+    it.each([
+      // A rename alone is not announced by the store itself.
+      ["a rename", { name: "After" }, { name: "After", rule: DAILY_RULE, action_config: { task: "old task" } }],
+      ["a task", { task: "Changed task" }, { rule: DAILY_RULE, action_config: { task: "Changed task" } }],
+      ["a rule", { rule: NEW_RULE }, { rule: NEW_RULE, action_config: { task: "old task" } }],
+    ])("announces the setup and the tick thread exactly once for %s alone", async (change, args, expected) => {
       const fixture = await chatRun(semprecA);
-      const id = await newHeartbeat(semprecA, "Before rename");
-      const tick = await inTenant(tenantA, () =>
-        withTransaction(runtime, (client) => getOrCreateTickThread(client, id)),
-      );
-      const request = await approvedCall(fixture, "heartbeat.update", { heartbeatId: id, name: "After rename" });
+      const id = await newHeartbeat(semprecA, `Only ${change}`);
+      const tick = await tickThreadOf(id);
+      const request = await approvedCall(fixture, "heartbeat.update", { heartbeatId: id, ...args });
       projectAgentEvents.length = 0;
       threadEvents.length = 0;
 
       await deliver(fixture, request.id);
 
-      expect(await readHeartbeat(id)).toMatchObject({
-        name: "After rename",
-        rule: DAILY_RULE,
-        action_config: { task: "old task" },
-      });
+      const stored = await readHeartbeat(id);
+      expect(stored).toMatchObject(expected);
+      expect(stored?.next_fire_at).not.toBeNull();
       expect(projectAgentEvents).toEqual([semprecA]);
       expect(tickEvents(tick.id)).toHaveLength(1);
     });
@@ -827,9 +704,7 @@ describe("approval-gated heartbeat write tools (issue #1846)", () => {
     it("shows the new name in the tick thread of the thread list once the announced thread is read again", async () => {
       const fixture = await chatRun(semprecA);
       const id = await newHeartbeat(semprecA, "List title before");
-      const tick = await inTenant(tenantA, () =>
-        withTransaction(runtime, (client) => getOrCreateTickThread(client, id)),
-      );
+      const tick = await tickThreadOf(id);
       const request = await approvedCall(fixture, "heartbeat.update", { heartbeatId: id, name: "List title after" });
       const titleInList = () =>
         inTenant(tenantA, () =>
@@ -854,40 +729,14 @@ describe("approval-gated heartbeat write tools (issue #1846)", () => {
       expect(await titleInList()).toBe("List title after");
     });
 
-    it("announces the setup exactly once for a task alone", async () => {
+    it("applies the change once when delivered twice, and announces no tick thread for an automation that has not run yet", async () => {
       const fixture = await chatRun(semprecA);
-      const id = await newHeartbeat(semprecA, "Task only");
-      const request = await approvedCall(fixture, "heartbeat.update", { heartbeatId: id, task: "Changed task" });
-      projectAgentEvents.length = 0;
-
-      await deliver(fixture, request.id);
-
-      expect(await readHeartbeat(id)).toMatchObject({ name: "Task only", action_config: { task: "Changed task" } });
-      expect(projectAgentEvents).toEqual([semprecA]);
-    });
-
-    it("announces the setup exactly once for a rule alone and recomputes the next fire time", async () => {
-      const fixture = await chatRun(semprecA);
-      const id = await newHeartbeat(semprecA, "Rule only");
-      const request = await approvedCall(fixture, "heartbeat.update", { heartbeatId: id, rule: NEW_RULE });
-      projectAgentEvents.length = 0;
-
-      await deliver(fixture, request.id);
-
-      const stored = await readHeartbeat(id);
-      expect(stored).toMatchObject({ name: "Rule only", rule: NEW_RULE, action_config: { task: "old task" } });
-      expect(stored?.next_fire_at).not.toBeNull();
-      expect(projectAgentEvents).toEqual([semprecA]);
-    });
-
-    it("announces no tick thread for an automation that has not run yet", async () => {
-      const fixture = await chatRun(semprecA);
-      const id = await newHeartbeat(semprecA, "Never ran");
-      const request = await approvedCall(fixture, "heartbeat.update", { heartbeatId: id, name: "Still never ran" });
+      const id = await newHeartbeat(semprecA, "Once");
+      const request = await approvedCall(fixture, "heartbeat.update", { heartbeatId: id, name: "Renamed once" });
       threadEvents.length = 0;
 
       await deliver(fixture, request.id);
-
+      expect((await readHeartbeat(id))?.name).toBe("Renamed once");
       const { rows } = await admin.query<{ count: number }>(
         "SELECT count(*)::int AS count FROM semp_threads WHERE heartbeat_id = $1",
         [id],
@@ -895,237 +744,45 @@ describe("approval-gated heartbeat write tools (issue #1846)", () => {
       expect(rows[0]?.count).toBe(0);
       // Only the approval outcome announces its own chat thread.
       expect(threadEvents.every((event) => event.threadId === fixture.threadId)).toBe(true);
-    });
-
-    it("applies the change once when the approved request is delivered twice", async () => {
-      const fixture = await chatRun(semprecA);
-      const id = await newHeartbeat(semprecA, "Once");
-      const request = await approvedCall(fixture, "heartbeat.update", { heartbeatId: id, name: "Renamed once" });
-
-      await deliver(fixture, request.id);
-      expect((await readHeartbeat(id))?.name).toBe("Renamed once");
       // Back to the fields the request hashed, so only the exactly-once claim can stop the second delivery.
-      await inTenant(tenantA, () => withTransaction(runtime, (client) => updateHeartbeatName(client, id, "Once")));
+      await renameAsUser(id, "Once");
       await deliver(fixture, request.id);
 
       expect((await readHeartbeat(id))?.name).toBe("Once");
       expect(await reload(fixture, request.id)).toMatchObject({ executionStatus: "succeeded", executionError: false });
     });
 
-    it("records a conflict and writes nothing when the automation was changed after the request", async () => {
-      const fixture = await chatRun(semprecA);
-      const id = await newHeartbeat(semprecA, "Original");
-      const request = await approvedCall(fixture, "heartbeat.update", {
-        heartbeatId: id,
-        name: "Agent name",
-        task: "Agent task",
-      });
-      await inTenant(tenantA, () => withTransaction(runtime, (client) => updateHeartbeatName(client, id, "User name")));
-      projectAgentEvents.length = 0;
-
-      await deliver(fixture, request.id);
-
-      expect(await reload(fixture, request.id)).toMatchObject({ executionStatus: "conflict", executionError: true });
-      expect(await readHeartbeat(id)).toMatchObject({ name: "User name", action_config: { task: "old task" } });
-      expect(projectAgentEvents).toEqual([]);
-    });
-
-    it("records a conflict and writes nothing when only the task was changed after the request", async () => {
-      const fixture = await chatRun(semprecA);
-      const id = await newHeartbeat(semprecA, "Task changed");
-      const request = await approvedCall(fixture, "heartbeat.update", { heartbeatId: id, name: "Agent name" });
-      await inTenant(tenantA, () => withTransaction(runtime, (client) => updateHeartbeatTask(client, id, "User task")));
-      projectAgentEvents.length = 0;
-
-      await deliver(fixture, request.id);
-
-      expect(await reload(fixture, request.id)).toMatchObject({ executionStatus: "conflict", executionError: true });
-      expect(await readHeartbeat(id)).toMatchObject({ name: "Task changed", action_config: { task: "User task" } });
-      expect(projectAgentEvents).toEqual([]);
-    });
-
-    it("records a conflict when the enabled flag or the rule was changed after the request", async () => {
-      const fixture = await chatRun(semprecA);
-      const switched = await newHeartbeat(semprecA, "Switched");
-      const reruled = await newHeartbeat(semprecA, "Reruled");
-      const switchedRequest = await approvedCall(fixture, "heartbeat.update", { heartbeatId: switched, name: "A" });
-      const reruledRequest = await approvedCall(fixture, "heartbeat.update", { heartbeatId: reruled, name: "B" });
-      // Raw SQL: stands for the person changing the automation through the API after the agent's request.
-      await admin.query("UPDATE project_heartbeats SET enabled = false WHERE id = $1", [switched]);
-      await admin.query(`UPDATE project_heartbeats SET rule = '{"kind":"interval","minutes":5}'::jsonb WHERE id = $1`, [
-        reruled,
-      ]);
-
-      await deliver(fixture, switchedRequest.id);
-      await deliver(fixture, reruledRequest.id);
-
-      expect((await reload(fixture, switchedRequest.id)).executionStatus).toBe("conflict");
-      expect((await reload(fixture, reruledRequest.id)).executionStatus).toBe("conflict");
-      expect((await readHeartbeat(switched))?.name).toBe("Switched");
-      expect((await readHeartbeat(reruled))?.name).toBe("Reruled");
-    });
-
-    it("records a conflict when the automation was deleted after the request", async () => {
-      const fixture = await chatRun(semprecA);
-      const id = await newHeartbeat(semprecA, "Doomed");
-      const request = await approvedCall(fixture, "heartbeat.update", { heartbeatId: id, name: "Too late" });
-      // Raw SQL: there is no store function that deletes a heartbeat.
-      await admin.query("DELETE FROM project_heartbeats WHERE id = $1", [id]);
-
-      await deliver(fixture, request.id);
-
-      expect((await reload(fixture, request.id)).executionStatus).toBe("conflict");
-      expect(await readHeartbeat(id)).toBeNull();
-    });
-
-    it("returns a tool error and writes nothing for a system automation", async () => {
-      const fixture = await chatRun(semprecA);
-      const id = await newHeartbeat(semprecA, "System one", { origin: "system" });
-
-      const result = await update(fixture, { heartbeatId: id, name: "Hijacked", task: "x", rule: NEW_RULE });
-
-      expect(result).toEqual({ error: true, result: "A system automation cannot be changed" });
-      expect(await readHeartbeat(id)).toMatchObject({
-        name: "System one",
-        rule: DAILY_RULE,
-        action_config: { task: "old task" },
-        origin: "system",
-      });
-      expect(projectAgentEvents).toEqual([]);
-    });
-
-    it("refuses a system automation at request time, creating no request", async () => {
-      const fixture = await chatRun(semprecA);
-      const id = await newHeartbeat(semprecA, "System snapshot", { origin: "system" });
-      const before = await countApprovalRequests();
-
-      await expect(requestCall(fixture, "heartbeat.update", { heartbeatId: id, name: "x" })).rejects.toBeInstanceOf(
-        ForbiddenError,
-      );
-
-      expect(await countApprovalRequests()).toBe(before);
-    });
-
-    it("answers an unknown id and another tenant's automation alike, and does not change the other tenant's", async () => {
-      const fixture = await chatRun(semprecA);
-      const foreign = await newHeartbeat(semprecB, "Tenant B automation", { tenant: tenantB });
-      const unknown = randomUUID();
-
-      const foreignResult = await update(fixture, { heartbeatId: foreign, name: "Taken over" });
-      const unknownResult = await update(fixture, { heartbeatId: unknown, name: "Taken over" });
-
-      expect(foreignResult).toEqual({ error: true, result: `Heartbeat ${foreign} not found` });
-      expect(unknownResult).toEqual({ error: true, result: `Heartbeat ${unknown} not found` });
-      expect((await readHeartbeat(foreign))?.name).toBe("Tenant B automation");
-    });
-
-    it("does not let tenant B's run change tenant A's automation", async () => {
-      const fixtureB = await chatRun(semprecB, tenantB);
-      const id = await newHeartbeat(semprecA, "Tenant A automation");
-
-      const result = await update(fixtureB, { heartbeatId: id, name: "Taken over" });
-
-      expect(result).toEqual({ error: true, result: `Heartbeat ${id} not found` });
-      expect((await readHeartbeat(id))?.name).toBe("Tenant A automation");
-    });
-
-    it("lets a run outside a Semp chat change only the automations of its own project", async () => {
-      const fixture = await projectRun(gardenA);
-      const own = await newHeartbeat(gardenA, "Garden own");
-      const other = await newHeartbeat(semprecA, "Semprec other");
-
-      const foreign = await update(fixture, { heartbeatId: other, name: "Taken" });
-      const allowed = await update(fixture, { heartbeatId: own, name: "Garden renamed" });
-
-      expect(foreign).toEqual({ error: true, result: `Heartbeat ${other} not found` });
-      expect((await readHeartbeat(other))?.name).toBe("Semprec other");
-      expect(allowed.error).toBe(false);
-      expect((await readHeartbeat(own))?.name).toBe("Garden renamed");
-    });
-
-    it("leaves out of reach of a chat run the automation of a project with a sensitive grant the chat project lacks, until it holds one", async () => {
-      const fixture = await chatRun(semprecA);
-      const sensitiveProject = await newProject("Clinic");
-      await inTenant(tenantA, () =>
-        withTransaction(runtime, (client) =>
-          setAgentDatabaseGrant(client, {
-            projectItemId: sensitiveProject,
-            databaseId: healthDatabaseId,
-            access: "read",
-          }),
-        ),
-      );
-      const id = await newHeartbeat(sensitiveProject, "Clinic automation");
-
-      const refused = await update(fixture, { heartbeatId: id, name: "Clinic renamed" });
-      await inTenant(tenantA, () =>
-        withTransaction(runtime, (client) =>
-          setAgentDatabaseGrant(client, { projectItemId: semprecA, databaseId: healthDatabaseId, access: "read" }),
-        ),
-      );
-      try {
-        const allowed = await update(fixture, { heartbeatId: id, name: "Clinic renamed" });
-        expect(allowed.error).toBe(false);
-        expect((await readHeartbeat(id))?.name).toBe("Clinic renamed");
-      } finally {
-        await inTenant(tenantA, () =>
-          withTransaction(runtime, (client) => removeAgentDatabaseGrant(client, semprecA, healthDatabaseId)),
-        );
-      }
-
-      expect(refused).toEqual({ error: true, result: `Heartbeat ${id} not found` });
-    });
-
-    it("rolls the whole change back when a later part is refused", async () => {
-      const fixture = await chatRun(semprecA);
-      const id = await newHeartbeat(semprecA, "Atomic");
-      projectAgentEvents.length = 0;
-
-      const result = await update(fixture, {
-        heartbeatId: id,
-        name: "Renamed halfway",
-        task: "Changed halfway",
-        rule: { kind: "onItemEvent", databaseId: randomUUID(), event: "update" },
-      });
-
-      expect(result).toEqual({ error: true, result: "'rule.databaseId' does not reference an existing database" });
-      expect(await readHeartbeat(id)).toMatchObject({
-        name: "Atomic",
-        action_config: { task: "old task" },
-        rule: DAILY_RULE,
-      });
-      expect(projectAgentEvents).toEqual([]);
-    });
-
-    it("returns a tool error for a rule the parser rejects and for arguments the schema does not accept", async () => {
+    it("returns a tool error and rolls the whole change back for a rule the parser rejects or arguments the schema does not accept, and refuses the rule at request time", async () => {
       const fixture = await chatRun(semprecA);
       const id = await newHeartbeat(semprecA, "Validation");
+      projectAgentEvents.length = 0;
+      const requestsBefore = await countApprovalRequests();
 
-      const badRule = await update(fixture, { heartbeatId: id, name: "x", rule: { kind: "fortnightly" } });
-      const nothing = await update(fixture, { heartbeatId: id });
-      const emptyName = await update(fixture, { heartbeatId: id, name: " " });
-      const stranger = await update(fixture, { heartbeatId: id, enabled: false });
-
-      expect(badRule).toMatchObject({ error: true, result: expect.stringContaining("Invalid rule") });
-      for (const result of [nothing, emptyName, stranger]) {
-        expect(result).toMatchObject({ error: true, result: expect.stringContaining("Invalid arguments") });
+      expect(
+        await update(fixture, {
+          heartbeatId: id,
+          name: "Renamed halfway",
+          task: "Changed halfway",
+          rule: { kind: "onItemEvent", databaseId: randomUUID(), event: "update" },
+        }),
+      ).toEqual({ error: true, result: "'rule.databaseId' does not reference an existing database" });
+      expect(await update(fixture, { heartbeatId: id, name: "x", rule: { kind: "fortnightly" } })).toMatchObject(
+        toolError("Invalid rule"),
+      );
+      for (const args of [{ heartbeatId: id }, { heartbeatId: id, name: " " }, { heartbeatId: id, enabled: false }]) {
+        expect(await update(fixture, args)).toMatchObject(toolError("Invalid arguments"));
       }
-      expect(await readHeartbeat(id)).toMatchObject({ name: "Validation", rule: DAILY_RULE });
-    });
-
-    it("refuses a run without a project context", async () => {
-      const runId = await inTenant(
-        tenantA,
-        async () => (await createAgentRun(runtime, { triggeredBy: "user", task: "none" })).id,
-      );
-      const id = await newHeartbeat(semprecA, "No context");
-      const result = await inTenant(tenantA, () =>
-        createHeartbeatUpdateTool(runtime)(runId, { heartbeatId: id, name: "x" }),
-      );
-      expect(result).toEqual({ error: true, result: `No project context for run ${runId}` });
       await expect(
-        inTenant(tenantA, () => createHeartbeatUpdateSnapshot(runtime)(runId, { heartbeatId: id, name: "x" })),
+        requestCall(fixture, "heartbeat.update", { heartbeatId: id, rule: { kind: "fortnightly" } }),
       ).rejects.toBeInstanceOf(ValidationError);
+
+      expect(await readHeartbeat(id)).toMatchObject({
+        name: "Validation",
+        action_config: { task: "old task" },
+        rule: DAILY_RULE,
+      });
+      expect(await countApprovalRequests()).toBe(requestsBefore);
+      expect(projectAgentEvents).toEqual([]);
     });
 
     it("describes the request with the current name, the project and what changes", async () => {
@@ -1148,30 +805,157 @@ describe("approval-gated heartbeat write tools (issue #1846)", () => {
       });
       expect(rule.description?.params.changes).toBe(`plán: ${JSON.stringify(NEW_RULE)}`);
     });
+  });
 
-    it("refuses at request time an unknown automation and a rule the parser rejects, creating no request", async () => {
+  describe.each([
+    ["heartbeat.update", update, (heartbeatId: string) => ({ heartbeatId, name: "Taken", task: "x", rule: NEW_RULE })],
+    ["heartbeat.setEnabled", setEnabled, (heartbeatId: string) => ({ heartbeatId, enabled: false })],
+  ] as const)("%s on an automation out of reach", (toolName, call, args) => {
+    it("returns a tool error and writes nothing for a system automation, and refuses it at request time", async () => {
       const fixture = await chatRun(semprecA);
-      const id = await newHeartbeat(semprecA, "Request time");
-      const before = await countApprovalRequests();
+      const id = await newHeartbeat(semprecA, `System ${toolName}`, { origin: "system" });
+      const stored = await readHeartbeat(id);
+      const requestsBefore = await countApprovalRequests();
 
+      expect(await call(fixture, args(id))).toEqual(SYSTEM_REFUSAL);
+      await expect(requestCall(fixture, toolName, args(id))).rejects.toBeInstanceOf(ForbiddenError);
+
+      expect(await readHeartbeat(id)).toEqual(stored);
+      expect(stored).toMatchObject({ origin: "system", enabled: true });
+      expect(await countApprovalRequests()).toBe(requestsBefore);
+      expect(projectAgentEvents).toEqual([]);
+    });
+
+    it("answers an unknown id and another tenant's automation alike, in both directions, changes neither, and refuses an unknown id at request time", async () => {
+      const fixtureA = await chatRun(semprecA);
+      const fixtureB = await chatRun(semprecB, tenantB);
+      const foreign = await newHeartbeat(semprecB, `Tenant B ${toolName}`, { tenant: tenantB });
+      const own = await newHeartbeat(semprecA, `Tenant A ${toolName}`);
+      const unknown = randomUUID();
+      const stored = [await readHeartbeat(foreign), await readHeartbeat(own)];
+
+      expect(await call(fixtureA, args(foreign))).toEqual(notFound("Heartbeat", foreign));
+      expect(await call(fixtureA, args(unknown))).toEqual(notFound("Heartbeat", unknown));
+      expect(await call(fixtureB, args(own))).toEqual(notFound("Heartbeat", own));
+      await expect(requestCall(fixtureA, toolName, args(unknown))).rejects.toMatchObject({ name: "NotFoundError" });
+
+      expect([await readHeartbeat(foreign), await readHeartbeat(own)]).toEqual(stored);
+    });
+  });
+
+  describe("the reach of a run", () => {
+    it("leaves out of reach of a chat run a project with a sensitive grant the chat project lacks, and its automations, until it holds one", async () => {
+      const fixture = await chatRun(semprecA);
+      const sensitiveProject = await newProject("Clinic");
+      await grantHealthRead(sensitiveProject);
+      const id = await newHeartbeat(sensitiveProject, "Clinic automation");
+      const args = (name: string) => createArgs(sensitiveProject, name);
+      const requestsBefore = await countApprovalRequests();
+
+      expect(await create(fixture, args("Clinic refused"))).toEqual(notFound("Project", sensitiveProject));
+      expect(await update(fixture, { heartbeatId: id, name: "Clinic renamed" })).toEqual(notFound("Heartbeat", id));
+      await expect(requestCall(fixture, "heartbeat.create", args("Clinic refused"))).rejects.toMatchObject({
+        name: "NotFoundError",
+      });
+      // The description builder refuses by itself, for a caller that skipped the snapshot.
+      await expect(requestWithoutSnapshot(fixture, "heartbeat.create", args("Clinic refused"))).rejects.toMatchObject({
+        name: "NotFoundError",
+      });
+      expect(await countApprovalRequests()).toBe(requestsBefore);
+      expect(await heartbeatsNamed("Clinic refused")).toEqual([]);
+      expect((await readHeartbeat(id))?.name).toBe("Clinic automation");
+
+      await grantHealthRead(semprecA);
+      try {
+        const request = await approvedCall(fixture, "heartbeat.create", args("Clinic allowed"));
+        await deliver(fixture, request.id);
+        expect(await heartbeatsNamed("Clinic allowed")).toMatchObject([{ project_item_id: sensitiveProject }]);
+        expect((await update(fixture, { heartbeatId: id, name: "Clinic renamed" })).error).toBe(false);
+        expect((await readHeartbeat(id))?.name).toBe("Clinic renamed");
+      } finally {
+        await revokeSemprecHealthRead();
+      }
+    });
+
+    it("lets a run outside a Semp chat create and change only in its own project, refusing another at request time too", async () => {
+      const fixture = await projectRun(gardenA);
+      const own = await newHeartbeat(gardenA, "Garden own");
+      const other = await newHeartbeat(semprecA, "Semprec other");
+      const requestsBefore = await countApprovalRequests();
+
+      expect(await create(fixture, createArgs(semprecA, "Foreign project"))).toEqual(notFound("Project", semprecA));
+      expect(await update(fixture, { heartbeatId: other, name: "Taken" })).toEqual(notFound("Heartbeat", other));
+      expect((await create(fixture, createArgs(gardenA, "Own project"))).error).toBe(false);
+      expect((await update(fixture, { heartbeatId: own, name: "Garden renamed" })).error).toBe(false);
+
+      expect(await heartbeatsNamed("Foreign project")).toEqual([]);
+      expect(await heartbeatsNamed("Own project")).toMatchObject([{ project_item_id: gardenA, origin: "user" }]);
+      expect((await readHeartbeat(other))?.name).toBe("Semprec other");
+      expect((await readHeartbeat(own))?.name).toBe("Garden renamed");
       await expect(
-        requestCall(fixture, "heartbeat.update", { heartbeatId: randomUUID(), name: "x" }),
+        inTenant(tenantA, () =>
+          createHeartbeatCreateSnapshot(runtime)(fixture.runId, createArgs(semprecA, "Foreign project")),
+        ),
       ).rejects.toMatchObject({ name: "NotFoundError" });
+      // The description builder refuses by itself, for a caller that skipped the snapshot.
       await expect(
-        requestCall(fixture, "heartbeat.update", { heartbeatId: id, rule: { kind: "fortnightly" } }),
-      ).rejects.toBeInstanceOf(ValidationError);
+        requestWithoutSnapshot(fixture, "heartbeat.create", createArgs(semprecA, "Foreign")),
+      ).rejects.toMatchObject({ name: "NotFoundError" });
+      expect(await countApprovalRequests()).toBe(requestsBefore);
+    });
+  });
 
-      expect(await countApprovalRequests()).toBe(before);
+  describe("a change made after the request", () => {
+    // Raw SQL stands for the person changing the automation through the API, or deleting it, which has no
+    // store function.
+    it.each([
+      ["heartbeat.update", "the name", (id: string) => renameAsUser(id, "User name")],
+      ["heartbeat.update", "the task", (id: string) => retaskAsUser(id, "User task")],
+      [
+        "heartbeat.update",
+        "the enabled flag",
+        (id: string) => admin.query("UPDATE project_heartbeats SET enabled = false WHERE id = $1", [id]),
+      ],
+      [
+        "heartbeat.update",
+        "the rule",
+        (id: string) =>
+          admin.query(`UPDATE project_heartbeats SET rule = '{"kind":"interval","minutes":5}'::jsonb WHERE id = $1`, [
+            id,
+          ]),
+      ],
+      [
+        "heartbeat.update",
+        "a deletion",
+        (id: string) => admin.query("DELETE FROM project_heartbeats WHERE id = $1", [id]),
+      ],
+      ["heartbeat.setEnabled", "the name", (id: string) => renameAsUser(id, "User name")],
+      ["heartbeat.setEnabled", "the task", (id: string) => retaskAsUser(id, "User task")],
+    ] as const)("makes %s record a conflict and write nothing after %s changed", async (toolName, _change, mutate) => {
+      const fixture = await chatRun(semprecA);
+      const id = await newHeartbeat(semprecA, `Changed under ${toolName}`);
+      const args =
+        toolName === "heartbeat.update"
+          ? { heartbeatId: id, name: "Agent name", task: "Agent task" }
+          : { heartbeatId: id, enabled: false };
+      const request = await approvedCall(fixture, toolName, args);
+      await mutate(id);
+      const afterChange = await readHeartbeat(id);
+      projectAgentEvents.length = 0;
+
+      await deliver(fixture, request.id);
+
+      expect(await reload(fixture, request.id)).toMatchObject({ executionStatus: "conflict", executionError: true });
+      expect(await readHeartbeat(id)).toEqual(afterChange);
+      expect(projectAgentEvents).toEqual([]);
     });
   });
 
   describe("heartbeat.setEnabled", () => {
-    it("switches a user automation off after approval and announces the setup and the tick thread", async () => {
+    it("switches a user automation off after approval, once however often it is delivered, and announces the setup and the tick thread", async () => {
       const fixture = await chatRun(semprecA);
       const id = await newHeartbeat(semprecA, "Switch off");
-      const tick = await inTenant(tenantA, () =>
-        withTransaction(runtime, (client) => getOrCreateTickThread(client, id)),
-      );
+      const tick = await tickThreadOf(id);
       const request = await approvedCall(fixture, "heartbeat.setEnabled", { heartbeatId: id, enabled: false });
       projectAgentEvents.length = 0;
       threadEvents.length = 0;
@@ -1183,6 +967,11 @@ describe("approval-gated heartbeat write tools (issue #1846)", () => {
       expect(await reload(fixture, request.id)).toMatchObject({ executionStatus: "succeeded" });
       expect(projectAgentEvents).toEqual([semprecA]);
       expect(tickEvents(tick.id)).toHaveLength(1);
+
+      // Raw SQL: stands for the person switching it back on through the API.
+      await admin.query("UPDATE project_heartbeats SET enabled = true WHERE id = $1", [id]);
+      await deliver(fixture, request.id);
+      expect((await readHeartbeat(id))?.enabled).toBe(true);
     });
 
     it("switches an automation back on and computes its next fire time", async () => {
@@ -1199,19 +988,6 @@ describe("approval-gated heartbeat write tools (issue #1846)", () => {
       expect(projectAgentEvents).toEqual([semprecA]);
     });
 
-    it("switches the automation once when the approved request is delivered twice", async () => {
-      const fixture = await chatRun(semprecA);
-      const id = await newHeartbeat(semprecA, "Switch once");
-      const request = await approvedCall(fixture, "heartbeat.setEnabled", { heartbeatId: id, enabled: false });
-
-      await deliver(fixture, request.id);
-      // Raw SQL: stands for the person switching it back on through the API.
-      await admin.query("UPDATE project_heartbeats SET enabled = true WHERE id = $1", [id]);
-      await deliver(fixture, request.id);
-
-      expect((await readHeartbeat(id))?.enabled).toBe(true);
-    });
-
     it("refuses to switch on an automation whose rule kind is inactive and leaves it as it was, but switches it off", async () => {
       const fixture = await chatRun(semprecA);
       const id = await newHeartbeat(moduleProjectA, "Ghost rule", {
@@ -1220,94 +996,14 @@ describe("approval-gated heartbeat write tools (issue #1846)", () => {
         enabled: false,
       });
 
-      const on = await setEnabled(fixture, { heartbeatId: id, enabled: true });
-      const stillOff = await readHeartbeat(id);
-      const enabledWithModule = await setEnabled(fixture, { heartbeatId: id, enabled: true }, MODULE_RULE_KINDS);
-      const off = await setEnabled(fixture, { heartbeatId: id, enabled: false });
-
-      expect(on).toMatchObject({ error: true, result: expect.stringContaining("Invalid rule") });
-      expect(stillOff?.enabled).toBe(false);
-      expect(enabledWithModule.error).toBe(false);
-      expect(off.error).toBe(false);
+      expect(await setEnabled(fixture, { heartbeatId: id, enabled: true })).toMatchObject(toolError("Invalid rule"));
       expect((await readHeartbeat(id))?.enabled).toBe(false);
-    });
-
-    it("records a conflict and writes nothing when the automation was changed after the request", async () => {
-      const fixture = await chatRun(semprecA);
-      const id = await newHeartbeat(semprecA, "Original name");
-      const request = await approvedCall(fixture, "heartbeat.setEnabled", { heartbeatId: id, enabled: false });
-      await inTenant(tenantA, () => withTransaction(runtime, (client) => updateHeartbeatName(client, id, "User name")));
-      projectAgentEvents.length = 0;
-
-      await deliver(fixture, request.id);
-
-      expect(await reload(fixture, request.id)).toMatchObject({ executionStatus: "conflict", executionError: true });
-      expect(await readHeartbeat(id)).toMatchObject({ enabled: true, name: "User name" });
-      expect(projectAgentEvents).toEqual([]);
-    });
-
-    it("records a conflict and writes nothing when only the task was changed after the request", async () => {
-      const fixture = await chatRun(semprecA);
-      const id = await newHeartbeat(semprecA, "Switch, task changed");
-      const request = await approvedCall(fixture, "heartbeat.setEnabled", { heartbeatId: id, enabled: false });
-      await inTenant(tenantA, () => withTransaction(runtime, (client) => updateHeartbeatTask(client, id, "User task")));
-      projectAgentEvents.length = 0;
-
-      await deliver(fixture, request.id);
-
-      expect(await reload(fixture, request.id)).toMatchObject({ executionStatus: "conflict", executionError: true });
-      expect(await readHeartbeat(id)).toMatchObject({ enabled: true, action_config: { task: "User task" } });
-      expect(projectAgentEvents).toEqual([]);
-    });
-
-    it("returns a tool error and writes nothing for a system automation, and creates no request for it", async () => {
-      const fixture = await chatRun(semprecA);
-      const id = await newHeartbeat(semprecA, "System switch", { origin: "system" });
-
-      const result = await setEnabled(fixture, { heartbeatId: id, enabled: false });
-
-      expect(result).toEqual({ error: true, result: "A system automation cannot be changed" });
-      expect((await readHeartbeat(id))?.enabled).toBe(true);
-      await expect(
-        requestCall(fixture, "heartbeat.setEnabled", { heartbeatId: id, enabled: false }),
-      ).rejects.toBeInstanceOf(ForbiddenError);
-      expect(projectAgentEvents).toEqual([]);
-    });
-
-    it("answers an unknown id, another tenant's automation and an invalid argument as a tool error", async () => {
-      const fixture = await chatRun(semprecA);
-      const foreign = await newHeartbeat(semprecB, "Tenant B switch", { tenant: tenantB });
-      const unknown = randomUUID();
-
-      expect(await setEnabled(fixture, { heartbeatId: foreign, enabled: false })).toEqual({
-        error: true,
-        result: `Heartbeat ${foreign} not found`,
-      });
-      expect(await setEnabled(fixture, { heartbeatId: unknown, enabled: false })).toEqual({
-        error: true,
-        result: `Heartbeat ${unknown} not found`,
-      });
-      expect(await setEnabled(fixture, { heartbeatId: unknown, enabled: "no" })).toMatchObject({
-        error: true,
-        result: expect.stringContaining("Invalid arguments"),
-      });
-      expect((await readHeartbeat(foreign))?.enabled).toBe(true);
-    });
-
-    it("refuses a run without a project context", async () => {
-      const runId = await inTenant(
-        tenantA,
-        async () => (await createAgentRun(runtime, { triggeredBy: "user", task: "none" })).id,
+      expect(await setEnabled(fixture, { heartbeatId: id, enabled: "no" })).toMatchObject(
+        toolError("Invalid arguments"),
       );
-      const id = await newHeartbeat(semprecA, "No context switch");
-      expect(
-        await inTenant(tenantA, () =>
-          createHeartbeatSetEnabledTool(runtime)(runId, { heartbeatId: id, enabled: false }),
-        ),
-      ).toEqual({ error: true, result: `No project context for run ${runId}` });
-      await expect(
-        inTenant(tenantA, () => createHeartbeatSetEnabledSnapshot(runtime)(runId, { heartbeatId: id, enabled: false })),
-      ).rejects.toBeInstanceOf(ValidationError);
+      expect((await setEnabled(fixture, { heartbeatId: id, enabled: true }, MODULE_RULE_KINDS)).error).toBe(false);
+      expect((await setEnabled(fixture, { heartbeatId: id, enabled: false })).error).toBe(false);
+      expect((await readHeartbeat(id))?.enabled).toBe(false);
     });
 
     it("describes the request with the current name, the project and the new state", async () => {
@@ -1322,13 +1018,6 @@ describe("approval-gated heartbeat write tools (issue #1846)", () => {
         params: { heartbeatName: "Water the plants", projectName: "Garden", state: "vypnutou" },
       });
       expect(on.description?.params.state).toBe("zapnutou");
-    });
-
-    it("refuses at request time an unknown automation, creating no request", async () => {
-      const fixture = await chatRun(semprecA);
-      await expect(
-        requestCall(fixture, "heartbeat.setEnabled", { heartbeatId: randomUUID(), enabled: false }),
-      ).rejects.toMatchObject({ name: "NotFoundError" });
     });
   });
 
@@ -1345,25 +1034,6 @@ describe("approval-gated heartbeat write tools (issue #1846)", () => {
         ),
       );
       expect(description).toBeNull();
-    });
-
-    it("refuses a run without a project context", async () => {
-      const runId = await inTenant(
-        tenantA,
-        async () => (await createAgentRun(runtime, { triggeredBy: "user", task: "none" })).id,
-      );
-      const id = await newHeartbeat(semprecA, "Described");
-      await expect(
-        inTenant(tenantA, () =>
-          withTransaction(runtime, (client) =>
-            buildHeartbeatToolApprovalDescription(client, {
-              agentRunId: runId,
-              toolName: "heartbeat.setEnabled",
-              args: { heartbeatId: id, enabled: true },
-            }),
-          ),
-        ),
-      ).rejects.toBeInstanceOf(ValidationError);
     });
 
     it("uses the language of the tenant user", async () => {

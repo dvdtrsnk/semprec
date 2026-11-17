@@ -79,6 +79,14 @@ const webAgentRunSchema = z.object({
   finishedAt: z.string().nullable(),
 });
 
+const approvalsSchema = z.object({
+  count: z.number(),
+  pending: z.number(),
+  approved: z.number(),
+  rejected: z.number(),
+  requestIds: z.array(z.string()),
+});
+
 /** Includes the run row's `startedAt` and `finishedAt`, which `durationMs` is checked against. */
 const addedFieldsSchema = z.object({
   displayStatus: z.enum(["running", "done", "waiting_approval", "error"]),
@@ -93,13 +101,7 @@ const addedFieldsSchema = z.object({
     threadId: z.string().nullable(),
     mcpClientName: z.string().nullable(),
   }),
-  approvals: z.object({
-    count: z.number(),
-    pending: z.number(),
-    approved: z.number(),
-    rejected: z.number(),
-    requestIds: z.array(z.string()),
-  }),
+  approvals: approvalsSchema,
 });
 
 const replyDetailSchema = z.object({
@@ -108,13 +110,7 @@ const replyDetailSchema = z.object({
   startedAt: z.string(),
   title: z.string(),
   durationMs: z.number().nullable(),
-  approvals: z.object({
-    count: z.number(),
-    pending: z.number(),
-    approved: z.number(),
-    rejected: z.number(),
-    requestIds: z.array(z.string()),
-  }),
+  approvals: approvalsSchema,
   usage: z.object({
     totalCostUsd: z.number(),
     estimated: z.boolean(),
@@ -237,17 +233,56 @@ async function readAddedFields(session: Session, runId: string): Promise<z.infer
   return addedFieldsSchema.parse(answer.body);
 }
 
-function createRequest(session: Session, agentRunId: string): Promise<string> {
-  return runInTenant(session.tenant, async () => {
-    const request = await createPendingApprovalRequest(pool, {
+function createRequestRow(session: Session, agentRunId: string) {
+  return runInTenant(session.tenant, () =>
+    createPendingApprovalRequest(pool, {
       agentRunId,
       toolName: "probe",
       riskClass: "unclassified",
       payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
-    });
-    return request.id;
+    }),
+  );
+}
+
+async function createRequest(session: Session, agentRunId: string): Promise<string> {
+  return (await createRequestRow(session, agentRunId)).id;
+}
+
+/** A heartbeat run of "Sunday planning" in project "Weekly review", on its tick thread. */
+async function createTickRun(
+  session: Session,
+  extra: Partial<Parameters<typeof createAgentRun>[1]> = {},
+): Promise<AgentRunRow & { tickThreadId: string; projectItemId: string; heartbeatId: string }> {
+  const projectItemId = await createProject(session, "Weekly review");
+  const { heartbeatId, tickThreadId } = await createHeartbeatWithThread(session, projectItemId, "Sunday planning");
+  const run = await createRun(session, {
+    projectItemId,
+    heartbeatId,
+    threadId: tickThreadId,
+    triggeredBy: "heartbeat",
+    task: "Plan the week",
+    ...extra,
   });
+  return { ...run, tickThreadId, projectItemId, heartbeatId };
+}
+
+/** The number of statements `getAgentRunDetail` runs for each run, on a pool of its own so no other test is spied on. */
+async function statementsPerDetail(session: Session, runs: AgentRunRow[]): Promise<number[]> {
+  const counted = await createRuntimeRolePool(admin, "semprec_data");
+  try {
+    const query = vi.spyOn(counted, "query");
+    const counts: number[] = [];
+    for (const run of runs) {
+      const before = query.mock.calls.length;
+      await runInTenant(session.tenant, () => getAgentRunDetail(counted, run));
+      counts.push(query.mock.calls.length - before);
+    }
+    query.mockRestore();
+    return counts;
+  } finally {
+    await counted.end();
+  }
 }
 
 async function decide(session: Session, requestId: string, decision: "approved" | "rejected"): Promise<void> {
@@ -291,15 +326,19 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
     await admin?.end();
   });
 
-  it("returns a finished chat run with its task as title, the project name, the user trigger, its thread and a duration", async () => {
+  it("returns a finished chat run with its task as title, the project name, the user trigger, its thread and a duration, beside every field of its row", async () => {
     const owner = await tenantSession();
     const projectItemId = await createProject(owner, "Weekly review");
     const threadId = await runInTenant(owner.tenant, () => withTransaction(pool, createSempChatThread));
     const run = await createRun(owner, { projectItemId, threadId, triggeredBy: "user", task: "Summarize the inbox" });
     await finishRun(owner, run.id);
+    const row = await runInTenant(owner.tenant, () => getAgentRun(pool, run.id));
+    if (!row) throw new Error("The run is missing");
 
-    const fields = await readAddedFields(owner, run.id);
+    const answer = await readDetail(owner, run.id);
+    const fields = addedFieldsSchema.parse(answer.body);
 
+    expect(answer.status).toBe(200);
     expect(fields).toMatchObject({
       title: "Summarize the inbox",
       projectName: "Weekly review",
@@ -310,21 +349,9 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
     if (fields.finishedAt === null) throw new Error("The run is not finished");
     expect(fields.durationMs).toBe(Date.parse(fields.finishedAt) - Date.parse(fields.startedAt));
     expect(fields.durationMs).toBeGreaterThanOrEqual(0);
-  });
-
-  it("keeps every field of the run's row and still parses with the web client's schema", async () => {
-    const owner = await tenantSession();
-    const projectItemId = await createProject(owner, "Weekly review");
-    const run = await createRun(owner, { projectItemId, triggeredBy: "user", task: "Summarize the inbox" });
-    await finishRun(owner, run.id);
-    const row = await runInTenant(owner.tenant, () => getAgentRun(pool, run.id));
-    if (!row) throw new Error("The run is missing");
     const rowAsJson: unknown = JSON.parse(JSON.stringify(row));
-
-    const answer = await readDetail(owner, run.id);
-
-    expect(answer.status).toBe(200);
     expect(answer.body).toMatchObject(z.record(z.string(), z.unknown()).parse(rowAsJson));
+    // The web client's schema still parses the answer.
     expect(webAgentRunSchema.parse(answer.body)).toEqual({
       id: row.id,
       projectItemId,
@@ -342,37 +369,20 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
 
   it("returns a heartbeat run with the heartbeat's name as title, the tick trigger and the tick thread", async () => {
     const owner = await tenantSession();
-    const projectItemId = await createProject(owner, "Weekly review");
-    const { heartbeatId, tickThreadId } = await createHeartbeatWithThread(owner, projectItemId, "Sunday planning");
-    const run = await createRun(owner, {
-      projectItemId,
-      heartbeatId,
-      threadId: tickThreadId,
-      triggeredBy: "heartbeat",
-      task: "Plan the week",
-    });
+    const run = await createTickRun(owner);
 
-    const fields = await readAddedFields(owner, run.id);
-
-    expect(fields).toMatchObject({
+    expect(await readAddedFields(owner, run.id)).toMatchObject({
       title: "Sunday planning",
       heartbeatName: "Sunday planning",
       projectName: "Weekly review",
-      trigger: { kind: "tick", threadId: tickThreadId, mcpClientName: null },
+      trigger: { kind: "tick", threadId: run.tickThreadId, mcpClientName: null },
     });
   });
 
   it("reports a user's follow-up turn in a tick thread as a tick, and a delegated run there as its supervisor's", async () => {
     const owner = await tenantSession();
-    const projectItemId = await createProject(owner, "Weekly review");
-    const { heartbeatId, tickThreadId } = await createHeartbeatWithThread(owner, projectItemId, "Sunday planning");
-    const heartbeatRun = await createRun(owner, {
-      projectItemId,
-      heartbeatId,
-      threadId: tickThreadId,
-      triggeredBy: "heartbeat",
-      task: "Plan the week",
-    });
+    const heartbeatRun = await createTickRun(owner);
+    const { projectItemId, tickThreadId } = heartbeatRun;
     const followUp = await createRun(owner, {
       projectItemId,
       threadId: tickThreadId,
@@ -502,42 +512,24 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
     expect(otherFields.approvals).toEqual({ count: 1, pending: 1, approved: 0, rejected: 0, requestIds: [ofOtherRun] });
   });
 
-  it("shows a finished tick run with one pending request as waiting_approval and as done once the request is approved", async () => {
-    const owner = await tenantSession();
-    const projectItemId = await createProject(owner, "Weekly review");
-    const { heartbeatId, tickThreadId } = await createHeartbeatWithThread(owner, projectItemId, "Sunday planning");
-    const run = await createRun(owner, {
-      projectItemId,
-      heartbeatId,
-      threadId: tickThreadId,
-      triggeredBy: "heartbeat",
-      task: "Plan the week",
-    });
-    const requestId = await createRequest(owner, run.id);
-    await finishRun(owner, run.id);
+  it.each(["approved", "rejected"] as const)(
+    "shows a finished tick run with one pending request as waiting_approval, and as done once the request is %s",
+    async (decision) => {
+      const owner = await tenantSession();
+      const run = await createTickRun(owner);
+      const requestId = await createRequest(owner, run.id);
+      await finishRun(owner, run.id);
 
-    const waiting = await readAddedFields(owner, run.id);
-    await decide(owner, requestId, "approved");
-    const decided = await readAddedFields(owner, run.id);
+      const waiting = await readAddedFields(owner, run.id);
+      await decide(owner, requestId, decision);
+      const decided = await readAddedFields(owner, run.id);
 
-    expect(waiting.displayStatus).toBe("waiting_approval");
-    expect(waiting.approvals).toMatchObject({ count: 1, pending: 1, approved: 0 });
-    expect(decided.displayStatus).toBe("done");
-    expect(decided.approvals).toMatchObject({ count: 1, pending: 0, approved: 1 });
-  });
-
-  it("shows a finished run as done once its only request is rejected", async () => {
-    const owner = await tenantSession();
-    const run = await createRun(owner, { triggeredBy: "user", task: "Needs a decision" });
-    const requestId = await createRequest(owner, run.id);
-    await finishRun(owner, run.id);
-
-    await decide(owner, requestId, "rejected");
-    const fields = await readAddedFields(owner, run.id);
-
-    expect(fields.displayStatus).toBe("done");
-    expect(fields.approvals).toMatchObject({ pending: 0, rejected: 1 });
-  });
+      expect(waiting.displayStatus).toBe("waiting_approval");
+      expect(waiting.approvals).toMatchObject({ count: 1, pending: 1, approved: 0, rejected: 0 });
+      expect(decided.displayStatus).toBe("done");
+      expect(decided.approvals).toMatchObject({ count: 1, pending: 0, [decision]: 1 });
+    },
+  );
 
   it("shows a running run with nothing pending as running, and a failed run with a pending request as error", async () => {
     const owner = await tenantSession();
@@ -556,123 +548,74 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
     expect(failedAnswer.body).toMatchObject({ status: "error", displayStatus: "error" });
   });
 
-  it("runs the same number of statements for a run with one approval request and a run with six", async () => {
+  it("runs as many statements for a run with one approval request as for one with six, and one more once finished to read its reply", async () => {
     const owner = await tenantSession();
-    const projectItemId = await createProject(owner, "Weekly review");
-    const { heartbeatId, tickThreadId } = await createHeartbeatWithThread(owner, projectItemId, "Sunday planning");
-    const input = { projectItemId, heartbeatId, threadId: tickThreadId, triggeredBy: "heartbeat", task: "t" } as const;
-    const one = await createRun(owner, input);
-    const six = await createRun(owner, input);
+    const one = await createTickRun(owner, { task: "t" });
+    const six = await createTickRun(owner, { task: "t" });
     await createRequest(owner, one.id);
     for (let index = 0; index < 6; index += 1) await createRequest(owner, six.id);
-    // A pool of its own, so the spy never sits on a pool another test uses.
-    const counted = await createRuntimeRolePool(admin, "semprec_data");
-    try {
-      const query = vi.spyOn(counted, "query");
-      const detailOfOne = await runInTenant(owner.tenant, () => getAgentRunDetail(counted, one));
-      const statementsForOne = query.mock.calls.length;
-      const detailOfSix = await runInTenant(owner.tenant, () => getAgentRunDetail(counted, six));
-      const statementsForSix = query.mock.calls.length - statementsForOne;
-      query.mockRestore();
+    expect(await statementsPerDetail(owner, [one, six])).toEqual([4, 4]);
+    const details = await runInTenant(owner.tenant, async () => [
+      await getAgentRunDetail(pool, one),
+      await getAgentRunDetail(pool, six),
+    ]);
+    expect(details.map((detail) => detail.approvals.count)).toEqual([1, 6]);
 
-      expect(detailOfOne.approvals.count).toBe(1);
-      expect(detailOfSix.approvals.count).toBe(6);
-      expect(statementsForOne).toBe(4);
-      expect(statementsForSix).toBe(statementsForOne);
-    } finally {
-      await counted.end();
-    }
+    await finishRun(owner, one.id);
+    await finishRun(owner, six.id);
+    const finished = await runInTenant(owner.tenant, async () => [
+      await getAgentRun(pool, one.id),
+      await getAgentRun(pool, six.id),
+    ]);
+    if (!finished[0] || !finished[1]) throw new Error("The runs are missing");
+    expect(await statementsPerDetail(owner, [finished[0], finished[1]])).toEqual([5, 5]);
   });
 
-  it("shows a finished tick run whose server was unavailable as error, with a summary naming the server", async () => {
+  it.each([
+    {
+      name: "shows a finished tick run whose server was unavailable as error, with a summary naming the server",
+      steps: () => [failedMcpStep("unavailable")],
+      expected: { status: "done", displayStatus: "error", errorCode: null, errorSummary: "GitHub není dostupný" },
+    },
+    {
+      name: "gives the seconds of the stored timeout in the summary of a tick run whose call timed out",
+      steps: () => [failedMcpStep("timeout", { timeoutMs: 15000 })],
+      expected: { displayStatus: "error", errorCode: null, errorSummary: "spojení vypršelo (15 s)" },
+    },
+    {
+      name: "keeps a finished tick run whose failed call was retried successfully as done, without an error summary",
+      steps: (): SempReplyStep[] => {
+        const registration = randomUUID();
+        return [
+          failedMcpStep("timeout", { mcpToolRegistrationId: registration, timeoutMs: 60000 }),
+          {
+            kind: "tool",
+            toolCallId: "call-2",
+            toolName: "mcp_search_aaaaaaaa",
+            label: { key: "agentStep.title.namedTool", params: { toolName: "search" } },
+            detail: { key: "agentStep.summary.done", params: {} },
+            status: "ok",
+            mcpToolRegistrationId: registration,
+            ...STORED_STEP_TIMES,
+          },
+        ];
+      },
+      expected: { displayStatus: "done", errorCode: null, errorSummary: null },
+    },
+  ])("$name", async ({ steps, expected }) => {
     const owner = await tenantSession();
-    const projectItemId = await createProject(owner, "Weekly review");
-    const { heartbeatId, tickThreadId } = await createHeartbeatWithThread(owner, projectItemId, "Sunday planning");
-    const run = await createRun(owner, {
-      projectItemId,
-      heartbeatId,
-      threadId: tickThreadId,
-      triggeredBy: "heartbeat",
-      task: "Plan the week",
-    });
-    await finishRunWithReply(owner, run, [failedMcpStep("unavailable")]);
+    const run = await createTickRun(owner);
+    await finishRunWithReply(owner, run, steps());
 
     const answer = await readDetail(owner, run.id);
 
     expect(answer.status).toBe(200);
-    expect(answer.body).toMatchObject({
-      status: "done",
-      displayStatus: "error",
-      errorCode: null,
-      errorSummary: "GitHub není dostupný",
-    });
-  });
-
-  it("gives the seconds of the stored timeout in the summary of a tick run whose call timed out", async () => {
-    const owner = await tenantSession();
-    const projectItemId = await createProject(owner, "Weekly review");
-    const { heartbeatId, tickThreadId } = await createHeartbeatWithThread(owner, projectItemId, "Sunday planning");
-    const run = await createRun(owner, {
-      projectItemId,
-      heartbeatId,
-      threadId: tickThreadId,
-      triggeredBy: "heartbeat",
-      task: "Plan the week",
-    });
-    await finishRunWithReply(owner, run, [failedMcpStep("timeout", { timeoutMs: 15000 })]);
-
-    const answer = await readDetail(owner, run.id);
-
-    expect(answer.body).toMatchObject({
-      displayStatus: "error",
-      errorCode: null,
-      errorSummary: "spojení vypršelo (15 s)",
-    });
-  });
-
-  it("keeps a finished tick run whose failed call was retried successfully as done, without an error summary", async () => {
-    const owner = await tenantSession();
-    const projectItemId = await createProject(owner, "Weekly review");
-    const { heartbeatId, tickThreadId } = await createHeartbeatWithThread(owner, projectItemId, "Sunday planning");
-    const run = await createRun(owner, {
-      projectItemId,
-      heartbeatId,
-      threadId: tickThreadId,
-      triggeredBy: "heartbeat",
-      task: "Plan the week",
-    });
-    const registration = randomUUID();
-    const retried: SempReplyStep = {
-      kind: "tool",
-      toolCallId: "call-2",
-      toolName: "mcp_search_aaaaaaaa",
-      label: { key: "agentStep.title.namedTool", params: { toolName: "search" } },
-      detail: { key: "agentStep.summary.done", params: {} },
-      status: "ok",
-      mcpToolRegistrationId: registration,
-      ...STORED_STEP_TIMES,
-    };
-    await finishRunWithReply(owner, run, [
-      failedMcpStep("timeout", { mcpToolRegistrationId: registration, timeoutMs: 60000 }),
-      retried,
-    ]);
-
-    const answer = await readDetail(owner, run.id);
-
-    expect(answer.body).toMatchObject({ displayStatus: "done", errorCode: null, errorSummary: null });
+    expect(answer.body).toMatchObject(expected);
   });
 
   it("keeps waiting_approval and gives no error summary to a finished tick run with a pending request and an incomplete reply", async () => {
     const owner = await tenantSession();
-    const projectItemId = await createProject(owner, "Weekly review");
-    const { heartbeatId, tickThreadId } = await createHeartbeatWithThread(owner, projectItemId, "Sunday planning");
-    const run = await createRun(owner, {
-      projectItemId,
-      heartbeatId,
-      threadId: tickThreadId,
-      triggeredBy: "heartbeat",
-      task: "Plan the week",
-    });
+    const run = await createTickRun(owner);
     await finishRunWithReply(owner, run, [failedMcpStep("unavailable")]);
     const requestId = await createRequest(owner, run.id);
 
@@ -680,50 +623,15 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
     await decide(owner, requestId, "approved");
     const decided = await readDetail(owner, run.id);
 
-    expect(waiting.status).toBe(200);
-    expect(waiting.body).toMatchObject({
-      status: "done",
-      displayStatus: "waiting_approval",
-      errorCode: null,
-      errorSummary: null,
+    expect(waiting).toMatchObject({
+      status: 200,
+      body: { status: "done", displayStatus: "waiting_approval", errorCode: null, errorSummary: null },
     });
     expect(decided.body).toMatchObject({
       displayStatus: "error",
       errorCode: null,
       errorSummary: "GitHub není dostupný",
     });
-  });
-
-  it("runs one statement more for a finished run to read its reply, whatever the number of its approval requests", async () => {
-    const owner = await tenantSession();
-    const projectItemId = await createProject(owner, "Weekly review");
-    const { heartbeatId, tickThreadId } = await createHeartbeatWithThread(owner, projectItemId, "Sunday planning");
-    const input = { projectItemId, heartbeatId, threadId: tickThreadId, triggeredBy: "heartbeat", task: "t" } as const;
-    const one = await createRun(owner, input);
-    const six = await createRun(owner, input);
-    await createRequest(owner, one.id);
-    for (let index = 0; index < 6; index += 1) await createRequest(owner, six.id);
-    await runInTenant(owner.tenant, async () => {
-      await finishAgentRun(pool, one.id, "done", "finished");
-      await finishAgentRun(pool, six.id, "done", "finished");
-    });
-    const finishedOne = await runInTenant(owner.tenant, () => getAgentRun(pool, one.id));
-    const finishedSix = await runInTenant(owner.tenant, () => getAgentRun(pool, six.id));
-    if (!finishedOne || !finishedSix) throw new Error("The runs are missing");
-    const counted = await createRuntimeRolePool(admin, "semprec_data");
-    try {
-      const query = vi.spyOn(counted, "query");
-      await runInTenant(owner.tenant, () => getAgentRunDetail(counted, finishedOne));
-      const statementsForOne = query.mock.calls.length;
-      await runInTenant(owner.tenant, () => getAgentRunDetail(counted, finishedSix));
-      const statementsForSix = query.mock.calls.length - statementsForOne;
-      query.mockRestore();
-
-      expect(statementsForOne).toBe(5);
-      expect(statementsForSix).toBe(statementsForOne);
-    } finally {
-      await counted.end();
-    }
   });
 
   it("answers another tenant's run exactly like an unknown id, and the owner's own request with the run", async () => {
@@ -795,62 +703,56 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
       return { setup, chat, a, b, requestA, requestB1, requestB2 };
     }
 
-    it("describes only the first reply of a chat run: its title, start, duration, approvals and usage", async () => {
+    it.each([
+      {
+        name: "the first reply of a chat run: its title, start, duration, approvals and usage",
+        reply: "a" as const,
+        expected: (r: Awaited<ReturnType<typeof twoReplies>>) => ({
+          title: "Plan my week",
+          startedAt: new Date(CLOCK_START).toISOString(),
+          durationMs: 400,
+          approvals: { count: 1, pending: 1, approved: 0, rejected: 0, requestIds: [r.requestA] },
+          usage: {
+            totalCostUsd: 0.01,
+            estimated: false,
+            perModel: [{ callCount: 1, inputTokens: 100, outputTokens: 10, costUsd: 0.01 }],
+          },
+        }),
+      },
+      {
+        name: "the second reply of the same run with its own values",
+        reply: "b" as const,
+        expected: (r: Awaited<ReturnType<typeof twoReplies>>) => ({
+          title: "Summarise the inbox",
+          startedAt: new Date(CLOCK_START + 10_000).toISOString(),
+          durationMs: 600,
+          approvals: { count: 2, pending: 2, approved: 0, rejected: 0, requestIds: [r.requestB1, r.requestB2] },
+          usage: {
+            totalCostUsd: 0.05,
+            estimated: false,
+            perModel: [{ callCount: 2, inputTokens: 500, outputTokens: 50, costUsd: 0.05 }],
+          },
+        }),
+      },
+    ])("describes only $name", async ({ reply, expected }) => {
+      const owner = await tenantSession();
+      const replies = await twoReplies(owner);
+
+      const detail = await readScoped(owner, replies.chat.runId, replies[reply].assistantMessageId);
+
+      expect(detail).toEqual({ id: replies.chat.runId, displayStatus: "waiting_approval", ...expected(replies) });
+    });
+
+    it("keeps every field of the run's row beside the scoped ones, and answers the whole run without a messageId", async () => {
       const owner = await tenantSession();
       const { chat, a, requestA, requestB1, requestB2 } = await twoReplies(owner);
 
-      const detail = await readScoped(owner, chat.runId, a.assistantMessageId);
-
-      expect(detail).toEqual({
-        id: chat.runId,
-        displayStatus: "waiting_approval",
-        title: "Plan my week",
-        startedAt: new Date(CLOCK_START).toISOString(),
-        durationMs: 400,
-        approvals: { count: 1, pending: 1, approved: 0, rejected: 0, requestIds: [requestA] },
-        usage: {
-          totalCostUsd: 0.01,
-          estimated: false,
-          perModel: [{ callCount: 1, inputTokens: 100, outputTokens: 10, costUsd: 0.01 }],
-        },
-      });
-      expect(detail.approvals.requestIds).not.toContain(requestB1);
-      expect(detail.approvals.requestIds).not.toContain(requestB2);
-    });
-
-    it("describes only the second reply of the same run with its own values", async () => {
-      const owner = await tenantSession();
-      const { chat, b, requestA, requestB1, requestB2 } = await twoReplies(owner);
-
-      const detail = await readScoped(owner, chat.runId, b.assistantMessageId);
-
-      expect(detail).toEqual({
-        id: chat.runId,
-        displayStatus: "waiting_approval",
-        title: "Summarise the inbox",
-        startedAt: new Date(CLOCK_START + 10_000).toISOString(),
-        durationMs: 600,
-        approvals: { count: 2, pending: 2, approved: 0, rejected: 0, requestIds: [requestB1, requestB2] },
-        usage: {
-          totalCostUsd: 0.05,
-          estimated: false,
-          perModel: [{ callCount: 2, inputTokens: 500, outputTokens: 50, costUsd: 0.05 }],
-        },
-      });
-      expect(detail.approvals.requestIds).not.toContain(requestA);
-    });
-
-    it("keeps every field of the run's row beside the scoped ones", async () => {
-      const owner = await tenantSession();
-      const { chat, a } = await twoReplies(owner);
-      const row = await runInTenant(owner.tenant, () => getAgentRun(pool, chat.runId));
-      if (!row) throw new Error("The run is missing");
-
       const answer = await readScopedRaw(owner, chat.runId, `?messageId=${a.assistantMessageId}`);
+      const whole = replyDetailSchema.parse((await readDetail(owner, chat.runId)).body);
 
       expect(answer.status).toBe(200);
       expect(answer.body).toMatchObject({
-        id: row.id,
+        id: chat.runId,
         triggeredBy: "user",
         unit: "session",
         task: "Chat",
@@ -858,27 +760,16 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
         finishedAt: null,
         trigger: { kind: "user", threadId: chat.threadId, mcpClientName: null },
       });
-    });
-
-    it("answers the whole run without a messageId: every approval, every call, the run's title and no duration", async () => {
-      const owner = await tenantSession();
-      const { chat, requestA, requestB1, requestB2 } = await twoReplies(owner);
-
-      const whole = replyDetailSchema.parse((await readDetail(owner, chat.runId)).body);
-
-      expect(whole.title).toBe("Chat");
-      expect(whole.durationMs).toBeNull();
-      expect(whole.approvals).toEqual({
-        count: 3,
-        pending: 3,
-        approved: 0,
-        rejected: 0,
-        requestIds: [requestA, requestB1, requestB2],
-      });
-      expect(whole.usage).toEqual({
-        totalCostUsd: 0.06,
-        estimated: false,
-        perModel: [{ callCount: 3, inputTokens: 600, outputTokens: 60, costUsd: 0.06 }],
+      // The whole run: every approval, every call, the run's title and no duration.
+      expect(whole).toMatchObject({
+        title: "Chat",
+        durationMs: null,
+        approvals: { count: 3, pending: 3, approved: 0, rejected: 0, requestIds: [requestA, requestB1, requestB2] },
+        usage: {
+          totalCostUsd: 0.06,
+          estimated: false,
+          perModel: [{ callCount: 3, inputTokens: 600, outputTokens: 60, costUsd: 0.06 }],
+        },
       });
     });
 
@@ -935,44 +826,33 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
       expect(whole.approvals.count).toBe(1);
     });
 
-    it("shows a reply that failed as error, even while it has a pending request", async () => {
+    it.each([
+      {
+        name: "a reply that failed as error, even while it has a pending request",
+        reply: { toolCalls: [{ toolCallId: "call-a" }], end: "error" as const },
+        approval: true,
+        expected: { displayStatus: "error", approvals: expect.objectContaining({ pending: 1 }) },
+      },
+      {
+        name: "a finished reply with a failed tool call as error",
+        reply: { toolCalls: [{ toolCallId: "call-a", fails: true }] },
+        approval: false,
+        expected: { displayStatus: "error" },
+      },
+      {
+        name: "a reply that is still running as running",
+        reply: { end: "running" as const },
+        approval: false,
+        expected: { displayStatus: "running" },
+      },
+    ])("shows $name", async ({ reply: spec, approval, expected }) => {
       const owner = await tenantSession();
       const setup = replySetup(owner);
       const chat = await createChatRun(setup);
-      const failed = await playReply(setup, chat, {
-        userText: "First",
-        startMs: 0,
-        toolCalls: [{ toolCallId: "call-a" }],
-        end: "error",
-      });
-      await createApproval(setup, chat.runId, "call-a");
+      const reply = await playReply(setup, chat, { userText: "First", startMs: 0, ...spec });
+      if (approval) await createApproval(setup, chat.runId, "call-a");
 
-      const detail = await readScoped(owner, chat.runId, failed.assistantMessageId);
-
-      expect(detail.displayStatus).toBe("error");
-      expect(detail.approvals.pending).toBe(1);
-    });
-
-    it("shows a finished reply with a failed tool call as error", async () => {
-      const owner = await tenantSession();
-      const setup = replySetup(owner);
-      const chat = await createChatRun(setup);
-      const reply = await playReply(setup, chat, {
-        userText: "First",
-        startMs: 0,
-        toolCalls: [{ toolCallId: "call-a", fails: true }],
-      });
-
-      expect((await readScoped(owner, chat.runId, reply.assistantMessageId)).displayStatus).toBe("error");
-    });
-
-    it("shows a reply that is still running as running", async () => {
-      const owner = await tenantSession();
-      const setup = replySetup(owner);
-      const chat = await createChatRun(setup);
-      const reply = await playReply(setup, chat, { userText: "First", startMs: 0, end: "running" });
-
-      expect((await readScoped(owner, chat.runId, reply.assistantMessageId)).displayStatus).toBe("running");
+      expect(await readScoped(owner, chat.runId, reply.assistantMessageId)).toMatchObject(expected);
     });
 
     it("shows a retried reply as its latest attempt, whichever attempt the request names", async () => {
@@ -1078,29 +958,9 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
 
     describe("the title of a reply to a system message", () => {
       async function replyToApprovalOutcome(session: Session, outcome: "executed" | "rejected" | "conflict") {
-        const setup = replySetup(session);
-        const projectItemId = await createProject(session, "Weekly review");
-        const { heartbeatId, tickThreadId } = await createHeartbeatWithThread(
-          session,
-          projectItemId,
-          "Sunday planning",
-        );
-        const heartbeatRun = await createRun(session, {
-          projectItemId,
-          heartbeatId,
-          threadId: tickThreadId,
-          triggeredBy: "heartbeat",
-          task: "t",
-        });
-        const request = await runInTenant(session.tenant, () =>
-          createPendingApprovalRequest(pool, {
-            agentRunId: heartbeatRun.id,
-            toolName: "probe",
-            riskClass: "unclassified",
-            payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
-            resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
-          }),
-        );
+        const heartbeatRun = await createTickRun(session, { task: "t" });
+        const tickThreadId = heartbeatRun.tickThreadId;
+        const request = await createRequestRow(session, heartbeatRun.id);
         await runInTenant(session.tenant, () =>
           withTransaction(pool, (client) => postApprovalOutcomeMessage(client, request, outcome)),
         );
@@ -1117,7 +977,7 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
           task: "t",
         });
         const chat: ChatRun = { runId: run.id, threadId: tickThreadId };
-        await playQueuedAssistant(setup, chat, assistant.id, {
+        await playQueuedAssistant(replySetup(session), chat, assistant.id, {
           userMessageId: assistant.reply_to_message_id,
           startMs: 0,
         });
@@ -1125,23 +985,16 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
       }
 
       it.each([
-        ["executed", "Approved action carried out"],
-        ["rejected", "Action rejected"],
-        ["conflict", "Approved action could not be carried out"],
-      ] as const)("is the English title of approval.outcome.%s", async (outcome, title) => {
+        ["executed", "en", "Approved action carried out"],
+        ["rejected", "en", "Action rejected"],
+        ["conflict", "en", "Approved action could not be carried out"],
+        ["rejected", "cs", "Akce zamítnuta"],
+      ] as const)("is the title of approval.outcome.%s in the user's locale %s", async (outcome, locale, title) => {
         const owner = await tenantSession();
-        await updateUserLocale(admin, owner.userId, "en");
+        await updateUserLocale(admin, owner.userId, locale);
         const { chat, assistantId } = await replyToApprovalOutcome(owner, outcome);
 
         expect((await readScoped(owner, chat.runId, assistantId)).title).toBe(title);
-      });
-
-      it("is written in the user's locale", async () => {
-        const owner = await tenantSession();
-        await updateUserLocale(admin, owner.userId, "cs");
-        const { chat, assistantId } = await replyToApprovalOutcome(owner, "rejected");
-
-        expect((await readScoped(owner, chat.runId, assistantId)).title).toBe("Akce zamítnuta");
       });
 
       it("is the generic title for a system key the catalog has no entry for", async () => {
@@ -1157,30 +1010,17 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
       });
     });
 
-    it("answers a message of another run of the same tenant like an unknown id", async () => {
+    it.each([
+      { name: "another run of the same tenant", foreignTenant: false },
+      { name: "another tenant", foreignTenant: true },
+    ])("answers a message of $name like an unknown id", async ({ foreignTenant }) => {
       const owner = await tenantSession();
-      const setup = replySetup(owner);
-      const chat = await createChatRun(setup);
-      await playReply(setup, chat, { userText: "First", startMs: 0 });
-      const otherChat = await createChatRun(setup);
-      const other = await playReply(setup, otherChat, { userText: "Elsewhere", startMs: 0 });
-
-      const foreign = await readScopedRaw(owner, chat.runId, `?messageId=${other.assistantMessageId}`);
-      const unknown = await readScopedRaw(owner, chat.runId, `?messageId=${randomUUID()}`);
-
-      expect(foreign).toEqual(NOT_FOUND);
-      expect(unknown).toEqual(foreign);
-    });
-
-    it("answers a message of another tenant like an unknown id", async () => {
-      const owner = await tenantSession();
-      const stranger = await tenantSession();
+      const otherSetup = replySetup(foreignTenant ? await tenantSession() : owner);
       const chat = await createChatRun(replySetup(owner));
       await playReply(replySetup(owner), chat, { userText: "First", startMs: 0 });
-      const strangerChat = await createChatRun(replySetup(stranger));
-      const foreignReply = await playReply(replySetup(stranger), strangerChat, { userText: "Private", startMs: 0 });
+      const other = await playReply(otherSetup, await createChatRun(otherSetup), { userText: "Private", startMs: 0 });
 
-      const foreign = await readScopedRaw(owner, chat.runId, `?messageId=${foreignReply.assistantMessageId}`);
+      const foreign = await readScopedRaw(owner, chat.runId, `?messageId=${other.assistantMessageId}`);
       const unknown = await readScopedRaw(owner, chat.runId, `?messageId=${randomUUID()}`);
 
       expect(foreign).toEqual(NOT_FOUND);
@@ -1292,11 +1132,22 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
     });
 
     describe("a heartbeat run refuses a message that is not its own assistant message", () => {
-      it("answers the assistant message of another run of the same tenant like an unknown id", async () => {
+      it.each([
+        { name: "the assistant message of another run of the same tenant", foreignTenant: false },
+        { name: "a message of another tenant", foreignTenant: true },
+      ])("answers $name like an unknown id", async ({ foreignTenant }) => {
         const owner = await tenantSession();
-        const projectItemId = await createProject(owner, "Weekly review");
-        const run = await heartbeatRunWithMessage(owner, projectItemId, "Sunday planning");
-        const other = await heartbeatRunWithMessage(owner, projectItemId, "Monday planning");
+        const stranger = foreignTenant ? await tenantSession() : owner;
+        const run = await heartbeatRunWithMessage(
+          owner,
+          await createProject(owner, "Weekly review"),
+          "Sunday planning",
+        );
+        const other = await heartbeatRunWithMessage(
+          stranger,
+          await createProject(stranger, "Private project"),
+          "Private planning",
+        );
 
         const foreign = await readScopedRaw(owner, run.runId, `?messageId=${other.messageId}`);
         const unknown = await readScopedRaw(owner, run.runId, `?messageId=${randomUUID()}`);
@@ -1304,6 +1155,7 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
 
         expect(foreign).toEqual(NOT_FOUND);
         expect(unknown).toEqual(foreign);
+        expect(JSON.stringify(foreign)).not.toContain("Private");
         expect(own.status).toBe(200);
       });
 
@@ -1325,28 +1177,6 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
 
         expect(refused).toEqual(NOT_FOUND);
         expect(own.status).toBe(200);
-      });
-
-      it("answers a message of another tenant like an unknown id", async () => {
-        const owner = await tenantSession();
-        const stranger = await tenantSession();
-        const run = await heartbeatRunWithMessage(
-          owner,
-          await createProject(owner, "Weekly review"),
-          "Sunday planning",
-        );
-        const foreignRun = await heartbeatRunWithMessage(
-          stranger,
-          await createProject(stranger, "Private project"),
-          "Private planning",
-        );
-
-        const foreign = await readScopedRaw(owner, run.runId, `?messageId=${foreignRun.messageId}`);
-        const unknown = await readScopedRaw(owner, run.runId, `?messageId=${randomUUID()}`);
-
-        expect(foreign).toEqual(NOT_FOUND);
-        expect(unknown).toEqual(foreign);
-        expect(JSON.stringify(foreign)).not.toContain("Private");
       });
     });
 
@@ -1428,27 +1258,28 @@ describe("GET /api/agent-runs/:id detail fields (issue #1805)", () => {
       return rows[0]!.count;
     }
 
-    it("queues the retry of a run that closed as done and reads error because its reply left a failed tool call", async () => {
+    it.each([
+      {
+        name: "queues the retry of a run that closed as done and reads error because its reply left a failed tool call",
+        steps: () => [failedMcpStep("unavailable")],
+        displayStatus: "error",
+        expected: (runId: string) => ({ status: 202, body: { jobKey: `heartbeat-fire:retry:${runId}` } }),
+        jobs: 1,
+      },
+      {
+        name: "refuses with not_retryable a run of the same occurrence whose reply is complete",
+        steps: () => [],
+        displayStatus: "done",
+        expected: () => ({ status: 409, body: expect.objectContaining({ code: "not_retryable" }) }),
+        jobs: 0,
+      },
+    ])("$name", async ({ steps, displayStatus, expected, jobs }) => {
       const owner = await tenantSession();
-      const run = await tickRunWithReply(owner, [failedMcpStep("unavailable")]);
-      expect((await readDetail(owner, run.id)).body).toMatchObject({ status: "done", displayStatus: "error" });
+      const run = await tickRunWithReply(owner, steps());
+      expect((await readDetail(owner, run.id)).body).toMatchObject({ status: "done", displayStatus });
 
-      const answer = await retry(owner, run.id);
-
-      expect(answer).toEqual({ status: 202, body: { jobKey: `heartbeat-fire:retry:${run.id}` } });
-      expect(await retryJobCount(run.id)).toBe(1);
-    });
-
-    it("refuses with not_retryable a run of the same occurrence whose reply is complete", async () => {
-      const owner = await tenantSession();
-      const run = await tickRunWithReply(owner, []);
-      expect((await readDetail(owner, run.id)).body).toMatchObject({ status: "done", displayStatus: "done" });
-
-      const answer = await retry(owner, run.id);
-
-      expect(answer.status).toBe(409);
-      expect(answer.body).toMatchObject({ code: "not_retryable" });
-      expect(await retryJobCount(run.id)).toBe(0);
+      expect(await retry(owner, run.id)).toEqual(expected(run.id));
+      expect(await retryJobCount(run.id)).toBe(jobs);
     });
   });
 });

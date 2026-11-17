@@ -200,7 +200,57 @@ function queryOf(after: string | null, limit: number): string {
   return `?limit=${limit}${after === null ? "" : `&after=${after}`}`;
 }
 
-describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
+/** Every page of `runId` read `limit` steps at a time, following the cursor; `prefix` scopes the query. */
+async function readAllPages(session: Session, runId: string, limit: number, prefix = ""): Promise<Page[]> {
+  const pages: Page[] = [];
+  let after: string | null = null;
+  do {
+    const query = queryOf(after, limit);
+    const page: Page = await readPage(session, runId, prefix === "" ? query : `${prefix}&${query.slice(1)}`);
+    pages.push(page);
+    after = page.nextCursor;
+  } while (after !== null && pages.length < 10);
+  return pages;
+}
+
+async function seededSession(locale: "cs" | "en" = "en"): Promise<Session> {
+  const session = await tenantSession();
+  await runInTenant(session.tenant, () => seedSystem(pool, createViewTypeRegistry()));
+  // A new user reads Czech, so English is set explicitly.
+  await updateUserLocale(admin, session.userId, locale);
+  return session;
+}
+
+/** The queries the projection of `runId`'s first page makes; `check` sees the projected steps. */
+function projectionQueries(
+  session: Session,
+  runId: string,
+  check: (steps: Awaited<ReturnType<typeof projectAgentRunStepPage>>["steps"]) => void,
+): Promise<number> {
+  return runInTenant(session.tenant, () =>
+    withTransaction(pool, async (client) => {
+      const { events, hasMore } = await listAgentRunEventsForStepPage(client, runId, "0", 100);
+      const page = buildAgentRunStepPage({ events, hasMore, after: "0", limit: 100, runSettled: false });
+      let queries = 0;
+      const counting: PoolClient = new Proxy(client, {
+        get(target, property) {
+          if (property === "query") queries += 1;
+          return Reflect.get(target, property);
+        },
+      });
+      check((await projectAgentRunStepPage(counting, page, { agentRunId: runId, locale: "en" })).steps);
+      return queries;
+    }),
+  );
+}
+
+/** A tool call and its result with the same identity fields. */
+async function addCall(session: Session, runId: string, toolCallId: string, identity: Record<string, unknown> = {}) {
+  await addToolUse(session, runId, toolCallId, identity);
+  await addToolResult(session, runId, toolCallId, identity);
+}
+
+describe("GET /api/agent-runs/:id/steps", () => {
   beforeAll(async () => {
     admin = getTestPool();
     await resetDatabase(admin);
@@ -233,22 +283,22 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
   });
 
   describe("steps and the cursor", () => {
-    it("groups a finished run into start, plan, two tool steps, answer and end without arguments, results or thinking", async () => {
-      const owner = await tenantSession();
+    it("groups a finished run into titled start, plan, two tool steps, answer and end without arguments, results or thinking", async () => {
+      const owner = await seededSession();
       const run = await createRun(owner);
       await writeFinishedRun(owner, run.id);
 
       const answer = await getSteps(owner, run.id);
+      expect(answer.status).toBe(200);
       const result = pageSchema.parse(JSON.parse(answer.text));
 
-      expect(answer.status).toBe(200);
-      expect(result.steps.map((s) => [s.kind, s.state])).toEqual([
-        ["start", "ok"],
-        ["plan", "ok"],
-        ["tool", "ok"],
-        ["tool", "ok"],
-        ["answer", "ok"],
-        ["end", "ok"],
+      expect(result.steps.map((s) => [s.kind, s.state, s.title])).toEqual([
+        ["start", "ok", "Run started"],
+        ["plan", "ok", "Planning"],
+        ["tool", "ok", "Reading an item"],
+        ["tool", "ok", "Using forecast"],
+        ["answer", "ok", "Answering"],
+        ["end", "ok", "Run finished"],
       ]);
       expect(
         result.steps.filter((s) => s.kind === "tool").map((s) => [s.toolCallId, s.operation, s.mcp?.toolName]),
@@ -256,8 +306,7 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
         ["call-1", "item.get", undefined],
         ["call-2", null, "forecast"],
       ]);
-      expect(result.nextCursor).toBeNull();
-      expect(result.truncatedHistory).toBe(false);
+      expect([result.nextCursor, result.truncatedHistory]).toEqual([null, false]);
       for (const hidden of [
         "private reasoning",
         "secret-argument",
@@ -277,14 +326,12 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       const result = await addToolResult(owner, run.id, "call-1");
       // Database defaults a test cannot choose; pinned to see the subtraction.
       await runInTenant(owner.tenant, async () => {
-        await pool.query("UPDATE agent_run_events SET at = $2 WHERE id = $1", [
-          use.id,
-          new Date("2026-11-01T10:00:00.000Z"),
-        ]);
-        await pool.query("UPDATE agent_run_events SET at = $2 WHERE id = $1", [
-          result.id,
-          new Date("2026-11-01T10:00:02.500Z"),
-        ]);
+        for (const [id, at] of [
+          [use.id, "2026-11-01T10:00:00.000Z"],
+          [result.id, "2026-11-01T10:00:02.500Z"],
+        ]) {
+          await pool.query("UPDATE agent_run_events SET at = $2 WHERE id = $1", [id, new Date(at ?? "")]);
+        }
       });
 
       const { steps } = await readPage(owner, run.id);
@@ -299,19 +346,12 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       const events = await runInTenant(owner.tenant, () => listAgentRunEventsAfter(pool, run.id, "0"));
       const unpaged = await readPage(owner, run.id);
 
-      const pages: Page[] = [];
-      let after: string | null = null;
-      do {
-        const next = await readPage(owner, run.id, queryOf(after, 2));
-        pages.push(next);
-        after = next.nextCursor;
-      } while (after !== null && pages.length < 10);
+      const pages = await readAllPages(owner, run.id, 2);
 
       expect(pages.flatMap((p) => p.steps)).toEqual(unpaged.steps);
       expect(pages.map((p) => p.steps.length)).toEqual([2, 2, 2]);
-      const replayOrder = events.map((e) => e.id);
       const stepIds = unpaged.steps.map((s) => s.stepId);
-      expect(stepIds).toEqual(replayOrder.filter((id) => stepIds.includes(id)));
+      expect(stepIds).toEqual(events.map((e) => e.id).filter((id) => stepIds.includes(id)));
       // A page ends after a whole step: cursors are never a tool_use.
       const toolUseIds = events.filter((e) => e.kind === "tool_use").map((e) => e.id);
       const cursors = pages.map((p) => p.nextCursor);
@@ -345,11 +385,10 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       const owner = await tenantSession();
       const run = await createRun(owner);
       const use = await addToolUse(owner, run.id, "call-1");
+      const before = String(BigInt(use.id) - 1n);
 
       expect((await readPage(owner, run.id)).nextCursor).toBe("0");
-      expect((await readPage(owner, run.id, `?after=${BigInt(use.id) - 1n}`)).nextCursor).toBe(
-        String(BigInt(use.id) - 1n),
-      );
+      expect((await readPage(owner, run.id, `?after=${before}`)).nextCursor).toBe(before);
     });
 
     it("never ends a page between parallel calls and their results", async () => {
@@ -362,17 +401,16 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       await addToolResult(owner, run.id, "a");
       await finish(owner, run.id);
 
-      const first = await readPage(owner, run.id, "?limit=1");
-      const second = await readPage(owner, run.id, queryOf(first.nextCursor, 1));
-      const third = await readPage(owner, run.id, queryOf(second.nextCursor, 1));
+      const pages = await readAllPages(owner, run.id, 1);
 
-      expect(first.steps.map((s) => s.kind)).toEqual(["start"]);
-      expect(second.steps.map((s) => [s.toolCallId, s.state])).toEqual([
-        ["a", "ok"],
-        ["b", "ok"],
+      expect(pages.map((page) => page.steps.map((s) => [s.kind, s.toolCallId, s.state]))).toEqual([
+        [["start", null, "ok"]],
+        [
+          ["tool", "a", "ok"],
+          ["tool", "b", "ok"],
+        ],
+        [["end", null, "ok"]],
       ]);
-      expect(third.steps.map((s) => s.kind)).toEqual(["end"]);
-      expect(third.nextCursor).toBeNull();
     });
 
     it.each([
@@ -387,8 +425,7 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       const run = await createRun(owner);
       await addToolUse(owner, run.id, "call-1");
       await addToolResult(owner, run.id, "call-1", extra);
-      await addToolUse(owner, run.id, "call-2");
-      await addToolResult(owner, run.id, "call-2");
+      await addCall(owner, run.id, "call-2");
 
       const { steps } = await readPage(owner, run.id);
 
@@ -396,18 +433,6 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
         ["call-1", "error"],
         ["call-2", "ok"],
       ]);
-    });
-
-    it("reads the interrupted result that startup repair writes as an error step", async () => {
-      const owner = await tenantSession();
-      const run = await createRun(owner);
-      await addToolUse(owner, run.id, "call-1");
-      await addToolResult(owner, run.id, "call-1", {
-        result: { content: [{ type: "text", text: "interrupted_by_restart" }], details: { error: true } },
-        isError: true,
-      });
-
-      expect((await readPage(owner, run.id)).steps.map((s) => s.state)).toEqual(["error"]);
     });
 
     it("ends the cursor of a settled run whose terminal step was never stored, and not while it is fresh", async () => {
@@ -422,19 +447,12 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       expect(fresh.nextCursor).not.toBeNull();
 
       await settle(owner, run.id);
-      const pages: Page[] = [];
-      let after: string | null = null;
-      do {
-        const next = await readPage(owner, run.id, queryOf(after, 1));
-        pages.push(next);
-        after = next.nextCursor;
-      } while (after !== null && pages.length < 10);
+      const pages = await readAllPages(owner, run.id, 1);
 
-      expect(pages.flatMap((p) => p.steps).map((s) => [s.kind, s.state])).toEqual([
-        ["start", "ok"],
-        ["tool", "error"],
+      expect(pages.flatMap((p) => p.steps).map((s) => [s.stepId, s.kind, s.state])).toEqual([
+        [expect.any(String), "start", "ok"],
+        [use.id, "tool", "error"],
       ]);
-      expect(pages.flatMap((p) => p.steps).map((s) => s.stepId)).toContain(use.id);
       expect(pages.at(-1)?.nextCursor).toBeNull();
     });
 
@@ -457,26 +475,15 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       const owner = await tenantSession();
       const run = await createRun(owner);
       const other = await createRun(owner);
-      await addStatus(owner, run.id, "running");
-      const foreign = await addStatus(owner, other.id, "running");
+      const own = await addStatus(owner, run.id, "running");
+      await addStatus(owner, other.id, "running");
 
-      const { steps } = await readPage(owner, run.id);
-
-      expect(steps.map((s) => s.stepId)).not.toContain(foreign.id);
-      expect(steps).toHaveLength(1);
+      expect((await readPage(owner, run.id)).steps.map((s) => s.stepId)).toEqual([own.id]);
     });
   });
 
-  describe("title, target, change and summary (issue #1847)", () => {
+  describe("title, target, change and summary", () => {
     const SECRET = "tok-1847-never-returned";
-
-    async function seededSession(locale: "cs" | "en" = "en"): Promise<Session> {
-      const session = await tenantSession();
-      await runInTenant(session.tenant, () => seedSystem(pool, createViewTypeRegistry()));
-      // A new user reads Czech, so English is set explicitly.
-      await updateUserLocale(admin, session.userId, locale);
-      return session;
-    }
 
     function createTask(session: Session, name: string): Promise<{ databaseId: string; itemId: string }> {
       return runInTenant(session.tenant, async () => {
@@ -493,80 +500,70 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       targetItemId: task.itemId,
     });
 
-    /** A finished item.patch call whose result reports changes, as the runtime stores it. */
-    async function writePatchCall(session: Session, runId: string, task: { databaseId: string; itemId: string }) {
-      await addStatus(session, runId, "running");
-      await addToolUse(session, runId, "patch-1", { ...patchIdentity(task), name: "item_patch" });
-      await addToolResult(session, runId, "patch-1", {
-        ...patchIdentity(task),
-        name: "item_patch",
-        result: {
-          content: [{ type: "text", text: `Patched ${SECRET}` }],
-          details: { error: false, changes: [{ key: "status", before: "todo", after: "done" }] },
-        },
-      });
+    /** The single step of a run with one call, and the raw answer. */
+    async function onlyStep(session: Session, runId: string) {
+      const answer = await getSteps(session, runId);
+      expect(answer.status, answer.text).toBe(200);
+      return {
+        text: answer.text,
+        step: pageSchema.parse(JSON.parse(answer.text)).steps.find((s) => s.kind !== "start"),
+      };
     }
 
-    it("returns an item.patch on a task with its title, the task's name and the change, in English", async () => {
-      const owner = await seededSession();
-      const task = await createTask(owner, "Buy milk");
-      const run = await createRun(owner);
-      await writePatchCall(owner, run.id, task);
-
-      const step = (await readPage(owner, run.id)).steps.find((s) => s.kind === "tool");
-
-      expect(step).toMatchObject({
-        operation: "item.patch",
-        title: "Changing a task",
-        targetName: "Buy milk",
-        change: { property: "status", from: "todo", to: "done" },
-        summary: "1 property changed",
-        approvalRequestId: null,
-      });
-    });
-
-    it("returns the same step in Czech for a user whose locale is cs", async () => {
-      const owner = await seededSession("cs");
-      const task = await createTask(owner, "Koupit mléko");
-      const run = await createRun(owner);
-      await writePatchCall(owner, run.id, task);
-
-      const step = (await readPage(owner, run.id)).steps.find((s) => s.kind === "tool");
-
-      expect(step).toMatchObject({
-        title: "Změna úkolu",
-        targetName: "Koupit mléko",
-        change: { property: "status", from: "todo", to: "done" },
-        summary: "Změněna 1 vlastnost",
-      });
-    });
-
-    it("titles database.query and item.create over the task database in both locales", async () => {
-      for (const [locale, titles] of [
-        ["en", ["Searching tasks", "Creating a task"]],
-        ["cs", ["Vyhledávání úkolů", "Vytvoření úkolu"]],
-      ] as const) {
+    it.each([
+      ["en", "Buy milk", { title: "Changing a task", summary: "1 property changed" }],
+      ["cs", "Koupit mléko", { title: "Změna úkolu", summary: "Změněna 1 vlastnost" }],
+    ] as const)(
+      "returns an item.patch on a task with its title, the task's name and the change, in %s",
+      async (locale, name, texts) => {
         const owner = await seededSession(locale);
-        const task = await createTask(owner, "Any");
+        const task = await createTask(owner, name);
         const run = await createRun(owner);
-        for (const [callId, operation] of [
-          ["q", "database.query"],
-          ["n", "item.create"],
-        ] as const) {
-          await addToolUse(owner, run.id, callId, { operation, targetDatabaseId: task.databaseId });
-          await addToolResult(owner, run.id, callId, { operation, targetDatabaseId: task.databaseId });
-        }
+        // A finished item.patch call whose result reports changes, as the runtime stores it.
+        await addStatus(owner, run.id, "running");
+        await addToolUse(owner, run.id, "patch-1", { ...patchIdentity(task), name: "item_patch" });
+        await addToolResult(owner, run.id, "patch-1", {
+          ...patchIdentity(task),
+          name: "item_patch",
+          result: {
+            content: [{ type: "text", text: `Patched ${SECRET}` }],
+            details: { error: false, changes: [{ key: "status", before: "todo", after: "done" }] },
+          },
+        });
 
-        const steps = (await readPage(owner, run.id)).steps;
+        const { step, text } = await onlyStep(owner, run.id);
 
-        expect(
-          steps.map((s) => [s.title, s.targetName]),
-          locale,
-        ).toEqual([
-          [titles[0], null],
-          [titles[1], null],
-        ]);
+        expect(step).toMatchObject({
+          operation: "item.patch",
+          targetName: name,
+          change: { property: "status", from: "todo", to: "done" },
+          approvalRequestId: null,
+          ...texts,
+        });
+        expect(text).not.toContain(SECRET);
+      },
+    );
+
+    it.each([
+      ["en", ["Searching tasks", "Creating a task"]],
+      ["cs", ["Vyhledávání úkolů", "Vytvoření úkolu"]],
+    ] as const)("titles database.query and item.create over the task database in %s", async (locale, titles) => {
+      const owner = await seededSession(locale);
+      const task = await createTask(owner, "Any");
+      const run = await createRun(owner);
+      for (const [callId, operation] of [
+        ["q", "database.query"],
+        ["n", "item.create"],
+      ] as const) {
+        await addCall(owner, run.id, callId, { operation, targetDatabaseId: task.databaseId });
       }
+
+      const steps = (await readPage(owner, run.id)).steps;
+
+      expect(steps.map((s) => [s.title, s.targetName])).toEqual([
+        [titles[0], null],
+        [titles[1], null],
+      ]);
     });
 
     it("names an MCP tool in the title and shows neither its arguments nor its output", async () => {
@@ -584,12 +581,11 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
         result: { content: [{ type: "text", text: `sunny ${SECRET}` }], details: { error: false } },
       });
 
-      const answer = await getSteps(owner, run.id);
-      const step = pageSchema.parse(JSON.parse(answer.text)).steps[0];
+      const { step, text } = await onlyStep(owner, run.id);
 
       expect(step).toMatchObject({ title: "Using forecast", mcp: { serverName: "Weather" }, targetName: null });
-      expect(answer.text).not.toContain(SECRET);
-      expect(answer.text).not.toContain("sunny");
+      expect(text).not.toContain(SECRET);
+      expect(text).not.toContain("sunny");
     });
 
     it("marks a call that created an approval request as an approval step with its request id and no argument", async () => {
@@ -607,8 +603,7 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
         },
       });
 
-      const answer = await getSteps(owner, run.id);
-      const step = pageSchema.parse(JSON.parse(answer.text)).steps[0];
+      const { step, text } = await onlyStep(owner, run.id);
 
       expect(step).toMatchObject({
         kind: "approval",
@@ -618,74 +613,37 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
         targetName: "Old task",
         summary: "Approval requested",
       });
-      expect(answer.text).not.toContain(SECRET);
-      expect(answer.text).not.toContain("reason");
+      expect(text).not.toContain(SECRET);
+      expect(text).not.toContain("reason");
     });
 
-    it("returns no raw error text of a failed call", async () => {
+    it.each([
+      ["a failed patch", `validation_failed: ${SECRET}`, ["validation_failed", SECRET]],
+      // The shape the startup repair writes for a call without a result.
+      ["a call interrupted by a restart", "interrupted_by_restart", ["interrupted_by_restart"]],
+    ])("returns %s as an error step without its raw error text", async (_name, errorText, hidden) => {
       const owner = await seededSession();
       const task = await createTask(owner, "Task");
       const run = await createRun(owner);
+      await addStatus(owner, run.id, "running");
       await addToolUse(owner, run.id, "f1", patchIdentity(task));
       await addToolResult(owner, run.id, "f1", {
         ...patchIdentity(task),
         isError: true,
-        result: { content: [{ type: "text", text: `validation_failed: ${SECRET}` }], details: { error: true } },
+        result: { content: [{ type: "text", text: errorText }], details: { error: true } },
       });
 
-      const answer = await getSteps(owner, run.id);
-      const step = pageSchema.parse(JSON.parse(answer.text)).steps[0];
+      const { step, text } = await onlyStep(owner, run.id);
 
-      expect(step).toMatchObject({ state: "error", summary: "Failed", change: null });
-      expect(answer.text).not.toContain(SECRET);
-      expect(answer.text).not.toContain("validation_failed");
-    });
-
-    it("returns a call interrupted by a restart, closed with an ordinary error result, as an error step", async () => {
-      const owner = await seededSession();
-      const run = await createRun(owner);
-      await addStatus(owner, run.id, "running");
-      await addToolUse(owner, run.id, "i1", { operation: "item.get" });
-      // The shape the startup repair writes for a call without a result.
-      await addToolResult(owner, run.id, "i1", {
-        operation: "item.get",
-        isError: true,
-        result: { content: [{ type: "text", text: "interrupted_by_restart" }], details: { error: true } },
-      });
-
-      const answer = await getSteps(owner, run.id);
-      const tool = pageSchema.parse(JSON.parse(answer.text)).steps.find((s) => s.kind === "tool");
-
-      expect(tool).toMatchObject({ state: "error", summary: "Failed", operation: "item.get" });
-      expect(answer.text).not.toContain("interrupted_by_restart");
-    });
-
-    it("returns no model text and no thinking for the plan and answer steps, with a title for each", async () => {
-      const owner = await seededSession();
-      const run = await createRun(owner);
-      await writeFinishedRun(owner, run.id);
-
-      const answer = await getSteps(owner, run.id);
-      const steps = pageSchema.parse(JSON.parse(answer.text)).steps;
-
-      expect(steps.map((s) => [s.kind, s.title])).toEqual([
-        ["start", "Run started"],
-        ["plan", "Planning"],
-        ["tool", "Reading an item"],
-        ["tool", "Using forecast"],
-        ["answer", "Answering"],
-        ["end", "Run finished"],
-      ]);
-      expect(answer.text).not.toContain("private reasoning");
-      expect(answer.text).not.toContain("Let me look");
+      expect(step).toMatchObject({ kind: "tool", state: "error", summary: "Failed", change: null });
+      for (const value of hidden) expect(text).not.toContain(value);
     });
 
     it("summarises the end step with the tool and approval counts of the whole run, whichever page holds it", async () => {
       const owner = await seededSession();
       const run = await createRun(owner);
       await addStatus(owner, run.id, "running");
-      await addToolUse(owner, run.id, "t1", { operation: "item.get" });
-      await addToolResult(owner, run.id, "t1", { operation: "item.get" });
+      await addCall(owner, run.id, "t1", { operation: "item.get" });
       await addToolUse(owner, run.id, "t2", { operation: "item.delete" });
       await addToolResult(owner, run.id, "t2", {
         operation: "item.delete",
@@ -702,20 +660,19 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
 
     it("answers with no target name for an item of another tenant and an id that is no uuid", async () => {
       const owner = await seededSession();
-      const other = await seededSession();
-      const foreign = await createTask(other, "Foreign task name");
+      const foreign = await createTask(await seededSession(), "Foreign task name");
       const run = await createRun(owner);
-      await addToolUse(owner, run.id, "x1", patchIdentity(foreign));
-      await addToolResult(owner, run.id, "x1", patchIdentity(foreign));
-      const garbage = { operation: "item.get", targetItemId: "not-a-uuid", targetDatabaseId: "also-not" };
-      await addToolUse(owner, run.id, "x2", garbage);
-      await addToolResult(owner, run.id, "x2", garbage);
+      await addCall(owner, run.id, "x1", patchIdentity(foreign));
+      await addCall(owner, run.id, "x2", {
+        operation: "item.get",
+        targetItemId: "not-a-uuid",
+        targetDatabaseId: "also-not",
+      });
 
       const answer = await getSteps(owner, run.id);
-      const steps = pageSchema.parse(JSON.parse(answer.text)).steps;
 
       expect(answer.status).toBe(200);
-      expect(steps.map((s) => [s.title, s.targetName])).toEqual([
+      expect(pageSchema.parse(JSON.parse(answer.text)).steps.map((s) => [s.title, s.targetName])).toEqual([
         ["Changing an item", null],
         ["Reading an item", null],
       ]);
@@ -728,51 +685,38 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       const queriesFor = async (calls: number): Promise<number> => {
         const run = await createRun(owner);
         await addStatus(owner, run.id, "running");
-        for (let i = 0; i < calls; i++) {
-          await addToolUse(owner, run.id, `c${i}`, patchIdentity(task));
-          await addToolResult(owner, run.id, `c${i}`, patchIdentity(task));
-        }
-        return runInTenant(owner.tenant, () =>
-          withTransaction(pool, async (client) => {
-            const { events, hasMore } = await listAgentRunEventsForStepPage(client, run.id, "0", 100);
-            const page = buildAgentRunStepPage({ events, hasMore, after: "0", limit: 100, runSettled: false });
-            let queries = 0;
-            const counting: PoolClient = new Proxy(client, {
-              get(target, property) {
-                if (property === "query") queries += 1;
-                return Reflect.get(target, property);
-              },
-            });
-            const projected = await projectAgentRunStepPage(counting, page, { agentRunId: run.id, locale: "en" });
-            expect(projected.steps.filter((s) => s.targetName === "Counted")).toHaveLength(calls);
-            return queries;
-          }),
+        for (let i = 0; i < calls; i++) await addCall(owner, run.id, `c${i}`, patchIdentity(task));
+        return projectionQueries(owner, run.id, (steps) =>
+          expect(steps.filter((s) => s.targetName === "Counted")).toHaveLength(calls),
         );
       };
 
       const few = await queriesFor(3);
-      const many = await queriesFor(30);
 
       expect(few).toBeGreaterThan(0);
-      expect(many).toBe(few);
+      expect(await queriesFor(30)).toBe(few);
     });
   });
 
-  describe("approval state (issue #1862)", () => {
+  describe("approval state", () => {
     const SECRET = "execution-text-1862-never-returned";
 
     /** The result is stored as the runtime stores it. */
-    async function runWithApprovalStep(session: Session, requestId: string): Promise<string> {
-      const run = await createRun(session);
-      await addStatus(session, run.id, "running");
-      await addToolUse(session, run.id, "ask", { operation: "item.delete" });
-      await addToolResult(session, run.id, "ask", {
+    async function addApprovalCall(session: Session, runId: string, requestId: string, toolCallId = "ask") {
+      await addToolUse(session, runId, toolCallId, { operation: "item.delete" });
+      await addToolResult(session, runId, toolCallId, {
         operation: "item.delete",
         result: {
           content: [{ type: "text", text: "awaiting a decision" }],
           details: { error: false, approvalRequestId: requestId },
         },
       });
+    }
+
+    async function runWithApprovalStep(session: Session, requestId: string): Promise<string> {
+      const run = await createRun(session);
+      await addStatus(session, run.id, "running");
+      await addApprovalCall(session, run.id, requestId);
       return run.id;
     }
 
@@ -803,11 +747,7 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       const run = await createRun(session);
       const requestId = await createRequest(session, run.id);
       await addStatus(session, run.id, "running");
-      await addToolUse(session, run.id, "ask", { operation: "item.delete" });
-      await addToolResult(session, run.id, "ask", {
-        operation: "item.delete",
-        result: { content: [], details: { error: false, approvalRequestId: requestId } },
-      });
+      await addApprovalCall(session, run.id, requestId);
       return { session, runId: run.id, requestId };
     }
 
@@ -819,15 +759,6 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       if (!step) throw new Error("The run has no approval step");
       return step;
     }
-
-    it("shows a pending request as pending and the step as waiting for approval", async () => {
-      const { session, runId, requestId } = await pendingApproval();
-
-      const step = await approvalStep(session, runId);
-
-      expect(step).toMatchObject({ approvalRequestId: requestId, approvalState: "pending", state: "waitingApproval" });
-      expect("conflictReason" in step).toBe(false);
-    });
 
     it("reads the same step as pending, executing and executed as its request moves on, with no event written to the run", async () => {
       const { session, runId, requestId } = await pendingApproval();
@@ -841,80 +772,76 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       );
       const executed = await approvalStep(session, runId);
 
-      expect([pending, executing, executed].map((s) => [s.stepId, s.approvalState, s.state])).toEqual([
-        [pending.stepId, "pending", "waitingApproval"],
-        [pending.stepId, "executing", "ok"],
-        [pending.stepId, "executed", "ok"],
+      expect(pending).toMatchObject({ approvalRequestId: requestId });
+      expect(
+        [pending, executing, executed].map((s) => [s.stepId, s.approvalState, s.state, "conflictReason" in s]),
+      ).toEqual([
+        [pending.stepId, "pending", "waitingApproval", false],
+        [pending.stepId, "executing", "ok", false],
+        [pending.stepId, "executed", "ok", false],
       ]);
-      const eventsAfter = await runInTenant(session.tenant, () => listAgentRunEventsAfter(pool, runId, "0"));
-      expect(eventsAfter).toEqual(eventsBefore);
+      expect(await runInTenant(session.tenant, () => listAgentRunEventsAfter(pool, runId, "0"))).toEqual(eventsBefore);
     });
 
-    it("shows a rejected request as rejected", async () => {
-      const { session, runId, requestId } = await pendingApproval();
-      await decide(session, requestId, "rejected");
-
-      expect(await approvalStep(session, runId)).toMatchObject({ approvalState: "rejected", state: "ok" });
-    });
-
-    it.each([
-      ["the data changed before execution", {}, "approval.conflict.changed"],
-      ["the source was deleted", { reason: "not_found" }, "approval.conflict.deleted"],
-      ["the database was archived", { reason: "database_archived" }, "approval.conflict.archived"],
-    ])(
-      "shows an approved request that ended in a conflict (%s) as a conflict with its reason",
-      async (_name, details, key) => {
-        const { session, runId, requestId } = await pendingApproval();
-        await decide(session, requestId, "approved");
-        await runInTenant(session.tenant, () =>
-          withTransaction(pool, (client) =>
-            terminalizeApprovalRequestAsConflict(client, requestId, { ...details, leaked: SECRET }),
-          ),
-        );
-
-        expect(await approvalStep(session, runId)).toMatchObject({
-          approvalState: "conflict",
-          conflictReason: key,
-          state: "error",
-        });
-      },
-    );
-
-    it("shows a request whose MCP tool call failed on execution as failed, without a conflict reason", async () => {
-      const { session, runId, requestId } = await pendingApproval();
-      await decide(session, requestId, "approved");
-      const written = await runInTenant(session.tenant, () =>
-        recordApprovalRequestOutcome(pool, requestId, { error: true, result: SECRET, outcomeKind: "callFailed" }),
+    const conflict = (details: Record<string, unknown>) => (session: Session, requestId: string) =>
+      runInTenant(session.tenant, () =>
+        withTransaction(pool, (client) =>
+          terminalizeApprovalRequestAsConflict(client, requestId, { ...details, leaked: SECRET }),
+        ),
       );
-      expect(written).toBe(true);
+    it.each<
+      [string, "approved" | "rejected", ((session: Session, requestId: string) => Promise<unknown>) | null, object]
+    >([
+      ["a rejected request as rejected", "rejected", null, { approvalState: "rejected", state: "ok" }],
+      [
+        "a conflict because the data changed before execution",
+        "approved",
+        conflict({}),
+        { approvalState: "conflict", conflictReason: "approval.conflict.changed", state: "error" },
+      ],
+      [
+        "a conflict because the source was deleted",
+        "approved",
+        conflict({ reason: "not_found" }),
+        { approvalState: "conflict", conflictReason: "approval.conflict.deleted", state: "error" },
+      ],
+      [
+        "a conflict because the database was archived",
+        "approved",
+        conflict({ reason: "database_archived" }),
+        { approvalState: "conflict", conflictReason: "approval.conflict.archived", state: "error" },
+      ],
+      [
+        "an MCP tool call that failed on execution as failed, without a conflict reason",
+        "approved",
+        async (session, requestId) =>
+          expect(
+            await runInTenant(session.tenant, () =>
+              recordApprovalRequestOutcome(pool, requestId, { error: true, result: SECRET, outcomeKind: "callFailed" }),
+            ),
+          ).toBe(true),
+        { approvalState: "failed", state: "error" },
+      ],
+    ])("shows %s", async (_name, decision, after, expected) => {
+      const { session, runId, requestId } = await pendingApproval();
+      await decide(session, requestId, decision);
+      await after?.(session, requestId);
 
       const step = await approvalStep(session, runId);
 
-      expect(step).toMatchObject({ approvalState: "failed", state: "error" });
-      expect("conflictReason" in step).toBe(false);
+      expect(step).toMatchObject(expected);
+      expect("conflictReason" in step).toBe("conflictReason" in expected);
     });
 
-    it("returns the page with no approval state for a step whose request does not exist or is no uuid", async () => {
+    it("returns the page with no approval state for a step whose request does not exist, is no uuid or belongs to another tenant", async () => {
       const session = await tenantSession();
-      const missing = await runWithApprovalStep(session, randomUUID());
-      const garbage = await runWithApprovalStep(session, "not-a-uuid");
+      const other = await pendingApproval();
 
-      for (const runId of [missing, garbage]) {
-        const step = await approvalStep(session, runId);
-        expect(step.state).toBe("ok");
+      for (const requestId of [randomUUID(), "not-a-uuid", other.requestId]) {
+        const step = await approvalStep(session, await runWithApprovalStep(session, requestId));
+        expect(step).toMatchObject({ kind: "approval", approvalRequestId: requestId, state: "ok" });
         expect("approvalState" in step).toBe(false);
       }
-    });
-
-    it("does not read a request of another tenant", async () => {
-      const owner = await tenantSession();
-      const other = await pendingApproval();
-      const runId = await runWithApprovalStep(owner, other.requestId);
-
-      const step = await approvalStep(owner, runId);
-
-      expect(step).toMatchObject({ kind: "approval", approvalRequestId: other.requestId, state: "ok" });
-      expect("approvalState" in step).toBe(false);
     });
 
     it("reads the requests of a page in the same number of queries for one approval step as for five", async () => {
@@ -923,35 +850,14 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
         const run = await createRun(session);
         await addStatus(session, run.id, "running");
         for (let i = 0; i < approvals; i++) {
-          const requestId = await createRequest(session, run.id);
-          await addToolUse(session, run.id, `ask${i}`, { operation: "item.delete" });
-          await addToolResult(session, run.id, `ask${i}`, {
-            operation: "item.delete",
-            result: { content: [], details: { error: false, approvalRequestId: requestId } },
-          });
+          await addApprovalCall(session, run.id, await createRequest(session, run.id), `ask${i}`);
         }
-        return runInTenant(session.tenant, () =>
-          withTransaction(pool, async (client) => {
-            const { events, hasMore } = await listAgentRunEventsForStepPage(client, run.id, "0", 100);
-            const page = buildAgentRunStepPage({ events, hasMore, after: "0", limit: 100, runSettled: false });
-            let queries = 0;
-            const counting: PoolClient = new Proxy(client, {
-              get(target, property) {
-                if (property === "query") queries += 1;
-                return Reflect.get(target, property);
-              },
-            });
-            const projected = await projectAgentRunStepPage(counting, page, { agentRunId: run.id, locale: "en" });
-            expect(projected.steps.filter((s) => s.approvalState === "pending")).toHaveLength(approvals);
-            return queries;
-          }),
+        return projectionQueries(session, run.id, (steps) =>
+          expect(steps.filter((s) => s.approvalState === "pending")).toHaveLength(approvals),
         );
       };
 
-      const one = await queriesFor(1);
-      const five = await queriesFor(5);
-
-      expect(five).toBe(one);
+      expect(await queriesFor(5)).toBe(await queriesFor(1));
     });
   });
 
@@ -962,31 +868,29 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       for (let i = 0; i < 102; i++) await addMessage(owner, run.id, `message ${i}`);
 
       const byDefault = await readPage(owner, run.id);
-      const explicit = await readPage(owner, run.id, "?limit=500");
-      const one = await readPage(owner, run.id, "?limit=1");
 
       expect(byDefault.steps).toHaveLength(100);
       expect(byDefault.nextCursor).toBe(byDefault.steps[99]?.stepId);
-      expect(explicit.steps).toHaveLength(102);
-      expect(one.steps).toHaveLength(1);
+      expect((await readPage(owner, run.id, "?limit=500")).steps).toHaveLength(102);
+      expect((await readPage(owner, run.id, "?limit=1")).steps).toHaveLength(1);
     });
 
     it.each([
-      ["a limit above 500", "?limit=501"],
-      ["a limit of zero", "?limit=0"],
-      ["a limit that is not a number", "?limit=ten"],
-      ["a negative limit", "?limit=-1"],
-      ["a fractional limit", "?limit=1.5"],
-      ["an empty limit", "?limit="],
-      ["a repeated limit", "?limit=1&limit=2"],
-      ["an after that is not a number", "?after=abc"],
-      ["a negative after", "?after=-1"],
-      ["a fractional after", "?after=1.5"],
-      ["an empty after", "?after="],
-      ["a repeated after", "?after=1&after=2"],
-      ["an after beyond the id column", "?after=9223372036854775808"],
-      ["an after of twenty digits", "?after=10000000000000000000"],
-    ])("answers %s with 400 validation_failed", async (_label, query) => {
+      ["a limit above 500", "?limit=501", "limit"],
+      ["a limit of zero", "?limit=0", "limit"],
+      ["a limit that is not a number", "?limit=ten", "limit"],
+      ["a negative limit", "?limit=-1", "limit"],
+      ["a fractional limit", "?limit=1.5", "limit"],
+      ["an empty limit", "?limit=", "limit"],
+      ["a repeated limit", "?limit=1&limit=2", "limit"],
+      ["an after that is not a number", "?after=abc", "after"],
+      ["a negative after", "?after=-1", "after"],
+      ["a fractional after", "?after=1.5", "after"],
+      ["an empty after", "?after=", "after"],
+      ["a repeated after", "?after=1&after=2", "after"],
+      ["an after beyond the id column", "?after=9223372036854775808", "after"],
+      ["an after of twenty digits", "?after=10000000000000000000", "after"],
+    ])("answers %s with 400 validation_failed naming the parameter", async (_label, query, field) => {
       const owner = await tenantSession();
       const run = await createRun(owner);
       await addStatus(owner, run.id, "running");
@@ -994,41 +898,26 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       const answer = await getSteps(owner, run.id, query);
 
       expect(answer.status, answer.text).toBe(400);
-      expect(JSON.parse(answer.text)).toMatchObject({ code: "validation_failed" });
+      expect(JSON.parse(answer.text)).toMatchObject({ code: "validation_failed", details: { field } });
     });
 
-    it.each([
-      ["the largest limit", "?limit=500"],
-      ["the smallest limit", "?limit=1"],
-      ["an after of zero", "?after=0"],
-      ["the largest event id", "?after=9223372036854775807"],
-    ])("accepts %s", async (_label, query) => {
+    it("accepts the largest and smallest limit, an after of zero and the largest event id", async () => {
       const owner = await tenantSession();
       const run = await createRun(owner);
       await addStatus(owner, run.id, "running");
 
-      expect((await getSteps(owner, run.id, query)).status).toBe(200);
-    });
-
-    it("names the offending parameter in the 400", async () => {
-      const owner = await tenantSession();
-      const run = await createRun(owner);
-
-      const limit = JSON.parse((await getSteps(owner, run.id, "?limit=501")).text);
-      const after = JSON.parse((await getSteps(owner, run.id, "?after=x")).text);
-
-      expect(limit).toMatchObject({ details: { field: "limit" } });
-      expect(after).toMatchObject({ details: { field: "after" } });
+      for (const query of ["?limit=500", "?limit=1", "?after=0", "?after=9223372036854775807"]) {
+        expect((await getSteps(owner, run.id, query)).status, query).toBe(200);
+      }
     });
 
     it("answers a request for steps with a non-UUID run id with 400 and a non-GET method with 404", async () => {
       const owner = await tenantSession();
       const run = await createRun(owner);
 
-      const badId = await getSteps(owner, "not-a-uuid");
       const post = await fetch(`${baseUrl}/api/agent-runs/${run.id}/steps`, { method: "POST", headers: owner.headers });
 
-      expect(badId.status).toBe(400);
+      expect((await getSteps(owner, "not-a-uuid")).status).toBe(400);
       expect(post.status).toBe(404);
     });
   });
@@ -1052,14 +941,11 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
 
       try {
         const foreignTenant = await getSteps(stranger, run.id);
-        const unknown = await getSteps(owner, randomUUID());
-        const otherActor = await getSteps(owner, otherActorRun.id);
-        const own = await readPage(owner, run.id);
 
         expect(foreignTenant).toEqual({ status: 404, text: '{"error":"Not found"}' });
-        expect(unknown).toEqual(foreignTenant);
-        expect(otherActor).toEqual(foreignTenant);
-        expect(own.steps).toHaveLength(6);
+        expect(await getSteps(owner, randomUUID())).toEqual(foreignTenant);
+        expect(await getSteps(owner, otherActorRun.id)).toEqual(foreignTenant);
+        expect((await readPage(owner, run.id)).steps).toHaveLength(6);
       } finally {
         await admin.query("DELETE FROM agent_run_events WHERE agent_run_id = $1", [otherActorRun.id]);
         await admin.query("DELETE FROM agent_runs WHERE id = $1", [otherActorRun.id]);
@@ -1067,22 +953,34 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
     });
 
     it("rejects a request without a session", async () => {
-      const owner = await tenantSession();
-      const run = await createRun(owner);
+      const run = await createRun(await tenantSession());
 
-      const res = await fetch(`${baseUrl}/api/agent-runs/${run.id}/steps`);
-
-      expect(res.status).toBe(401);
+      expect((await fetch(`${baseUrl}/api/agent-runs/${run.id}/steps`)).status).toBe(401);
     });
   });
 
   describe("truncatedHistory", () => {
-    it("is false for a run that starts with its opening run_status", async () => {
+    it.each<[string, (session: Session, runId: string) => Promise<unknown>, boolean]>([
+      ["false for a run that starts with its opening run_status", (s, id) => addStatus(s, id, "running"), false],
+      [
+        "true when the first stored event is not a run_status",
+        async (s, id) => {
+          await addMessage(s, id, "an answer");
+          await addStatus(s, id, "running");
+        },
+        true,
+      ],
+      [
+        "true when the first stored event is a run_status that does not open the run",
+        (s, id) => addStatus(s, id, "done"),
+        true,
+      ],
+    ])("is %s", async (_name, write, truncated) => {
       const owner = await tenantSession();
       const run = await createRun(owner);
-      await addStatus(owner, run.id, "running");
+      await write(owner, run.id);
 
-      expect((await readPage(owner, run.id)).truncatedHistory).toBe(false);
+      expect((await readPage(owner, run.id)).truncatedHistory).toBe(truncated);
     });
 
     it("is true, and the remaining steps are returned, when retention removed the run's earliest events", async () => {
@@ -1111,23 +1009,6 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       expect(result.steps.at(-1)).toMatchObject({ kind: "end" });
     });
 
-    it("is true when the first stored event is not a run_status", async () => {
-      const owner = await tenantSession();
-      const run = await createRun(owner);
-      await addMessage(owner, run.id, "an answer");
-      await addStatus(owner, run.id, "running");
-
-      expect((await readPage(owner, run.id)).truncatedHistory).toBe(true);
-    });
-
-    it("is true when the first stored event is a run_status that does not open the run", async () => {
-      const owner = await tenantSession();
-      const run = await createRun(owner);
-      await addStatus(owner, run.id, "done");
-
-      expect((await readPage(owner, run.id)).truncatedHistory).toBe(true);
-    });
-
     it("is true for a finished run without any event and false for a running one", async () => {
       const owner = await tenantSession();
       const finished = await createRun(owner);
@@ -1135,15 +1016,12 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       await settle(owner, finished.id);
       const running = await createRun(owner);
 
-      const finishedPage = await readPage(owner, finished.id);
-      const runningPage = await readPage(owner, running.id);
-
-      expect(finishedPage).toEqual({ steps: [], nextCursor: null, truncatedHistory: true });
-      expect(runningPage).toEqual({ steps: [], nextCursor: "0", truncatedHistory: false });
+      expect(await readPage(owner, finished.id)).toEqual({ steps: [], nextCursor: null, truncatedHistory: true });
+      expect(await readPage(owner, running.id)).toEqual({ steps: [], nextCursor: "0", truncatedHistory: false });
     });
   });
 
-  describe("with ?messageId= (issue #1889)", () => {
+  describe("with ?messageId=", () => {
     const NOT_FOUND = { status: 404, body: { error: "Not found" } };
 
     const replySetup = (session: Session): ReplySetup => ({
@@ -1168,46 +1046,36 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
 
     const scoped = (messageId: string, rest = "") => `?messageId=${messageId}${rest}`;
 
-    it("returns only the steps in the first reply's events, a tool step with its result and its answer", async () => {
+    /** `refused` answers 404 exactly as an unknown message id does. */
+    async function expectLikeUnknown(session: Session, runId: string, refused: string): Promise<string> {
+      const answer = await getSteps(session, runId, scoped(refused));
+      expect({ status: answer.status, body: JSON.parse(answer.text) }).toEqual(NOT_FOUND);
+      expect(await getSteps(session, runId, scoped(randomUUID()))).toEqual(answer);
+      return answer.text;
+    }
+
+    it("returns only the steps in each reply's events, a tool step with its result and its answer, and both without a messageId", async () => {
       const owner = await tenantSession();
       const { chat, a, b } = await twoReplies(owner);
 
-      const page = await readPage(owner, chat.runId, scoped(a.assistantMessageId));
+      const first = await readPage(owner, chat.runId, scoped(a.assistantMessageId));
+      const second = await readPage(owner, chat.runId, scoped(b.assistantMessageId));
+      const whole = await readPage(owner, chat.runId);
 
-      expect(page.steps.map((step) => [step.kind, step.toolCallId, step.state])).toEqual([
-        ["tool", "call-a", "ok"],
-        ["answer", null, "ok"],
+      expect(first.steps.map((step) => [step.stepId, step.kind, step.toolCallId, step.state])).toEqual([
+        [a.eventIds[1], "tool", "call-a", "ok"],
+        [a.eventIds[3], "answer", null, "ok"],
       ]);
-      const ids = page.steps.map((step) => step.stepId);
-      expect(ids).toEqual([a.eventIds[1], a.eventIds[3]]);
-      expect(ids.filter((id) => b.eventIds.includes(id))).toEqual([]);
-      expect(page.nextCursor).toBeNull();
-      expect(page.truncatedHistory).toBe(false);
-    });
-
-    it("returns only the steps in the second reply's events", async () => {
-      const owner = await tenantSession();
-      const { chat, a, b } = await twoReplies(owner);
-
-      const page = await readPage(owner, chat.runId, scoped(b.assistantMessageId));
-
-      expect(page.steps.map((step) => [step.kind, step.toolCallId])).toEqual([
+      expect([first.nextCursor, first.truncatedHistory]).toEqual([null, false]);
+      expect(second.steps.map((step) => [step.kind, step.toolCallId])).toEqual([
         ["tool", "call-b1"],
         ["tool", "call-b2"],
         ["answer", null],
       ]);
-      expect(page.steps.map((step) => step.stepId).filter((id) => a.eventIds.includes(id))).toEqual([]);
-      expect(page.nextCursor).toBeNull();
-    });
-
-    it("returns the steps of both replies without a messageId, as for any run", async () => {
-      const owner = await tenantSession();
-      const { chat, a, b } = await twoReplies(owner);
-
-      const page = await readPage(owner, chat.runId);
-
-      expect(page.steps.map((step) => step.toolCallId)).toEqual(["call-a", null, "call-b1", "call-b2", null]);
-      expect(page.steps.map((step) => step.stepId)).toEqual(
+      expect(second.steps.map((step) => step.stepId).filter((id) => a.eventIds.includes(id))).toEqual([]);
+      expect(second.nextCursor).toBeNull();
+      expect(whole.steps.map((step) => step.toolCallId)).toEqual(["call-a", null, "call-b1", "call-b2", null]);
+      expect(whole.steps.map((step) => step.stepId)).toEqual(
         expect.arrayContaining([a.eventIds[1], a.eventIds[3], b.eventIds[1], b.eventIds[3], b.eventIds[5]]),
       );
     });
@@ -1217,27 +1085,13 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       const { chat, a, b } = await twoReplies(owner);
       const unpaged = await readPage(owner, chat.runId, scoped(b.assistantMessageId));
 
-      const pages: Page[] = [];
-      let after: string | null = null;
-      do {
-        const page: Page = await readPage(
-          owner,
-          chat.runId,
-          scoped(b.assistantMessageId, after === null ? "&limit=1" : `&limit=1&after=${after}`),
-        );
-        pages.push(page);
-        after = page.nextCursor;
-      } while (after !== null);
+      const pages = await readAllPages(owner, chat.runId, 1, scoped(b.assistantMessageId));
+      const steps = pages.flatMap((page) => page.steps);
 
       expect(pages.map((page) => page.steps.length)).toEqual([1, 1, 1]);
-      expect(pages.flatMap((page) => page.steps)).toEqual(unpaged.steps);
-      expect(
-        pages
-          .flatMap((page) => page.steps)
-          .filter((step) => step.kind === "tool")
-          .map((s) => s.durationMs),
-      ).toEqual([100, 100]);
-      expect(pages.flatMap((page) => page.steps).map((step) => step.stepId)).not.toContain(a.eventIds[1]);
+      expect(steps).toEqual(unpaged.steps);
+      expect(steps.filter((step) => step.kind === "tool").map((s) => s.durationMs)).toEqual([100, 100]);
+      expect(steps.map((step) => step.stepId)).not.toContain(a.eventIds[1]);
     });
 
     it("starts at the later of the cursor and the reply's first event", async () => {
@@ -1252,7 +1106,7 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       expect(done).toEqual({ steps: [], nextCursor: null, truncatedHistory: false });
     });
 
-    it("keeps the cursor of a reply that is still running, and ends it for a finished one", async () => {
+    it("keeps the cursor of a reply that is still running", async () => {
       const owner = await tenantSession();
       const setup = replySetup(owner);
       const chat = await createChatRun(setup);
@@ -1396,40 +1250,29 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
         a.assistantMessageId,
       ]);
 
-      const page = await readPage(owner, chat.runId, scoped(a.assistantMessageId));
-
-      expect(page).toEqual({ steps: [], nextCursor: null, truncatedHistory: false });
+      expect(await readPage(owner, chat.runId, scoped(a.assistantMessageId))).toEqual({
+        steps: [],
+        nextCursor: null,
+        truncatedHistory: false,
+      });
     });
 
-    it("answers a message of another run of the same tenant like an unknown id", async () => {
+    it("answers a message of another run of the same tenant and one of another tenant like an unknown id", async () => {
       const owner = await tenantSession();
+      const stranger = await tenantSession();
       const setup = replySetup(owner);
       const chat = await createChatRun(setup);
       await playReply(setup, chat, { userText: "First", startMs: 0 });
-      const otherChat = await createChatRun(setup);
-      const other = await playReply(setup, otherChat, { userText: "Elsewhere", startMs: 0 });
+      const other = await playReply(setup, await createChatRun(setup), { userText: "Elsewhere", startMs: 0 });
+      const strangerSetup = replySetup(stranger);
+      const foreignReply = await playReply(strangerSetup, await createChatRun(strangerSetup), {
+        userText: "Private",
+        startMs: 0,
+      });
 
-      const foreign = await getSteps(owner, chat.runId, scoped(other.assistantMessageId));
-      const unknown = await getSteps(owner, chat.runId, scoped(randomUUID()));
-
-      expect({ status: foreign.status, body: JSON.parse(foreign.text) }).toEqual(NOT_FOUND);
-      expect(unknown).toEqual(foreign);
-    });
-
-    it("answers a message of another tenant like an unknown id", async () => {
-      const owner = await tenantSession();
-      const stranger = await tenantSession();
-      const chat = await createChatRun(replySetup(owner));
-      await playReply(replySetup(owner), chat, { userText: "First", startMs: 0 });
-      const strangerChat = await createChatRun(replySetup(stranger));
-      const foreignReply = await playReply(replySetup(stranger), strangerChat, { userText: "Private", startMs: 0 });
-
-      const foreign = await getSteps(owner, chat.runId, scoped(foreignReply.assistantMessageId));
-      const unknown = await getSteps(owner, chat.runId, scoped(randomUUID()));
-
-      expect({ status: foreign.status, body: JSON.parse(foreign.text) }).toEqual(NOT_FOUND);
-      expect(unknown).toEqual(foreign);
-      for (const id of foreignReply.eventIds) expect(foreign.text).not.toContain(id);
+      await expectLikeUnknown(owner, chat.runId, other.assistantMessageId);
+      const foreign = await expectLikeUnknown(owner, chat.runId, foreignReply.assistantMessageId);
+      for (const id of foreignReply.eventIds) expect(foreign).not.toContain(id);
     });
 
     it("answers a message that is not an assistant message like an unknown id, even when it names the run", async () => {
@@ -1440,11 +1283,8 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       // No production write gives a user message a run; set by SQL so only its role is refused.
       await admin.query("UPDATE semp_messages SET agent_run_id = $2 WHERE id = $1", [reply.userMessageId, chat.runId]);
 
-      const user = await getSteps(owner, chat.runId, scoped(reply.userMessageId ?? ""));
-      const assistant = await getSteps(owner, chat.runId, scoped(reply.assistantMessageId));
-
-      expect({ status: user.status, body: JSON.parse(user.text) }).toEqual(NOT_FOUND);
-      expect(assistant.status).toBe(200);
+      await expectLikeUnknown(owner, chat.runId, reply.userMessageId ?? "");
+      expect((await getSteps(owner, chat.runId, scoped(reply.assistantMessageId))).status).toBe(200);
     });
 
     it.each([
@@ -1495,8 +1335,7 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
         triggeredBy: "heartbeat",
       });
       await addStatus(session, run.id, "running");
-      await addToolUse(session, run.id, "call-1", { operation: "item.get" });
-      await addToolResult(session, run.id, "call-1", { operation: "item.get" });
+      await addCall(session, run.id, "call-1", { operation: "item.get" });
       await addMessage(session, run.id, "Here is what I found");
       await runInTenant(session.tenant, () =>
         withTransaction(pool, (client) =>
@@ -1523,66 +1362,36 @@ describe("GET /api/agent-runs/:id/steps (issue #1821)", () => {
       const { runId, messageId } = await heartbeatRunWithMessage(owner, "Sunday planning");
 
       const whole = await getSteps(owner, runId);
-      const withMessage = await getSteps(owner, runId, scoped(messageId));
-      const unknown = await getSteps(owner, runId, scoped(randomUUID()));
 
       expect(whole.status).toBe(200);
-      expect(withMessage).toEqual(whole);
+      expect(await getSteps(owner, runId, scoped(messageId))).toEqual(whole);
       expect(pageSchema.parse(JSON.parse(whole.text)).steps.map((step) => step.kind)).toEqual([
         "start",
         "tool",
         "answer",
         "end",
       ]);
-      expect(unknown.status).toBe(404);
+      expect((await getSteps(owner, runId, scoped(randomUUID()))).status).toBe(404);
     });
 
-    describe("a heartbeat run refuses a message that is not its own assistant message", () => {
-      it("answers the assistant message of another run of the same tenant like an unknown id", async () => {
-        const owner = await tenantSession();
-        const run = await heartbeatRunWithMessage(owner, "Sunday planning");
-        const other = await heartbeatRunWithMessage(owner, "Monday planning");
+    it("refuses for a heartbeat run, like an unknown id, another run's, another tenant's and a user message of its thread", async () => {
+      const owner = await tenantSession();
+      const run = await heartbeatRunWithMessage(owner, "Sunday planning");
+      const other = await heartbeatRunWithMessage(owner, "Monday planning");
+      const foreignRun = await heartbeatRunWithMessage(await tenantSession(), "Private planning");
+      // No production write gives a user message a run; made by SQL so only its role is refused.
+      const user = await admin.query<{ id: string }>(
+        `INSERT INTO semp_messages (tenant_id, thread_id, role, text, agent_run_id)
+         VALUES ($1, $2, 'user', 'Private question', $3) RETURNING id`,
+        [owner.tenant, run.tickThreadId, run.runId],
+      );
+      const userMessageId = user.rows[0]?.id;
+      if (userMessageId === undefined) throw new Error("The user message was not inserted");
 
-        const foreign = await getSteps(owner, run.runId, scoped(other.messageId));
-        const unknown = await getSteps(owner, run.runId, scoped(randomUUID()));
-        const own = await getSteps(owner, run.runId, scoped(run.messageId));
-
-        expect({ status: foreign.status, body: JSON.parse(foreign.text) }).toEqual(NOT_FOUND);
-        expect(unknown).toEqual(foreign);
-        expect(own.status).toBe(200);
-      });
-
-      it("answers a user message of the run's thread like an unknown id, even when it names the run", async () => {
-        const owner = await tenantSession();
-        const run = await heartbeatRunWithMessage(owner, "Sunday planning");
-        // No production write gives a user message a run; made by SQL so only its role is refused.
-        const user = await admin.query<{ id: string }>(
-          `INSERT INTO semp_messages (tenant_id, thread_id, role, text, agent_run_id)
-           VALUES ($1, $2, 'user', 'Private question', $3) RETURNING id`,
-          [owner.tenant, run.tickThreadId, run.runId],
-        );
-        const userMessageId = user.rows[0]?.id;
-        if (userMessageId === undefined) throw new Error("The user message was not inserted");
-
-        const refused = await getSteps(owner, run.runId, scoped(userMessageId));
-        const own = await getSteps(owner, run.runId, scoped(run.messageId));
-
-        expect({ status: refused.status, body: JSON.parse(refused.text) }).toEqual(NOT_FOUND);
-        expect(own.status).toBe(200);
-      });
-
-      it("answers a message of another tenant like an unknown id", async () => {
-        const owner = await tenantSession();
-        const stranger = await tenantSession();
-        const run = await heartbeatRunWithMessage(owner, "Sunday planning");
-        const foreignRun = await heartbeatRunWithMessage(stranger, "Private planning");
-
-        const foreign = await getSteps(owner, run.runId, scoped(foreignRun.messageId));
-        const unknown = await getSteps(owner, run.runId, scoped(randomUUID()));
-
-        expect({ status: foreign.status, body: JSON.parse(foreign.text) }).toEqual(NOT_FOUND);
-        expect(unknown).toEqual(foreign);
-      });
+      for (const refused of [other.messageId, foreignRun.messageId, userMessageId]) {
+        await expectLikeUnknown(owner, run.runId, refused);
+      }
+      expect((await getSteps(owner, run.runId, scoped(run.messageId))).status).toBe(200);
     });
   });
 });

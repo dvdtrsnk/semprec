@@ -19,6 +19,7 @@ import { createSeriesOccurrence } from "../testSupport/taskSeriesFixtures.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 
 const WAIT_MS = 10_000;
+type RolloverOutcome = { ok: true } | { ok: false; error: unknown };
 type RolloverActorRecord = {
   label: string;
   status: "pending" | "fulfilled" | "rejected";
@@ -28,6 +29,10 @@ type RolloverActorRecord = {
   consumed: boolean;
   primary?: { error: unknown };
 };
+/**
+ * Every concurrent actor a test starts is tracked: one that is still pending, or that settled after its deadline, holds
+ * a connection or a row lock, so the next test refuses to reset the database under it.
+ */
 const pendingRolloverActors = new Set<Promise<unknown>>();
 const rolloverActorRecords = new Map<Promise<unknown>, RolloverActorRecord>();
 function trackRolloverActor<T>(actor: Promise<T>): Promise<T> {
@@ -80,11 +85,7 @@ function rolloverActorDiagnostic(): AggregateError | undefined {
   }
   return new AggregateError(details, "Prior rollover actor crossed its deadline; resources remain reserved");
 }
-async function settleRolloverActor<T>(
-  actor: Promise<T>,
-  primary?: { error: unknown },
-  deadlineMs = WAIT_MS,
-): Promise<T> {
+async function settleRolloverActor<T>(actor: Promise<T>, primary?: { error: unknown }): Promise<T> {
   if (!rolloverActorRecords.has(actor)) void trackRolloverActor(actor);
   const record = rolloverActorRecords.get(actor);
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -98,7 +99,7 @@ async function settleRolloverActor<T>(
             record.primary = primary;
           }
           reject(new Error("Rollover actor did not settle"));
-        }, deadlineMs);
+        }, WAIT_MS);
       }),
     ]);
   } finally {
@@ -106,12 +107,11 @@ async function settleRolloverActor<T>(
   }
 }
 
-type RolloverOutcome = { ok: true } | { ok: false; error: unknown };
+/** Waits for `ready`; an actor that fails or ends first fails the wait with its own error. */
 async function waitRolloverReady<T>(
   ready: Promise<T>,
   actors: Array<Promise<RolloverOutcome>>,
   message: string,
-  deadlineMs = WAIT_MS,
 ): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -124,7 +124,7 @@ async function waitRolloverReady<T>(
         ),
       ),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), deadlineMs);
+        timer = setTimeout(() => reject(new Error(message)), WAIT_MS);
       }),
     ]);
     if (winner.kind === "ready") return winner.value;
@@ -141,6 +141,93 @@ async function waitRolloverReady<T>(
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+/**
+ * Settles every actor within the deadline after `release`, and throws the test's own failure together with every actor
+ * failure it has not already reported.
+ */
+async function settleActors(
+  release: () => void,
+  actors: Array<Promise<RolloverOutcome>>,
+  failure: { error: unknown } | undefined,
+): Promise<void> {
+  release();
+  const settled = await Promise.allSettled(actors.map((actor) => settleRolloverActor(actor, failure)));
+  const errors: unknown[] = failure ? [failure.error] : [];
+  settled.forEach((result, index) => {
+    if (result.status === "rejected") errors.push(result.reason);
+    else if (!result.value.ok && !rolloverActorRecords.get(actors[index]!)?.consumed) errors.push(result.value.error);
+  });
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, "Rollover actors failed", { cause: errors[0] });
+}
+
+function outcomeOf(work: Promise<unknown>): Promise<RolloverOutcome> {
+  return work.then(
+    () => ({ ok: true as const }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
+}
+
+function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+type Identity = { pid: number; started: string };
+
+async function identityOf(client: PoolClient): Promise<Identity> {
+  const result = await client.query<Identity>(
+    "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
+  );
+  if (!result.rows[0]) throw new Error("Missing actor identity");
+  return result.rows[0];
+}
+
+/**
+ * A tracked transaction that runs `hold` and then stays open until `release`; `ready` answers its backend once `hold`
+ * has run.
+ */
+function holdTransaction(hold: (client: PoolClient) => Promise<unknown>) {
+  const gate = deferred();
+  const ready = deferred<Identity>();
+  const actor = trackRolloverActor(
+    outcomeOf(
+      inTenant(() =>
+        withTransaction(pool, async (client) => {
+          const identity = await identityOf(client);
+          await hold(client);
+          ready.resolve(identity);
+          await gate.promise;
+        }),
+      ),
+    ),
+  );
+  return { actor, ready: ready.promise, release: () => gate.resolve() };
+}
+
+function lockRow(client: PoolClient, id: string): Promise<unknown> {
+  return client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE", [tasksId, id]);
+}
+
+async function expectBackendLive(identity: Identity): Promise<void> {
+  const { rows } = await admin.query<{ present: boolean }>(
+    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND backend_start = $2::timestamptz) AS present",
+    [identity.pid, identity.started],
+  );
+  expect(rows).toEqual([{ present: true }]);
+}
+
+async function isBlocking(pid: number): Promise<boolean> {
+  const { rows } = await admin.query<{ waiting: boolean }>(
+    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))) AS waiting",
+    [pid],
+  );
+  return rows[0]?.waiting === true;
 }
 
 let admin: Pool;
@@ -174,28 +261,67 @@ async function row(id: string): Promise<z.infer<typeof itemRow>> {
   });
 }
 
-function run(): Promise<void> {
+function setStatus(id: string, status: string): Promise<unknown> {
+  return inTenant(() => cp.updateItem({ databaseId: tasksId, itemId: id, propertiesPatch: { status } }));
+}
+
+function run(runtime: Pool = pool, options?: { recurringLimit: number }): Promise<void> {
   return inTenant(() =>
-    createTasksDayRolloverAction(pool)(heartbeat.config, {
+    createTasksDayRolloverAction(runtime, options)(heartbeat.config, {
       heartbeatId: heartbeat.id,
       projectItemId: heartbeat.projectItemId,
     }),
   );
 }
 
-/** Synthetic state for a property no production writer sets yet, written directly as Tasks. */
-async function setSystemProperties(id: string, properties: Record<string, unknown>): Promise<void> {
-  await inTenant(async () => {
-    const result = await pool.query(
-      "UPDATE items SET properties = properties || $3::jsonb WHERE database_id = $1 AND id = $2",
-      [tasksId, id, JSON.stringify(properties)],
+/** Makes the task recurring through the route a user calls, and answers its series id. */
+async function setRecurrence(id: string, preset: string): Promise<string> {
+  const answer = await inTenant(() =>
+    createTaskRecurrenceSetRouteHandler(pool)({
+      params: { id },
+      body: { preset },
+      identity: { user: { id: randomUUID() } },
+    }),
+  );
+  return z.string().parse(answer.item.properties.seriesId);
+}
+
+/** The live occurrences of a series. */
+async function seriesItems(seriesId: string): Promise<Array<z.infer<typeof itemRow>>> {
+  return inTenant(async () => {
+    const { rows } = await pool.query<Record<string, unknown>>(
+      "SELECT id, properties, updated_at::text FROM items WHERE database_id = $1 AND properties->>'seriesId' = $2 AND deleted_at IS NULL ORDER BY id",
+      [tasksId, seriesId],
     );
-    expect(result.rowCount).toBe(1);
+    return z.array(itemRow).parse(rows);
   });
 }
 
-/** Synthetic `effectiveDate`/`hiddenUntil` for many tasks at once, as `setSystemProperties` does for one. */
-async function setSystemPropertiesMany(ids: string[], properties: Record<string, unknown>): Promise<void> {
+/** The series row: its current occurrence, rule and whether it is active. */
+async function seriesRow(seriesId: string): Promise<{ item_id: string; rule: unknown; active: boolean } | undefined> {
+  const { rows } = await inTenant(() =>
+    pool.query<{ item_id: string; rule: unknown; active: boolean }>(
+      "SELECT item_id, rule, active FROM task_recurrence WHERE series_id = $1",
+      [seriesId],
+    ),
+  );
+  return rows[0];
+}
+
+async function queuedJobs(): Promise<Array<{ id: string; key: string | null }>> {
+  return (await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+    .rows;
+}
+
+/** The one occurrence of the series besides `old`. */
+async function nextOccurrence(seriesId: string, old: string): Promise<Record<string, unknown> | undefined> {
+  const occurrences = await seriesItems(seriesId);
+  expect(occurrences).toHaveLength(2);
+  return occurrences.find((entry) => entry.id !== old)?.properties;
+}
+
+/** Synthetic state for properties no production writer sets yet, written directly as Tasks. */
+async function setSystemProperties(ids: string[], properties: Record<string, unknown>): Promise<void> {
   await inTenant(async () => {
     const result = await pool.query(
       "UPDATE items SET properties = properties || $3::jsonb WHERE database_id = $1 AND id = ANY($2::uuid[])",
@@ -205,20 +331,44 @@ async function setSystemPropertiesMany(ids: string[], properties: Record<string,
   });
 }
 
-async function invalidationsDuring(work: () => Promise<void>): Promise<Map<string, number>> {
-  const counts = new Map<string, number>();
-  setInvalidationHook((event) => {
-    if (event.scope === "item") counts.set(event.itemId, (counts.get(event.itemId) ?? 0) + 1);
-  });
+async function eventsDuring(work: () => Promise<unknown>): Promise<InvalidationEvent[]> {
+  const events: InvalidationEvent[] = [];
+  setInvalidationHook((event) => events.push(event));
   try {
     await work();
   } finally {
     setInvalidationHook(() => {});
   }
+  return events;
+}
+
+/** The number of item invalidations per item id during `work`. */
+async function invalidationsDuring(work: () => Promise<void>): Promise<Map<string, number>> {
+  const counts = new Map<string, number>();
+  for (const event of await eventsDuring(work)) {
+    if (event.scope === "item") counts.set(event.itemId, (counts.get(event.itemId) ?? 0) + 1);
+  }
   return counts;
 }
 
-describe("the midnight Tasks rollover (issue #1674)", () => {
+/**
+ * A weekly series begun on 2026-10-12 whose first occurrence was completed on 10-13 and reopened, so it is older than
+ * the next occurrence the completion created; that next occurrence then gets the rule `preset`.
+ */
+async function reopenedSeries(preset: string): Promise<{ old: string; next: string; seriesId: string }> {
+  vi.setSystemTime(new Date("2026-10-12T10:00:00Z"));
+  const old = await task({ date: "2026-10-12" });
+  const seriesId = await setRecurrence(old, "weekly");
+  vi.setSystemTime(new Date("2026-10-13T10:00:00Z"));
+  await setStatus(old, "done");
+  const next = (await seriesRow(seriesId))?.item_id;
+  if (!next || next === old) throw new Error("Missing next occurrence");
+  await setStatus(old, "notDone");
+  await setRecurrence(next, preset);
+  return { old, next, seriesId };
+}
+
+describe("the midnight Tasks rollover", () => {
   beforeAll(async () => {
     admin = getTestPool();
     pool = await createRuntimeRolePool(admin, "semprec_data");
@@ -260,73 +410,6 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     await admin?.end();
   });
 
-  it("retains a rollover actor failure after readiness timeout", async () => {
-    const never = new Promise<never>(() => {});
-    type Outcome = { ok: true } | { ok: false; error: unknown };
-    let finish: (value: Outcome) => void = () => {};
-    const actor = trackRolloverActor(
-      new Promise<Outcome>((resolve) => {
-        finish = resolve;
-      }),
-    );
-    let finishPending: (value: Outcome) => void = () => {};
-    const pendingActor = trackRolloverActor(
-      new Promise<Outcome>((resolve) => {
-        finishPending = resolve;
-      }),
-    );
-    let earlyActor: Promise<Outcome> | undefined;
-    try {
-      const timeout = await waitRolloverReady(never, [actor], "readiness timeout", 1).then(
-        () => null,
-        (error: unknown) => error,
-      );
-      expect(timeout).toMatchObject({ message: "readiness timeout" });
-      const late = new Error("late rollover actor");
-      finish({ ok: false, error: late });
-      await actor;
-      const outcome = await settleRolloverActor(actor, { error: timeout }, 10);
-      expect(outcome).toEqual({ ok: false, error: late });
-      if (outcome.ok) throw new Error("Missing actor failure");
-      const aggregate = new AggregateError([timeout, outcome.error], "finite settlement", { cause: timeout });
-      expect(aggregate.cause).toBe(timeout);
-      expect(aggregate.errors).toEqual([timeout, late]);
-      expect(aggregate.errors[1]).toBe(late);
-      expect(rolloverActorRecords.get(actor)?.consumed).toBe(false);
-
-      const pendingTimeout = await waitRolloverReady(never, [pendingActor], "pending readiness timeout", 1).then(
-        () => null,
-        (error: unknown) => error,
-      );
-      await expect(settleRolloverActor(pendingActor, { error: pendingTimeout }, 1)).rejects.toThrow();
-      expect(rolloverActorDiagnostic()?.errors[0]).toBe(pendingTimeout);
-      expect(pendingRolloverActors.has(pendingActor)).toBe(true);
-      const retained = new Error("retained rollover actor");
-      finishPending({ ok: false, error: retained });
-      await pendingActor;
-      expect(rolloverActorDiagnostic()?.errors.find((error) => error === retained)).toBe(retained);
-      const earlyError = new Error("early rollover actor");
-      earlyActor = trackRolloverActor(Promise.resolve<Outcome>({ ok: false, error: earlyError }));
-      const early = await waitRolloverReady(never, [earlyActor], "unused deadline", 1).then(
-        () => null,
-        (error: unknown) => error,
-      );
-      expect(early).toBe(earlyError);
-      expect(rolloverActorRecords.get(earlyActor)?.consumed).toBe(true);
-      const earlyOutcome = await settleRolloverActor(earlyActor, { error: timeout }, 10);
-      const errors = [early];
-      if (!earlyOutcome.ok && !rolloverActorRecords.get(earlyActor)?.consumed) errors.push(earlyOutcome.error);
-      expect(errors).toEqual([earlyError]);
-    } finally {
-      finish({ ok: true });
-      finishPending({ ok: true });
-      await Promise.all([actor, pendingActor, earlyActor]);
-      rolloverActorRecords.delete(actor);
-      rolloverActorRecords.delete(pendingActor);
-      if (earlyActor) rolloverActorRecords.delete(earlyActor);
-    }
-  });
-
   it("moves a notDone task of yesterday 10:00-11:00 to today without times, with since yesterday", async () => {
     const id = await task({ date: day(-1), timeFrom: "10:00", timeTo: "11:00" });
     await run();
@@ -355,18 +438,15 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
 
   it("changes nothing on a second run the same day, and after a three-day outage writes today once", async () => {
     const id = await task({ date: day(-3) });
-    const events: InvalidationEvent[] = [];
-    setInvalidationHook((event) => events.push(event));
-    try {
+    let moved: z.infer<typeof itemRow> | undefined;
+    const counts = await invalidationsDuring(async () => {
       await run();
-      const moved = await row(id);
+      moved = await row(id);
       expect(moved.properties).toMatchObject({ date: day(0), since: day(-3) });
       await run();
-      expect(await row(id)).toEqual(moved);
-    } finally {
-      setInvalidationHook(() => {});
-    }
-    expect(events.filter((event) => event.scope === "item" && event.itemId === id)).toHaveLength(1);
+    });
+    expect(await row(id)).toEqual(moved);
+    expect(counts.get(id)).toBe(1);
   });
 
   it("does not move a done, wontDo, deleted, recurring, undated, current or hidden task, nor one completed in an event", async () => {
@@ -375,21 +455,18 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     const deleted = await task({ date: day(-2) });
     await inTenant(() => cp.softDeleteItem(tasksId, deleted));
     const recurring = await task({ date: day(-2) });
-    await inTenant(() =>
-      createTaskRecurrenceSetRouteHandler(pool)({
-        params: { id: recurring },
-        body: { preset: "weekly" },
-        identity: { user: { id: randomUUID() } },
-      }),
-    );
+    await setRecurrence(recurring, "weekly");
     const undated = await task({});
     const current = await task({ date: day(0) });
     const hidden = await task({ date: day(-2) });
-    await setSystemProperties(hidden, { hiddenUntil: today.plus({ days: 1 }).toISO() });
+    await setSystemProperties([hidden], { hiddenUntil: today.plus({ days: 1 }).toISO() });
     const completedInEvent = await task({ date: day(-2) });
     await inTenant(() =>
-      withTransaction(pool, async (client: PoolClient) => {
-        const event = await createRelationTarget(client);
+      withTransaction(pool, async (client) => {
+        const event = await createItemWithClient(client, {
+          databaseId: eventsId,
+          properties: { name: "Workshop", date: day(-2) },
+        });
         const property = await client.query<{ id: string }>(
           "SELECT id FROM properties WHERE database_id = $1 AND key = 'completedInEvent'",
           [tasksId],
@@ -397,7 +474,7 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
         // Synthetic edge: its producer is not built yet.
         await createRelationWithClient(
           client,
-          { relationPropertyId: property.rows[0]!.id, callerItemId: completedInEvent, targetItemId: event },
+          { relationPropertyId: property.rows[0]!.id, callerItemId: completedInEvent, targetItemId: event.id },
           { ownerProcess: "tasks" },
         );
       }),
@@ -410,35 +487,17 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
 
   it("marks a daily occurrence missed and creates today's occurrence exactly once", async () => {
     const id = await task({ date: day(-1) });
-    const created = await inTenant(() =>
-      createTaskRecurrenceSetRouteHandler(pool)({
-        params: { id },
-        body: { preset: "daily" },
-        identity: { user: { id: randomUUID() } },
-      }),
-    );
+    const seriesId = await setRecurrence(id, "daily");
     await run();
     expect((await row(id)).properties).toMatchObject({ status: "missed", date: day(-1) });
-    const state = await inTenant(() =>
-      pool.query<{ id: string; properties: Record<string, unknown> }>(
-        "SELECT id, properties FROM items WHERE database_id = $1 AND properties->>'seriesId' = $2 AND deleted_at IS NULL ORDER BY id",
-        [tasksId, created.item.properties.seriesId],
-      ),
-    );
-    expect(state.rows).toHaveLength(2);
-    expect(state.rows.find((item) => item.id !== id)?.properties).toMatchObject({
+    expect(await nextOccurrence(seriesId, id)).toMatchObject({
       status: "notDone",
       date: day(0),
       occurrenceDate: day(0),
     });
+    const state = await seriesItems(seriesId);
     await run();
-    const again = await inTenant(() =>
-      pool.query<{ id: string; properties: Record<string, unknown> }>(
-        "SELECT id, properties FROM items WHERE database_id = $1 AND properties->>'seriesId' = $2 AND deleted_at IS NULL ORDER BY id",
-        [tasksId, created.item.properties.seriesId],
-      ),
-    );
-    expect(again.rows).toEqual(state.rows);
+    expect(await seriesItems(seriesId)).toEqual(state);
   });
 
   it("rolls over only the active tenant while another tenant has a due series", async () => {
@@ -456,13 +515,7 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
       return item.id;
     });
     const localItem = await task({ date: day(-8) });
-    await inTenant(() =>
-      createTaskRecurrenceSetRouteHandler(pool)({
-        params: { id: localItem },
-        body: { preset: "weekly" },
-        identity: { user: { id: randomUUID() } },
-      }),
-    );
+    await setRecurrence(localItem, "weekly");
     const foreignState = () =>
       runInTenant(foreign, async () => ({
         items: (
@@ -473,7 +526,7 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
         series: (await pool.query<Record<string, unknown>>("SELECT * FROM task_recurrence ORDER BY series_id")).rows,
       }));
     const before = await foreignState();
-    const invalidations = await invalidationsDuring(run);
+    const invalidations = await invalidationsDuring(() => run());
     expect((await row(localItem)).properties.status).toBe("missed");
     expect(await foreignState()).toEqual(before);
     expect(invalidations.has(foreignItem)).toBe(false);
@@ -481,79 +534,29 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
 
   it("leaves a weekly occurrence open before its next day and catches up only to the latest weekly day", async () => {
     const notDue = await task({ date: day(-6) });
-    await inTenant(() =>
-      createTaskRecurrenceSetRouteHandler(pool)({
-        params: { id: notDue },
-        body: { preset: "weekly" },
-        identity: { user: { id: randomUUID() } },
-      }),
-    );
+    await setRecurrence(notDue, "weekly");
     const before = await row(notDue);
     const overdue = await task({ date: day(-8) });
-    const series = await inTenant(() =>
-      createTaskRecurrenceSetRouteHandler(pool)({
-        params: { id: overdue },
-        body: { preset: "weekly" },
-        identity: { user: { id: randomUUID() } },
-      }),
-    );
+    const seriesId = await setRecurrence(overdue, "weekly");
     await run();
     expect(await row(notDue)).toEqual(before);
     expect((await row(overdue)).properties).toMatchObject({ status: "missed", date: day(-8) });
-    const occurrences = await inTenant(() =>
-      pool.query<{ id: string; properties: Record<string, unknown>; updated_at: Date }>(
-        "SELECT id, properties, updated_at FROM items WHERE database_id = $1 AND properties->>'seriesId' = $2 AND deleted_at IS NULL ORDER BY id",
-        [tasksId, series.item.properties.seriesId],
-      ),
-    );
-    expect(occurrences.rows).toHaveLength(2);
-    expect(occurrences.rows.find((entry) => entry.id !== overdue)?.properties).toMatchObject({
+    expect(await nextOccurrence(seriesId, overdue)).toMatchObject({
       status: "notDone",
       date: day(-1),
       occurrenceDate: day(-1),
     });
-    const seriesBeforeRepeat = await inTenant(() =>
-      pool.query<{ item_id: string; rule: unknown; active: boolean }>(
-        "SELECT item_id, rule, active FROM task_recurrence WHERE series_id = $1",
-        [series.item.properties.seriesId],
-      ),
-    );
-    const jobsBeforeRepeat = await admin.query<{ id: string; key: string | null }>(
-      "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
-    );
-    const repeatEvents: InvalidationEvent[] = [];
-    setInvalidationHook((event) => repeatEvents.push(event));
-    try {
-      await run();
-    } finally {
-      setInvalidationHook(() => {});
-    }
-    expect(
-      (
-        await inTenant(() =>
-          pool.query<{ item_id: string; rule: unknown; active: boolean }>(
-            "SELECT item_id, rule, active FROM task_recurrence WHERE series_id = $1",
-            [series.item.properties.seriesId],
-          ),
-        )
-      ).rows,
-    ).toEqual(seriesBeforeRepeat.rows);
-    expect(
-      (await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
-        .rows,
-    ).toEqual(jobsBeforeRepeat.rows);
+    const occurrences = await seriesItems(seriesId);
+    const seriesBeforeRepeat = await seriesRow(seriesId);
+    const jobsBeforeRepeat = await queuedJobs();
+
+    const repeatEvents = await eventsDuring(() => run());
+
+    expect(await seriesRow(seriesId)).toEqual(seriesBeforeRepeat);
+    expect(await queuedJobs()).toEqual(jobsBeforeRepeat);
     // The repeat writes nothing, so only the run's day announcement is sent.
     expect(repeatEvents).toEqual([{ scope: "overview" }]);
-    expect(
-      (
-        await inTenant(() =>
-          pool.query<{ id: string; properties: Record<string, unknown>; updated_at: Date }>(
-            "SELECT id, properties, updated_at FROM items WHERE database_id = $1 AND properties->>'seriesId' = $2 AND deleted_at IS NULL ORDER BY id",
-            [tasksId, series.item.properties.seriesId],
-          ),
-        )
-      ).rows,
-    ).toEqual(occurrences.rows);
+    expect(await seriesItems(seriesId)).toEqual(occurrences);
   });
 
   it("processes a higher-id due series behind lower-id nondue series within the selection limit", async () => {
@@ -566,20 +569,9 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
       ])
     ).sort();
     const due = ids[3];
-    if (!due) throw new Error("Missing due task");
-    for (const id of ids)
-      await inTenant(() =>
-        createTaskRecurrenceSetRouteHandler(pool)({
-          params: { id },
-          body: { preset: id === due ? "daily" : "yearly" },
-          identity: { user: { id: randomUUID() } },
-        }),
-      );
+    for (const id of ids) await setRecurrence(id, id === due ? "daily" : "yearly");
     const before = await Promise.all(ids.slice(0, 3).map(row));
-    const action = createTasksDayRolloverAction(pool, { recurringLimit: 2 });
-    await inTenant(() =>
-      action(heartbeat.config, { heartbeatId: heartbeat.id, projectItemId: heartbeat.projectItemId }),
-    );
+    await run(pool, { recurringLimit: 2 });
     expect((await row(due)).properties.status).toBe("missed");
     expect(await Promise.all(ids.slice(0, 3).map(row))).toEqual(before);
   });
@@ -587,84 +579,16 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
   it("projects the locked current rule when an older reopened occurrence is processed first", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
-      vi.setSystemTime(new Date("2026-10-12T10:00:00Z"));
-      const old = await task({ date: "2026-10-12" });
-      const started = await inTenant(() =>
-        createTaskRecurrenceSetRouteHandler(pool)({
-          params: { id: old },
-          body: { preset: "weekly" },
-          identity: { user: { id: randomUUID() } },
-        }),
-      );
-      const seriesId = started.item.properties.seriesId;
-      if (typeof seriesId !== "string") throw new Error("Missing series");
-      vi.setSystemTime(new Date("2026-10-13T10:00:00Z"));
-      await inTenant(() => cp.updateItem({ databaseId: tasksId, itemId: old, propertiesPatch: { status: "done" } }));
-      const pointer = await inTenant(() =>
-        pool.query<{ item_id: string }>("SELECT item_id FROM task_recurrence WHERE series_id = $1", [seriesId]),
-      );
-      const current = pointer.rows[0]?.item_id;
-      if (!current || current === old) throw new Error("Missing next occurrence");
-      await inTenant(() => cp.updateItem({ databaseId: tasksId, itemId: old, propertiesPatch: { status: "notDone" } }));
-      await inTenant(() =>
-        createTaskRecurrenceSetRouteHandler(pool)({
-          params: { id: current },
-          body: { preset: "monthly" },
-          identity: { user: { id: randomUUID() } },
-        }),
-      );
+      const { old, next: current, seriesId } = await reopenedSeries("monthly");
       vi.setSystemTime(new Date("2026-11-20T10:00:00Z"));
       // Hold the current occurrence so the full action's SKIP LOCKED pass must process the older one first.
-      let release = () => {};
-      let signalReady: (value: { pid: number; started: string }) => void = () => {};
-      const gate = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      const ready = new Promise<{ pid: number; started: string }>((resolve) => {
-        signalReady = resolve;
-      });
-      const holder = trackRolloverActor(
-        inTenant(() =>
-          withTransaction(pool, async (client) => {
-            const identity = await client.query<{ pid: number; started: string }>(
-              "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
-            );
-            if (!identity.rows[0]) throw new Error("Missing current occurrence holder");
-            await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE", [
-              tasksId,
-              current,
-            ]);
-            signalReady(identity.rows[0]);
-            await gate;
-          }),
-        ).then(
-          () => ({ ok: true as const }),
-          (error: unknown) => ({ ok: false as const, error }),
-        ),
-      );
-      let action: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
-      let primary: { error: unknown } | undefined;
+      const held = holdTransaction((client) => lockRow(client, current));
+      let action: Promise<RolloverOutcome> | undefined;
+      let failure: { error: unknown } | undefined;
       try {
-        const held = await waitRolloverReady(ready, [holder], "Rollover actor did not settle");
-        expect(
-          (
-            await admin.query<{ present: boolean }>(
-              "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND backend_start = $2::timestamptz) AS present",
-              [held.pid, held.started],
-            )
-          ).rows,
-        ).toEqual([{ present: true }]);
-        action = trackRolloverActor(
-          inTenant(() =>
-            createTasksDayRolloverAction(pool)(heartbeat.config, {
-              heartbeatId: heartbeat.id,
-              projectItemId: heartbeat.projectItemId,
-            }),
-          ).then(
-            () => ({ ok: true as const }),
-            (error: unknown) => ({ ok: false as const, error }),
-          ),
-        );
+        const holder = await waitRolloverReady(held.ready, [held.actor], "Rollover actor did not settle");
+        await expectBackendLive(holder);
+        action = trackRolloverActor(outcomeOf(run()));
         await expect.poll(async () => (await row(old)).properties.status, { timeout: WAIT_MS }).toBe("missed");
         let blocked: Array<{ pid: number; started: string; blockers: number[] }> = [];
         await expect
@@ -673,57 +597,29 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
               blocked = (
                 await admin.query<{ pid: number; started: string; blockers: number[] }>(
                   "SELECT pid, backend_start::text AS started, pg_blocking_pids(pid) AS blockers FROM pg_stat_activity WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid)) AND query LIKE 'SELECT i.id FROM items i%'",
-                  [held.pid],
+                  [holder.pid],
                 )
               ).rows;
               return blocked.map((entry) => entry.blockers);
             },
             { timeout: WAIT_MS },
           )
-          .toEqual([[held.pid]]);
-        expect(blocked).toEqual([{ pid: expect.any(Number), started: expect.any(String), blockers: [held.pid] }]);
-        expect(blocked[0]?.pid).not.toBe(held.pid);
+          .toEqual([[holder.pid]]);
+        expect(blocked).toEqual([{ pid: expect.any(Number), started: expect.any(String), blockers: [holder.pid] }]);
+        expect(blocked[0]?.pid).not.toBe(holder.pid);
       } catch (error) {
-        primary = { error };
+        failure = { error };
       }
-      release();
-      const settled = await Promise.allSettled([
-        settleRolloverActor(holder, primary),
-        ...(action ? [settleRolloverActor(action, primary)] : []),
-      ]);
-      const errors: unknown[] = primary ? [primary.error] : [];
-      for (const [index, result] of settled.entries()) {
-        if (result.status === "rejected") errors.push(result.reason);
-        else if (!result.value.ok && !(index === 0 && rolloverActorRecords.get(holder)?.consumed))
-          errors.push(result.value.error);
-      }
-      if (errors.length)
-        throw new AggregateError(errors, "Older occurrence action failed", {
-          cause: primary ? primary.error : errors[0],
-        });
-      if (!action) throw new Error("Rollover action did not start");
-      const moved = await inTenant(() =>
-        pool.query<{ item_id: string }>("SELECT item_id FROM task_recurrence WHERE series_id = $1", [seriesId]),
-      );
-      const latest = moved.rows[0]?.item_id;
+      await settleActors(held.release, [held.actor, ...(action ? [action] : [])], failure);
+      const latest = (await seriesRow(seriesId))?.item_id;
       if (!latest || latest === old || latest === current) throw new Error("Missing new occurrence");
       const before = await row(latest);
       expect(before.properties).toMatchObject({
         occurrenceDate: "2026-11-19",
-        recurrence: {
-          preset: null,
-          mode: "fixed",
-          rule: { kind: "monthDates", dates: [19] },
-        },
+        recurrence: { preset: null, mode: "fixed", rule: { kind: "monthDates", dates: [19] } },
       });
-      await inTenant(() =>
-        createTasksDayRolloverAction(pool)(heartbeat.config, {
-          heartbeatId: heartbeat.id,
-          projectItemId: heartbeat.projectItemId,
-        }),
-      );
-      const after = await row(latest);
-      expect(after).toEqual(before);
+      await run();
+      expect(await row(latest)).toEqual(before);
       const noOp = await inTenant(() =>
         cp.updateItem({ databaseId: tasksId, itemId: latest, propertiesPatch: { recurrence: { preset: "monthly" } } }),
       );
@@ -736,248 +632,70 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
 
   it("reserves a future current occurrence without waiting and retains its pointer", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
-    let release = () => {};
-    let holder: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
-    let failure: { error: unknown } | undefined;
     try {
-      vi.setSystemTime(new Date("2026-10-12T10:00:00Z"));
-      const old = await task({ date: "2026-10-12" });
-      const started = await inTenant(() =>
-        createTaskRecurrenceSetRouteHandler(pool)({
-          params: { id: old },
-          body: { preset: "weekly" },
-          identity: { user: { id: randomUUID() } },
-        }),
-      );
-      const seriesId = started.item.properties.seriesId;
-      if (typeof seriesId !== "string") throw new Error("Missing series");
-      vi.setSystemTime(new Date("2026-10-13T10:00:00Z"));
-      await inTenant(() => cp.updateItem({ databaseId: tasksId, itemId: old, propertiesPatch: { status: "done" } }));
-      const pointer = await inTenant(() =>
-        pool.query<{ item_id: string }>("SELECT item_id FROM task_recurrence WHERE series_id = $1", [seriesId]),
-      );
-      const future = pointer.rows[0]?.item_id;
-      if (!future || future === old) throw new Error("Missing future occurrence");
-      await inTenant(() => cp.updateItem({ databaseId: tasksId, itemId: old, propertiesPatch: { status: "notDone" } }));
-      await inTenant(() =>
-        createTaskRecurrenceSetRouteHandler(pool)({
-          params: { id: future },
-          body: { preset: "daily" },
-          identity: { user: { id: randomUUID() } },
-        }),
-      );
+      const { old, next: future, seriesId } = await reopenedSeries("daily");
       vi.setSystemTime(new Date("2026-10-16T10:00:00Z"));
       const beforeOld = await row(old);
       const beforeFuture = await row(future);
-      const jobs = await admin.query<{ id: string; key: string | null }>(
-        "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
-      );
-      let signal: (value: { pid: number; started: string }) => void = () => {};
-      const ready = new Promise<{ pid: number; started: string }>((resolve) => {
-        signal = resolve;
-      });
-      const gate = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      holder = trackRolloverActor(
-        inTenant(() =>
-          withTransaction(pool, async (client) => {
-            const own = await client.query<{ pid: number; started: string }>(
-              "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
-            );
-            if (!own.rows[0]) throw new Error("Missing holder identity");
-            await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE", [tasksId, future]);
-            signal(own.rows[0]);
-            await gate;
-          }),
-        ).then(
-          () => ({ ok: true as const }),
-          (error: unknown) => ({ ok: false as const, error }),
-        ),
-      );
-      const identity = await waitRolloverReady(ready, [holder], "Rollover actor did not settle");
-      expect(
-        (
-          await admin.query<{ present: boolean }>(
-            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND backend_start = $2::timestamptz) AS present",
-            [identity.pid, identity.started],
-          )
-        ).rows,
-      ).toEqual([{ present: true }]);
-      await expect(
-        inTenant(() =>
-          createTasksDayRolloverAction(pool)(heartbeat.config, {
-            heartbeatId: heartbeat.id,
-            projectItemId: heartbeat.projectItemId,
-          }),
-        ),
-      ).rejects.toMatchObject({ code: "55P03" });
-      expect(await row(old)).toEqual(beforeOld);
-      expect(await row(future)).toEqual(beforeFuture);
-      expect(
-        (await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
-          .rows,
-      ).toEqual(jobs.rows);
-      release();
-      const outcome = await settleRolloverActor(holder, failure);
-      if (!outcome.ok) throw outcome.error;
-      holder = undefined;
-      await inTenant(() =>
-        createTasksDayRolloverAction(pool)(heartbeat.config, {
-          heartbeatId: heartbeat.id,
-          projectItemId: heartbeat.projectItemId,
-        }),
-      );
+      const jobs = await queuedJobs();
+      const held = holdTransaction((client) => lockRow(client, future));
+      let failure: { error: unknown } | undefined;
+      try {
+        await expectBackendLive(await waitRolloverReady(held.ready, [held.actor], "Rollover actor did not settle"));
+        await expect(run()).rejects.toMatchObject({ code: "55P03" });
+        expect(await row(old)).toEqual(beforeOld);
+        expect(await row(future)).toEqual(beforeFuture);
+        expect(await queuedJobs()).toEqual(jobs);
+      } catch (error) {
+        failure = { error };
+      }
+      await settleActors(held.release, [held.actor], failure);
+      await run();
       expect((await row(old)).properties.status).toBe("missed");
       expect(await row(future)).toEqual(beforeFuture);
-      expect(
-        (
-          await inTenant(() =>
-            pool.query<{ item_id: string }>("SELECT item_id FROM task_recurrence WHERE series_id = $1", [seriesId]),
-          )
-        ).rows,
-      ).toEqual([{ item_id: future }]);
-      const ensured = await inTenant(() =>
-        pool.query<{ properties: Record<string, unknown> }>(
-          "SELECT properties FROM items WHERE database_id = $1 AND deleted_at IS NULL AND properties->>'seriesId' = $2 AND properties->>'occurrenceDate' = $3",
-          [tasksId, seriesId, "2026-10-16"],
-        ),
-      );
-      expect(ensured.rows).toEqual([
-        { properties: expect.objectContaining({ status: "notDone", occurrenceDate: "2026-10-16" }) },
+      expect((await seriesRow(seriesId))?.item_id).toBe(future);
+      const ensured = (await seriesItems(seriesId)).filter((entry) => entry.properties.occurrenceDate === "2026-10-16");
+      expect(ensured.map((entry) => entry.properties)).toEqual([
+        expect.objectContaining({ status: "notDone", occurrenceDate: "2026-10-16" }),
       ]);
-    } catch (error) {
-      failure = { error };
+    } finally {
+      vi.useRealTimers();
     }
-    release();
-    if (holder) {
-      try {
-        const outcome = await settleRolloverActor(holder, failure);
-        if (!outcome.ok && !rolloverActorRecords.get(holder)?.consumed) throw outcome.error;
-      } catch (error) {
-        vi.useRealTimers();
-        if (failure) {
-          // The earlier test failure is primary; the caught actor failure remains in the aggregate.
-          // eslint-disable-next-line preserve-caught-error
-          throw new AggregateError([failure.error, error], "Future occurrence actor failed", { cause: failure.error });
-        }
-        throw error;
-      }
-    }
-    vi.useRealTimers();
-    if (failure) throw failure.error;
   });
 
   it("rolls back the current recurring batch when the existing latest occurrence is reserved", async () => {
     const old = await task({ date: day(-1) });
-    const series = await inTenant(() =>
-      createTaskRecurrenceSetRouteHandler(pool)({
-        params: { id: old },
-        body: { preset: "daily" },
-        identity: { user: { id: randomUUID() } },
-      }),
-    );
-    const seriesId = series.item.properties.seriesId;
-    if (typeof seriesId !== "string") throw new Error("Missing series id");
+    const seriesId = await setRecurrence(old, "daily");
     // A pre-materialized latest occurrence is a historical fixture; this path does not make it current.
     const latest = await inTenant(() =>
       createSeriesOccurrence(pool, { databaseId: tasksId, seriesId, occurrenceDate: day(0), status: "notDone" }),
     );
     const beforeOld = await row(old);
     const beforeLatest = await row(latest);
-    const beforeSeries = await inTenant(() =>
-      pool.query<{ item_id: string; active: boolean }>(
-        "SELECT item_id, active FROM task_recurrence WHERE series_id = $1",
-        [seriesId],
-      ),
-    );
-    const beforeJobs = await admin.query<{ id: string; key: string | null }>(
-      "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
-    );
-    const events: InvalidationEvent[] = [];
-    setInvalidationHook((event) => events.push(event));
-    let release = () => {};
-    let signalReady: (identity: { pid: number; started: string }) => void = () => {};
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
+    const beforeSeries = await seriesRow(seriesId);
+    const beforeJobs = await queuedJobs();
+    const held = holdTransaction(async (client) => {
+      await client.query("SET LOCAL lock_timeout = '5s'");
+      // Fixture SQL: the choke point trashes a whole series, so the latest occurrence is trashed on its own to hold its row lock.
+      const trashed = await client.query(
+        "UPDATE items SET deleted_at = now() WHERE database_id = $1 AND id = $2 AND deleted_at IS NULL",
+        [tasksId, latest],
+      );
+      if (trashed.rowCount !== 1) throw new Error("Latest occurrence was not trashed");
     });
-    const ready = new Promise<{ pid: number; started: string }>((resolve) => {
-      signalReady = resolve;
-    });
-    const holder = trackRolloverActor(
-      inTenant(() =>
-        withTransaction(pool, async (client) => {
-          await client.query("SET LOCAL lock_timeout = '5s'");
-          const identity = await client.query<{ pid: number; started: string }>(
-            "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
-          );
-          if (!identity.rows[0]) throw new Error("Missing holder identity");
-          // Fixture SQL: the choke point trashes a whole series, so the latest occurrence is trashed on its own to hold its row lock.
-          const trashed = await client.query(
-            "UPDATE items SET deleted_at = now() WHERE database_id = $1 AND id = $2 AND deleted_at IS NULL",
-            [tasksId, latest],
-          );
-          if (trashed.rowCount !== 1) throw new Error("Latest occurrence was not trashed");
-          signalReady(identity.rows[0]);
-          await gate;
-        }),
-      ).then(
-        () => ({ ok: true as const }),
-        (error: unknown) => ({ ok: false as const, error }),
-      ),
-    );
     let failure: { error: unknown } | undefined;
     try {
-      const identity = await waitRolloverReady(ready, [holder], "Latest reservation timed out");
-      expect(
-        (
-          await admin.query<{ present: boolean }>(
-            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND backend_start = $2::timestamptz) AS present",
-            [identity.pid, identity.started],
-          )
-        ).rows,
-      ).toEqual([{ present: true }]);
-      await expect(run()).rejects.toMatchObject({ code: "55P03" });
+      await expectBackendLive(await waitRolloverReady(held.ready, [held.actor], "Latest reservation timed out"));
+      const events = await eventsDuring(() => expect(run()).rejects.toMatchObject({ code: "55P03" }));
       expect(await row(old)).toEqual(beforeOld);
       expect(await row(latest)).toEqual(beforeLatest);
-      expect(
-        (
-          await inTenant(() =>
-            pool.query<{ item_id: string; active: boolean }>(
-              "SELECT item_id, active FROM task_recurrence WHERE series_id = $1",
-              [seriesId],
-            ),
-          )
-        ).rows,
-      ).toEqual(beforeSeries.rows);
-      expect(
-        (await admin.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
-          .rows,
-      ).toEqual(beforeJobs.rows);
+      expect(await seriesRow(seriesId)).toEqual(beforeSeries);
+      expect(await queuedJobs()).toEqual(beforeJobs);
       expect(events).toEqual([]);
     } catch (error) {
       failure = { error };
     }
-    release();
-    let outcome: Awaited<typeof holder> | undefined;
-    try {
-      outcome = await settleRolloverActor(holder, failure);
-    } catch (error) {
-      if (!pendingRolloverActors.size) setInvalidationHook(() => {});
-      if (failure) {
-        // The earlier test failure is primary; the caught actor failure remains in the aggregate.
-        // eslint-disable-next-line preserve-caught-error
-        throw new AggregateError([failure.error, error], "Rollover actor did not settle", { cause: failure.error });
-      }
-      throw error;
-    }
-    setInvalidationHook(() => {});
-    if (!outcome.ok && failure && !rolloverActorRecords.get(holder)?.consumed)
-      throw new AggregateError([failure.error, outcome.error], "Rollover test and holder failed", {
-        cause: failure.error,
-      });
-    if (!outcome.ok && !rolloverActorRecords.get(holder)?.consumed) throw outcome.error;
-    if (failure) throw failure.error;
+    await settleActors(held.release, [held.actor], failure);
     const trashed = await inTenant(() =>
       pool.query<{ deleted: boolean }>(
         "SELECT deleted_at IS NOT NULL AS deleted FROM items WHERE database_id = $1 AND id = $2",
@@ -992,15 +710,7 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     "preserves an already materialized latest %s occurrence",
     async (status) => {
       const old = await task({ date: day(-1) });
-      const series = await inTenant(() =>
-        createTaskRecurrenceSetRouteHandler(pool)({
-          params: { id: old },
-          body: { preset: "daily" },
-          identity: { user: { id: randomUUID() } },
-        }),
-      );
-      const seriesId = series.item.properties.seriesId;
-      if (typeof seriesId !== "string") throw new Error("Missing series id");
+      const seriesId = await setRecurrence(old, "daily");
       // Synthetic materialized terminal occurrence: normal completion owns the series advance.
       const latest = await inTenant(() =>
         createSeriesOccurrence(pool, { databaseId: tasksId, seriesId, occurrenceDate: day(0), status }),
@@ -1009,27 +719,13 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
       await run();
       expect((await row(old)).properties.status).toBe("missed");
       expect(await row(latest)).toEqual(beforeLatest);
-      const all = await inTenant(() =>
-        pool.query<{ id: string }>(
-          "SELECT id FROM items WHERE database_id = $1 AND properties->>'seriesId' = $2 AND deleted_at IS NULL ORDER BY id",
-          [tasksId, seriesId],
-        ),
-      );
-      expect(all.rows.map((entry) => entry.id).sort()).toEqual([old, latest].sort());
+      expect((await seriesItems(seriesId)).map((entry) => entry.id).sort()).toEqual([old, latest].sort());
     },
   );
 
   it("replaces a trashed latest occurrence without restoring or modifying its history", async () => {
     const old = await task({ date: day(-1) });
-    const series = await inTenant(() =>
-      createTaskRecurrenceSetRouteHandler(pool)({
-        params: { id: old },
-        body: { preset: "daily" },
-        identity: { user: { id: randomUUID() } },
-      }),
-    );
-    const seriesId = series.item.properties.seriesId;
-    if (typeof seriesId !== "string") throw new Error("Missing series id");
+    const seriesId = await setRecurrence(old, "daily");
     // A pre-materialized latest occurrence is a historical fixture; then trash it.
     const trashed = await inTenant(() =>
       createSeriesOccurrence(pool, { databaseId: tasksId, seriesId, occurrenceDate: day(0), status: "notDone" }),
@@ -1040,14 +736,7 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     await run();
     expect(await row(trashed)).toEqual(beforeTrashed);
     expect((await row(old)).properties.status).toBe("missed");
-    const live = await inTenant(() =>
-      pool.query<{ id: string; properties: Record<string, unknown> }>(
-        "SELECT id, properties FROM items WHERE database_id = $1 AND properties->>'seriesId' = $2 AND deleted_at IS NULL ORDER BY id",
-        [tasksId, seriesId],
-      ),
-    );
-    expect(live.rows).toHaveLength(2);
-    expect(live.rows.find((entry) => entry.id !== old)?.properties).toMatchObject({
+    expect(await nextOccurrence(seriesId, old)).toMatchObject({
       status: "notDone",
       date: day(0),
       occurrenceDate: day(0),
@@ -1056,103 +745,60 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
 
   it("observes a concurrent completion before attempting a missed transition", async () => {
     const old = await task({ date: day(-1) });
-    const series = await inTenant(() =>
-      createTaskRecurrenceSetRouteHandler(pool)({
-        params: { id: old },
-        body: { preset: "daily" },
-        identity: { user: { id: randomUUID() } },
-      }),
-    );
-    const seriesId = series.item.properties.seriesId;
-    if (typeof seriesId !== "string") throw new Error("Missing series id");
+    const seriesId = await setRecurrence(old, "daily");
     const actionPool = await createRuntimeRolePool(admin, "semprec_data");
-    type Identity = { pid: number; started: string };
-    let release = () => {};
-    let holderReady: (identity: Identity) => void = () => {};
-    let contenderReady: (identity: Identity) => void = () => {};
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const held = new Promise<Identity>((resolve) => {
-      holderReady = resolve;
-    });
-    const competing = new Promise<Identity>((resolve) => {
-      contenderReady = resolve;
-    });
-    const identity = async (client: PoolClient): Promise<Identity> => {
-      const result = await client.query<Identity>(
-        "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
-      );
-      if (!result.rows[0]) throw new Error("Missing actor identity");
-      return result.rows[0];
-    };
-    const holder = trackRolloverActor(
-      inTenant(() =>
-        withTransaction(pool, async (client) => {
-          const actor = await identity(client);
-          await updateItemWithClient(
-            client,
-            { databaseId: tasksId, itemId: old, propertiesPatch: { status: "done" } },
-            { writer: { writerKind: "user" } },
-          );
-          holderReady(actor);
-          await gate;
-        }),
-      ).then(
-        () => ({ ok: true as const }),
-        (error: unknown) => ({ ok: false as const, error }),
+    const held = holdTransaction((client) =>
+      updateItemWithClient(
+        client,
+        { databaseId: tasksId, itemId: old, propertiesPatch: { status: "done" } },
+        { writer: { writerKind: "user" } },
       ),
     );
-    let contender: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
+    const competing = deferred<Identity>();
+    let contender: Promise<RolloverOutcome> | undefined;
     let failure: { error: unknown } | undefined;
     try {
-      const bounded = (value: Promise<Identity>, actors: Array<Promise<RolloverOutcome>>) =>
-        waitRolloverReady(value, actors, "Actor readiness timed out");
-      const owner = await bounded(held, [holder]);
+      const owner = await waitRolloverReady(held.ready, [held.actor], "Actor readiness timed out");
       contender = trackRolloverActor(
-        inTenant(async () => {
-          const client = await actionPool.connect();
-          let own: Identity;
-          try {
-            own = await identity(client);
-          } catch (error) {
-            client.release(error instanceof Error ? error : new Error(String(error)));
-            throw error;
-          }
-          // Scoped checkout resets its GUC asynchronously; wait for this exact client to return to the pool.
-          await new Promise<void>((resolve, reject) => {
-            const timer = setTimeout(() => {
-              actionPool.off("release", onRelease);
-              reject(new Error("Action client did not return to its pool"));
-            }, WAIT_MS);
-            const onRelease = (error: Error | undefined, returned: PoolClient) => {
-              if (returned !== client) return;
-              clearTimeout(timer);
-              actionPool.off("release", onRelease);
-              if (error) reject(error);
-              else resolve();
-            };
-            actionPool.on("release", onRelease);
-            client.release();
-          });
-          contenderReady(own);
-          await createTasksDayRolloverAction(actionPool)(heartbeat.config, {
-            heartbeatId: heartbeat.id,
-            projectItemId: heartbeat.projectItemId,
-          });
-        }).then(
-          () => ({ ok: true as const }),
-          (error: unknown) => ({ ok: false as const, error }),
+        outcomeOf(
+          inTenant(async () => {
+            const client = await actionPool.connect();
+            let own: Identity;
+            try {
+              own = await identityOf(client);
+            } catch (error) {
+              client.release(error instanceof Error ? error : new Error(String(error)));
+              throw error;
+            }
+            // Scoped checkout resets its GUC asynchronously; wait for this exact client to return to the pool.
+            await new Promise<void>((resolve, reject) => {
+              const timer = setTimeout(() => {
+                actionPool.off("release", onRelease);
+                reject(new Error("Action client did not return to its pool"));
+              }, WAIT_MS);
+              const onRelease = (error: Error | undefined, returned: PoolClient) => {
+                if (returned !== client) return;
+                clearTimeout(timer);
+                actionPool.off("release", onRelease);
+                if (error) reject(error);
+                else resolve();
+              };
+              actionPool.on("release", onRelease);
+              client.release();
+            });
+            competing.resolve(own);
+            await run(actionPool);
+          }),
         ),
       );
-      const waiter = await bounded(competing, [holder, contender]);
+      const waiter = await waitRolloverReady(competing.promise, [held.actor, contender], "Actor readiness timed out");
       await expect
         .poll(
           async () => {
             const result = await admin.query<{ blocked: boolean }>(
               `SELECT EXISTS (SELECT 1 FROM pg_stat_activity h JOIN pg_stat_activity w ON w.pid = $3
-           WHERE h.pid = $1 AND h.backend_start = $2::timestamptz AND w.backend_start = $4::timestamptz
-             AND $1::int = ANY(pg_blocking_pids(w.pid))) AS blocked`,
+               WHERE h.pid = $1 AND h.backend_start = $2::timestamptz AND w.backend_start = $4::timestamptz
+                 AND $1::int = ANY(pg_blocking_pids(w.pid))) AS blocked`,
               [owner.pid, owner.started, waiter.pid, waiter.started],
             );
             return result.rows[0]?.blocked;
@@ -1163,41 +809,14 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     } catch (error) {
       failure = { error };
     }
-    release();
-    const settled = await Promise.allSettled([
-      settleRolloverActor(holder, failure),
-      ...(contender ? [settleRolloverActor(contender, failure)] : []),
-    ]);
-    const actors = [holder, ...(contender ? [contender] : [])];
-    const failures = settled.flatMap((result, index) =>
-      result.status === "rejected"
-        ? [result.reason]
-        : result.value.ok || rolloverActorRecords.get(actors[index]!)?.consumed
-          ? []
-          : [result.value.error],
-    );
-    if (pendingRolloverActors.size)
-      failures.push(new Error("Completion actor remains unsettled; action pool remains open"));
-    else {
-      try {
-        await actionPool.end();
-      } catch (error) {
-        failures.push(error);
-      }
+    try {
+      await settleActors(held.release, [held.actor, ...(contender ? [contender] : [])], failure);
+    } finally {
+      // An actor that stays pending still uses the action pool, so the pool stays open for the diagnostic.
+      if (!pendingRolloverActors.size) await actionPool.end();
     }
-    if (failure && failures.length)
-      throw new AggregateError([failure.error, ...failures], "Completion overlap failed", { cause: failure.error });
-    if (failure) throw failure.error;
-    if (failures.length) throw new AggregateError(failures, "Completion overlap actors failed");
     expect((await row(old)).properties.status).toBe("done");
-    const occurrences = await inTenant(() =>
-      pool.query<{ id: string; properties: Record<string, unknown> }>(
-        "SELECT id, properties FROM items WHERE database_id = $1 AND properties->>'seriesId' = $2 AND deleted_at IS NULL",
-        [tasksId, seriesId],
-      ),
-    );
-    expect(occurrences.rows).toHaveLength(2);
-    expect(occurrences.rows.find((entry) => entry.id !== old)?.properties).toMatchObject({
+    expect(await nextOccurrence(seriesId, old)).toMatchObject({
       status: "notDone",
       date: day(0),
       occurrenceDate: day(0),
@@ -1207,10 +826,7 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
   it("moves a task whose event ended yesterday, with since yesterday", async () => {
     const id = await task({ date: day(-3) });
     // Synthetic Tasks values: no writer sets the event-derived day and event end yet.
-    await setSystemProperties(id, {
-      effectiveDate: day(-1),
-      hiddenUntil: today.minus({ hours: 1 }).toISO(),
-    });
+    await setSystemProperties([id], { effectiveDate: day(-1), hiddenUntil: today.minus({ hours: 1 }).toISO() });
     await run();
     expect((await row(id)).properties).toMatchObject({ date: day(0), since: day(-1) });
   });
@@ -1218,14 +834,7 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
   it("sends one invalidation without an acting user for every moved task and none for an unmoved one", async () => {
     const moved = [await task({ date: day(-1) }), await task({ date: day(-2) })];
     const kept = await task({ date: day(0) });
-    const events: InvalidationEvent[] = [];
-    setInvalidationHook((event) => events.push(event));
-    try {
-      await run();
-    } finally {
-      setInvalidationHook(() => {});
-    }
-    const items = events.filter((event) => event.scope === "item");
+    const items = (await eventsDuring(() => run())).filter((event) => event.scope === "item");
     for (const id of moved) {
       expect(items.filter((event) => event.itemId === id)).toEqual([
         expect.objectContaining({ scope: "item", op: "update", databaseId: tasksId, itemId: id, userId: undefined }),
@@ -1234,93 +843,66 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     expect(items.filter((event) => event.itemId === kept)).toEqual([]);
   });
 
+  /**
+   * Starts the run while another transaction holds `locked`, waits until the run's second pass waits for that row,
+   * runs `whileBlocked`, then releases the row; answers the item invalidation counts of the whole run.
+   */
+  async function runWhileRowHeld(locked: string, whileBlocked: () => Promise<void>): Promise<Map<string, number>> {
+    const held = holdTransaction((client) => lockRow(client, locked));
+    let counts = new Map<string, number>();
+    let rollover: Promise<RolloverOutcome> | undefined;
+    let failure: { error: unknown } | undefined;
+    try {
+      const holder = await waitRolloverReady(held.ready, [held.actor], "The holder did not lock the row");
+      rollover = trackRolloverActor(
+        outcomeOf(
+          invalidationsDuring(() => run()).then((result) => {
+            counts = result;
+          }),
+        ),
+      );
+      await expect.poll(() => isBlocking(holder.pid), { timeout: WAIT_MS }).toBe(true);
+      await whileBlocked();
+    } catch (error) {
+      failure = { error };
+    }
+    await settleActors(held.release, [held.actor, ...(rollover ? [rollover] : [])], failure);
+    return counts;
+  }
+
   it("moves a row another transaction holds during the first pass by the end of the same run", async () => {
     const locked = await task({ date: day(-1) });
     const free = await task({ date: day(-1) });
-    let release: () => void = () => undefined;
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    let holderPid: (pid: number) => void = () => undefined;
-    const holding = new Promise<number>((resolve) => {
-      holderPid = resolve;
-    });
-    const asError = (error: unknown): Error =>
-      error instanceof Error ? error : new Error("A transaction failed with a non-Error value", { cause: error });
-    const holder: Promise<Error | null> = inTenant(() =>
-      withTransaction(pool, async (client) => {
-        await client.query("SELECT id FROM items WHERE id = $1 FOR UPDATE", [locked]);
-        holderPid((await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid);
-        await held;
-      }),
-    ).then(
-      () => null,
-      (error: unknown) => asError(error),
-    );
-    let rollover: Promise<Error | null> | undefined;
-    let waitFailure: Error | null = null;
-    let timer: NodeJS.Timeout | undefined;
-    try {
-      const pid = await Promise.race([
-        holding,
-        holder.then((error) => Promise.reject(error ?? new Error("The holder ended before locking"))),
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error("The holder did not lock the row")), WAIT_MS);
-        }),
-      ]);
-      rollover = run().then(
-        () => null,
-        (error: unknown) => asError(error),
-      );
-      const deadline = Date.now() + WAIT_MS;
-      for (;;) {
-        const { rows } = await admin.query<{ waiting: boolean }>(
-          "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))) AS waiting",
-          [pid],
-        );
-        if (rows[0]?.waiting === true) break;
-        if (Date.now() > deadline) throw new Error("The rollover never waited for the held row");
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
+    await runWhileRowHeld(locked, async () => {
       // The first pass skipped the held row and committed the free one before the second pass started waiting.
       expect((await row(free)).properties.date).toBe(day(0));
       expect((await row(locked)).properties.date).toBe(day(-1));
-    } catch (error) {
-      waitFailure = asError(error);
-    } finally {
-      clearTimeout(timer);
-      release();
-    }
-    const holderError = await holder;
-    const rolloverError = rollover === undefined ? null : await rollover;
-    if (holderError !== null) throw holderError;
-    if (waitFailure !== null) throw waitFailure;
-    if (rolloverError !== null) throw rolloverError;
+    });
     expect((await row(locked)).properties).toMatchObject({ date: day(0), since: day(-1) });
   });
 
   describe("a task with a stale effectiveDate (synthetic: the stale value is written directly)", () => {
     it("moves it once: one invalidation, and a second run the same day writes nothing", async () => {
       const id = await task({ date: day(-3) });
-      await setSystemProperties(id, { effectiveDate: day(-2), hiddenUntil: today.minus({ hours: 1 }).toISO() });
-      const first = await invalidationsDuring(run);
+      await setSystemProperties([id], { effectiveDate: day(-2), hiddenUntil: today.minus({ hours: 1 }).toISO() });
+      const first = await invalidationsDuring(() => run());
       const moved = await row(id);
       // The Tasks transform stores the effective day with the new date, so the task is not selected again.
       expect(moved.properties).toMatchObject({ date: day(0), timeFrom: null, timeTo: null, effectiveDate: day(0) });
       expect(first.get(id)).toBe(1);
-      const second = await invalidationsDuring(run);
+      const second = await invalidationsDuring(() => run());
       expect(second.get(id)).toBeUndefined();
       expect(await row(id)).toEqual(moved);
     });
 
     it("clears the times of a task dated today once, then leaves it alone", async () => {
       const id = await task({ date: day(0), timeFrom: "10:00", timeTo: "11:00" });
-      await setSystemProperties(id, { effectiveDate: day(-1) });
-      const first = await invalidationsDuring(run);
+      await setSystemProperties([id], { effectiveDate: day(-1) });
+      const first = await invalidationsDuring(() => run());
       const moved = await row(id);
       expect(moved.properties).toMatchObject({ date: day(0), timeFrom: null, timeTo: null, time: null });
       expect(first.get(id)).toBe(1);
-      const second = await invalidationsDuring(run);
+      const second = await invalidationsDuring(() => run());
       expect(second.size).toBe(0);
       expect(await row(id)).toEqual(moved);
     });
@@ -1328,76 +910,22 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     it("moves 101 of them and a row held during the first pass, each exactly once, in one run", async () => {
       const stale: string[] = [];
       for (let index = 0; index < 101; index++) stale.push(await task({ date: day(-2) }));
-      await setSystemPropertiesMany(stale, { effectiveDate: day(-1) });
+      await setSystemProperties(stale, { effectiveDate: day(-1) });
       const locked = await task({ date: day(-1) });
-      let release: () => void = () => undefined;
-      const held = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      let holderPid: (pid: number) => void = () => undefined;
-      const holding = new Promise<number>((resolve) => {
-        holderPid = resolve;
-      });
-      const asError = (error: unknown): Error =>
-        error instanceof Error ? error : new Error("A transaction failed with a non-Error value", { cause: error });
-      const holder: Promise<Error | null> = inTenant(() =>
-        withTransaction(pool, async (client) => {
-          await client.query("SELECT id FROM items WHERE id = $1 FOR UPDATE", [locked]);
-          holderPid((await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid);
-          await held;
-        }),
-      ).then(
-        () => null,
-        (error: unknown) => asError(error),
-      );
-      let rollover: Promise<Map<string, number> | Error> | undefined;
-      let waitFailure: Error | null = null;
-      let timer: NodeJS.Timeout | undefined;
-      try {
-        const pid = await Promise.race([
-          holding,
-          holder.then((error) => Promise.reject(error ?? new Error("The holder ended before locking"))),
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(() => reject(new Error("The holder did not lock the row")), WAIT_MS);
-          }),
-        ]);
-        rollover = invalidationsDuring(run).then(
-          (counts) => counts,
-          (error: unknown) => asError(error),
-        );
-        const deadline = Date.now() + WAIT_MS;
-        for (;;) {
-          const { rows } = await admin.query<{ waiting: boolean }>(
-            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))) AS waiting",
-            [pid],
-          );
-          if (rows[0]?.waiting === true) break;
-          if (Date.now() > deadline) throw new Error("The rollover never waited for the held row");
-          await new Promise((resolve) => setTimeout(resolve, 20));
-        }
+      const counts = await runWhileRowHeld(locked, async () => {
         // The second pass waits for the held row only: every stale task already moved and stopped qualifying.
         expect((await Promise.all(stale.map(row))).every((moved) => moved.properties.date === day(0))).toBe(true);
         expect((await row(locked)).properties.date).toBe(day(-1));
-      } catch (error) {
-        waitFailure = asError(error);
-      } finally {
-        clearTimeout(timer);
-        release();
-      }
-      const holderError = await holder;
-      const counts = rollover === undefined ? null : await rollover;
-      if (holderError !== null) throw holderError;
-      if (waitFailure !== null) throw waitFailure;
-      if (counts instanceof Error) throw counts;
+      });
       expect((await row(locked)).properties).toMatchObject({ date: day(0), since: day(-1) });
-      expect(counts?.size).toBe(102);
-      expect([...(counts?.values() ?? [])].every((count) => count === 1)).toBe(true);
-      expect(counts?.get(locked)).toBe(1);
-      const rerun = await invalidationsDuring(run);
-      expect(rerun.size).toBe(0);
+      expect(counts.size).toBe(102);
+      expect([...counts.values()].every((count) => count === 1)).toBe(true);
+      expect(counts.get(locked)).toBe(1);
+      expect((await invalidationsDuring(() => run())).size).toBe(0);
     });
   });
-  describe("the overview invalidation (issue #1951)", () => {
+
+  describe("the overview invalidation", () => {
     async function overviewEventsDuring(work: () => Promise<void>, watched?: string) {
       const overview: Array<{ event: InvalidationEvent; watchedDate: Promise<unknown> | null }> = [];
       const all: InvalidationEvent[] = [];
@@ -1427,7 +955,7 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
 
     it("announces once, with no field but the scope and no acting user, after the tasks it moved have committed", async () => {
       const moved = await task({ date: day(-2) });
-      const { overview, all } = await overviewEventsDuring(run, moved);
+      const { overview, all } = await overviewEventsDuring(() => run(), moved);
 
       expect(overview.map((entry) => entry.event)).toEqual([{ scope: "overview" }]);
       expect(await overview[0]?.watchedDate).toBe(day(0));
@@ -1438,7 +966,7 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
 
     it("announces once when no task moved", async () => {
       const kept = await task({ date: day(0) });
-      const { overview, all } = await overviewEventsDuring(run);
+      const { overview, all } = await overviewEventsDuring(() => run());
 
       expect(overview.map((entry) => entry.event)).toEqual([{ scope: "overview" }]);
       expect(all.filter((event) => event.scope === "item" && event.itemId === kept)).toEqual([]);
@@ -1446,14 +974,8 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
 
     it("announces once when the run only closed a missed occurrence of a recurring task", async () => {
       const first = await task({ date: day(-8) });
-      await inTenant(() =>
-        createTaskRecurrenceSetRouteHandler(pool)({
-          params: { id: first },
-          body: { preset: "daily" },
-          identity: { user: { id: randomUUID() } },
-        }),
-      );
-      const { overview } = await overviewEventsDuring(run);
+      await setRecurrence(first, "daily");
+      const { overview } = await overviewEventsDuring(() => run());
 
       expect((await row(first)).properties.status).toBe("missed");
       expect(overview.map((entry) => entry.event)).toEqual([{ scope: "overview" }]);
@@ -1492,8 +1014,3 @@ describe("the midnight Tasks rollover (issue #1674)", () => {
     });
   });
 });
-
-async function createRelationTarget(client: PoolClient): Promise<string> {
-  return (await createItemWithClient(client, { databaseId: eventsId, properties: { name: "Workshop", date: day(-2) } }))
-    .id;
-}

@@ -183,6 +183,44 @@ function stateOf(authorizeUrl: URL): string {
   return state;
 }
 
+const AUTHORIZE = {
+  gmail: {
+    endpoint: "https://accounts.google.com/o/oauth2/v2/auth",
+    clientSecret: SECRETS.gmailClientSecret,
+    params: {
+      client_id: "gmail-client-id",
+      scope: "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.send",
+      access_type: "offline",
+      prompt: "consent",
+    },
+  },
+  outlook: {
+    endpoint: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+    clientSecret: SECRETS.graphClientSecret,
+    params: { client_id: "graph-client-id", scope: "Mail.ReadWrite Mail.Send offline_access User.Read" },
+  },
+} as const;
+
+/** Asserts the provider's authorization URL with its exact parameters, and answers its state. */
+function expectAuthorizeUrl(url: URL, provider: keyof typeof AUTHORIZE): string {
+  expect(`${url.origin}${url.pathname}`).toBe(AUTHORIZE[provider].endpoint);
+  const state = stateOf(url);
+  expect(Object.fromEntries(url.searchParams)).toEqual({
+    response_type: "code",
+    redirect_uri: REDIRECT_URI,
+    state,
+    code_challenge: url.searchParams.get("code_challenge"),
+    code_challenge_method: "S256",
+    ...AUTHORIZE[provider].params,
+  });
+  expect(url.toString()).not.toContain(AUTHORIZE[provider].clientSecret);
+  return state;
+}
+
+function s256(verifier: string): string {
+  return createHash("sha256").update(verifier, "utf8").digest("base64url");
+}
+
 function complete(
   body: unknown,
   provider: { fetchImpl: typeof fetch },
@@ -290,6 +328,22 @@ function expectNoSecret(text: string, secrets: readonly string[]): void {
   expect(secrets.filter((secret) => text.includes(secret))).toEqual([]);
 }
 
+/** The tenant export holds the mailbox and its sync state, but no credential, no state row and no secret. */
+async function expectExportWithoutSecrets(mailboxId: string, secrets: readonly string[]): Promise<void> {
+  const entries = await exportEntries(caller);
+  const names = entries.map((entry) => entry.name);
+  expect(names).toContain("tables/mail_account_sync_state.jsonl");
+  expect(names).not.toContain("tables/external_credentials.jsonl");
+  expect(names).not.toContain("tables/mail_oauth_states.jsonl");
+  expect(entries.some((entry) => entry.content.includes(Buffer.from(mailboxId)))).toBe(true);
+  for (const entry of entries) {
+    expect(
+      secrets.filter((secret) => entry.content.includes(Buffer.from(secret))),
+      `export entry ${entry.name}`,
+    ).toEqual([]);
+  }
+}
+
 async function exportEntries(who: Caller): Promise<Array<{ name: string; content: Buffer }>> {
   const root = await mkdtemp(join(tmpdir(), "semprec-mail-oauth-export-"));
   try {
@@ -349,57 +403,23 @@ afterAll(async () => {
   await admin?.end();
 });
 
-describe("POST /api/mail/mailboxes/oauth/start (issue gh-1686)", () => {
-  it("answers Google's authorization URL for a new-account state of the caller", async () => {
-    const url = await start("gmail");
+describe("POST /api/mail/mailboxes/oauth/start", () => {
+  it.each(["gmail", "outlook"] as const)(
+    "answers the %s authorization URL for a new-account state of the caller",
+    async (provider) => {
+      const url = await start(provider);
 
-    expect(`${url.origin}${url.pathname}`).toBe("https://accounts.google.com/o/oauth2/v2/auth");
-    const state = stateOf(url);
-    const challenge = url.searchParams.get("code_challenge");
-    expect(Object.fromEntries(url.searchParams)).toEqual({
-      response_type: "code",
-      client_id: "gmail-client-id",
-      redirect_uri: REDIRECT_URI,
-      scope: "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.send",
-      state,
-      code_challenge: challenge,
-      code_challenge_method: "S256",
-      access_type: "offline",
-      prompt: "consent",
-    });
-    expect(await stateRow(state)).toEqual({
-      user_id: caller.userId,
-      provider: "gmail",
-      mailbox_item_id: null,
-      used_at: null,
-    });
-    // The challenge in the URL is the S256 of the verifier sealed in that state's row.
-    const consumed = await inTenant(caller.tenantId, (client) =>
-      consumeMailOauthState(client, { state, userId: caller.userId }),
-    );
-    if (consumed === null) throw new Error("the started state could not be consumed");
-    expect(createHash("sha256").update(consumed.codeVerifier, "utf8").digest("base64url")).toBe(challenge);
-    expect(url.toString()).not.toContain(consumed.codeVerifier);
-    expect(url.toString()).not.toContain(SECRETS.gmailClientSecret);
-  });
-
-  it("answers Microsoft's /common authorization URL with the Graph client and scopes", async () => {
-    const url = await start("outlook");
-
-    expect(`${url.origin}${url.pathname}`).toBe("https://login.microsoftonline.com/common/oauth2/v2.0/authorize");
-    const state = stateOf(url);
-    expect(Object.fromEntries(url.searchParams)).toEqual({
-      response_type: "code",
-      client_id: "graph-client-id",
-      redirect_uri: REDIRECT_URI,
-      scope: "Mail.ReadWrite Mail.Send offline_access User.Read",
-      state,
-      code_challenge: url.searchParams.get("code_challenge"),
-      code_challenge_method: "S256",
-    });
-    expect(await stateRow(state)).toMatchObject({ provider: "outlook", mailbox_item_id: null, used_at: null });
-    expect(url.toString()).not.toContain(SECRETS.graphClientSecret);
-  });
+      const state = expectAuthorizeUrl(url, provider);
+      expect(await stateRow(state)).toEqual({ user_id: caller.userId, provider, mailbox_item_id: null, used_at: null });
+      // The challenge in the URL is the S256 of the verifier sealed in that state's row.
+      const consumed = await inTenant(caller.tenantId, (client) =>
+        consumeMailOauthState(client, { state, userId: caller.userId }),
+      );
+      if (consumed === null) throw new Error("the started state could not be consumed");
+      expect(s256(consumed.codeVerifier)).toBe(url.searchParams.get("code_challenge"));
+      expect(url.toString()).not.toContain(consumed.codeVerifier);
+    },
+  );
 
   it.each([
     ["no provider", {}],
@@ -431,7 +451,7 @@ describe("POST /api/mail/mailboxes/oauth/start (issue gh-1686)", () => {
   });
 });
 
-describe("POST /api/mail/mailboxes/oauth/complete (issue gh-1686)", () => {
+describe("POST /api/mail/mailboxes/oauth/complete", () => {
   it("connects a Google account as one gmail_api mailbox, and answers 409 naming it when the address signs in again", async () => {
     const url = await start("gmail");
     const provider = fakeProvider(googleRoutes());
@@ -475,9 +495,7 @@ describe("POST /api/mail/mailboxes/oauth/complete (issue gh-1686)", () => {
       client_secret: SECRETS.gmailClientSecret,
       code_verifier: verifier,
     });
-    expect(createHash("sha256").update(verifier, "utf8").digest("base64url")).toBe(
-      url.searchParams.get("code_challenge"),
-    );
+    expect(s256(verifier)).toBe(url.searchParams.get("code_challenge"));
     expect(provider.calls.slice(1).map((call) => call.authorization)).toEqual([
       `Bearer ${SECRETS.accessToken}`,
       `Bearer ${SECRETS.accessToken}`,
@@ -507,19 +525,34 @@ describe("POST /api/mail/mailboxes/oauth/complete (issue gh-1686)", () => {
     expect((await connected()).mailboxes.map((mailbox) => mailbox.addresses)).toEqual(["connect.user@gmail.com"]);
   });
 
-  it("keeps at most 100 aliases of one Gmail account", async () => {
-    const sendAs = Array.from({ length: 150 }, (_, index) => ({
-      sendAsEmail: `alias-${index}@example.com`,
-      verificationStatus: "accepted",
-    }));
-    const provider = fakeProvider(googleRoutes({ [GMAIL_SEND_AS_URL]: () => json({ sendAs }) }));
+  it.each([
+    [
+      "Gmail",
+      "gmail",
+      (aliases: string[]) =>
+        googleRoutes({
+          [GMAIL_SEND_AS_URL]: () =>
+            json({ sendAs: aliases.map((sendAsEmail) => ({ sendAsEmail, verificationStatus: "accepted" })) }),
+        }),
+      "connect.user@gmail.com",
+    ],
+    [
+      "Outlook",
+      "outlook",
+      (aliases: string[]) =>
+        microsoftRoutes({
+          mail: "work.user@contoso.com",
+          proxyAddresses: aliases.map((alias) => `smtp:${alias}`),
+        }),
+      "work.user@contoso.com",
+    ],
+  ] as const)("keeps at most 100 aliases of one %s account", async (_name, kind, routes, primary) => {
+    const aliases = Array.from({ length: 150 }, (_, index) => `alias-${index}@example.com`);
 
-    await complete({ state: stateOf(await start("gmail")), code: SECRETS.code }, provider);
+    await complete({ state: stateOf(await start(kind)), code: SECRETS.code }, fakeProvider(routes(aliases)));
 
     const addresses = (await connected()).mailboxes.map((mailbox) => mailbox.addresses);
-    expect(addresses).toEqual([
-      ["connect.user@gmail.com", ...sendAs.slice(0, 100).map((entry) => entry.sendAsEmail)].join("\n"),
-    ]);
+    expect(addresses).toEqual([[primary, ...aliases.slice(0, 100)].join("\n")]);
   });
 
   it("connects a Microsoft 365 work account as a graph_api mailbox under its mail address, with its secondary SMTP addresses as aliases", async () => {
@@ -599,18 +632,6 @@ describe("POST /api/mail/mailboxes/oauth/complete (issue gh-1686)", () => {
       expect(after.jobs).toEqual([`mail-account-sync:${mailboxId}`]);
     },
   );
-
-  it("keeps at most 100 aliases of one Outlook account", async () => {
-    const proxyAddresses = Array.from({ length: 150 }, (_, index) => `smtp:alias-${index}@contoso.com`);
-    const provider = fakeProvider(microsoftRoutes({ mail: "work.user@contoso.com", proxyAddresses }));
-
-    await complete({ state: stateOf(await start("outlook")), code: SECRETS.code }, provider);
-
-    const addresses = (await connected()).mailboxes.map((mailbox) => mailbox.addresses);
-    expect(addresses).toEqual([
-      ["work.user@contoso.com", ...proxyAddresses.slice(0, 100).map((entry) => entry.slice("smtp:".length))].join("\n"),
-    ]);
-  });
 
   it("lets two tenants connect the same address, each as its own mailbox", async () => {
     const other = await otherTenantCaller();
@@ -791,21 +812,9 @@ describe("POST /api/mail/mailboxes/oauth/complete (issue gh-1686)", () => {
     expect(await connected()).toEqual(NOTHING);
   });
 
-  it("answers 400 validation_failed for a code the provider refuses as invalid_grant, and the state cannot be presented again", async () => {
-    const state = stateOf(await start("gmail"));
-    const provider = fakeProvider({ [GOOGLE_TOKEN_URL]: () => json({ error: "invalid_grant" }, 400) });
-
-    const error = await caught(complete({ state, code: SECRETS.code }, provider));
-
-    expect(error).toBeInstanceOf(ValidationError);
-    expect(error).toMatchObject({ status: 400, code: "validation_failed", details: { field: "code" } });
-    expect(provider.calls).toHaveLength(1);
-    expect(await connected()).toEqual(NOTHING);
-    expect((await stateRow(state))?.used_at).not.toBeNull();
-  });
-
-  it.each(["a", "grant", "invalid_grant"])(
-    "answers 400 validation_failed for the code %j that the provider refuses as invalid_grant, although the code is part of the provider's error token",
+  // Codes that are part of the provider's error token must not hide the refused grant.
+  it.each([SECRETS.code, "a", "grant", "invalid_grant"])(
+    "answers 400 validation_failed for the code %j that the provider refuses as invalid_grant, and the state cannot be presented again",
     async (code) => {
       const state = stateOf(await start("gmail"));
       const provider = fakeProvider({ [GOOGLE_TOKEN_URL]: () => json({ error: "invalid_grant" }, 400) });
@@ -821,48 +830,48 @@ describe("POST /api/mail/mailboxes/oauth/complete (issue gh-1686)", () => {
     },
   );
 
-  it.each(["a", "invalid_client"])(
-    "still propagates a token endpoint that refuses the OAuth client as an unexpected error for the code %j, and creates nothing",
-    async (code) => {
-      const state = stateOf(await start("gmail"));
-      const provider = fakeProvider({ [GOOGLE_TOKEN_URL]: () => json({ error: "invalid_client" }, 401) });
-
-      const error = await caught(complete({ state, code }, provider));
-
-      expect(error).not.toBeInstanceOf(ChokePointError);
-      expect(error).toBeInstanceOf(MailAuthorizationCodeRejectedError);
-      // The submitted code is part of the error token, so the redaction blanks it, and the answer is not a refused grant.
-      expect(error).toMatchObject({ providerError: null, grantRefused: false });
-      expect(error.message).toBe("OAuth code exchange rejected the authorization code (status 401)");
-      expect(provider.calls).toHaveLength(1);
-      expect(await connected()).toEqual(NOTHING);
-      expect((await stateRow(state))?.used_at).not.toBeNull();
-    },
-  );
-
-  it.each<[string, number, unknown, string | null, string]>([
+  it.each<[string, string, number, unknown, string | null, string]>([
     [
       "refuses the OAuth client (a wrong or expired client secret)",
+      SECRETS.code,
       401,
       { error: "invalid_client" },
       "invalid_client",
       "status 401, error invalid_client",
     ],
+    // The submitted code is part of the error token, so the redaction blanks it, and the answer is not a refused grant.
+    ["refuses the OAuth client, for the code a", "a", 401, { error: "invalid_client" }, null, "status 401"],
+    [
+      "refuses the OAuth client, for the code invalid_client",
+      "invalid_client",
+      401,
+      { error: "invalid_client" },
+      null,
+      "status 401",
+    ],
     [
       "calls the request malformed",
+      SECRETS.code,
       400,
       { error: "invalid_request" },
       "invalid_request",
       "status 400, error invalid_request",
     ],
-    ["names no error code this server knows", 400, { error: "redirect_uri_mismatch" }, null, "status 400"],
+    [
+      "names no error code this server knows",
+      SECRETS.code,
+      400,
+      { error: "redirect_uri_mismatch" },
+      null,
+      "status 400",
+    ],
   ])(
     "propagates a token endpoint that %s as an unexpected error, not as the caller's rejected code, and creates nothing",
-    async (_name, status, providerBody, providerError, detail) => {
+    async (_name, code, status, providerBody, providerError, detail) => {
       const state = stateOf(await start("gmail"));
       const provider = fakeProvider({ [GOOGLE_TOKEN_URL]: () => json(providerBody, status) });
 
-      const error = await caught(complete({ state, code: SECRETS.code }, provider));
+      const error = await caught(complete({ state, code }, provider));
 
       // No `ChokePointError`: the adapter logs the failure and answers a generic 500.
       expect(error).not.toBeInstanceOf(ChokePointError);
@@ -966,34 +975,32 @@ describe("POST /api/mail/mailboxes/oauth/complete (issue gh-1686)", () => {
     expect(await connected()).toEqual(NOTHING);
   });
 
-  it("creates nothing when Gmail's send-as answer holds no list", async () => {
-    const provider = fakeProvider(googleRoutes({ [GMAIL_SEND_AS_URL]: () => json({ sendAs: "none" }) }));
-
-    const error = await caught(complete({ state: stateOf(await start("gmail")), code: SECRETS.code }, provider));
-
-    expect(error.message).toBe("Gmail send-as list response holds no list");
-    expect(await connected()).toEqual(NOTHING);
-  });
-
-  it("creates nothing when Microsoft Graph's proxy addresses are no list", async () => {
-    const provider = fakeProvider(
+  it.each<[string, "gmail" | "outlook", Record<string, ProviderRoute>, string]>([
+    [
+      "Gmail's send-as answer holds no list",
+      "gmail",
+      googleRoutes({ [GMAIL_SEND_AS_URL]: () => json({ sendAs: "none" }) }),
+      "Gmail send-as list response holds no list",
+    ],
+    [
+      "Microsoft Graph's proxy addresses are no list",
+      "outlook",
       microsoftRoutes({ mail: "work.user@contoso.com", proxyAddresses: "smtp:sales@contoso.com" }),
+      "Microsoft Graph profile response holds no proxy address list",
+    ],
+    [
+      "Microsoft Graph reports neither a mail address nor a user principal name",
+      "outlook",
+      microsoftRoutes({ displayName: "Nobody", mail: null }),
+      "Microsoft Graph profile response holds no account address",
+    ],
+  ])("creates nothing when %s", async (_name, kind, routes, message) => {
+    const error = await caught(
+      complete({ state: stateOf(await start(kind)), code: SECRETS.code }, fakeProvider(routes)),
     );
 
-    const error = await caught(complete({ state: stateOf(await start("outlook")), code: SECRETS.code }, provider));
-
     expect(error).not.toBeInstanceOf(ChokePointError);
-    expect(error.message).toBe("Microsoft Graph profile response holds no proxy address list");
-    expect(await connected()).toEqual(NOTHING);
-  });
-
-  it("creates nothing when Microsoft Graph reports neither a mail address nor a user principal name", async () => {
-    const provider = fakeProvider(microsoftRoutes({ displayName: "Nobody", mail: null }));
-
-    const error = await caught(complete({ state: stateOf(await start("outlook")), code: SECRETS.code }, provider));
-
-    expect(error).not.toBeInstanceOf(ChokePointError);
-    expect(error.message).toBe("Microsoft Graph profile response holds no account address");
+    expect(error.message).toBe(message);
     expect(await connected()).toEqual(NOTHING);
   });
 
@@ -1086,21 +1093,7 @@ describe("POST /api/mail/mailboxes/oauth/complete (issue gh-1686)", () => {
     );
     await caught(complete({ state: stateOf(await start("gmail")), code: SECRETS.code }, failing));
     expectNoSecret(logs(), secrets);
-
-    const entries = await exportEntries(caller);
-    const names = entries.map((entry) => entry.name);
-    // The mailbox and its sync state are exported; the credential and the state rows are not.
-    expect(names).toContain("tables/mail_account_sync_state.jsonl");
-    expect(names).not.toContain("tables/external_credentials.jsonl");
-    expect(names).not.toContain("tables/mail_oauth_states.jsonl");
-    const mailboxId = completeBody.parse(result.body).mailboxId;
-    expect(entries.some((entry) => entry.content.includes(Buffer.from(mailboxId)))).toBe(true);
-    for (const entry of entries) {
-      expect(
-        secrets.filter((secret) => entry.content.includes(Buffer.from(secret))),
-        `export entry ${entry.name}`,
-      ).toEqual([]);
-    }
+    await expectExportWithoutSecrets(completeBody.parse(result.body).mailboxId, secrets);
   });
 });
 
@@ -1172,6 +1165,12 @@ function relabel(tenantId: string, mailboxId: string, provider: string): Promise
       propertiesPatch: { provider },
     });
   });
+}
+
+async function relabelled(mailbox: Promise<string>, provider: string): Promise<string> {
+  const mailboxId = await mailbox;
+  await relabel(caller.tenantId, mailboxId, provider);
+  return mailboxId;
 }
 
 async function storedCredentialType(tenantId: string, mailboxId: string): Promise<string | null> {
@@ -1262,6 +1261,33 @@ function completeReauthorization(
   );
 }
 
+async function lockWaiters(): Promise<number> {
+  const { rows } = await admin.query<{ waiting: number }>(
+    `SELECT count(*)::int AS waiting FROM pg_stat_activity
+      WHERE datname = current_database() AND wait_event_type = 'Lock'`,
+  );
+  return rows[0]?.waiting ?? -1;
+}
+
+/** Holds the rows `lockSql` selects FOR UPDATE in a superuser transaction while `body` runs, then commits. */
+async function whileRowLocked<T>(
+  lockSql: string,
+  params: unknown[],
+  body: (commit: () => Promise<void>) => Promise<T>,
+) {
+  const blocker = await admin.connect();
+  try {
+    await blocker.query("BEGIN");
+    await blocker.query(lockSql, params);
+    return await body(async () => {
+      await blocker.query("COMMIT");
+    });
+  } finally {
+    await blocker.query("ROLLBACK");
+    blocker.release();
+  }
+}
+
 function googleAccount(address: string, refreshToken: string = SECRETS.refreshToken): Record<string, ProviderRoute> {
   return googleRoutes({
     [GOOGLE_TOKEN_URL]: () =>
@@ -1277,49 +1303,28 @@ function expectWrongAccount(error: Error): void {
   expect(error).toMatchObject({ status: 400, code: "mail_reauth_wrong_account", details: undefined });
 }
 
-describe("POST /api/mail/mailboxes/:id/reauthorize (issue gh-1742)", () => {
-  it("answers Google's authorization URL, as the start route builds it, for a state that carries the mailbox", async () => {
-    const mailboxId = await existingMailbox(caller.tenantId);
+describe("POST /api/mail/mailboxes/:id/reauthorize", () => {
+  it.each<[string, "gmail" | "outlook", ExistingMailbox]>([
+    ["a Gmail mailbox", "gmail", {}],
+    ["an Outlook mailbox", "outlook", { provider: "outlook", address: "work.user@contoso.com" }],
+  ])(
+    "answers the provider's authorization URL, as the start route builds it, with a state that carries %s",
+    async (_name, provider, mailbox) => {
+      const mailboxId = await existingMailbox(caller.tenantId, mailbox);
 
-    const result = await reauthorizeResult(mailboxId);
+      const result = await reauthorizeResult(mailboxId);
 
-    expect(result.status).toBe(200);
-    const url = new URL(startBody.parse(result.body).authorizeUrl);
-    expect(`${url.origin}${url.pathname}`).toBe("https://accounts.google.com/o/oauth2/v2/auth");
-    const state = stateOf(url);
-    expect(Object.fromEntries(url.searchParams)).toEqual({
-      response_type: "code",
-      client_id: "gmail-client-id",
-      redirect_uri: REDIRECT_URI,
-      scope: "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.send",
-      state,
-      code_challenge: url.searchParams.get("code_challenge"),
-      code_challenge_method: "S256",
-      access_type: "offline",
-      prompt: "consent",
-    });
-    expect(await stateRow(state)).toEqual({
-      user_id: caller.userId,
-      provider: "gmail",
-      mailbox_item_id: mailboxId,
-      used_at: null,
-    });
-    expectNoSecret(JSON.stringify(result), [OLD_REFRESH_TOKEN, SECRETS.gmailClientSecret]);
-  });
-
-  it("answers Microsoft's authorization URL with the Graph client for an Outlook mailbox", async () => {
-    const mailboxId = await existingMailbox(caller.tenantId, {
-      provider: "outlook",
-      address: "work.user@contoso.com",
-    });
-
-    const url = await reauthorize(mailboxId);
-
-    expect(`${url.origin}${url.pathname}`).toBe("https://login.microsoftonline.com/common/oauth2/v2.0/authorize");
-    expect(url.searchParams.get("client_id")).toBe("graph-client-id");
-    expect(url.searchParams.get("scope")).toBe("Mail.ReadWrite Mail.Send offline_access User.Read");
-    expect(await stateRow(stateOf(url))).toMatchObject({ provider: "outlook", mailbox_item_id: mailboxId });
-  });
+      expect(result.status).toBe(200);
+      const state = expectAuthorizeUrl(new URL(startBody.parse(result.body).authorizeUrl), provider);
+      expect(await stateRow(state)).toEqual({
+        user_id: caller.userId,
+        provider,
+        mailbox_item_id: mailboxId,
+        used_at: null,
+      });
+      expectNoSecret(JSON.stringify(result), [OLD_REFRESH_TOKEN]);
+    },
+  );
 
   it("answers the same 404 not_found for an unknown, a malformed and a trashed mailbox, and stores no state", async () => {
     const trashed = await existingMailbox(caller.tenantId);
@@ -1365,28 +1370,41 @@ describe("POST /api/mail/mailboxes/:id/reauthorize (issue gh-1742)", () => {
     expect(await stateRow(stateOf(url))).toMatchObject({ user_id: other.userId, mailbox_item_id: foreign });
   });
 
-  it.each<[string, string | null]>([
-    ["an iCloud mailbox", "icloud"],
-    ["a generic IMAP mailbox", "generic"],
-    ["a mailbox without a provider", null],
+  const OAUTH_TOKEN = [OLD_REFRESH_TOKEN, "oauth2_refresh_token"] as const;
+  const PASSWORD = [IMAP_PASSWORD, "app_password"] as const;
+  it.each<[string, () => Promise<string>, readonly [string, string]]>([
+    [
+      "an iCloud mailbox",
+      () => existingMailbox(caller.tenantId, { provider: "icloud", syncState: false }),
+      OAUTH_TOKEN,
+    ],
+    [
+      "a generic IMAP mailbox",
+      () => existingMailbox(caller.tenantId, { provider: "generic", syncState: false }),
+      OAUTH_TOKEN,
+    ],
+    [
+      "a mailbox without a provider",
+      () => existingMailbox(caller.tenantId, { provider: null, syncState: false }),
+      OAUTH_TOKEN,
+    ],
+    // A relabelled mailbox still signs in with its password, or still syncs through its own provider's API.
+    ["an IMAP mailbox relabelled gmail", () => relabelled(passwordMailbox(caller.tenantId), "gmail"), PASSWORD],
+    ["an IMAP mailbox relabelled outlook", () => relabelled(passwordMailbox(caller.tenantId), "outlook"), PASSWORD],
+    ["a Gmail mailbox relabelled outlook", () => relabelled(existingMailbox(caller.tenantId), "outlook"), OAUTH_TOKEN],
+    [
+      "an Outlook mailbox relabelled gmail",
+      () =>
+        relabelled(
+          existingMailbox(caller.tenantId, { provider: "outlook", address: "work.user@contoso.com" }),
+          "gmail",
+        ),
+      OAUTH_TOKEN,
+    ],
   ])(
-    "refuses %s, which signs in with a password, with 400 validation_failed and stores no state",
-    async (_name, provider) => {
-      const mailboxId = await existingMailbox(caller.tenantId, { provider, syncState: false });
-
-      const error = await caught(reauthorizeResult(mailboxId));
-
-      expect(error).toBeInstanceOf(ValidationError);
-      expect(error).toMatchObject({ status: 400, code: "validation_failed", details: { field: "provider" } });
-      expect(await stateCount()).toBe(0);
-    },
-  );
-
-  it.each(["gmail", "outlook"])(
-    "refuses an IMAP mailbox relabelled %s, which still signs in with its password, with 400 validation_failed and stores no state",
-    async (label) => {
-      const mailboxId = await passwordMailbox(caller.tenantId);
-      await relabel(caller.tenantId, mailboxId, label);
+    "refuses %s with 400 validation_failed, stores no state and keeps its credential",
+    async (_name, create, [secret, credentialType]) => {
+      const mailboxId = await create();
       const before = await storedMailbox(caller.tenantId, mailboxId);
 
       const error = await caught(reauthorizeResult(mailboxId));
@@ -1395,28 +1413,8 @@ describe("POST /api/mail/mailboxes/:id/reauthorize (issue gh-1742)", () => {
       expect(error).toMatchObject({ status: 400, code: "validation_failed", details: { field: "provider" } });
       expect(await stateCount()).toBe(0);
       expect(await storedMailbox(caller.tenantId, mailboxId)).toEqual(before);
-      expect(before).toMatchObject({ refreshToken: IMAP_PASSWORD, syncState: { sync_mode: "imap" } });
-      expect(await storedCredentialType(caller.tenantId, mailboxId)).toBe("app_password");
-    },
-  );
-
-  it.each<[string, ExistingMailbox, string]>([
-    ["a Gmail mailbox relabelled outlook", { provider: "gmail" }, "outlook"],
-    ["an Outlook mailbox relabelled gmail", { provider: "outlook", address: "work.user@contoso.com" }, "gmail"],
-  ])(
-    "refuses %s, which still syncs through its own provider's API, with 400 validation_failed and stores no state",
-    async (_name, mailbox, label) => {
-      const mailboxId = await existingMailbox(caller.tenantId, mailbox);
-      await relabel(caller.tenantId, mailboxId, label);
-      const before = await storedMailbox(caller.tenantId, mailboxId);
-
-      const error = await caught(reauthorizeResult(mailboxId));
-
-      expect(error).toBeInstanceOf(ValidationError);
-      expect(error).toMatchObject({ status: 400, code: "validation_failed", details: { field: "provider" } });
-      expect(await stateCount()).toBe(0);
-      expect(await storedMailbox(caller.tenantId, mailboxId)).toEqual(before);
-      expect(before.refreshToken).toBe(OLD_REFRESH_TOKEN);
+      expect(before.refreshToken).toBe(secret);
+      expect(await storedCredentialType(caller.tenantId, mailboxId)).toBe(credentialType);
     },
   );
 
@@ -1435,7 +1433,7 @@ describe("POST /api/mail/mailboxes/:id/reauthorize (issue gh-1742)", () => {
   });
 });
 
-describe("POST /api/mail/mailboxes/oauth/complete: reauthorization (issue gh-1742)", () => {
+describe("POST /api/mail/mailboxes/oauth/complete: reauthorization", () => {
   it("replaces the refresh token when the same account signs in, queues a sync, and restarts the lifecycle after the commit", async () => {
     const mailboxId = await existingMailbox(caller.tenantId);
     await inTenant(caller.tenantId, async (client) => {
@@ -1482,10 +1480,7 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization (issue gh-174
     expect((await stateRow(stateOf(url)))?.used_at).not.toBeNull();
     // The exchange presented this state's verifier, as a new sign-in does.
     expect(provider.calls.map((call) => call.url)).toEqual([GOOGLE_TOKEN_URL, GMAIL_PROFILE_URL, GMAIL_SEND_AS_URL]);
-    const verifier = provider.calls[0]?.form?.get("code_verifier") ?? "";
-    expect(createHash("sha256").update(verifier, "utf8").digest("base64url")).toBe(
-      url.searchParams.get("code_challenge"),
-    );
+    expect(s256(provider.calls[0]?.form?.get("code_verifier") ?? "")).toBe(url.searchParams.get("code_challenge"));
   });
 
   it("replaces the refresh token of an Outlook mailbox and keeps its delta link", async () => {
@@ -1668,14 +1663,7 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization (issue gh-174
     it("refuses a mailbox whose provider changed since the sign-in started", async () => {
       const mailboxId = await existingMailbox(caller.tenantId);
       const state = stateOf(await reauthorize(mailboxId));
-      await inTenant(caller.tenantId, async (client) => {
-        const { mailboxesDatabaseId } = await resolveMailModuleIds(client);
-        await updateItemWithClient(client, {
-          databaseId: mailboxesDatabaseId,
-          itemId: mailboxId,
-          propertiesPatch: { provider: "outlook" },
-        });
-      });
+      await relabel(caller.tenantId, mailboxId, "outlook");
 
       await expectStaleState(state, mailboxId);
     });
@@ -1763,36 +1751,17 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization (issue gh-174
       const liveSync = liveSyncSpy();
       // Another transaction holds the sync state row. The reauthorization has then read the mailbox
       // without a lock and waits for the row, so only its locked second read can see the change.
-      const blocker = await admin.connect();
-      let error: Error;
-      try {
-        await blocker.query("BEGIN");
-        await blocker.query("SELECT 1 FROM mail_account_sync_state WHERE item_id = $1 FOR UPDATE", [mailboxId]);
-        const outcome = caught(completeReauthorization(state, fakeProvider(googleRoutes()), liveSync.control));
-        await vi.waitFor(
-          async () => {
-            const { rows } = await admin.query<{ waiting: number }>(
-              `SELECT count(*)::int AS waiting FROM pg_stat_activity
-                WHERE datname = current_database() AND wait_event_type = 'Lock'`,
-            );
-            expect(rows[0]?.waiting).toBe(1);
-          },
-          { timeout: 10_000 },
-        );
-        await inTenant(caller.tenantId, async (client) => {
-          const { mailboxesDatabaseId } = await resolveMailModuleIds(client);
-          await updateItemWithClient(client, {
-            databaseId: mailboxesDatabaseId,
-            itemId: mailboxId,
-            propertiesPatch: { provider: "outlook" },
-          });
-        });
-        await blocker.query("COMMIT");
-        error = await outcome;
-      } finally {
-        await blocker.query("ROLLBACK");
-        blocker.release();
-      }
+      const error = await whileRowLocked(
+        "SELECT 1 FROM mail_account_sync_state WHERE item_id = $1 FOR UPDATE",
+        [mailboxId],
+        async (commit) => {
+          const outcome = caught(completeReauthorization(state, fakeProvider(googleRoutes()), liveSync.control));
+          await vi.waitFor(async () => expect(await lockWaiters()).toBe(1), { timeout: 10_000 });
+          await relabel(caller.tenantId, mailboxId, "outlook");
+          await commit();
+          return outcome;
+        },
+      );
 
       expect(error).toBeInstanceOf(ValidationError);
       expect(error).toMatchObject({ status: 400, code: "validation_failed", details: { field: "state" } });
@@ -1805,41 +1774,29 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization (issue gh-174
     const mailboxId = await existingMailbox(caller.tenantId, { address: null });
     const states = [stateOf(await reauthorize(mailboxId)), stateOf(await reauthorize(mailboxId))];
     const liveSync = liveSyncSpy();
-    const lockWaiters = async (): Promise<number> => {
-      const { rows } = await admin.query<{ waiting: number }>(
-        `SELECT count(*)::int AS waiting FROM pg_stat_activity
-          WHERE datname = current_database() AND wait_event_type = 'Lock'`,
-      );
-      return rows[0]?.waiting ?? -1;
-    };
     // Another transaction holds the Mailboxes item. The first reauthorization then holds the sync
     // state row and waits for the item, before it has read the recorded address, and the second one
     // waits for the sync state row behind it.
-    const blocker = await admin.connect();
-    let outcomes: Array<PromiseSettledResult<{ status: number; body: unknown }>>;
-    try {
-      await blocker.query("BEGIN");
-      await blocker.query("SELECT 1 FROM items WHERE id = $1 FOR UPDATE", [mailboxId]);
-      const first = completeReauthorization(
-        states[0] ?? "",
-        fakeProvider(googleAccount("first.account@gmail.com", "SENTINEL-REFRESH-TOKEN-FIRST")),
-        liveSync.control,
-      );
-      const settledFirst = Promise.allSettled([first]);
-      await vi.waitFor(async () => expect(await lockWaiters()).toBe(1), { timeout: 10_000 });
-      const second = completeReauthorization(
-        states[1] ?? "",
-        fakeProvider(googleAccount("second.account@gmail.com", "SENTINEL-REFRESH-TOKEN-SECOND")),
-        liveSync.control,
-      );
-      const settledSecond = Promise.allSettled([second]);
-      await vi.waitFor(async () => expect(await lockWaiters()).toBe(2), { timeout: 10_000 });
-      await blocker.query("COMMIT");
-      outcomes = [...(await settledFirst), ...(await settledSecond)];
-    } finally {
-      await blocker.query("ROLLBACK");
-      blocker.release();
-    }
+    const outcomes = await whileRowLocked(
+      "SELECT 1 FROM items WHERE id = $1 FOR UPDATE",
+      [mailboxId],
+      async (commit) => {
+        const settled = [];
+        for (const [index, account] of (["first", "second"] as const).entries()) {
+          const outcome = completeReauthorization(
+            states[index] ?? "",
+            fakeProvider(
+              googleAccount(`${account}.account@gmail.com`, `SENTINEL-REFRESH-TOKEN-${account.toUpperCase()}`),
+            ),
+            liveSync.control,
+          );
+          settled.push(Promise.allSettled([outcome]));
+          await vi.waitFor(async () => expect(await lockWaiters()).toBe(index + 1), { timeout: 10_000 });
+        }
+        await commit();
+        return (await Promise.all(settled)).flat();
+      },
+    );
 
     // The second one read the address only after the first committed it, so it is another account.
     expect(outcomes[0]).toEqual({ status: "fulfilled", value: { status: 200, body: { mailboxId } } });
@@ -2160,23 +2117,11 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization (issue gh-174
     );
     expectNoSecret(inspect([wrongAccount, rejected], { depth: 8 }), secrets);
     expectNoSecret(logs(), secrets);
-
-    const entries = await exportEntries(caller);
-    const names = entries.map((entry) => entry.name);
-    expect(names).toContain("tables/mail_account_sync_state.jsonl");
-    expect(names).not.toContain("tables/external_credentials.jsonl");
-    expect(names).not.toContain("tables/mail_oauth_states.jsonl");
-    expect(entries.some((entry) => entry.content.includes(Buffer.from(mailboxId)))).toBe(true);
-    for (const entry of entries) {
-      expect(
-        secrets.filter((secret) => entry.content.includes(Buffer.from(secret))),
-        `export entry ${entry.name}`,
-      ).toEqual([]);
-    }
+    await expectExportWithoutSecrets(mailboxId, secrets);
   });
 });
 
-describe("mail account sync state store: connect flow additions (issue gh-1686)", () => {
+describe("mail account sync state store: connect flow additions", () => {
   async function mailboxWithState(tenantId: string): Promise<string> {
     return inTenant(tenantId, async (client) => {
       const { mailboxesDatabaseId } = await resolveMailModuleIds(client);

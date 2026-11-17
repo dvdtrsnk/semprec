@@ -1,7 +1,7 @@
 import "../../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { runInTenant } from "@semprec/shared";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { createItemWithClient, updateItemWithClient } from "../../chokePoint/itemWrites.js";
@@ -74,6 +74,24 @@ function countCards(pool: Pool, userId: string): Promise<number> {
   return inTenantZero(() => withTransaction(pool, (client) => countOpenInboxCards(client, { ownerUserId: userId })));
 }
 
+/** The list's total and the count agree on `total`. */
+async function expectTotal(list: InboxCardList, total: number, userId = ownerId): Promise<void> {
+  expect(list.total).toBe(total);
+  expect(await countCards(adminPool, userId)).toBe(total);
+}
+
+function inTenantZeroTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+  return inTenantZero(() => withTransaction(adminPool, fn));
+}
+
+function listRoute(userId: string, locale = "en") {
+  return inTenantZero(() => createInboxCardsRouteHandler(adminPool)({ identity: { user: { id: userId, locale } } }));
+}
+
+function countRoute(userId: string) {
+  return inTenantZero(() => createInboxCardsCountRouteHandler(adminPool)({ identity: { user: { id: userId } } }));
+}
+
 function cardIds(list: InboxCardList): string[] {
   return list.cards.map((card) => card.cardId);
 }
@@ -82,6 +100,26 @@ function cardOf(list: InboxCardList, cardId: string): InboxCard {
   const card = list.cards.find((candidate) => candidate.cardId === cardId);
   if (!card) throw new Error(`Card ${cardId} is not in the list`);
   return card;
+}
+
+async function createItemIn(moduleId: string, properties: Record<string, unknown>): Promise<string> {
+  const databaseId = await databaseIdFor(moduleId);
+  return inTenantZeroTransaction(async (client) => (await createItemWithClient(client, { databaseId, properties })).id);
+}
+
+/** A card row written through the choke point, with the system keys the producers write. */
+async function storedCard(
+  properties: Record<string, unknown>,
+  { pool = adminPool, databaseId = proposalsId }: { pool?: Pool; databaseId?: string } = {},
+): Promise<string> {
+  const row = await withTransaction(pool, (client) =>
+    createItemWithClient(
+      client,
+      { databaseId, properties: { kind: "inbox", status: "proposed", proposal: null, ...properties } },
+      { allowedSystemKeys: ["kind", "status", "proposal"] },
+    ),
+  );
+  return row.id;
 }
 
 const TASK_COMPUTATION: ComputeSemprecProposalFn = async (input) => ({
@@ -153,17 +191,9 @@ async function occurrenceCard(): Promise<{ transcriptId: string; cardId: string;
 
 /** Cards written through the choke point: the tick takes about half a second per card, too slow for the limit tests. */
 async function bareProposedCards(count: number): Promise<void> {
-  await inTenantZero(() =>
-    withTransaction(adminPool, async (client) => {
-      for (let n = 0; n < count; n += 1) {
-        await createItemWithClient(
-          client,
-          { databaseId: proposalsId, properties: { kind: "inbox", status: "proposed", proposal: null } },
-          { allowedSystemKeys: ["kind", "status", "proposal"] },
-        );
-      }
-    }),
-  );
+  await inTenantZero(async () => {
+    for (let n = 0; n < count; n += 1) await storedCard({});
+  });
 }
 
 async function invalidateBySourceDeletion(itemId: string): Promise<void> {
@@ -241,16 +271,14 @@ describe("listInboxCards (issue #1807)", () => {
     typesId = await databaseIdFor("inboxItemTypes");
     proposalsId = await databaseIdFor("processingProposals");
     taskTypeId = (
-      await inTenantZero(() =>
-        withTransaction(adminPool, (client) =>
-          createInboxTypeWithClient(client, {
-            inboxItemTypesDatabaseId: typesId,
-            name: "Task",
-            emoji: "☑️",
-            processingMethod: "database",
-            targetDatabase: "tasks",
-          }),
-        ),
+      await inTenantZeroTransaction((client) =>
+        createInboxTypeWithClient(client, {
+          inboxItemTypesDatabaseId: typesId,
+          name: "Task",
+          emoji: "☑️",
+          processingMethod: "database",
+          targetDatabase: "tasks",
+        }),
       )
     ).id;
   });
@@ -259,8 +287,9 @@ describe("listInboxCards (issue #1807)", () => {
     await adminPool?.end();
   });
 
-  it("returns an empty stack for a tenant without cards", async () => {
+  it("returns an empty stack and a count of 0 for a tenant without cards", async () => {
     expect(await listCards(adminPool, ownerId)).toEqual({ cards: [], total: 0 });
+    expect(await countCards(adminPool, ownerId)).toBe(0);
   });
 
   it("orders five cards of different states and kinds by group: approval, proposed, invalid, needsClarification, transcript", async () => {
@@ -283,32 +312,30 @@ describe("listInboxCards (issue #1807)", () => {
       ["proposal", "clarify", "clarify", "needsClarification"],
       ["proposal", "transcriptEvent", "event", "proposed"],
     ]);
-    expect(list.total).toBe(5);
+    await expectTotal(list, 5);
   });
 
-  it("leaves out confirmed, rejected and deleted cards and the approvals of chat, and the approvals already decided", async () => {
+  it("leaves out and does not count confirmed, rejected and deleted cards, the approvals of chat and the approvals already decided", async () => {
     const open = await proposedCard("Still open");
     const confirmed = await proposedCard("Confirmed one");
     const rejected = await proposedCard("Rejected one");
     const deleted = await proposedCard("Deleted card");
-    await inTenantZero(() =>
-      withTransaction(adminPool, async (client) => {
-        await confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, confirmed.cardId);
-        await rejectProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, rejected.cardId);
-        await itemsStore.softDeleteItem(client, proposalsId, deleted.cardId);
-      }),
-    );
+    expect(await countCards(adminPool, ownerId)).toBe(4);
+    await inTenantZeroTransaction(async (client) => {
+      await confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, confirmed.cardId);
+      await rejectProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, rejected.cardId);
+      await itemsStore.softDeleteItem(client, proposalsId, deleted.cardId);
+    });
     const tickApproval = await approvalFrom("heartbeat");
     await approvalFrom("user");
+    await approvalFrom("user", { delegated: true });
     const decided = await approvalFrom("heartbeat");
-    await inTenantZero(() =>
-      withTransaction(adminPool, (client) => decideApprovalRequest(client, decided, "rejected", ownerId)),
-    );
+    await inTenantZeroTransaction((client) => decideApprovalRequest(client, decided, "rejected", ownerId));
 
     const list = await listCards(adminPool, ownerId);
 
     expect(cardIds(list)).toEqual([tickApproval, open.cardId]);
-    expect(list.total).toBe(2);
+    await expectTotal(list, 2);
   });
 
   describe("the route handler", () => {
@@ -316,9 +343,7 @@ describe("listInboxCards (issue #1807)", () => {
       const card = await proposedCard("Buy milk");
       const approval = await approvalFrom("heartbeat");
 
-      const answer = await inTenantZero(() =>
-        createInboxCardsRouteHandler(adminPool)({ identity: { user: { id: ownerId, locale: "cs" } } }),
-      );
+      const answer = await listRoute(ownerId, "cs");
 
       if (!("body" in answer)) throw new Error("expected a raw JSON body");
       expect(answer.status).toBe(200);
@@ -335,15 +360,27 @@ describe("listInboxCards (issue #1807)", () => {
       });
     });
 
-    it("lists no approval of a user who is not the actor of the runs", async () => {
+    it("answers another user of the tenant with its cards and count, but not the approvals of another actor", async () => {
       await approvalFrom("heartbeat");
+      const card = await proposedCard("Buy milk");
       const other = (await createTenantZeroUser(adminPool)).id;
 
-      const answer = await inTenantZero(() =>
-        createInboxCardsRouteHandler(adminPool)({ identity: { user: { id: other, locale: "en" } } }),
-      );
+      // A proposals card belongs to the tenant and an approval to the actor of its run, so only the card is listed.
+      expect(await listRoute(other)).toMatchObject({
+        status: 200,
+        body: { cards: [{ cardId: card.cardId }], total: 1 },
+      });
+      expect(await countRoute(other)).toEqual({ status: 200, body: { total: 1 } });
+    });
 
-      expect(answer).toEqual({ status: 200, body: { cards: [], total: 0 } });
+    it("answers the count with the total of the session's user, equal to the total of the list", async () => {
+      await proposedCard("Buy milk");
+      await approvalFrom("heartbeat");
+      const computing = await proposedCard("Computing");
+      await setCardStatus(computing.cardId, "computing");
+
+      expect(await countRoute(ownerId)).toEqual({ status: 200, body: { total: 2 } });
+      expect((await listCards(adminPool, ownerId)).total).toBe(2);
     });
   });
 
@@ -404,17 +441,17 @@ describe("listInboxCards (issue #1807)", () => {
         [proposed.cardId, "proposed"],
         [invalid.cardId, "invalid"],
       ]);
-      expect(list.total).toBe(3);
+      await expectTotal(list, 3);
     });
 
-    it("has a total of 0 for a stack that holds only cards being computed", async () => {
+    it("has a total and a count of 0 for a stack that holds only cards being computed", async () => {
       const computing = await proposedCard("Computing");
       await setCardStatus(computing.cardId, "computing");
 
       const list = await listCards(adminPool, ownerId);
 
       expect(cardIds(list)).toEqual([computing.cardId]);
-      expect(list.total).toBe(0);
+      await expectTotal(list, 0);
     });
   });
 
@@ -433,19 +470,15 @@ describe("listInboxCards (issue #1807)", () => {
     });
 
     function sendBack(cardId: string): Promise<ItemRow> {
-      return inTenantZero(() =>
-        withTransaction(adminPool, (client) =>
-          recomputeProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId, {}),
-        ),
+      return inTenantZeroTransaction((client) =>
+        recomputeProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId, {}),
       );
     }
 
     async function stored(
       cardId: string,
     ): Promise<{ updatedAt: string; version: string; properties: Record<string, unknown> }> {
-      const card = await inTenantZero(() =>
-        withTransaction(adminPool, (client) => itemsStore.getItemById(client, proposalsId, cardId)),
-      );
+      const card = await inTenantZeroTransaction((client) => itemsStore.getItemById(client, proposalsId, cardId));
       if (!card) throw new Error(`card ${cardId} not found`);
       return { updatedAt: card.updatedAt, version: card.version, properties: card.properties };
     }
@@ -461,34 +494,21 @@ describe("listInboxCards (issue #1807)", () => {
       expect(listed).not.toHaveProperty("computeTimedOut");
     });
 
-    it("lists a card that has been computing for longer than the timeout as computeFailed with computeTimedOut, and changes nothing else about it", async () => {
+    it("lists a card that has been computing for longer than the timeout as computeFailed with computeTimedOut, changes nothing else about it and leaves it stored and counted as it was", async () => {
+      const proposed = await proposedCard("Proposed");
       const card = await proposedCard("Computing");
       await sendBack(card.cardId);
       const before = await stored(card.cardId);
       const fresh = cardOf(await listCards(adminPool, ownerId), card.cardId);
       clockAfter(COMPUTING_TIMEOUT_MS + MINUTE_MS);
 
-      const listed = cardOf(await listCards(adminPool, ownerId), card.cardId);
-
-      expect(listed).toEqual({ ...fresh, status: "computeFailed", computeTimedOut: true });
-      expect(listed.version).toBe(before.version);
-    });
-
-    it("leaves the stored card as it was, uncounted like every computing card", async () => {
-      const proposed = await proposedCard("Proposed");
-      const card = await proposedCard("Computing");
-      await sendBack(card.cardId);
-      const before = await stored(card.cardId);
-      clockAfter(COMPUTING_TIMEOUT_MS + MINUTE_MS);
-
       const list = await listCards(adminPool, ownerId);
 
-      expect(cardOf(list, card.cardId).status).toBe("computeFailed");
+      expect(cardOf(list, card.cardId)).toEqual({ ...fresh, status: "computeFailed", computeTimedOut: true });
       expect(await stored(card.cardId)).toEqual(before);
       expect(before.properties.status).toBe("computing");
-      expect(list.total).toBe(1);
-      expect(await countCards(adminPool, ownerId)).toBe(1);
       expect(cardIds(list).sort()).toEqual([proposed.cardId, card.cardId].sort());
+      await expectTotal(list, 1);
     });
 
     it("answers the card list of the route with the timed-out card as computeFailed, and the count of the route without it", async () => {
@@ -497,14 +517,7 @@ describe("listInboxCards (issue #1807)", () => {
       await sendBack(card.cardId);
       clockAfter(COMPUTING_TIMEOUT_MS + MINUTE_MS);
 
-      const listAnswer = await inTenantZero(() =>
-        createInboxCardsRouteHandler(adminPool)({ identity: { user: { id: ownerId, locale: "en" } } }),
-      );
-      const countAnswer = await inTenantZero(() =>
-        createInboxCardsCountRouteHandler(adminPool)({ identity: { user: { id: ownerId } } }),
-      );
-
-      expect(listAnswer).toMatchObject({
+      expect(await listRoute(ownerId)).toMatchObject({
         status: 200,
         body: {
           cards: expect.arrayContaining([
@@ -513,7 +526,7 @@ describe("listInboxCards (issue #1807)", () => {
           total: 1,
         },
       });
-      expect(countAnswer).toEqual({ status: 200, body: { total: 1 } });
+      expect(await countRoute(ownerId)).toEqual({ status: 200, body: { total: 1 } });
     });
 
     it("lists the card as proposed once a late tick has stored its result", async () => {
@@ -598,14 +611,18 @@ describe("listInboxCards (issue #1807)", () => {
       });
     });
 
-    it("lists the approvals of the caller only", async () => {
+    it("lists and counts the approvals of the caller only", async () => {
       const mine = await approvalFrom("heartbeat");
       const other = (await createTenantZeroUser(adminPool)).id;
 
-      expect(cardIds(await listCards(adminPool, ownerId))).toEqual([mine]);
+      const list = await listCards(adminPool, ownerId);
+      expect(cardIds(list)).toEqual([mine]);
+      await expectTotal(list, 1);
       // The tenant holds one user's runs only (a run takes its actor from the tenant's sole user), so
       // the second user has no run and no approval.
-      expect(cardIds(await listCards(adminPool, other))).toEqual([]);
+      const ofOther = await listCards(adminPool, other);
+      expect(cardIds(ofOther)).toEqual([]);
+      await expectTotal(ofOther, 0, other);
     });
   });
 
@@ -679,16 +696,17 @@ describe("listInboxCards (issue #1807)", () => {
   });
 
   describe("the card fields", () => {
-    it("carries the version, the effective envelope and the stored context of a proposal card", async () => {
+    it("carries the version, the effective envelope and the stored context of a proposal card, and a null context when none is stored", async () => {
       const card = await proposedCard("Buy milk");
+      expect(cardOf(await listCards(adminPool, ownerId), card.cardId).context).toBeNull();
       const context = { alternatives: [{ eventId: randomUUID() }] };
       // Raw SQL: `context` is written by the transcript producers, and the card of this test is an Inbox card.
       await adminPool.query(
         "UPDATE items SET properties = jsonb_set(properties, '{context}', $2::jsonb) WHERE id = $1",
         [card.cardId, JSON.stringify(context)],
       );
-      const stored = await inTenantZero(() =>
-        withTransaction(adminPool, (client) => itemsStore.getItemById(client, proposalsId, card.cardId)),
+      const stored = await inTenantZeroTransaction((client) =>
+        itemsStore.getItemById(client, proposalsId, card.cardId),
       );
 
       const listed = cardOf(await listCards(adminPool, ownerId), card.cardId);
@@ -697,12 +715,6 @@ describe("listInboxCards (issue #1807)", () => {
       expect(listed.envelope).toEqual(stored!.properties.proposal);
       expect(listed.envelope).toMatchObject({ entityKind: "database", properties: { name: "Buy milk" } });
       expect(listed.context).toEqual(context);
-    });
-
-    it("has a null context when none is stored", async () => {
-      const card = await proposedCard("Buy milk");
-
-      expect(cardOf(await listCards(adminPool, ownerId), card.cardId).context).toBeNull();
     });
 
     it("has a null envelope and no targets for a card that has none", async () => {
@@ -781,16 +793,14 @@ describe("listInboxCards (issue #1807)", () => {
     });
 
     it("names one target per database of a multi-step proposal, the primary one first", async () => {
-      const filesType = await inTenantZero(() =>
-        withTransaction(adminPool, (client) =>
-          createInboxTypeWithClient(client, {
-            inboxItemTypesDatabaseId: typesId,
-            name: "File",
-            emoji: "📄",
-            processingMethod: "database",
-            targetDatabase: "files",
-          }),
-        ),
+      const filesType = await inTenantZeroTransaction((client) =>
+        createInboxTypeWithClient(client, {
+          inboxItemTypesDatabaseId: typesId,
+          name: "File",
+          emoji: "📄",
+          processingMethod: "database",
+          targetDatabase: "files",
+        }),
       );
       const card = await proposedCard("Invoice scan", {
         typeId: filesType.id,
@@ -814,15 +824,8 @@ describe("listInboxCards (issue #1807)", () => {
     });
 
     it("names the database of the page a page-content card adds to, labelled as a page", async () => {
-      const project = await inTenantZero(async () =>
-        withTransaction(adminPool, async (client) =>
-          createItemWithClient(client, {
-            databaseId: await databaseIdFor("projects"),
-            properties: { name: "Kitchen" },
-          }),
-        ),
-      );
-      const card = await createMarkdownPageContentProposal(adminPool, { inboxId, typesId, proposalsId }, project.id, {
+      const projectId = await createItemIn("projects", { name: "Kitchen" });
+      const card = await createMarkdownPageContentProposal(adminPool, { inboxId, typesId, proposalsId }, projectId, {
         markdown: "Measure the room",
         placement: "end",
       });
@@ -877,34 +880,25 @@ describe("listInboxCards (issue #1807)", () => {
   describe("the reason of an invalid card (issue #2027)", () => {
     /** Marks `cardId` invalid with a stored reason through the choke point. */
     async function invalidateWithReason(cardId: string, reason: Record<string, unknown>): Promise<void> {
-      await inTenantZero(() =>
-        withTransaction(adminPool, (client) =>
-          updateItemWithClient(
-            client,
-            { databaseId: proposalsId, itemId: cardId, propertiesPatch: { status: "invalid", invalidReason: reason } },
-            { allowedSystemKeys: ["status", "invalidReason"] },
-          ),
+      await inTenantZeroTransaction((client) =>
+        updateItemWithClient(
+          client,
+          { databaseId: proposalsId, itemId: cardId, propertiesPatch: { status: "invalid", invalidReason: reason } },
+          { allowedSystemKeys: ["status", "invalidReason"] },
         ),
       );
     }
 
     async function archivedProjectCard(): Promise<{ cardId: string; projectId: string }> {
-      const project = await inTenantZero(async () =>
-        withTransaction(adminPool, async (client) =>
-          createItemWithClient(client, {
-            databaseId: await databaseIdFor("projects"),
-            properties: { name: "Kitchen" },
-          }),
-        ),
-      );
+      const projectId = await createItemIn("projects", { name: "Kitchen" });
       const card = await proposedCard("Order the cabinets");
       await invalidateWithReason(card.cardId, {
         code: "targetArchived",
         field: "project",
-        itemId: project.id,
+        itemId: projectId,
         label: "Kitchen",
       });
-      return { cardId: card.cardId, projectId: project.id };
+      return { cardId: card.cardId, projectId };
     }
 
     it.each([
@@ -914,6 +908,11 @@ describe("listInboxCards (issue #1807)", () => {
       ],
       [
         "en",
+        "The target “Kitchen” was archived, so this proposal has nowhere to go. Choose another target or ask Semp to recompute.",
+      ],
+      // A locale the catalogs do not have falls back to the English sentence.
+      [
+        "de",
         "The target “Kitchen” was archived, so this proposal has nowhere to go. Choose another target or ask Semp to recompute.",
       ],
     ])(
@@ -933,14 +932,6 @@ describe("listInboxCards (issue #1807)", () => {
         });
       },
     );
-
-    it("falls back to the English sentence for a locale the catalogs do not have", async () => {
-      const card = await archivedProjectCard();
-
-      expect(cardOf(await listCards(adminPool, ownerId, "de"), card.cardId).invalidReason?.text).toBe(
-        "The target “Kitchen” was archived, so this proposal has nowhere to go. Choose another target or ask Semp to recompute.",
-      );
-    });
 
     it("gives the reason of a card that became invalid because its Inbox item was deleted", async () => {
       const card = await proposedCard("Deleted capture");
@@ -1025,36 +1016,11 @@ describe("listInboxCards (issue #1807)", () => {
     let financeId: string;
     let accountingId: string;
 
-    async function createItem(moduleId: string, properties: Record<string, unknown>): Promise<string> {
-      const databaseId = await databaseIdFor(moduleId);
-      return inTenantZero(() =>
-        withTransaction(
-          adminPool,
-          async (client) => (await createItemWithClient(client, { databaseId, properties })).id,
-        ),
-      );
-    }
-
     /** A proposed card that holds a multi-step envelope with `operations`, the first of which is the primary step. */
     async function stepsCard(operations: ProposalStep[]): Promise<string> {
-      const proposal = {
-        entityKind: "database",
-        target: await databaseIdFor("projects"),
-        properties: {},
-        operations,
-      };
+      const target = await databaseIdFor("projects");
       return inTenantZero(() =>
-        withTransaction(
-          adminPool,
-          async (client) =>
-            (
-              await createItemWithClient(
-                client,
-                { databaseId: proposalsId, properties: { kind: "inbox", status: "proposed", proposal } },
-                { allowedSystemKeys: ["kind", "status", "proposal"] },
-              )
-            ).id,
-        ),
+        storedCard({ proposal: { entityKind: "database", target, properties: {}, operations } }),
       );
     }
 
@@ -1071,9 +1037,9 @@ describe("listInboxCards (issue #1807)", () => {
     }
 
     beforeEach(async () => {
-      workId = await createItem("areas", { name: "Work" });
-      financeId = await createItem("areas", { name: "Finance" });
-      accountingId = await createItem("projects", { name: "Accounting", status: "inProgress" });
+      workId = await createItemIn("areas", { name: "Work" });
+      financeId = await createItemIn("areas", { name: "Finance" });
+      accountingId = await createItemIn("projects", { name: "Accounting", status: "inProgress" });
     });
 
     it("carries the move of a project from area Work to area Finance on the card GET /api/inbox/cards returns", async () => {
@@ -1203,44 +1169,22 @@ describe("listInboxCards (issue #1807)", () => {
         const cardId = await stepsCard([moveToFinance()]);
         const otherTenantId = await createTestTenant(adminPool);
         await provisionTenant(dataPool, otherTenantId);
-        const otherProposalsId = await runInTenant(otherTenantId, async () => {
-          const { rows } = await withTransaction(dataPool, (client) =>
-            client.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'processingProposals'"),
-          );
-          return rows[0]?.id ?? "";
-        });
-        const otherProjectsId = await runInTenant(otherTenantId, async () => {
-          const { rows } = await withTransaction(dataPool, (client) =>
-            client.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = 'projects'"),
-          );
-          return rows[0]?.id ?? "";
-        });
         // The second tenant's card names the first tenant's project and areas, the ids a stolen envelope would hold.
-        const foreignCard = await runInTenant(otherTenantId, () =>
-          withTransaction(
-            dataPool,
-            async (client) =>
-              (
-                await createItemWithClient(
-                  client,
-                  {
-                    databaseId: otherProposalsId,
-                    properties: {
-                      kind: "inbox",
-                      status: "proposed",
-                      proposal: {
-                        entityKind: "database",
-                        target: otherProjectsId,
-                        properties: {},
-                        operations: [moveToFinance()],
-                      },
-                    },
-                  },
-                  { allowedSystemKeys: ["kind", "status", "proposal"] },
-                )
-              ).id,
-          ),
-        );
+        const foreignCard = await runInTenant(otherTenantId, async () => {
+          const { rows } = await withTransaction(dataPool, (client) =>
+            client.query<{ id: string; owner_module_id: string }>(
+              "SELECT id, owner_module_id FROM databases WHERE owner_module_id IN ('processingProposals', 'projects')",
+            ),
+          );
+          const idOf = (moduleId: string) => rows.find((row) => row.owner_module_id === moduleId)?.id ?? "";
+          const proposal = {
+            entityKind: "database",
+            target: idOf("projects"),
+            properties: {},
+            operations: [moveToFinance()],
+          };
+          return storedCard({ proposal }, { pool: dataPool, databaseId: idOf("processingProposals") });
+        });
 
         const asFirstTenant = await inTenantZero(() =>
           withTransaction(dataPool, (client) => listInboxCards(client, { ownerUserId: ownerId, locale: "en" })),
@@ -1273,7 +1217,7 @@ describe("listInboxCards (issue #1807)", () => {
 
   describe("the limit", () => {
     it(
-      "returns 200 cards and the full total for more than 200 open cards",
+      "returns 200 cards and the full total and count for more than 200 open cards",
       async () => {
         const approvals = [await approvalFrom("heartbeat"), await approvalFrom("mcp")];
         const proposalCount = INBOX_CARDS_LIMIT + 5;
@@ -1284,7 +1228,7 @@ describe("listInboxCards (issue #1807)", () => {
         expect(list.cards).toHaveLength(INBOX_CARDS_LIMIT);
         expect(cardIds(list).slice(0, 2)).toEqual(approvals);
         expect(list.cards.slice(2).every((card) => card.source === "proposal")).toBe(true);
-        expect(list.total).toBe(2 + proposalCount);
+        await expectTotal(list, 2 + proposalCount);
       },
       BULK_TEST_TIMEOUT_MS,
     );
@@ -1300,29 +1244,26 @@ describe("listInboxCards (issue #1807)", () => {
         const list = await listCards(adminPool, ownerId);
 
         expect(cardIds(list)).toEqual(approvals.slice(0, INBOX_CARDS_LIMIT));
-        expect(list.total).toBe(approvalCount + 1);
+        await expectTotal(list, approvalCount + 1);
       },
       BULK_TEST_TIMEOUT_MS,
     );
   });
 
   describe("a tenant that lacks part of the pipeline", () => {
-    it("lists the approvals when the Inbox database is not there", async () => {
-      const approval = await approvalFrom("heartbeat");
-      // Raw SQL: the API cannot remove a system database; this stands for a tenant seeded before the pipeline.
-      await adminPool.query("UPDATE databases SET owner_module_id = NULL WHERE owner_module_id = 'inbox'");
+    it.each(["inbox", "processingProposals"])(
+      "lists and counts only the approvals when the %s database is not there",
+      async (moduleId) => {
+        const approval = await approvalFrom("heartbeat");
+        await proposedCard("Buy milk");
+        // Raw SQL: the API cannot remove a system database; this stands for a tenant seeded before the pipeline.
+        await adminPool.query("UPDATE databases SET owner_module_id = NULL WHERE owner_module_id = $1", [moduleId]);
 
-      expect(await listCards(adminPool, ownerId)).toMatchObject({ cards: [{ cardId: approval }], total: 1 });
-    });
-
-    it("lists the approvals when the Processing proposals database is not there", async () => {
-      const approval = await approvalFrom("heartbeat");
-      await adminPool.query(
-        "UPDATE databases SET owner_module_id = NULL WHERE owner_module_id = 'processingProposals'",
-      );
-
-      expect(await listCards(adminPool, ownerId)).toMatchObject({ cards: [{ cardId: approval }], total: 1 });
-    });
+        const list = await listCards(adminPool, ownerId);
+        expect(list).toMatchObject({ cards: [{ cardId: approval }] });
+        await expectTotal(list, 1);
+      },
+    );
 
     it("lists the cards without a transcript source when the Transcripts database is not there", async () => {
       const card = await transcriptCard("Standup", "2026-08-28T08:00:00.000Z");
@@ -1382,245 +1323,37 @@ describe("listInboxCards (issue #1807)", () => {
     expect(cardIds(list)).toEqual([kept.cardId]);
   });
 
-  describe("countOpenInboxCards (issue #1823)", () => {
-    it("equals the total of the list for cards of every state and kind and for approvals", async () => {
-      await transcriptCard("Standup", "2026-08-28T08:00:00.000Z");
-      const clarification = await proposedCard("Unclear capture");
-      await setCardStatus(clarification.cardId, "needsClarification");
-      const invalid = await proposedCard("Deleted capture");
-      await invalidateBySourceDeletion(invalid.itemId);
-      await proposedCard("Buy milk");
-      await approvalFrom("heartbeat");
-      await approvalFrom("mcp");
-
-      const list = await listCards(adminPool, ownerId);
-
-      expect(await countCards(adminPool, ownerId)).toBe(6);
-      expect(list.total).toBe(6);
-    });
-
-    it("is 0 for a tenant without cards", async () => {
-      expect(await countCards(adminPool, ownerId)).toBe(0);
-    });
-
-    it(
-      "equals the total of the list also when more than 200 cards are open",
-      async () => {
-        await approvalFrom("heartbeat");
-        await approvalFrom("mcp");
-        const proposalCount = INBOX_CARDS_LIMIT + 5;
-        await bareProposedCards(proposalCount);
-
-        const list = await listCards(adminPool, ownerId);
-
-        expect(list.cards).toHaveLength(INBOX_CARDS_LIMIT);
-        expect(await countCards(adminPool, ownerId)).toBe(2 + proposalCount);
-        expect(await countCards(adminPool, ownerId)).toBe(list.total);
-      },
-      BULK_TEST_TIMEOUT_MS,
-    );
-
-    it(
-      "equals the total of the list when the approvals alone pass the limit",
-      async () => {
-        const approvalCount = INBOX_CARDS_LIMIT + 1;
-        for (let n = 0; n < approvalCount; n += 1) await approvalFrom("heartbeat");
-        await proposedCard("A card below the approvals");
-
-        const list = await listCards(adminPool, ownerId);
-
-        expect(await countCards(adminPool, ownerId)).toBe(approvalCount + 1);
-        expect(await countCards(adminPool, ownerId)).toBe(list.total);
-      },
-      BULK_TEST_TIMEOUT_MS,
-    );
-
-    it("is lower by one after a card is confirmed", async () => {
-      const confirmed = await proposedCard("Confirmed one");
-      await proposedCard("Still open");
-      expect(await countCards(adminPool, ownerId)).toBe(2);
-
-      await inTenantZero(() =>
-        withTransaction(adminPool, (client) =>
-          confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, confirmed.cardId),
-        ),
-      );
-
-      expect(await countCards(adminPool, ownerId)).toBe(1);
-      expect(await countCards(adminPool, ownerId)).toBe((await listCards(adminPool, ownerId)).total);
-    });
-
-    it("does not count a rejected card, a deleted card, the approvals of chat or an approval already decided", async () => {
-      await proposedCard("Still open");
-      const rejected = await proposedCard("Rejected one");
-      const deleted = await proposedCard("Deleted card");
-      await inTenantZero(() =>
-        withTransaction(adminPool, async (client) => {
-          await rejectProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, rejected.cardId);
-          await itemsStore.softDeleteItem(client, proposalsId, deleted.cardId);
-        }),
-      );
-      await approvalFrom("heartbeat");
-      await approvalFrom("user");
-      await approvalFrom("user", { delegated: true });
-      const decided = await approvalFrom("heartbeat");
-      await inTenantZero(() =>
-        withTransaction(adminPool, (client) => decideApprovalRequest(client, decided, "rejected", ownerId)),
-      );
-
-      expect(await countCards(adminPool, ownerId)).toBe(2);
-      expect(cardIds(await listCards(adminPool, ownerId))).toHaveLength(2);
-    });
-
-    it("does not count computing and computeFailed cards that the list returns", async () => {
-      const proposed = await proposedCard("Proposed");
-      const computing = await proposedCard("Computing");
-      const failed = await proposedCard("Failed");
-      await setCardStatus(computing.cardId, "computing");
-      await setCardStatus(failed.cardId, "computeFailed");
-
-      const list = await listCards(adminPool, ownerId);
-
-      expect(cardIds(list).sort()).toEqual([proposed.cardId, computing.cardId, failed.cardId].sort());
-      expect(await countCards(adminPool, ownerId)).toBe(1);
-      expect(list.total).toBe(1);
-    });
-
-    it("is 0 for a stack that holds only cards being computed", async () => {
-      const computing = await proposedCard("Computing");
-      await setCardStatus(computing.cardId, "computing");
-
-      expect(await countCards(adminPool, ownerId)).toBe(0);
-    });
-
-    it("counts the approvals of the user only", async () => {
-      await approvalFrom("heartbeat");
-      const other = (await createTenantZeroUser(adminPool)).id;
-
-      expect(await countCards(adminPool, ownerId)).toBe(1);
-      expect(await countCards(adminPool, other)).toBe(0);
-    });
-
-    it("counts only the approvals when the Inbox database is not there", async () => {
-      await approvalFrom("heartbeat");
-      await proposedCard("Buy milk");
-      await adminPool.query("UPDATE databases SET owner_module_id = NULL WHERE owner_module_id = 'inbox'");
-
-      expect(await countCards(adminPool, ownerId)).toBe(1);
-      expect(await countCards(adminPool, ownerId)).toBe((await listCards(adminPool, ownerId)).total);
-    });
-
-    it("counts only the approvals when the Processing proposals database is not there", async () => {
-      await approvalFrom("heartbeat");
-      await proposedCard("Buy milk");
-      await adminPool.query(
-        "UPDATE databases SET owner_module_id = NULL WHERE owner_module_id = 'processingProposals'",
-      );
-
-      expect(await countCards(adminPool, ownerId)).toBe(1);
-      expect(await countCards(adminPool, ownerId)).toBe((await listCards(adminPool, ownerId)).total);
-    });
-
-    describe("the route handler", () => {
-      it("answers 200 with the total of the session's user, equal to the total of the list", async () => {
-        await proposedCard("Buy milk");
-        await approvalFrom("heartbeat");
-        const computing = await proposedCard("Computing");
-        await setCardStatus(computing.cardId, "computing");
-
-        const answer = await inTenantZero(() =>
-          createInboxCardsCountRouteHandler(adminPool)({ identity: { user: { id: ownerId } } }),
-        );
-
-        expect(answer).toEqual({ status: 200, body: { total: 2 } });
-        expect((await listCards(adminPool, ownerId)).total).toBe(2);
-      });
-
-      it("counts the cards of the tenant but not the approvals of another actor", async () => {
-        await approvalFrom("heartbeat");
-        const other = (await createTenantZeroUser(adminPool)).id;
-        await proposedCard("Buy milk");
-
-        const answer = await inTenantZero(() =>
-          createInboxCardsCountRouteHandler(adminPool)({ identity: { user: { id: other } } }),
-        );
-
-        // A proposals card belongs to the tenant and an approval to the actor of its run, so only the card is counted.
-        expect(answer).toEqual({ status: 200, body: { total: 1 } });
-      });
-    });
-
-    describe("tenant isolation", () => {
-      let dataPool: Pool;
-
-      beforeAll(async () => {
-        dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
-      });
-
-      afterAll(async () => {
-        await dataPool?.end();
-      });
-
-      it(
-        "gives a second tenant its own count and never the first tenant's, on the runtime role",
-        async () => {
-          await proposedCard("First tenant capture");
-          await transcriptCard("First tenant transcript", "2026-08-28T08:00:00.000Z");
-          await approvalFrom("heartbeat");
-          const otherTenantId = await createTestTenant(adminPool);
-          await provisionTenant(dataPool, otherTenantId);
-
-          const asFirstTenant = await inTenantZero(() =>
-            withTransaction(dataPool, (client) => countOpenInboxCards(client, { ownerUserId: ownerId })),
-          );
-          // The first tenant's user id is passed on purpose: only the tenant scope can keep its rows out.
-          const asSecondTenant = await runInTenant(otherTenantId, () =>
-            withTransaction(dataPool, (client) => countOpenInboxCards(client, { ownerUserId: ownerId })),
-          );
-
-          expect(asFirstTenant).toBe(3);
-          expect(asSecondTenant).toBe(0);
-        },
-        BULK_TEST_TIMEOUT_MS,
-      );
-    });
-  });
-
-  describe("tenant isolation", () => {
-    let dataPool: Pool;
-
-    beforeAll(async () => {
-      dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
-    });
-
-    afterAll(async () => {
-      await dataPool?.end();
-    });
-
-    it(
-      "shows a second tenant none of the cards and approvals of the first, on the runtime role",
-      async () => {
+  it(
+    "shows and counts for a second tenant none of the cards and approvals of the first, on the runtime role",
+    async () => {
+      const dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+      try {
         const card = await proposedCard("First tenant capture");
         const transcript = await transcriptCard("First tenant transcript", "2026-08-28T08:00:00.000Z");
         const approval = await approvalFrom("heartbeat");
         const otherTenantId = await createTestTenant(adminPool);
         await provisionTenant(dataPool, otherTenantId);
-
-        const asFirstTenant = await inTenantZero(() =>
-          withTransaction(dataPool, (client) => listInboxCards(client, { ownerUserId: ownerId, locale: "en" })),
-        );
         // The first tenant's user id is passed on purpose: only the tenant scope can keep its rows out.
-        const asSecondTenant = await runInTenant(otherTenantId, () =>
-          withTransaction(dataPool, (client) => listInboxCards(client, { ownerUserId: ownerId, locale: "en" })),
-        );
+        const read = (inTenant: <T>(fn: () => Promise<T>) => Promise<T>) =>
+          inTenant(() =>
+            withTransaction(dataPool, async (client) => ({
+              list: await listInboxCards(client, { ownerUserId: ownerId, locale: "en" }),
+              count: await countOpenInboxCards(client, { ownerUserId: ownerId }),
+            })),
+          );
 
-        expect(cardIds(asFirstTenant).sort()).toEqual([approval, card.cardId, transcript.cardId].sort());
-        expect(asFirstTenant.total).toBe(3);
-        expect(asSecondTenant).toEqual({ cards: [], total: 0 });
-      },
-      BULK_TEST_TIMEOUT_MS,
-    );
-  });
+        const asFirstTenant = await read(inTenantZero);
+        const asSecondTenant = await read((fn) => runInTenant(otherTenantId, fn));
+
+        expect(cardIds(asFirstTenant.list).sort()).toEqual([approval, card.cardId, transcript.cardId].sort());
+        expect([asFirstTenant.list.total, asFirstTenant.count]).toEqual([3, 3]);
+        expect(asSecondTenant).toEqual({ list: { cards: [], total: 0 }, count: 0 });
+      } finally {
+        await dataPool.end();
+      }
+    },
+    BULK_TEST_TIMEOUT_MS,
+  );
 });
 
 describe("isComputingTimedOut (issue gh-2026)", () => {
@@ -1632,16 +1365,14 @@ describe("isComputingTimedOut (issue gh-2026)", () => {
     expect(COMPUTING_TIMEOUT_MS).toBe(10 * 60 * 1000);
   });
 
-  it("is false for a computing card that was updated less than the timeout ago", () => {
-    expect(isComputingTimedOut(card("computing", ago(COMPUTING_TIMEOUT_MS - 1)), NOW)).toBe(false);
-  });
-
-  it("is false for a computing card that was updated exactly the timeout ago", () => {
-    expect(isComputingTimedOut(card("computing", ago(COMPUTING_TIMEOUT_MS)), NOW)).toBe(false);
-  });
-
-  it("is true for a computing card that was updated more than the timeout ago", () => {
-    expect(isComputingTimedOut(card("computing", ago(COMPUTING_TIMEOUT_MS + 1)), NOW)).toBe(true);
+  it.each([
+    ["less than the timeout ago", ago(COMPUTING_TIMEOUT_MS - 1), false],
+    ["exactly the timeout ago", ago(COMPUTING_TIMEOUT_MS), false],
+    ["more than the timeout ago", ago(COMPUTING_TIMEOUT_MS + 1), true],
+    ["after now", new Date(NOW.getTime() + 1000).toISOString(), false],
+    ["at no timestamp", "not a timestamp", false],
+  ])("for a computing card updated %s is %s", (_, updatedAt, timedOut) => {
+    expect(isComputingTimedOut(card("computing", updatedAt), NOW)).toBe(timedOut);
   });
 
   it.each(["proposed", "computeFailed", "needsClarification", "invalid", "confirmed", "rejected", undefined])(
@@ -1650,12 +1381,4 @@ describe("isComputingTimedOut (issue gh-2026)", () => {
       expect(isComputingTimedOut(card(status, ago(24 * 60 * 60 * 1000)), NOW)).toBe(false);
     },
   );
-
-  it("is false for a computing card whose updatedAt is no timestamp", () => {
-    expect(isComputingTimedOut(card("computing", "not a timestamp"), NOW)).toBe(false);
-  });
-
-  it("is false for a computing card updated after now", () => {
-    expect(isComputingTimedOut(card("computing", new Date(NOW.getTime() + 1000).toISOString()), NOW)).toBe(false);
-  });
 });

@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ImapFlow } from "imapflow";
 import type { Pool, PoolClient } from "pg";
 import { runInTenant } from "@semprec/shared";
 import { withTransaction } from "../db/pool.js";
 import { drainGmailMoves, drainGraphMoves, drainImapMoves } from "../mail/mailMessageMoveSync.js";
 import { logger } from "../mail/logger.js";
-import { reconcileImapAccount } from "../mail/imapReconcile.js";
+import { reconcileImapAccount, type ImapMailClient } from "../mail/imapReconcile.js";
 import { ImapFlowMailClient } from "../mail/imapFlowClient.js";
 import { GmailRestClient } from "../mail/gmailRestClient.js";
 import { GraphRestClient } from "../mail/graphRestClient.js";
@@ -21,11 +22,10 @@ import {
 import { seedSystem } from "../seed/seedSystem.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
-import { updateItemWithClient } from "../chokePoint/itemWrites.js";
+import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { getRelationDefinitionByPropertyId } from "../chokePoint/relationsStore.js";
 import { listPendingImapFlagWrites } from "../mail/mailMessageFlagSyncStore.js";
 import { createImapMailFlagWritebackAdapter } from "../mail/mailFlagWriteback.js";
-import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient, deleteRelationWithClient } from "../chokePoint/relationOps.js";
 import { ensureFolderItem } from "../mail/folderDiscovery.js";
 import { ensureMailFolderSyncState, recordReconcile } from "../mail/mailFolderSyncStateStore.js";
@@ -54,6 +54,60 @@ let pool: Pool;
 let a: string;
 let b: string;
 
+type RecordInput = Parameters<typeof recordDesiredMailMessageMove>[1];
+type ClaimInput = Parameters<typeof claimMailMoveStep>[1];
+
+const inTenant = <T>(fn: (client: PoolClient) => Promise<T>, tenantId = a) =>
+  runInTenant(tenantId, () => withTransaction(pool, fn));
+const record = (input: RecordInput, tenantId = a) =>
+  inTenant((client) => recordDesiredMailMessageMove(client, input), tenantId);
+const claim = (input: ClaimInput) => inTenant((client) => claimMailMoveStep(client, input));
+const confirm = (messageItemId: string, revision: string) =>
+  inTenant((client) => markMoveConfirmed(client, messageItemId, revision));
+const pendingMoves = (mailboxItemId: string, tenantId = a) =>
+  inTenant((client) => listPendingMoves(client, mailboxItemId), tenantId);
+const providerMessageIdOf = async (messageItemId: string) =>
+  (await inTenant((client) => getMailMessageMetaByItemId(client, messageItemId)))?.providerMessageId;
+const moveState = async (messageItemId: string) =>
+  (
+    await inTenant((client) =>
+      client.query<{ status: string; attempts: number; failure_reason: string }>(
+        "SELECT status, attempts, failure_reason FROM mail_message_move_sync_state WHERE message_item_id = $1",
+        [messageItemId],
+      ),
+    )
+  ).rows[0];
+
+const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+const gmailClient = (request: typeof fetch) => new GmailRestClient(async () => "fake-token", request);
+const graphClient = (request: typeof fetch) => new GraphRestClient(async () => "fake-token", request);
+const gmailEvidence = (messageId: string, labels: { inTrash?: boolean; inInbox?: boolean } = {}) => ({
+  provider: "gmail" as const,
+  messageId,
+  inTrash: false,
+  inInbox: true,
+  inSent: false,
+  ...labels,
+});
+
+/** The provider adapters must run outside any database transaction held by the move worker. */
+async function assertNoMoveTransaction(): Promise<void> {
+  const activity = await admin.query<{ pid: number; xact_start: Date | null }>(
+    "SELECT pid, xact_start FROM pg_stat_activity WHERE datname = current_database() AND usename = 'semprec_data'",
+  );
+  expect(activity.rows.length).toBeGreaterThan(0);
+  expect(activity.rows.every((row) => row.xact_start === null)).toBe(true);
+}
+
+async function withFakeTimers(fn: () => Promise<void>): Promise<void> {
+  vi.useFakeTimers();
+  try {
+    await fn();
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 async function fixture(
   tenantId: string,
 ): Promise<{ mailboxItemId: string; messageItemId: string; source: { provider: "gmail"; providerMessageId: string } }> {
@@ -74,15 +128,174 @@ async function fixture(
   });
 }
 
+/** A Graph move for a fresh message, claimed with an in-flight `move` step. */
+async function claimedGraphMove() {
+  const own = await fixture(a);
+  const source = { provider: "graph" as const, providerMessageId: own.source.providerMessageId };
+  const move = await record({ ...own, source, desiredPurpose: "archive" });
+  const token = randomUUID();
+  await claim({
+    messageItemId: own.messageItemId,
+    revision: move.desired_revision,
+    token,
+    step: "move",
+    evidence: { provider: "graph", sourceId: source.providerMessageId, targetFolderId: "archive" },
+  });
+  return { own, source, token };
+}
+
+/** A local write that gives the message a newer provider identity than the claimed operation captured. */
+async function replaceProviderMessageId(messageItemId: string, mailboxItemId: string, providerMessageId: string) {
+  await inTenant(async (client) => {
+    const existing = await getMailMessageMetaByItemId(client, messageItemId);
+    if (!existing) throw new Error("missing fixture metadata");
+    await upsertMailMessageMeta(client, {
+      itemId: existing.itemId,
+      mailboxItemId,
+      messageId: existing.messageId,
+      providerMessageId,
+      envelope: {},
+    });
+  });
+}
+
+type ImapFixture = Awaited<ReturnType<typeof imapFixture>>;
+
+/**
+ * A seeded mailbox with one message and the given IMAP folders; the message is linked to the first folder with
+ * UID 7.
+ */
+async function imapFixture(folders: { path: string; purpose: string; uidValidity: string; uidNext: string }[]) {
+  await runInTenant(a, () => seedSystem(pool));
+  return inTenant(async (client) => {
+    const mailboxDb = await getDatabaseByModuleId(client, "mailboxes");
+    const emailDb = await getDatabaseByModuleId(client, "emails");
+    const folderDb = await getDatabaseByModuleId(client, "folders");
+    if (!mailboxDb || !emailDb || !folderDb) throw new Error("Missing mail databases");
+    const emailFolder = await getPropertyByKey(client, emailDb.id, "folder");
+    const folderMailbox = await getPropertyByKey(client, folderDb.id, "mailbox");
+    if (!emailFolder || !folderMailbox) throw new Error("Missing mail relation properties");
+    const mailbox = await createItemWithClient(client, { databaseId: mailboxDb.id, properties: { name: "Mailbox" } });
+    const message = await createItemWithClient(
+      client,
+      { databaseId: emailDb.id, properties: { name: "Message" } },
+      { allowedSystemKeys: ["name"] },
+    );
+    const messageId = `<${randomUUID()}@example.test>`;
+    await upsertMailMessageMeta(client, { itemId: message.id, mailboxItemId: mailbox.id, messageId, envelope: {} });
+    const folderIds: string[] = [];
+    for (const folder of folders) {
+      const id = await ensureFolderItem(client, {
+        foldersDatabaseId: folderDb.id,
+        mailboxItemId: mailbox.id,
+        mailboxRelationPropertyId: folderMailbox.id,
+        providerId: folder.path,
+        name: folder.path,
+        behavior: "folder",
+        specialPurpose: folder.purpose,
+      });
+      await ensureMailFolderSyncState(client, id);
+      await recordReconcile(client, {
+        itemId: id,
+        uidvalidity: folder.uidValidity,
+        uidnext: folder.uidNext,
+        highestmodseq: null,
+      });
+      folderIds.push(id);
+    }
+    const fx = {
+      mailboxItemId: mailbox.id,
+      messageItemId: message.id,
+      messageId,
+      folderIds,
+      emailsDatabaseId: emailDb.id,
+      foldersDatabaseId: folderDb.id,
+      folderPropertyId: emailFolder.id,
+      mailboxPropertyId: folderMailbox.id,
+    };
+    await linkFolder(client, fx, folderIds[0]!, 7);
+    return fx;
+  });
+}
+
+const linkFolder = (
+  client: PoolClient,
+  fx: Pick<ImapFixture, "folderPropertyId" | "messageItemId">,
+  folderId: string,
+  uid?: number,
+) =>
+  createRelationWithClient(
+    client,
+    {
+      relationPropertyId: fx.folderPropertyId,
+      callerItemId: fx.messageItemId,
+      targetItemId: folderId,
+      ...(uid === undefined ? {} : { metadata: { uid } }),
+    },
+    EMAILS_RELATION_CONTEXT,
+  );
+const unlinkFolder = (client: PoolClient, fx: ImapFixture, folderId: string) =>
+  deleteRelationWithClient(
+    client,
+    { relationPropertyId: fx.folderPropertyId, callerItemId: fx.messageItemId, targetItemId: folderId },
+    EMAILS_RELATION_CONTEXT,
+  );
+
+/** Records the desired IMAP move from `from` and relinks the message locally from `from` to `to`. */
+const moveImapLocally = (
+  fx: ImapFixture,
+  desiredPurpose: RecordInput["desiredPurpose"],
+  from: { folderId: string; path: string; uid: number; uidValidity: string },
+  to: string,
+) =>
+  inTenant(async (client) => {
+    await recordDesiredMailMessageMove(client, {
+      messageItemId: fx.messageItemId,
+      mailboxItemId: fx.mailboxItemId,
+      desiredPurpose,
+      source: {
+        provider: "imap",
+        folderItemId: from.folderId,
+        path: from.path,
+        uid: from.uid,
+        uidValidity: from.uidValidity,
+      },
+    });
+    await unlinkFolder(client, fx, from.folderId);
+    await linkFolder(client, fx, to);
+  });
+
+const drainImap = (fx: ImapFixture, create: () => Promise<ImapMailClient>) =>
+  runInTenant(a, () =>
+    drainImapMoves(pool, fx.mailboxItemId, create, fx.foldersDatabaseId, fx.mailboxPropertyId, fx.folderPropertyId),
+  );
+const fakeImapClient = (
+  prepare: { uidValidity: string; capabilities: string[] },
+  executeMoveStep: unknown,
+  close = async () => {},
+) =>
+  ({
+    prepareMove: async () => ({ ...prepare, capabilities: new Set(prepare.capabilities), found: true }),
+    executeMoveStep,
+    close,
+  }) as unknown as ImapMailClient;
+const imapFlow = (raw: Record<string, unknown>) => raw as unknown as ImapFlow;
+const imapFlowOn = (path: string, uidValidity: bigint, raw: Record<string, unknown>) =>
+  imapFlow({
+    mailbox: { path, uidValidity },
+    mailboxOpen: async () => ({ path, uidValidity }),
+    logout: async () => {},
+    close: () => {},
+    ...raw,
+  });
+
 describe("mail move intent store", () => {
   it("prepares one-use Gmail and Graph commands without a second token lookup", async () => {
     const tokens = vi.fn(async () => "fake-token");
     const gmailFetch = vi.fn(async () => Response.json({ id: "g", labelIds: ["TRASH"] }));
     const graphFetch = vi.fn(async () => Response.json({ id: "new-graph-id" }));
-    const gmail = new GmailRestClient(tokens, gmailFetch);
-    const graph = new GraphRestClient(tokens, graphFetch);
-    const gmailCommand = await prepareGmailMove(gmail, "g", "trash");
-    const graphCommand = await prepareGraphMove(graph, "graph-id", "archive");
+    const gmailCommand = await prepareGmailMove(new GmailRestClient(tokens, gmailFetch), "g", "trash");
+    const graphCommand = await prepareGraphMove(new GraphRestClient(tokens, graphFetch), "graph-id", "archive");
     expect(tokens).toHaveBeenCalledTimes(2);
     expect(gmailFetch).not.toHaveBeenCalled();
     expect(graphFetch).not.toHaveBeenCalled();
@@ -94,20 +307,14 @@ describe("mail move intent store", () => {
     expect(gmailFetch).toHaveBeenCalledTimes(1);
     expect(graphFetch).toHaveBeenCalledTimes(1);
   });
-  it("closes a timed-out IMAP preparation, joins its late result, and never starts SEARCH", async () => {
-    vi.useFakeTimers();
-    try {
+
+  it("closes a timed-out IMAP preparation, joins its late result, and never starts SEARCH", () =>
+    withFakeTimers(async () => {
       let release!: (value: { uidValidity: bigint }) => void;
-      const open = vi.fn(
-        () =>
-          new Promise<{ uidValidity: bigint }>((resolve) => {
-            release = resolve;
-          }),
-      );
+      const open = vi.fn(() => new Promise<{ uidValidity: bigint }>((resolve) => (release = resolve)));
       const search = vi.fn();
       const close = vi.fn();
-      const raw = { mailboxOpen: open, search, close, capabilities: new Map() };
-      const client = new ImapFlowMailClient(raw as unknown as import("imapflow").ImapFlow);
+      const client = new ImapFlowMailClient(imapFlow({ mailboxOpen: open, search, close, capabilities: new Map() }));
       let settled = false;
       const pending = client.prepareMove("INBOX", 10).then((value) => {
         settled = true;
@@ -121,29 +328,21 @@ describe("mail move intent store", () => {
       expect(search).not.toHaveBeenCalled();
       await client.close();
       expect(close).toHaveBeenCalledTimes(1);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+    }));
 
-  it("keeps a late IMAP MOVE acknowledgement uncertain and forbids a second step", async () => {
-    vi.useFakeTimers();
-    try {
+  it("keeps a late IMAP MOVE acknowledgement uncertain and forbids a second step", () =>
+    withFakeTimers(async () => {
       let release!: (value: unknown) => void;
-      const move = vi.fn(
-        () =>
-          new Promise<unknown>((resolve) => {
-            release = resolve;
-          }),
-      );
+      const move = vi.fn(() => new Promise<unknown>((resolve) => (release = resolve)));
       const close = vi.fn();
-      const raw = {
-        mailbox: { path: "INBOX", uidValidity: 2n },
-        capabilities: new Map([["MOVE", true]]),
-        messageMove: move,
-        close,
-      };
-      const client = new ImapFlowMailClient(raw as unknown as import("imapflow").ImapFlow);
+      const client = new ImapFlowMailClient(
+        imapFlow({
+          mailbox: { path: "INBOX", uidValidity: 2n },
+          capabilities: new Map([["MOVE", true]]),
+          messageMove: move,
+          close,
+        }),
+      );
       let settled = false;
       const pending = client.executeMoveStep("move", "INBOX", 10, "2", "Archive").then((value) => {
         settled = true;
@@ -157,38 +356,33 @@ describe("mail move intent store", () => {
       await expect(client.executeMoveStep("move", "INBOX", 10, "2", "Archive")).resolves.toEqual({ kind: "uncertain" });
       expect(move).toHaveBeenCalledTimes(1);
       await client.close();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+    }));
 
-  it("keeps a timed-out IMAP operation and close failure private through actual settlement", async () => {
-    vi.useFakeTimers();
-    const warning = vi.spyOn(logger, "warn").mockImplementation(() => {});
-    try {
-      let rejectOperation!: (error: unknown) => void;
-      const raw = {
-        mailboxOpen: () =>
-          new Promise((_resolve, reject) => {
-            rejectOperation = reject;
+  it("keeps a timed-out IMAP operation and close failure private through actual settlement", () =>
+    withFakeTimers(async () => {
+      const warning = vi.spyOn(logger, "warn").mockImplementation(() => {});
+      try {
+        let rejectOperation!: (error: unknown) => void;
+        const client = new ImapFlowMailClient(
+          imapFlow({
+            mailboxOpen: () => new Promise((_resolve, reject) => (rejectOperation = reject)),
+            close: () => {
+              throw new Error("private close failure");
+            },
+            capabilities: new Map(),
           }),
-        close: () => {
-          throw new Error("private close failure");
-        },
-        capabilities: new Map(),
-      };
-      const client = new ImapFlowMailClient(raw as unknown as import("imapflow").ImapFlow);
-      const pending = client.prepareMove("private-folder", 10);
-      await vi.advanceTimersByTimeAsync(30_000);
-      rejectOperation(undefined);
-      await expect(pending).resolves.toBeNull();
-      await expect(client.close()).rejects.toThrow("IMAP move provider cleanup failed unexpectedly");
-      expect(JSON.stringify(warning.mock.calls)).not.toContain("private");
-    } finally {
-      warning.mockRestore();
-      vi.useRealTimers();
-    }
-  });
+        );
+        const pending = client.prepareMove("private-folder", 10);
+        await vi.advanceTimersByTimeAsync(30_000);
+        rejectOperation(undefined);
+        await expect(pending).resolves.toBeNull();
+        await expect(client.close()).rejects.toThrow("IMAP move provider cleanup failed unexpectedly");
+        expect(JSON.stringify(warning.mock.calls)).not.toContain("private");
+      } finally {
+        warning.mockRestore();
+      }
+    }));
+
   it.each([
     [["MOVE", "UIDPLUS"], "move"],
     [["MOVE"], "move"],
@@ -197,41 +391,27 @@ describe("mail move intent store", () => {
   ] as const)("selects the safe IMAP protocol for %j", (capabilities, expected) => {
     expect(selectImapMoveProtocol(new Set(capabilities))).toBe(expected);
   });
+
   it("refuses unsupported IMAP commands before mutation and leaves unrelated deleted messages alone", async () => {
     const unrelatedDeleted = new Set([99]);
-    const copy = vi.fn(async () => {
-      unrelatedDeleted.clear();
-      return false as const;
-    });
-    const flag = vi.fn(async () => {
-      unrelatedDeleted.clear();
-      return true;
-    });
-    const expunge = vi.fn(async () => {
-      unrelatedDeleted.clear();
-      return true;
-    });
-    const move = vi.fn(async () => {
-      unrelatedDeleted.clear();
-      return false as const;
-    });
-    const client = {
-      capabilities: new Map<string, boolean>(),
-      mailbox: { path: "INBOX", uidValidity: 42n },
-      messageCopy: copy,
-      messageFlagsAdd: flag,
-      messageDelete: expunge,
-      messageMove: move,
-    } as unknown as import("imapflow").ImapFlow;
+    const mutation = () =>
+      vi.fn(async () => {
+        unrelatedDeleted.clear();
+        return true;
+      });
+    const commands = {
+      messageCopy: mutation(),
+      messageFlagsAdd: mutation(),
+      messageDelete: mutation(),
+      messageMove: mutation(),
+    };
+    const client = imapFlow({ capabilities: new Map(), mailbox: { path: "INBOX", uidValidity: 42n }, ...commands });
     for (const step of ["move", "copy", "mark_deleted", "expunge"] as const) {
       expect(await executeImapMoveStep(client, step, "INBOX", 7, "42", "Archive")).toEqual({
         kind: "unsupportedCapability",
       });
     }
-    expect(copy).not.toHaveBeenCalled();
-    expect(flag).not.toHaveBeenCalled();
-    expect(expunge).not.toHaveBeenCalled();
-    expect(move).not.toHaveBeenCalled();
+    for (const command of Object.values(commands)) expect(command).not.toHaveBeenCalled();
     expect([...unrelatedDeleted]).toEqual([99]);
   });
 
@@ -239,17 +419,12 @@ describe("mail move intent store", () => {
     const move = vi
       .fn()
       .mockResolvedValueOnce(false)
-      .mockResolvedValueOnce({
-        path: "INBOX",
-        destination: "Archive",
-        uidValidity: 43n,
-        uidMap: new Map([[7, 23]]),
-      });
-    const client = {
+      .mockResolvedValueOnce({ path: "INBOX", destination: "Archive", uidValidity: 43n, uidMap: new Map([[7, 23]]) });
+    const client = imapFlow({
       capabilities: new Map([["MOVE", true]]),
       mailbox: { path: "INBOX", uidValidity: 42n },
       messageMove: move,
-    } as unknown as import("imapflow").ImapFlow;
+    });
     expect(await executeImapMoveStep(client, "move", "INBOX", 7, "42", "Archive")).toEqual({
       kind: "uncertain",
       observed: false,
@@ -265,13 +440,11 @@ describe("mail move intent store", () => {
   it("uses bounded Graph observation and move calls without exposing provider text", async () => {
     const fetchProvider: typeof fetch = vi
       .fn()
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ id: "old-id", parentFolderId: "folder-1" }), { status: 200 }),
-      )
-      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "new-id" }), { status: 201 }))
+      .mockResolvedValueOnce(json({ id: "old-id", parentFolderId: "folder-1" }))
+      .mockResolvedValueOnce(json({ id: "new-id" }, 201))
       .mockResolvedValueOnce(new Response("secret body", { status: 404 }))
       .mockRejectedValueOnce(new Error("secret token and address"));
-    const client = new GraphRestClient(async () => "fake-token", fetchProvider);
+    const client = graphClient(fetchProvider);
     expect(await client.observeMoveMessage("old-id")).toEqual({
       kind: "found",
       id: "old-id",
@@ -284,14 +457,13 @@ describe("mail move intent store", () => {
   });
 
   it("observes Gmail labels and keeps an ambiguous mutation unconfirmed", async () => {
-    const fetchProvider: typeof fetch = vi
-      .fn()
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ id: "mail-id", labelIds: ["TRASH", "SENT"] }), { status: 200 }),
-      )
-      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "mail-id", labelIds: ["SENT"] }), { status: 200 }))
-      .mockRejectedValueOnce(new Error("private provider failure"));
-    const gmail = new GmailRestClient(async () => "fake-token", fetchProvider);
+    const gmail = gmailClient(
+      vi
+        .fn()
+        .mockResolvedValueOnce(json({ id: "mail-id", labelIds: ["TRASH", "SENT"] }))
+        .mockResolvedValueOnce(json({ id: "mail-id", labelIds: ["SENT"] }))
+        .mockRejectedValueOnce(new Error("private provider failure")),
+    );
     expect(await gmail.observeMoveMessage("mail-id")).toEqual({
       kind: "found",
       inTrash: true,
@@ -308,9 +480,8 @@ describe("mail move intent store", () => {
   });
 
   it("settles a Graph response read and failing cleanup before private diagnostics", async () => {
-    const original = new Error("provider-secret-in-read");
     const read = vi.fn(async () => {
-      throw original;
+      throw new Error("provider-secret-in-read");
     });
     const cancel = vi.fn(async () => {
       // Provider cleanup may reject without a value; the owner must retain its presence.
@@ -318,11 +489,10 @@ describe("mail move intent store", () => {
       throw undefined;
     });
     const releaseLock = vi.fn();
-    const bodyCancel = vi.fn(async () => {});
     const response = {
       ok: true,
       status: 200,
-      body: { locked: false, getReader: () => ({ read, cancel, releaseLock }), cancel: bodyCancel },
+      body: { locked: false, getReader: () => ({ read, cancel, releaseLock }), cancel: vi.fn(async () => {}) },
     } as unknown as Response;
     const warning = vi.spyOn(logger, "warn").mockImplementation(() => {
       expect(cancel).toHaveBeenCalled();
@@ -372,72 +542,41 @@ describe("mail move intent store", () => {
   it("tracks revisions, refuses foreign identities and confirms only the current revision", async () => {
     const own = await fixture(a);
     const other = await fixture(b);
-    const first = await runInTenant(a, () =>
-      withTransaction(pool, (client) => recordDesiredMailMessageMove(client, { ...own, desiredPurpose: "archive" })),
-    );
-    const second = await runInTenant(a, () =>
-      withTransaction(pool, (client) => recordDesiredMailMessageMove(client, { ...own, desiredPurpose: "inbox" })),
-    );
+    const first = await record({ ...own, desiredPurpose: "archive" });
+    const second = await record({ ...own, desiredPurpose: "inbox" });
     expect(first.desired_revision).toBe("1");
     expect(second.desired_revision).toBe("2");
-    await expect(
-      runInTenant(b, () =>
-        withTransaction(pool, (client) => recordDesiredMailMessageMove(client, { ...own, desiredPurpose: "trash" })),
-      ),
-    ).rejects.toThrow("Mail message is not available in this mailbox");
-    expect(
-      await runInTenant(b, () => withTransaction(pool, (client) => listPendingMoves(client, other.mailboxItemId))),
-    ).toEqual([]);
-    expect(
-      await runInTenant(a, () =>
-        withTransaction(pool, (client) => markMoveConfirmed(client, own.messageItemId, first.desired_revision)),
-      ),
-    ).toBe(false);
-    expect(
-      await runInTenant(a, () =>
-        withTransaction(pool, (client) => markMoveConfirmed(client, own.messageItemId, second.desired_revision)),
-      ),
-    ).toBe(true);
-    expect(
-      await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, own.mailboxItemId))),
-    ).toEqual([]);
+    await expect(record({ ...own, desiredPurpose: "trash" }, b)).rejects.toThrow(
+      "Mail message is not available in this mailbox",
+    );
+    expect(await pendingMoves(other.mailboxItemId, b)).toEqual([]);
+    expect(await confirm(own.messageItemId, first.desired_revision)).toBe(false);
+    expect(await confirm(own.messageItemId, second.desired_revision)).toBe(true);
+    expect(await pendingMoves(own.mailboxItemId)).toEqual([]);
   });
 
   it.each(["none", "pending", "operation outstanding", "done", "failed"] as const)(
     "decides in one place whether a new desire keeps the earlier source: %s",
     async (state) => {
       const own = await fixture(a);
-      const inTenant = <T>(fn: (client: PoolClient) => Promise<T>) => runInTenant(a, () => withTransaction(pool, fn));
       if (state !== "none") {
-        const first = await inTenant((client) =>
-          recordDesiredMailMessageMove(client, { ...own, desiredPurpose: "archive" }),
-        );
+        const first = await record({ ...own, desiredPurpose: "archive" });
+        const revision = first.desired_revision;
         if (state === "operation outstanding")
           expect(
-            await inTenant((client) =>
-              claimMailMoveStep(client, {
-                messageItemId: own.messageItemId,
-                revision: first.desired_revision,
-                token: randomUUID(),
-                step: "modify_labels",
-                evidence: {
-                  provider: "gmail",
-                  messageId: own.source.providerMessageId,
-                  inTrash: false,
-                  inInbox: true,
-                  inSent: false,
-                },
-              }),
-            ),
+            await claim({
+              messageItemId: own.messageItemId,
+              revision,
+              token: randomUUID(),
+              step: "modify_labels",
+              evidence: gmailEvidence(own.source.providerMessageId),
+            }),
           ).toBe(true);
-        if (state === "done")
-          expect(await inTenant((client) => markMoveConfirmed(client, own.messageItemId, first.desired_revision))).toBe(
-            true,
-          );
+        if (state === "done") expect(await confirm(own.messageItemId, revision)).toBe(true);
         if (state === "failed")
           expect(
             await inTenant((client) =>
-              markMoveAttemptFailed(client, own.messageItemId, first.desired_revision, "providerRejected", 1),
+              markMoveAttemptFailed(client, own.messageItemId, revision, "providerRejected", 1),
             ),
           ).toBe(true);
       }
@@ -446,217 +585,94 @@ describe("mail move intent store", () => {
       expect(await inTenant((client) => hasPreservedMailMoveSource(client, own.messageItemId))).toBe(keeps);
       // The store keeps the earlier source exactly when the helper says so: a desire without a source of its own is
       // recorded then and refused otherwise.
-      const record = inTenant((client) =>
-        recordDesiredMailMessageMove(client, {
-          messageItemId: own.messageItemId,
-          mailboxItemId: own.mailboxItemId,
-          desiredPurpose: "trash",
-        }),
-      );
-      if (keeps) expect(await record).toMatchObject({ desired_purpose: "trash", source_evidence: own.source });
-      else await expect(record).rejects.toThrow();
+      const recorded = record({
+        messageItemId: own.messageItemId,
+        mailboxItemId: own.mailboxItemId,
+        desiredPurpose: "trash",
+      });
+      if (keeps) expect(await recorded).toMatchObject({ desired_purpose: "trash", source_evidence: own.source });
+      else await expect(recorded).rejects.toThrow();
     },
   );
+
   it.each([
     ["acknowledged outcome", false, 0],
     ["uncertain evidence", true, null],
   ] as const)("rolls back %s when its state write reports no row", async (_name, conflict, reportedCount) => {
-    const original = await fixture(a);
-    const source = { provider: "graph" as const, providerMessageId: original.source.providerMessageId };
-    const move = await runInTenant(a, () =>
-      withTransaction(pool, (client) =>
-        recordDesiredMailMessageMove(client, { ...original, source, desiredPurpose: "archive" }),
-      ),
-    );
-    const token = randomUUID();
-    await runInTenant(a, () =>
-      withTransaction(pool, (client) =>
-        claimMailMoveStep(client, {
-          messageItemId: original.messageItemId,
-          revision: move.desired_revision,
-          token,
-          step: "move",
-          evidence: { provider: "graph", sourceId: source.providerMessageId, targetFolderId: "archive" },
-        }),
-      ),
-    );
-    if (conflict) {
-      await runInTenant(a, () =>
-        withTransaction(pool, async (client) => {
-          const existing = await getMailMessageMetaByItemId(client, original.messageItemId);
-          if (!existing) throw new Error("missing fixture metadata");
-          await upsertMailMessageMeta(client, {
-            itemId: existing.itemId,
-            mailboxItemId: original.mailboxItemId,
-            messageId: existing.messageId,
-            providerMessageId: "newer-local-id",
-            envelope: {},
-          });
-        }),
-      );
-    }
+    const { own, source, token } = await claimedGraphMove();
+    if (conflict) await replaceProviderMessageId(own.messageItemId, own.mailboxItemId, "newer-local-id");
     let intercepted = false;
     await expect(
-      runInTenant(a, () =>
-        withTransaction(pool, async (client) => {
-          const realQuery = client.query.bind(client);
-          const spy = vi.spyOn(client, "query");
-          // The exercised store calls use pg's promise overload.
-          const forward = async (sql: string, values?: unknown[]) => {
-            const result = await realQuery(sql, values);
-            if (
-              sql.includes("UPDATE mail_message_move_sync_state SET") &&
-              (conflict ? sql.includes("operation_phase = 'uncertain'") : sql.includes("source_evidence = $3::jsonb"))
-            ) {
-              intercepted = true;
-              return { ...result, rowCount: reportedCount };
-            }
-            return result;
-          };
-          // pg's final overload returns void; the store uses the promise overload.
-          // eslint-disable-next-line @typescript-eslint/no-misused-promises
-          spy.mockImplementation(forward as typeof client.query);
-          try {
-            return await completeGraphMove(client, {
-              messageItemId: original.messageItemId,
-              token,
-              resultId: "remote-result",
-            });
-          } finally {
-            spy.mockRestore();
+      inTenant(async (client) => {
+        const realQuery = client.query.bind(client);
+        const spy = vi.spyOn(client, "query");
+        // The exercised store calls use pg's promise overload.
+        const forward = async (sql: string, values?: unknown[]) => {
+          const result = await realQuery(sql, values);
+          if (
+            sql.includes("UPDATE mail_message_move_sync_state SET") &&
+            (conflict ? sql.includes("operation_phase = 'uncertain'") : sql.includes("source_evidence = $3::jsonb"))
+          ) {
+            intercepted = true;
+            return { ...result, rowCount: reportedCount };
           }
-        }),
-      ),
+          return result;
+        };
+        // pg's final overload returns void; the store uses the promise overload.
+        // eslint-disable-next-line @typescript-eslint/no-misused-promises
+        spy.mockImplementation(forward as typeof client.query);
+        try {
+          return await completeGraphMove(client, {
+            messageItemId: own.messageItemId,
+            token,
+            resultId: "remote-result",
+          });
+        } finally {
+          spy.mockRestore();
+        }
+      }),
     ).rejects.toThrow(`Expected mail move outcome to affect at least one row, got ${reportedCount}`);
     expect(intercepted).toBe(true);
-    const row = (
-      await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, original.mailboxItemId)))
-    )[0];
-    expect(row).toMatchObject({
+    expect((await pendingMoves(own.mailboxItemId))[0]).toMatchObject({
       operation_token: token,
       operation_phase: "in_flight",
       operation_evidence: { provider: "graph", sourceId: source.providerMessageId },
       status: "pending",
     });
-    const metadata = await runInTenant(a, () =>
-      withTransaction(pool, (client) => getMailMessageMetaByItemId(client, original.messageItemId)),
-    );
-    expect(metadata?.providerMessageId).toBe(conflict ? "newer-local-id" : source.providerMessageId);
+    expect(await providerMessageIdOf(own.messageItemId)).toBe(conflict ? "newer-local-id" : source.providerMessageId);
   });
 
   it("keeps an acknowledged Graph identity without confirming an A-B-A desire", async () => {
-    const original = await fixture(a);
-    const input = {
-      ...original,
-      source: { provider: "graph" as const, providerMessageId: original.source.providerMessageId },
-    };
-    const move = await runInTenant(a, () =>
-      withTransaction(pool, (client) => recordDesiredMailMessageMove(client, { ...input, desiredPurpose: "archive" })),
-    );
-    const token = randomUUID();
-    await runInTenant(a, () =>
-      withTransaction(pool, (client) =>
-        claimMailMoveStep(client, {
-          messageItemId: input.messageItemId,
-          revision: move.desired_revision,
-          token,
-          step: "move",
-          evidence: { provider: "graph", sourceId: original.source.providerMessageId, targetFolderId: "archive" },
-        }),
-      ),
-    );
-    for (const desiredPurpose of ["inbox", "archive"] as const) {
-      await runInTenant(a, () =>
-        withTransaction(pool, (client) => recordDesiredMailMessageMove(client, { ...input, desiredPurpose })),
-      );
-    }
+    const { own, source, token } = await claimedGraphMove();
+    for (const desiredPurpose of ["inbox", "archive"] as const) await record({ ...own, source, desiredPurpose });
     expect(
-      await runInTenant(a, () =>
-        withTransaction(pool, (client) =>
-          completeGraphMove(client, {
-            messageItemId: input.messageItemId,
-            token,
-            resultId: "new-graph-id",
-          }),
-        ),
+      await inTenant((client) =>
+        completeGraphMove(client, { messageItemId: own.messageItemId, token, resultId: "new-graph-id" }),
       ),
     ).toBe("pending");
-    const rows = await runInTenant(a, () =>
-      withTransaction(pool, (client) => listPendingMoves(client, input.mailboxItemId)),
-    );
-    expect(rows[0]).toMatchObject({
+    expect((await pendingMoves(own.mailboxItemId))[0]).toMatchObject({
       desired_revision: "3",
       current_purpose: "archive",
       status: "pending",
       source_evidence: { provider: "graph", providerMessageId: "new-graph-id" },
       operation_token: null,
     });
-    const meta = await runInTenant(a, () =>
-      withTransaction(pool, (client) =>
-        client.query<{ provider_message_id: string }>(
-          "SELECT provider_message_id FROM mail_message_meta WHERE item_id = $1",
-          [input.messageItemId],
-        ),
-      ),
-    );
-    expect(meta.rows[0]?.provider_message_id).toBe("new-graph-id");
+    expect(await providerMessageIdOf(own.messageItemId)).toBe("new-graph-id");
   });
 
   it("retains Graph result evidence instead of overwriting a newer stored identity", async () => {
-    const original = await fixture(a);
-    const source = { provider: "graph" as const, providerMessageId: original.source.providerMessageId };
-    const move = await runInTenant(a, () =>
-      withTransaction(pool, (client) =>
-        recordDesiredMailMessageMove(client, { ...original, source, desiredPurpose: "archive" }),
-      ),
-    );
-    const token = randomUUID();
-    await runInTenant(a, () =>
-      withTransaction(pool, (client) =>
-        claimMailMoveStep(client, {
-          messageItemId: original.messageItemId,
-          revision: move.desired_revision,
-          token,
-          step: "move",
-          evidence: { provider: "graph", sourceId: source.providerMessageId, targetFolderId: "archive" },
-        }),
-      ),
-    );
-    await runInTenant(a, () =>
-      withTransaction(pool, async (client) => {
-        const existing = await getMailMessageMetaByItemId(client, original.messageItemId);
-        if (!existing) throw new Error("missing fixture metadata");
-        await upsertMailMessageMeta(client, {
-          itemId: existing.itemId,
-          mailboxItemId: original.mailboxItemId,
-          messageId: existing.messageId,
-          providerMessageId: "newer-local-id",
-          envelope: {},
-        });
-      }),
-    );
+    const { own, token } = await claimedGraphMove();
+    await replaceProviderMessageId(own.messageItemId, own.mailboxItemId, "newer-local-id");
     expect(
-      await runInTenant(a, () =>
-        withTransaction(pool, (client) =>
-          completeGraphMove(client, {
-            messageItemId: original.messageItemId,
-            token,
-            resultId: "old-operation-result",
-          }),
-        ),
+      await inTenant((client) =>
+        completeGraphMove(client, { messageItemId: own.messageItemId, token, resultId: "old-operation-result" }),
       ),
     ).toBe("conflict");
-    const row = (
-      await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, original.mailboxItemId)))
-    )[0];
-    expect(row).toMatchObject({
+    expect((await pendingMoves(own.mailboxItemId))[0]).toMatchObject({
       operation_phase: "uncertain",
       operation_evidence: { resultId: "old-operation-result" },
     });
-    const metadata = await runInTenant(a, () =>
-      withTransaction(pool, (client) => getMailMessageMetaByItemId(client, original.messageItemId)),
-    );
-    expect(metadata?.providerMessageId).toBe("newer-local-id");
+    expect(await providerMessageIdOf(own.messageItemId)).toBe("newer-local-id");
   });
 
   it.each([
@@ -665,20 +681,14 @@ describe("mail move intent store", () => {
     ["sent", ["TRASH", "SENT"], ["SENT"], "untrash"],
   ] as const)("moves Gmail to %s and confirms the returned labels", async (purpose, before, after, command) => {
     const own = await fixture(a);
-    await runInTenant(a, () =>
-      withTransaction(pool, (client) => recordDesiredMailMessageMove(client, { ...own, desiredPurpose: purpose })),
-    );
+    await record({ ...own, desiredPurpose: purpose });
     const id = own.source.providerMessageId;
     const request = vi
       .fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ id, labelIds: before }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ id, labelIds: after }), { status: 200 }));
-    await runInTenant(a, () =>
-      drainGmailMoves(pool, own.mailboxItemId, new GmailRestClient(async () => "fake-token", request)),
-    );
-    expect(
-      await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, own.mailboxItemId))),
-    ).toEqual([]);
+      .mockResolvedValueOnce(json({ id, labelIds: before }))
+      .mockResolvedValueOnce(json({ id, labelIds: after }));
+    await runInTenant(a, () => drainGmailMoves(pool, own.mailboxItemId, gmailClient(request)));
+    expect(await pendingMoves(own.mailboxItemId)).toEqual([]);
     expect(request).toHaveBeenCalledTimes(2);
     expect(String(request.mock.calls[1]?.[0])).toContain(`/${command}`);
   });
@@ -690,74 +700,54 @@ describe("mail move intent store", () => {
     ["sent", ["SENT"]],
   ] as const)("confirms an observed matching Gmail %s without mutation", async (purpose, labels) => {
     const own = await fixture(a);
-    await runInTenant(a, () =>
-      withTransaction(pool, (client) => recordDesiredMailMessageMove(client, { ...own, desiredPurpose: purpose })),
-    );
-    const request = vi
-      .fn()
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ id: own.source.providerMessageId, labelIds: labels }), { status: 200 }),
-      );
-    await runInTenant(a, () =>
-      drainGmailMoves(pool, own.mailboxItemId, new GmailRestClient(async () => "fake-token", request)),
-    );
+    await record({ ...own, desiredPurpose: purpose });
+    const request = vi.fn().mockResolvedValueOnce(json({ id: own.source.providerMessageId, labelIds: labels }));
+    await runInTenant(a, () => drainGmailMoves(pool, own.mailboxItemId, gmailClient(request)));
     expect(request).toHaveBeenCalledTimes(1);
     expect(request.mock.calls[0]?.[1]?.method).toBe("GET");
-    expect(
-      await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, own.mailboxItemId))),
-    ).toEqual([]);
+    expect(await pendingMoves(own.mailboxItemId)).toEqual([]);
   });
 
   it("stops Gmail retries after five verified 404 observations", async () => {
     const own = await fixture(a);
-    await runInTenant(a, () =>
-      withTransaction(pool, (client) => recordDesiredMailMessageMove(client, { ...own, desiredPurpose: "trash" })),
-    );
+    await record({ ...own, desiredPurpose: "trash" });
     const request = vi.fn(async () => new Response(null, { status: 404 }));
-    const gmail = new GmailRestClient(async () => "fake-token", request);
+    const gmail = gmailClient(request);
     for (let count = 0; count < 6; count++) await runInTenant(a, () => drainGmailMoves(pool, own.mailboxItemId, gmail));
-    const result = await runInTenant(a, () =>
-      withTransaction(pool, (client) =>
-        client.query<{ status: string; attempts: number; failure_reason: string }>(
-          "SELECT status, attempts, failure_reason FROM mail_message_move_sync_state WHERE message_item_id = $1",
-          [own.messageItemId],
-        ),
-      ),
-    );
-    expect(result.rows[0]).toEqual({ status: "failed", attempts: 5, failure_reason: "messageMissing" });
+    expect(await moveState(own.messageItemId)).toEqual({
+      status: "failed",
+      attempts: 5,
+      failure_reason: "messageMissing",
+    });
     expect(request).toHaveBeenCalledTimes(5);
   });
 
   it("does not replay an unacknowledged Gmail untrash", async () => {
     const own = await fixture(a);
-    await runInTenant(a, () =>
-      withTransaction(pool, (client) => recordDesiredMailMessageMove(client, { ...own, desiredPurpose: "inbox" })),
-    );
-    const id = own.source.providerMessageId;
+    await record({ ...own, desiredPurpose: "inbox" });
     const request = vi
       .fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ id, labelIds: ["TRASH"] }), { status: 200 }))
+      .mockResolvedValueOnce(json({ id: own.source.providerMessageId, labelIds: ["TRASH"] }))
       .mockRejectedValueOnce(new Error("private provider failure"));
-    const gmail = new GmailRestClient(async () => "fake-token", request);
+    const gmail = gmailClient(request);
     await runInTenant(a, () => drainGmailMoves(pool, own.mailboxItemId, gmail));
     await runInTenant(a, () => drainGmailMoves(pool, own.mailboxItemId, gmail));
-    const row = (
-      await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, own.mailboxItemId)))
-    )[0];
-    expect(row).toMatchObject({ operation_phase: "uncertain", operation_step: "untrash", status: "pending" });
+    expect((await pendingMoves(own.mailboxItemId))[0]).toMatchObject({
+      operation_phase: "uncertain",
+      operation_step: "untrash",
+      status: "pending",
+    });
     expect(request).toHaveBeenCalledTimes(2);
   });
 
   it("checkpoints Gmail untrash before a later inbox-label command", async () => {
     const own = await fixture(a);
-    await runInTenant(a, () =>
-      withTransaction(pool, (client) => recordDesiredMailMessageMove(client, { ...own, desiredPurpose: "inbox" })),
-    );
+    await record({ ...own, desiredPurpose: "inbox" });
     const id = own.source.providerMessageId;
     const fetchProvider: typeof fetch = vi
       .fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ id, labelIds: ["TRASH"] }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ id, labelIds: [] }), { status: 200 }))
+      .mockResolvedValueOnce(json({ id, labelIds: ["TRASH"] }))
+      .mockResolvedValueOnce(json({ id, labelIds: [] }))
       .mockImplementationOnce(async () => {
         const row = (await withTransaction(pool, (client) => listPendingMoves(client, own.mailboxItemId)))[0];
         expect(row).toMatchObject({
@@ -765,59 +755,30 @@ describe("mail move intent store", () => {
           operation_step: "modify_labels",
           operation_evidence: { inTrash: false, inInbox: false },
         });
-        return new Response(JSON.stringify({ id, labelIds: ["INBOX"] }), { status: 200 });
+        return json({ id, labelIds: ["INBOX"] });
       });
-    const gmail = new GmailRestClient(async () => "fake-token", fetchProvider);
-    await runInTenant(a, () => drainGmailMoves(pool, own.mailboxItemId, gmail));
-    expect(
-      await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, own.mailboxItemId))),
-    ).toEqual([]);
+    await runInTenant(a, () => drainGmailMoves(pool, own.mailboxItemId, gmailClient(fetchProvider)));
+    expect(await pendingMoves(own.mailboxItemId)).toEqual([]);
     expect(fetchProvider).toHaveBeenCalledTimes(3);
   });
 
   it("resumes an acknowledged Gmail checkpoint without repeating untrash", async () => {
     const own = await fixture(a);
-    const row = await runInTenant(a, () =>
-      withTransaction(pool, (client) => recordDesiredMailMessageMove(client, { ...own, desiredPurpose: "inbox" })),
-    );
+    const row = await record({ ...own, desiredPurpose: "inbox" });
     const token = randomUUID();
-    const evidence = {
-      provider: "gmail" as const,
-      messageId: own.source.providerMessageId,
-      inTrash: true,
-      inInbox: false,
-      inSent: false,
-    };
-    await runInTenant(a, () =>
-      withTransaction(pool, (client) =>
-        claimMailMoveStep(client, {
-          messageItemId: own.messageItemId,
-          revision: row.desired_revision,
-          token,
-          step: "untrash",
-          evidence,
-        }),
-      ),
+    const evidence = gmailEvidence(own.source.providerMessageId, { inTrash: true, inInbox: false });
+    await claim({ messageItemId: own.messageItemId, revision: row.desired_revision, token, step: "untrash", evidence });
+    await inTenant((client) =>
+      checkpointMailMoveStep(client, {
+        messageItemId: own.messageItemId,
+        token,
+        nextStep: "modify_labels",
+        evidence: { ...evidence, inTrash: false },
+      }),
     );
-    await runInTenant(a, () =>
-      withTransaction(pool, (client) =>
-        checkpointMailMoveStep(client, {
-          messageItemId: own.messageItemId,
-          token,
-          nextStep: "modify_labels",
-          evidence: { ...evidence, inTrash: false },
-        }),
-      ),
-    );
-    const request = vi
-      .fn()
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ id: evidence.messageId, labelIds: ["INBOX"] }), { status: 200 }),
-      );
+    const request = vi.fn().mockResolvedValueOnce(json({ id: evidence.messageId, labelIds: ["INBOX"] }));
     const tokenFailure = new Error("private token acquisition failure");
-    const before = await runInTenant(a, () =>
-      withTransaction(pool, (client) => listPendingMoves(client, own.mailboxItemId)),
-    );
+    const before = await pendingMoves(own.mailboxItemId);
     await expect(
       runInTenant(a, () =>
         drainGmailMoves(
@@ -830,17 +791,11 @@ describe("mail move intent store", () => {
       ),
     ).rejects.toBe(tokenFailure);
     expect(request).not.toHaveBeenCalled();
-    expect(
-      await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, own.mailboxItemId))),
-    ).toEqual(before);
-    await runInTenant(a, () =>
-      drainGmailMoves(pool, own.mailboxItemId, new GmailRestClient(async () => "fake-token", request)),
-    );
+    expect(await pendingMoves(own.mailboxItemId)).toEqual(before);
+    await runInTenant(a, () => drainGmailMoves(pool, own.mailboxItemId, gmailClient(request)));
     expect(request).toHaveBeenCalledTimes(1);
     expect(String(request.mock.calls[0]?.[0])).toContain("/modify");
-    expect(
-      await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, own.mailboxItemId))),
-    ).toEqual([]);
+    expect(await pendingMoves(own.mailboxItemId)).toEqual([]);
   });
 
   it.each([
@@ -851,265 +806,150 @@ describe("mail move intent store", () => {
   ] as const)("persists a Graph move to %s after a claimed provider request", async (purpose, destination) => {
     await runInTenant(a, () => seedSystem(pool));
     const own = await fixture(a);
-    const target = await runInTenant(a, () =>
-      withTransaction(pool, async (client) => {
-        const folders = await getDatabaseByModuleId(client, "folders");
-        if (!folders) throw new Error("Missing folders database");
-        const mailbox = await getPropertyByKey(client, folders.id, "mailbox");
-        if (!mailbox) throw new Error("Missing mailbox relation");
-        await ensureFolderItem(client, {
-          foldersDatabaseId: folders.id,
-          mailboxItemId: own.mailboxItemId,
-          mailboxRelationPropertyId: mailbox.id,
-          providerId: `${purpose}-id`,
-          name: "Archive",
-          behavior: "folder",
-          specialPurpose: purpose,
-        });
-        return { databaseId: folders.id, propertyId: mailbox.id };
-      }),
-    );
-    const source = { provider: "graph" as const, providerMessageId: own.source.providerMessageId };
-    await runInTenant(a, () =>
-      withTransaction(pool, (client) =>
-        recordDesiredMailMessageMove(client, { ...own, source, desiredPurpose: purpose }),
-      ),
-    );
+    const target = await inTenant(async (client) => {
+      const folders = await getDatabaseByModuleId(client, "folders");
+      if (!folders) throw new Error("Missing folders database");
+      const mailbox = await getPropertyByKey(client, folders.id, "mailbox");
+      if (!mailbox) throw new Error("Missing mailbox relation");
+      await ensureFolderItem(client, {
+        foldersDatabaseId: folders.id,
+        mailboxItemId: own.mailboxItemId,
+        mailboxRelationPropertyId: mailbox.id,
+        providerId: `${purpose}-id`,
+        name: "Archive",
+        behavior: "folder",
+        specialPurpose: purpose,
+      });
+      return { databaseId: folders.id, propertyId: mailbox.id };
+    });
+    const drain = (graph: GraphRestClient) =>
+      runInTenant(a, () => drainGraphMoves(pool, own.mailboxItemId, graph, target.databaseId, target.propertyId));
+    const recordFrom = (providerMessageId: string) =>
+      record({ ...own, source: { provider: "graph", providerMessageId }, desiredPurpose: purpose });
+    const sourceId = own.source.providerMessageId;
+    await recordFrom(sourceId);
     if (purpose === "archive") {
       const tokenFailure = new Error("private Graph token failure");
       let tokenCalls = 0;
-      const observation = vi.fn(async () =>
-        Response.json({ id: source.providerMessageId, parentFolderId: "old-folder-id" }),
-      );
+      const observation = vi.fn(async () => Response.json({ id: sourceId, parentFolderId: "old-folder-id" }));
       const graph = new GraphRestClient(async () => {
         if (++tokenCalls === 2) throw tokenFailure;
         return "fake-token";
       }, observation);
-      const before = await runInTenant(a, () =>
-        withTransaction(pool, (client) => listPendingMoves(client, own.mailboxItemId)),
-      );
-      await expect(
-        runInTenant(a, () => drainGraphMoves(pool, own.mailboxItemId, graph, target.databaseId, target.propertyId)),
-      ).rejects.toBe(tokenFailure);
+      const before = await pendingMoves(own.mailboxItemId);
+      await expect(drain(graph)).rejects.toBe(tokenFailure);
       expect(observation).toHaveBeenCalledTimes(1);
-      expect(
-        await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, own.mailboxItemId))),
-      ).toEqual(before);
+      expect(await pendingMoves(own.mailboxItemId)).toEqual(before);
     }
-    const assertNoMoveTransaction = async () => {
-      const activity = await admin.query<{ pid: number; xact_start: Date | null }>(
-        "SELECT pid, xact_start FROM pg_stat_activity WHERE datname = current_database() AND usename = 'semprec_data'",
-      );
-      expect(activity.rows.length).toBeGreaterThan(0);
-      expect(activity.rows.every((row) => row.xact_start === null)).toBe(true);
-    };
     const fetchProvider: typeof fetch = vi
       .fn()
       .mockImplementationOnce(async () => {
         await assertNoMoveTransaction();
-        return new Response(JSON.stringify({ id: source.providerMessageId, parentFolderId: "old-folder-id" }), {
-          status: 200,
-        });
+        return json({ id: sourceId, parentFolderId: "old-folder-id" });
       })
       .mockImplementationOnce(async () => {
         await assertNoMoveTransaction();
-        return new Response(JSON.stringify({ id: "new-id" }), { status: 201 });
+        return json({ id: "new-id" }, 201);
       });
-    const graph = new GraphRestClient(async () => "fake-token", fetchProvider);
-    await runInTenant(a, () => drainGraphMoves(pool, own.mailboxItemId, graph, target.databaseId, target.propertyId));
-    expect(
-      await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, own.mailboxItemId))),
-    ).toEqual([]);
-    const metadata = await runInTenant(a, () =>
-      withTransaction(pool, (client) => getMailMessageMetaByItemId(client, own.messageItemId)),
-    );
-    expect(metadata?.providerMessageId).toBe("new-id");
+    await drain(graphClient(fetchProvider));
+    expect(await pendingMoves(own.mailboxItemId)).toEqual([]);
+    expect(await providerMessageIdOf(own.messageItemId)).toBe("new-id");
     expect(fetchProvider).toHaveBeenCalledTimes(2);
     expect(vi.mocked(fetchProvider).mock.calls[1]?.[1]?.body).toBe(JSON.stringify({ destinationId: destination }));
-    await runInTenant(a, () =>
-      withTransaction(pool, (client) =>
-        recordDesiredMailMessageMove(client, {
-          ...own,
-          source: { provider: "graph", providerMessageId: "new-id" },
-          desiredPurpose: purpose,
-        }),
-      ),
-    );
-    const observeOnly = vi
-      .fn()
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ id: "new-id", parentFolderId: `${purpose}-id` }), { status: 200 }),
-      );
-    await runInTenant(a, () =>
-      drainGraphMoves(
-        pool,
-        own.mailboxItemId,
-        new GraphRestClient(async () => "fake-token", observeOnly),
-        target.databaseId,
-        target.propertyId,
-      ),
-    );
+
+    await recordFrom("new-id");
+    const observeOnly = vi.fn().mockResolvedValueOnce(json({ id: "new-id", parentFolderId: `${purpose}-id` }));
+    await drain(graphClient(observeOnly));
     expect(observeOnly).toHaveBeenCalledTimes(1);
     expect(observeOnly.mock.calls[0]?.[1]?.method).toBe("GET");
-    expect(
-      await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, own.mailboxItemId))),
-    ).toEqual([]);
-    if (purpose === "archive") {
-      await runInTenant(a, () =>
-        withTransaction(pool, (client) =>
-          recordDesiredMailMessageMove(client, {
-            ...own,
-            source: { provider: "graph", providerMessageId: "new-id" },
-            desiredPurpose: purpose,
-          }),
-        ),
-      );
-      const stale = vi
-        .fn()
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ id: "new-id", parentFolderId: "external-folder" }), { status: 200 }),
-        )
-        .mockResolvedValueOnce(new Response(JSON.stringify({ id: "after-external-move" }), { status: 201 }));
-      await runInTenant(a, () =>
-        drainGraphMoves(
-          pool,
-          own.mailboxItemId,
-          new GraphRestClient(async () => "fake-token", stale),
-          target.databaseId,
-          target.propertyId,
-        ),
-      );
-      expect(stale).toHaveBeenCalledTimes(2);
-      await runInTenant(a, () =>
-        withTransaction(pool, (client) =>
-          recordDesiredMailMessageMove(client, {
-            ...own,
-            source: { provider: "graph", providerMessageId: "after-external-move" },
-            desiredPurpose: purpose,
-          }),
-        ),
-      );
-      const missing = vi.fn(async () => new Response(null, { status: 404 }));
-      const missingGraph = new GraphRestClient(async () => "fake-token", missing);
-      for (let count = 0; count < 6; count++)
-        await runInTenant(a, () =>
-          drainGraphMoves(pool, own.mailboxItemId, missingGraph, target.databaseId, target.propertyId),
-        );
-      const failed = await runInTenant(a, () =>
-        withTransaction(pool, (client) =>
-          client.query<{ status: string; attempts: number; failure_reason: string }>(
-            "SELECT status, attempts, failure_reason FROM mail_message_move_sync_state WHERE message_item_id = $1",
-            [own.messageItemId],
-          ),
-        ),
-      );
-      expect(failed.rows[0]).toEqual({ status: "failed", attempts: 5, failure_reason: "messageMissing" });
-      expect(missing).toHaveBeenCalledTimes(5);
-      await runInTenant(a, () =>
-        withTransaction(pool, (client) =>
-          recordDesiredMailMessageMove(client, {
-            ...own,
-            source: { provider: "graph", providerMessageId: "after-external-move" },
-            desiredPurpose: purpose,
-          }),
-        ),
-      );
-      const afterRemote = vi
-        .fn()
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ id: "after-external-move", parentFolderId: "other-folder" }), { status: 200 }),
-        )
-        .mockResolvedValueOnce(new Response(JSON.stringify({ id: "rejected-local-result" }), { status: 201 }));
-      const rollbackGraph = new GraphRestClient(async () => "fake-token", afterRemote);
-      let created = false;
-      let primary: { value: unknown } | undefined;
-      try {
-        await admin.query(`CREATE FUNCTION batch18_reject_graph_result() RETURNS trigger LANGUAGE plpgsql AS $$
-          BEGIN IF NEW.provider_message_id = 'rejected-local-result' THEN RAISE EXCEPTION 'synthetic result rollback'; END IF; RETURN NEW; END $$`);
-        await admin.query(`CREATE TRIGGER batch18_reject_graph_result BEFORE UPDATE ON mail_message_meta
-          FOR EACH ROW EXECUTE FUNCTION batch18_reject_graph_result()`);
-        created = true;
-        await expect(
-          runInTenant(a, () =>
-            drainGraphMoves(pool, own.mailboxItemId, rollbackGraph, target.databaseId, target.propertyId),
-          ),
-        ).rejects.toThrow("synthetic result rollback");
-        const blocked = (
-          await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, own.mailboxItemId)))
-        )[0];
-        expect(blocked).toMatchObject({ operation_phase: "in_flight", status: "pending" });
-        await runInTenant(a, () =>
-          drainGraphMoves(pool, own.mailboxItemId, rollbackGraph, target.databaseId, target.propertyId),
-        );
-        expect(afterRemote).toHaveBeenCalledTimes(2);
-      } catch (error) {
-        primary = { value: error };
-      }
-      const cleanupErrors: unknown[] = [];
-      try {
-        if (created) await admin.query("DROP TRIGGER batch18_reject_graph_result ON mail_message_meta");
-      } catch (error) {
-        cleanupErrors.push(error);
-      }
-      try {
-        await admin.query("DROP FUNCTION IF EXISTS batch18_reject_graph_result()");
-      } catch (error) {
-        cleanupErrors.push(error);
-      }
-      if (primary && cleanupErrors.length)
-        throw new AggregateError([primary.value, ...cleanupErrors], "Graph rollback test and cleanup failed");
-      if (primary) throw primary.value;
-      if (cleanupErrors.length) throw new AggregateError(cleanupErrors, "Graph rollback cleanup failed");
+    expect(await pendingMoves(own.mailboxItemId)).toEqual([]);
+    if (purpose !== "archive") return;
+
+    await recordFrom("new-id");
+    const stale = vi
+      .fn()
+      .mockResolvedValueOnce(json({ id: "new-id", parentFolderId: "external-folder" }))
+      .mockResolvedValueOnce(json({ id: "after-external-move" }, 201));
+    await drain(graphClient(stale));
+    expect(stale).toHaveBeenCalledTimes(2);
+
+    await recordFrom("after-external-move");
+    const missing = vi.fn(async () => new Response(null, { status: 404 }));
+    const missingGraph = graphClient(missing);
+    for (let count = 0; count < 6; count++) await drain(missingGraph);
+    expect(await moveState(own.messageItemId)).toEqual({
+      status: "failed",
+      attempts: 5,
+      failure_reason: "messageMissing",
+    });
+    expect(missing).toHaveBeenCalledTimes(5);
+
+    await recordFrom("after-external-move");
+    const afterRemote = vi
+      .fn()
+      .mockResolvedValueOnce(json({ id: "after-external-move", parentFolderId: "other-folder" }))
+      .mockResolvedValueOnce(json({ id: "rejected-local-result" }, 201));
+    const rollbackGraph = graphClient(afterRemote);
+    let created = false;
+    let primary: { value: unknown } | undefined;
+    try {
+      // A trigger is the only way to make the local result write fail after the provider acknowledged the move.
+      await admin.query(`CREATE FUNCTION batch18_reject_graph_result() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN IF NEW.provider_message_id = 'rejected-local-result' THEN RAISE EXCEPTION 'synthetic result rollback'; END IF; RETURN NEW; END $$`);
+      await admin.query(`CREATE TRIGGER batch18_reject_graph_result BEFORE UPDATE ON mail_message_meta
+        FOR EACH ROW EXECUTE FUNCTION batch18_reject_graph_result()`);
+      created = true;
+      await expect(drain(rollbackGraph)).rejects.toThrow("synthetic result rollback");
+      expect((await pendingMoves(own.mailboxItemId))[0]).toMatchObject({
+        operation_phase: "in_flight",
+        status: "pending",
+      });
+      await drain(rollbackGraph);
+      expect(afterRemote).toHaveBeenCalledTimes(2);
+    } catch (error) {
+      primary = { value: error };
     }
+    const cleanupErrors: unknown[] = [];
+    try {
+      if (created) await admin.query("DROP TRIGGER batch18_reject_graph_result ON mail_message_meta");
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
+      await admin.query("DROP FUNCTION IF EXISTS batch18_reject_graph_result()");
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    if (primary && cleanupErrors.length)
+      throw new AggregateError([primary.value, ...cleanupErrors], "Graph rollback test and cleanup failed");
+    if (primary) throw primary.value;
+    if (cleanupErrors.length) throw new AggregateError(cleanupErrors, "Graph rollback cleanup failed");
   });
 
   it("stops retrying a definite missing message at its attempt limit", async () => {
     const own = await fixture(a);
-    const move = await runInTenant(a, () =>
-      withTransaction(pool, (client) => recordDesiredMailMessageMove(client, { ...own, desiredPurpose: "trash" })),
-    );
-    for (let attempt = 0; attempt < 5; attempt++) {
-      expect(
-        await runInTenant(a, () =>
-          withTransaction(pool, (client) =>
-            markMoveAttemptFailed(client, own.messageItemId, move.desired_revision, "messageMissing"),
-          ),
-        ),
-      ).toBe(true);
-    }
-    expect(
-      await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, own.mailboxItemId))),
-    ).toEqual([]);
-    expect(
-      await runInTenant(a, () =>
-        withTransaction(pool, (client) =>
-          markMoveAttemptFailed(client, own.messageItemId, move.desired_revision, "messageMissing"),
-        ),
-      ),
-    ).toBe(false);
+    const move = await record({ ...own, desiredPurpose: "trash" });
+    const fail = () =>
+      inTenant((client) => markMoveAttemptFailed(client, own.messageItemId, move.desired_revision, "messageMissing"));
+    for (let attempt = 0; attempt < 5; attempt++) expect(await fail()).toBe(true);
+    expect(await pendingMoves(own.mailboxItemId)).toEqual([]);
+    expect(await fail()).toBe(false);
   });
 
   it("does not dispatch a second Gmail job while the first owns its step", async () => {
     const own = await fixture(a);
-    await runInTenant(a, () =>
-      withTransaction(pool, (client) => recordDesiredMailMessageMove(client, { ...own, desiredPurpose: "archive" })),
-    );
+    await record({ ...own, desiredPurpose: "archive" });
     let release!: () => void;
     let entered!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const ready = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const ready = new Promise<void>((resolve) => (entered = resolve));
     const request = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      if (init?.method === "GET")
-        return new Response(JSON.stringify({ id: own.source.providerMessageId, labelIds: ["INBOX"] }), { status: 200 });
+      if (init?.method === "GET") return json({ id: own.source.providerMessageId, labelIds: ["INBOX"] });
       entered();
       await gate;
-      return new Response(JSON.stringify({ id: own.source.providerMessageId, labelIds: [] }), { status: 200 });
+      return json({ id: own.source.providerMessageId, labelIds: [] });
     });
-    const gmail = new GmailRestClient(async () => "fake-token", request);
+    const gmail = gmailClient(request);
     const first = runInTenant(a, () => drainGmailMoves(pool, own.mailboxItemId, gmail)).then(
       () => ({ ok: true as const }),
       (error: unknown) => ({ ok: false as const, error }),
@@ -1139,57 +979,43 @@ describe("mail move intent store", () => {
       throw new AggregateError([primary.value, settledFirst.error], "move overlap and cleanup failed");
     if (primary) throw primary.value;
     if (!settledFirst.ok) throw settledFirst.error;
-    expect(
-      await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, own.mailboxItemId))),
-    ).toEqual([]);
+    expect(await pendingMoves(own.mailboxItemId)).toEqual([]);
   });
 
   it("serializes competing move claims under the actual tenant guard", async () => {
     const own = await fixture(a);
-    const move = await runInTenant(a, () =>
-      withTransaction(pool, (client) => recordDesiredMailMessageMove(client, { ...own, desiredPurpose: "archive" })),
-    );
-    const evidence = {
-      provider: "gmail" as const,
-      messageId: own.source.providerMessageId,
-      inTrash: false,
-      inInbox: true,
-      inSent: false,
-    };
+    const move = await record({ ...own, desiredPurpose: "archive" });
+    const claimInput = () => ({
+      messageItemId: own.messageItemId,
+      revision: move.desired_revision,
+      token: randomUUID(),
+      step: "modify_labels" as const,
+      evidence: gmailEvidence(own.source.providerMessageId),
+    });
     let release!: () => void;
     let firstReady!: (pid: number) => void;
     let secondReady!: (pid: number) => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const firstPidPromise = new Promise<number>((resolve) => {
-      firstReady = resolve;
-    });
-    const secondPidPromise = new Promise<number>((resolve) => {
-      secondReady = resolve;
-    });
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const firstPidPromise = new Promise<number>((resolve) => (firstReady = resolve));
+    const secondPidPromise = new Promise<number>((resolve) => (secondReady = resolve));
     const settled = <T>(promise: Promise<T>) =>
       promise.then(
         (value) => ({ ok: true as const, value }),
         (error: unknown) => ({ ok: false as const, error }),
       );
+    const backendPid = async (client: PoolClient) => {
+      const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
+      if (pid === undefined) throw new Error("missing claim PID");
+      return pid;
+    };
     const first = settled(
-      runInTenant(a, () =>
-        withTransaction(pool, async (client) => {
-          const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-          if (pid === undefined) throw new Error("missing first claim PID");
-          const claimed = await claimMailMoveStep(client, {
-            messageItemId: own.messageItemId,
-            revision: move.desired_revision,
-            token: randomUUID(),
-            step: "modify_labels",
-            evidence,
-          });
-          firstReady(pid);
-          await gate;
-          return claimed;
-        }),
-      ),
+      inTenant(async (client) => {
+        const pid = await backendPid(client);
+        const claimed = await claimMailMoveStep(client, claimInput());
+        firstReady(pid);
+        await gate;
+        return claimed;
+      }),
     );
     let second: ReturnType<typeof settled<boolean>> | undefined;
     const waitPid = async (ready: Promise<number>, owner: Promise<unknown>): Promise<number> => {
@@ -1211,20 +1037,10 @@ describe("mail move intent store", () => {
     try {
       const firstPid = await waitPid(firstPidPromise, first);
       second = settled(
-        runInTenant(a, () =>
-          withTransaction(pool, async (client) => {
-            const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-            if (pid === undefined) throw new Error("missing second claim PID");
-            secondReady(pid);
-            return claimMailMoveStep(client, {
-              messageItemId: own.messageItemId,
-              revision: move.desired_revision,
-              token: randomUUID(),
-              step: "modify_labels",
-              evidence,
-            });
-          }),
-        ),
+        inTenant(async (client) => {
+          secondReady(await backendPid(client));
+          return claimMailMoveStep(client, claimInput());
+        }),
       );
       const secondPid = await waitPid(secondPidPromise, second);
       await vi.waitFor(
@@ -1236,7 +1052,6 @@ describe("mail move intent store", () => {
         },
         { timeout: 5000, interval: 25 },
       );
-      process.stdout.write(`batch18 move claim blocker=${firstPid} blocked=${secondPid}\n`);
       release();
       expect(await first).toEqual({ ok: true, value: true });
       expect(await second).toEqual({ ok: true, value: false });
@@ -1249,68 +1064,37 @@ describe("mail move intent store", () => {
 
   it("allows one claim and preserves an uncertain operation across A-B-A desires", async () => {
     const own = await fixture(a);
-    const first = await runInTenant(a, () =>
-      withTransaction(pool, (client) => recordDesiredMailMessageMove(client, { ...own, desiredPurpose: "archive" })),
-    );
+    const first = await record({ ...own, desiredPurpose: "archive" });
+    const evidence = gmailEvidence("fake-provider-id");
     const tokens = [randomUUID(), randomUUID()];
-    const evidence = {
-      provider: "gmail" as const,
-      messageId: "fake-provider-id",
-      inTrash: false,
-      inInbox: true,
-      inSent: false,
-    };
     const claims = await Promise.all(
       tokens.map((token) =>
-        runInTenant(a, () =>
-          withTransaction(pool, (client) =>
-            claimMailMoveStep(client, {
-              messageItemId: own.messageItemId,
-              revision: first.desired_revision,
-              token,
-              step: "modify_labels",
-              evidence,
-            }),
-          ),
-        ),
+        claim({
+          messageItemId: own.messageItemId,
+          revision: first.desired_revision,
+          token,
+          step: "modify_labels",
+          evidence,
+        }),
       ),
     );
     expect(claims.filter(Boolean)).toHaveLength(1);
     const winner = tokens[claims.findIndex(Boolean)]!;
-    await runInTenant(a, () =>
-      withTransaction(pool, (client) => recordDesiredMailMessageMove(client, { ...own, desiredPurpose: "trash" })),
-    );
-    const latest = await runInTenant(a, () =>
-      withTransaction(pool, (client) => recordDesiredMailMessageMove(client, { ...own, desiredPurpose: "archive" })),
-    );
+    await record({ ...own, desiredPurpose: "trash" });
+    const latest = await record({ ...own, desiredPurpose: "archive" });
     expect(latest.desired_revision).toBe("3");
+    expect(await inTenant((client) => markMailMoveUncertain(client, own.messageItemId, winner))).toBe(true);
+    expect(await confirm(own.messageItemId, latest.desired_revision)).toBe(false);
     expect(
-      await runInTenant(a, () =>
-        withTransaction(pool, (client) => markMailMoveUncertain(client, own.messageItemId, winner)),
-      ),
-    ).toBe(true);
-    expect(
-      await runInTenant(a, () =>
-        withTransaction(pool, (client) => markMoveConfirmed(client, own.messageItemId, latest.desired_revision)),
-      ),
+      await claim({
+        messageItemId: own.messageItemId,
+        revision: latest.desired_revision,
+        token: randomUUID(),
+        step: "modify_labels",
+        evidence,
+      }),
     ).toBe(false);
-    expect(
-      await runInTenant(a, () =>
-        withTransaction(pool, (client) =>
-          claimMailMoveStep(client, {
-            messageItemId: own.messageItemId,
-            revision: latest.desired_revision,
-            token: randomUUID(),
-            step: "modify_labels",
-            evidence,
-          }),
-        ),
-      ),
-    ).toBe(false);
-    const [pending] = await runInTenant(a, () =>
-      withTransaction(pool, (client) => listPendingMoves(client, own.mailboxItemId)),
-    );
-    expect(pending).toMatchObject({
+    expect((await pendingMoves(own.mailboxItemId))[0]).toMatchObject({
       desired_revision: "3",
       captured_revision: "1",
       operation_token: winner,
@@ -1320,428 +1104,128 @@ describe("mail move intent store", () => {
 
   it("resumes only the acknowledged checkpoint with its captured evidence", async () => {
     const own = await fixture(a);
-    const move = await runInTenant(a, () =>
-      withTransaction(pool, (client) => recordDesiredMailMessageMove(client, { ...own, desiredPurpose: "inbox" })),
-    );
+    const move = await record({ ...own, desiredPurpose: "inbox" });
     const token = randomUUID();
-    const before = {
-      provider: "gmail" as const,
-      messageId: "fake-provider-id",
-      inTrash: true,
-      inInbox: false,
-      inSent: false,
-    };
+    const before = gmailEvidence("fake-provider-id", { inTrash: true, inInbox: false });
     const after = { ...before, inTrash: false };
+    const claimWith = (step: ClaimInput["step"], evidence: ClaimInput["evidence"]) =>
+      claim({ messageItemId: own.messageItemId, revision: move.desired_revision, token, step, evidence });
+    expect(await claimWith("untrash", before)).toBe(true);
     expect(
-      await runInTenant(a, () =>
-        withTransaction(pool, (client) =>
-          claimMailMoveStep(client, {
-            messageItemId: own.messageItemId,
-            revision: move.desired_revision,
-            token,
-            step: "untrash",
-            evidence: before,
-          }),
-        ),
+      await inTenant((client) =>
+        checkpointMailMoveStep(client, {
+          messageItemId: own.messageItemId,
+          token,
+          nextStep: "modify_labels",
+          evidence: after,
+        }),
       ),
     ).toBe(true);
-    expect(
-      await runInTenant(a, () =>
-        withTransaction(pool, (client) =>
-          checkpointMailMoveStep(client, {
-            messageItemId: own.messageItemId,
-            token,
-            nextStep: "modify_labels",
-            evidence: after,
-          }),
-        ),
-      ),
-    ).toBe(true);
-    expect(
-      await runInTenant(a, () =>
-        withTransaction(pool, (client) =>
-          claimMailMoveStep(client, {
-            messageItemId: own.messageItemId,
-            revision: move.desired_revision,
-            token,
-            step: "modify_labels",
-            evidence: before,
-          }),
-        ),
-      ),
-    ).toBe(false);
-    expect(
-      await runInTenant(a, () =>
-        withTransaction(pool, (client) =>
-          claimMailMoveStep(client, {
-            messageItemId: own.messageItemId,
-            revision: move.desired_revision,
-            token,
-            step: "modify_labels",
-            evidence: after,
-          }),
-        ),
-      ),
-    ).toBe(true);
-    expect(
-      await runInTenant(a, () =>
-        withTransaction(pool, (client) =>
-          claimMailMoveStep(client, {
-            messageItemId: own.messageItemId,
-            revision: move.desired_revision,
-            token,
-            step: "modify_labels",
-            evidence: after,
-          }),
-        ),
-      ),
-    ).toBe(false);
+    expect(await claimWith("modify_labels", before)).toBe(false);
+    expect(await claimWith("modify_labels", after)).toBe(true);
+    expect(await claimWith("modify_labels", after)).toBe(false);
   });
 
   it.each(["archive", "trash", "inbox", "sent"] as const)("moves IMAP to the mailbox's %s folder", async (purpose) => {
-    await runInTenant(a, () => seedSystem(pool));
-    const fixture = await runInTenant(a, () =>
-      withTransaction(pool, async (client) => {
-        const mailboxDb = await getDatabaseByModuleId(client, "mailboxes");
-        const emailDb = await getDatabaseByModuleId(client, "emails");
-        const folderDb = await getDatabaseByModuleId(client, "folders");
-        if (!mailboxDb || !emailDb || !folderDb) throw new Error("Missing mail databases");
-        const emailFolder = await getPropertyByKey(client, emailDb.id, "folder");
-        const folderMailbox = await getPropertyByKey(client, folderDb.id, "mailbox");
-        if (!emailFolder || !folderMailbox) throw new Error("Missing relations");
-        const mailbox = await createItemWithClient(client, {
-          databaseId: mailboxDb.id,
-          properties: { name: "Mailbox" },
-        });
-        const message = await createItemWithClient(
-          client,
-          { databaseId: emailDb.id, properties: { name: "Message" } },
-          { allowedSystemKeys: ["name"] },
-        );
-        await upsertMailMessageMeta(client, {
-          itemId: message.id,
-          mailboxItemId: mailbox.id,
-          messageId: `<${randomUUID()}@example.test>`,
-          envelope: {},
-        });
-        const folder = async (path: string, specialPurpose: string, validity: string) => {
-          const id = await ensureFolderItem(client, {
-            foldersDatabaseId: folderDb.id,
-            mailboxItemId: mailbox.id,
-            mailboxRelationPropertyId: folderMailbox.id,
-            providerId: path,
-            name: path,
-            behavior: "folder",
-            specialPurpose,
-          });
-          await ensureMailFolderSyncState(client, id);
-          await recordReconcile(client, { itemId: id, uidvalidity: validity, uidnext: "50", highestmodseq: null });
-          return id;
-        };
-        const source = await folder("Source", purpose === "inbox" ? "junk" : "inbox", "11");
-        const target = await folder("Destination", purpose, "12");
-        await createRelationWithClient(
-          client,
-          { relationPropertyId: emailFolder.id, callerItemId: message.id, targetItemId: source, metadata: { uid: 7 } },
-          EMAILS_RELATION_CONTEXT,
-        );
-        await recordDesiredMailMessageMove(client, {
-          messageItemId: message.id,
-          mailboxItemId: mailbox.id,
-          desiredPurpose: purpose,
-          source: { provider: "imap", folderItemId: source, path: "Source", uid: 7, uidValidity: "11" },
-        });
-        await deleteRelationWithClient(
-          client,
-          { relationPropertyId: emailFolder.id, callerItemId: message.id, targetItemId: source },
-          EMAILS_RELATION_CONTEXT,
-        );
-        await createRelationWithClient(
-          client,
-          { relationPropertyId: emailFolder.id, callerItemId: message.id, targetItemId: target },
-          EMAILS_RELATION_CONTEXT,
-        );
-        return {
-          mailbox: mailbox.id,
-          message: message.id,
-          source,
-          target,
-          folderDb: folderDb.id,
-          folderProperty: emailFolder.id,
-          mailboxProperty: folderMailbox.id,
-        };
-      }),
-    );
+    const fx = await imapFixture([
+      { path: "Source", purpose: purpose === "inbox" ? "junk" : "inbox", uidValidity: "11", uidNext: "50" },
+      { path: "Destination", purpose, uidValidity: "12", uidNext: "50" },
+    ]);
+    const [sourceId, targetId] = fx.folderIds as [string, string];
+    await moveImapLocally(fx, purpose, { folderId: sourceId, path: "Source", uid: 7, uidValidity: "11" }, targetId);
     const move = vi.fn(async () => ({ kind: "acknowledged" as const, targetUid: 27, targetUidValidity: "12" }));
-    const fake = {
-      prepareMove: async () => ({ uidValidity: "11", capabilities: new Set(["MOVE"]), found: true }),
-      executeMoveStep: move,
-      close: async () => {},
-    } as unknown as import("../mail/imapReconcile.js").ImapMailClient;
-    await runInTenant(a, () =>
-      drainImapMoves(
-        pool,
-        fixture.mailbox,
-        async () => fake,
-        fixture.folderDb,
-        fixture.mailboxProperty,
-        fixture.folderProperty,
-      ),
-    );
+    const fake = fakeImapClient({ uidValidity: "11", capabilities: ["MOVE"] }, move);
+    await drainImap(fx, async () => fake);
     expect(move).toHaveBeenCalledWith("move", "Source", 7, "11", "Destination");
-    expect(
-      await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, fixture.mailbox))),
-    ).toEqual([]);
-    if (purpose === "archive" || purpose === "trash") {
-      await runInTenant(a, () =>
-        withTransaction(pool, async (client) => {
-          await recordDesiredMailMessageMove(client, {
-            messageItemId: fixture.message,
-            mailboxItemId: fixture.mailbox,
-            desiredPurpose: "inbox",
-            source: { provider: "imap", folderItemId: fixture.target, path: "Destination", uid: 27, uidValidity: "12" },
-          });
-          await deleteRelationWithClient(
-            client,
-            { relationPropertyId: fixture.folderProperty, callerItemId: fixture.message, targetItemId: fixture.target },
-            EMAILS_RELATION_CONTEXT,
-          );
-          await createRelationWithClient(
-            client,
-            { relationPropertyId: fixture.folderProperty, callerItemId: fixture.message, targetItemId: fixture.source },
-            EMAILS_RELATION_CONTEXT,
-          );
-        }),
-      );
-      const copy = vi.fn(async () =>
-        purpose === "archive"
-          ? { path: "Destination", destination: "Source" }
-          : { path: "Destination", destination: "Source", uidValidity: 99n, uidMap: new Map([[27, 44]]) },
-      );
-      const flags = vi.fn(async () => true);
-      const expunge = vi.fn(async () => true);
-      const flow = {
-        capabilities: new Map([["UIDPLUS", true]]),
-        mailbox: { path: "Destination", uidValidity: 12n },
-        mailboxOpen: async () => ({ path: "Destination", uidValidity: 12n }),
-        search: async () => [27],
-        messageCopy: copy,
-        messageFlagsAdd: flags,
-        messageDelete: expunge,
-        logout: async () => {},
-        close: () => {},
-      } as unknown as import("imapflow").ImapFlow;
-      const create = vi.fn(async () => new ImapFlowMailClient(flow));
-      for (let attempt = 0; attempt < 2; attempt++)
-        await runInTenant(a, () =>
-          drainImapMoves(
-            pool,
-            fixture.mailbox,
-            create,
-            fixture.folderDb,
-            fixture.mailboxProperty,
-            fixture.folderProperty,
-          ),
-        );
-      expect(copy).toHaveBeenCalledTimes(1);
-      expect(flags).not.toHaveBeenCalled();
-      expect(expunge).not.toHaveBeenCalled();
-      const blocked = (
-        await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, fixture.mailbox)))
-      )[0];
-      expect(blocked).toMatchObject(
-        purpose === "archive"
-          ? { status: "pending", operation_phase: "uncertain", operation_step: "copy" }
-          : { status: "pending", operation_phase: "between_steps", operation_step: "mark_deleted" },
-      );
-    }
+    expect(await pendingMoves(fx.mailboxItemId)).toEqual([]);
+    if (purpose !== "archive" && purpose !== "trash") return;
+
+    await moveImapLocally(
+      fx,
+      "inbox",
+      { folderId: targetId, path: "Destination", uid: 27, uidValidity: "12" },
+      sourceId,
+    );
+    const copy = vi.fn(async () =>
+      purpose === "archive"
+        ? { path: "Destination", destination: "Source" }
+        : { path: "Destination", destination: "Source", uidValidity: 99n, uidMap: new Map([[27, 44]]) },
+    );
+    const flags = vi.fn(async () => true);
+    const expunge = vi.fn(async () => true);
+    const flow = imapFlowOn("Destination", 12n, {
+      capabilities: new Map([["UIDPLUS", true]]),
+      search: async () => [27],
+      messageCopy: copy,
+      messageFlagsAdd: flags,
+      messageDelete: expunge,
+    });
+    for (let attempt = 0; attempt < 2; attempt++) await drainImap(fx, async () => new ImapFlowMailClient(flow));
+    expect(copy).toHaveBeenCalledTimes(1);
+    expect(flags).not.toHaveBeenCalled();
+    expect(expunge).not.toHaveBeenCalled();
+    expect((await pendingMoves(fx.mailboxItemId))[0]).toMatchObject(
+      purpose === "archive"
+        ? { status: "pending", operation_phase: "uncertain", operation_step: "copy" }
+        : { status: "pending", operation_phase: "between_steps", operation_step: "mark_deleted" },
+    );
   });
 
   it("checkpoints IMAP COPY and deletion before UID expunge and persists the new UID", async () => {
-    await runInTenant(a, () => seedSystem(pool));
-    const fixture = await runInTenant(a, () =>
-      withTransaction(pool, async (client) => {
-        const mailboxDb = await getDatabaseByModuleId(client, "mailboxes");
-        const emailDb = await getDatabaseByModuleId(client, "emails");
-        const folderDb = await getDatabaseByModuleId(client, "folders");
-        if (!mailboxDb || !emailDb || !folderDb) throw new Error("Missing mail databases");
-        const emailFolder = await getPropertyByKey(client, emailDb.id, "folder");
-        const folderMailbox = await getPropertyByKey(client, folderDb.id, "mailbox");
-        if (!emailFolder || !folderMailbox) throw new Error("Missing relation properties");
-        const mailbox = await createItemWithClient(client, {
-          databaseId: mailboxDb.id,
-          properties: { name: "Mailbox" },
-        });
-        const message = await createItemWithClient(
-          client,
-          { databaseId: emailDb.id, properties: { name: "Message" } },
-          { allowedSystemKeys: ["name"] },
-        );
-        await upsertMailMessageMeta(client, {
-          itemId: message.id,
-          mailboxItemId: mailbox.id,
-          messageId: `<${randomUUID()}@example.test>`,
-          envelope: {},
-        });
-        const makeFolder = async (path: string, purpose: string) => {
-          const id = await ensureFolderItem(client, {
-            foldersDatabaseId: folderDb.id,
-            mailboxItemId: mailbox.id,
-            mailboxRelationPropertyId: folderMailbox.id,
-            providerId: path,
-            name: path,
-            behavior: "folder",
-            specialPurpose: purpose,
-          });
-          await ensureMailFolderSyncState(client, id);
-          await recordReconcile(client, {
-            itemId: id,
-            uidvalidity: path === "INBOX" ? "42" : "43",
-            uidnext: "30",
-            highestmodseq: null,
-          });
-          return id;
-        };
-        const sourceId = await makeFolder("INBOX", "inbox");
-        const targetId = await makeFolder("Archive", "archive");
-        await createRelationWithClient(
-          client,
-          {
-            relationPropertyId: emailFolder.id,
-            callerItemId: message.id,
-            targetItemId: sourceId,
-            metadata: { uid: 7 },
-          },
-          EMAILS_RELATION_CONTEXT,
-        );
-        await recordDesiredMailMessageMove(client, {
-          messageItemId: message.id,
-          mailboxItemId: mailbox.id,
-          desiredPurpose: "archive",
-          source: { provider: "imap", folderItemId: sourceId, path: "INBOX", uid: 7, uidValidity: "42" },
-        });
-        await deleteRelationWithClient(
-          client,
-          { relationPropertyId: emailFolder.id, callerItemId: message.id, targetItemId: sourceId },
-          EMAILS_RELATION_CONTEXT,
-        );
-        await createRelationWithClient(
-          client,
-          { relationPropertyId: emailFolder.id, callerItemId: message.id, targetItemId: targetId },
-          EMAILS_RELATION_CONTEXT,
-        );
-        return {
-          mailboxId: mailbox.id,
-          messageId: message.id,
-          sourceId,
-          targetId,
-          folderDb: folderDb.id,
-          emailDb: emailDb.id,
-          folderProperty: emailFolder.id,
-          mailboxProperty: folderMailbox.id,
-        };
-      }),
-    );
+    const fx = await imapFixture([
+      { path: "INBOX", purpose: "inbox", uidValidity: "42", uidNext: "30" },
+      { path: "Archive", purpose: "archive", uidValidity: "43", uidNext: "30" },
+    ]);
+    const [sourceId, targetId] = fx.folderIds as [string, string];
+    const inboxSource = { folderId: sourceId, path: "INBOX", uid: 7, uidValidity: "42" };
+    await moveImapLocally(fx, "archive", inboxSource, targetId);
+
+    // A source UID the server no longer reports is left pending without mutation.
     for (const answer of [[], false] as const) {
       const move = vi.fn(async () => false as const);
-      const flow = {
+      const flow = imapFlowOn("INBOX", 42n, {
         capabilities: new Map([["MOVE", true]]),
-        mailbox: { path: "INBOX", uidValidity: 42n },
-        mailboxOpen: async () => ({ path: "INBOX", uidValidity: 42n }),
         search: async () => answer,
         messageMove: move,
-        logout: async () => {},
-        close: () => {},
-      } as unknown as import("imapflow").ImapFlow;
-      await runInTenant(a, () =>
-        drainImapMoves(
-          pool,
-          fixture.mailboxId,
-          async () => new ImapFlowMailClient(flow),
-          fixture.folderDb,
-          fixture.mailboxProperty,
-          fixture.folderProperty,
-        ),
-      );
+      });
+      await drainImap(fx, async () => new ImapFlowMailClient(flow));
       expect(move).not.toHaveBeenCalled();
-      const pending = (
-        await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, fixture.mailboxId)))
-      )[0];
-      expect(pending).toMatchObject({ status: "pending", attempts: 0, operation_token: null });
+      expect((await pendingMoves(fx.mailboxItemId))[0]).toMatchObject({
+        status: "pending",
+        attempts: 0,
+        operation_token: null,
+      });
     }
+
+    // A server without MOVE or UIDPLUS fails the move after its attempt limit without any mutation.
     const unrelatedDeleted = new Set([99]);
     const forbidden = vi.fn(async () => {
       unrelatedDeleted.clear();
       return { kind: "acknowledged" as const };
     });
-    const unsupported = {
-      prepareMove: async () => ({ uidValidity: "42", capabilities: new Set<string>(), found: true }),
-      executeMoveStep: forbidden,
-      close: async () => {},
-    } as unknown as import("../mail/imapReconcile.js").ImapMailClient;
-    for (let attempt = 0; attempt < 5; attempt++) {
-      await runInTenant(a, () =>
-        drainImapMoves(
-          pool,
-          fixture.mailboxId,
-          async () => unsupported,
-          fixture.folderDb,
-          fixture.mailboxProperty,
-          fixture.folderProperty,
-        ),
-      );
-    }
+    const unsupported = fakeImapClient({ uidValidity: "42", capabilities: [] }, forbidden);
+    for (let attempt = 0; attempt < 5; attempt++) await drainImap(fx, async () => unsupported);
     expect(forbidden).not.toHaveBeenCalled();
     expect([...unrelatedDeleted]).toEqual([99]);
-    const refused = await runInTenant(a, () =>
-      withTransaction(pool, (client) =>
-        client.query<{ status: string; failure_reason: string; attempts: number }>(
-          "SELECT status, failure_reason, attempts FROM mail_message_move_sync_state WHERE message_item_id = $1",
-          [fixture.messageId],
-        ),
-      ),
-    );
-    expect(refused.rows[0]).toEqual({ status: "failed", failure_reason: "unsupportedCapability", attempts: 5 });
-    await runInTenant(a, () =>
-      withTransaction(pool, async (client) => {
-        await createRelationWithClient(
-          client,
-          {
-            relationPropertyId: fixture.folderProperty,
-            callerItemId: fixture.messageId,
-            targetItemId: fixture.sourceId,
-            metadata: { uid: 7 },
-          },
-          EMAILS_RELATION_CONTEXT,
-        );
-        await recordDesiredMailMessageMove(client, {
-          messageItemId: fixture.messageId,
-          mailboxItemId: fixture.mailboxId,
-          desiredPurpose: "archive",
-          source: { provider: "imap", folderItemId: fixture.sourceId, path: "INBOX", uid: 7, uidValidity: "42" },
-        });
-        await deleteRelationWithClient(
-          client,
-          {
-            relationPropertyId: fixture.folderProperty,
-            callerItemId: fixture.messageId,
-            targetItemId: fixture.sourceId,
-          },
-          EMAILS_RELATION_CONTEXT,
-        );
-      }),
-    );
-    const steps: string[] = [];
-    const assertNoMoveTransaction = async () => {
-      const activity = await admin.query<{ pid: number; xact_start: Date | null }>(
-        "SELECT pid, xact_start FROM pg_stat_activity WHERE datname = current_database() AND usename = 'semprec_data'",
-      );
-      expect(activity.rows.length).toBeGreaterThan(0);
-      expect(activity.rows.every((row) => row.xact_start === null)).toBe(true);
-    };
-    const close = vi.fn(async () => {
-      await assertNoMoveTransaction();
+    expect(await moveState(fx.messageItemId)).toEqual({
+      status: "failed",
+      failure_reason: "unsupportedCapability",
+      attempts: 5,
     });
+
+    // UIDPLUS copy, delete and expunge run step by step outside any transaction.
+    await inTenant(async (client) => {
+      await linkFolder(client, fx, sourceId, 7);
+      await recordDesiredMailMessageMove(client, {
+        messageItemId: fx.messageItemId,
+        mailboxItemId: fx.mailboxItemId,
+        desiredPurpose: "archive",
+        source: { provider: "imap", folderItemId: sourceId, path: "INBOX", uid: 7, uidValidity: "42" },
+      });
+      await unlinkFolder(client, fx, sourceId);
+    });
+    const steps: string[] = [];
+    const close = vi.fn(assertNoMoveTransaction);
     const fake = {
       prepareMove: async () => {
         await assertNoMoveTransaction();
@@ -1749,7 +1233,7 @@ describe("mail move intent store", () => {
       },
       executeMoveStep: async (step: string) => {
         await assertNoMoveTransaction();
-        const state = (await withTransaction(pool, (client) => listPendingMoves(client, fixture.mailboxId)))[0];
+        const state = (await withTransaction(pool, (client) => listPendingMoves(client, fx.mailboxItemId)))[0];
         expect(state).toMatchObject({ operation_phase: "in_flight", operation_step: step });
         steps.push(step);
         return step === "copy"
@@ -1757,85 +1241,55 @@ describe("mail move intent store", () => {
           : { kind: "acknowledged" };
       },
       close,
-    } as unknown as import("../mail/imapReconcile.js").ImapMailClient;
-    await runInTenant(a, () =>
-      drainImapMoves(
-        pool,
-        fixture.mailboxId,
-        async () => {
-          await assertNoMoveTransaction();
-          return fake;
-        },
-        fixture.folderDb,
-        fixture.mailboxProperty,
-        fixture.folderProperty,
-      ),
-    );
+    } as unknown as ImapMailClient;
+    await drainImap(fx, async () => {
+      await assertNoMoveTransaction();
+      return fake;
+    });
     expect(steps).toEqual(["copy", "mark_deleted", "expunge"]);
     expect(close).toHaveBeenCalledTimes(1);
-    expect(
-      await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, fixture.mailboxId))),
-    ).toEqual([]);
-    const edge = await runInTenant(a, () =>
-      withTransaction(pool, (client) =>
-        client.query<{ uid: string }>(
-          `SELECT metadata ->> 'uid' AS uid FROM item_relations WHERE (item_a = $1 OR item_b = $1) AND (item_a = $2 OR item_b = $2)`,
-          [fixture.messageId, fixture.targetId],
-        ),
+    expect(await pendingMoves(fx.mailboxItemId)).toEqual([]);
+    const edge = await inTenant((client) =>
+      client.query<{ uid: string }>(
+        `SELECT metadata ->> 'uid' AS uid FROM item_relations WHERE (item_a = $1 OR item_b = $1) AND (item_a = $2 OR item_b = $2)`,
+        [fx.messageItemId, targetId],
       ),
     );
     expect(edge.rows[0]?.uid).toBe("23");
-    await runInTenant(a, () =>
-      withTransaction(pool, (client) =>
-        recordDesiredMailMessageMove(client, {
-          messageItemId: fixture.messageId,
-          mailboxItemId: fixture.mailboxId,
-          desiredPurpose: "archive",
-          source: { provider: "imap", folderItemId: fixture.targetId, path: "Archive", uid: 23, uidValidity: "43" },
-        }),
-      ),
-    );
+
+    // A desire that matches the new location is confirmed without a provider step.
+    const archiveSource = { folderId: targetId, path: "Archive", uid: 23, uidValidity: "43" };
+    await record({
+      messageItemId: fx.messageItemId,
+      mailboxItemId: fx.mailboxItemId,
+      desiredPurpose: "archive",
+      source: { provider: "imap", folderItemId: targetId, path: "Archive", uid: 23, uidValidity: "43" },
+    });
     const noMutation = vi.fn(async () => ({ kind: "uncertain" as const }));
-    const matching = {
-      prepareMove: async () => ({ uidValidity: "43", capabilities: new Set(["MOVE"]), found: true }),
-      executeMoveStep: noMutation,
-      close: async () => {},
-    } as unknown as import("../mail/imapReconcile.js").ImapMailClient;
-    await runInTenant(a, () =>
-      drainImapMoves(
-        pool,
-        fixture.mailboxId,
-        async () => matching,
-        fixture.folderDb,
-        fixture.mailboxProperty,
-        fixture.folderProperty,
-      ),
-    );
+    await drainImap(fx, async () => fakeImapClient({ uidValidity: "43", capabilities: ["MOVE"] }, noMutation));
     expect(noMutation).not.toHaveBeenCalled();
-    expect(
-      await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, fixture.mailboxId))),
-    ).toEqual([]);
-    const flagWrites = await runInTenant(a, () =>
-      withTransaction(pool, async (client) => {
-        await updateItemWithClient(client, {
-          databaseId: fixture.emailDb,
-          itemId: fixture.messageId,
-          propertiesPatch: { read: true },
-        });
-        const folderRelation = await getRelationDefinitionByPropertyId(client, fixture.folderProperty);
-        const mailboxRelation = await getRelationDefinitionByPropertyId(client, fixture.mailboxProperty);
-        if (!folderRelation || !mailboxRelation) throw new Error("missing relation definition");
-        return listPendingImapFlagWrites(client, {
-          folderRelationDefinitionId: folderRelation.id,
-          mailboxFolderRelationDefinitionId: mailboxRelation.id,
-          mailboxItemId: fixture.mailboxId,
-        });
-      }),
-    );
+    expect(await pendingMoves(fx.mailboxItemId)).toEqual([]);
+
+    // Flag writeback and reconcile address the message by its new UID.
+    const flagWrites = await inTenant(async (client) => {
+      await updateItemWithClient(client, {
+        databaseId: fx.emailsDatabaseId,
+        itemId: fx.messageItemId,
+        propertiesPatch: { read: true },
+      });
+      const folderRelation = await getRelationDefinitionByPropertyId(client, fx.folderPropertyId);
+      const mailboxRelation = await getRelationDefinitionByPropertyId(client, fx.mailboxPropertyId);
+      if (!folderRelation || !mailboxRelation) throw new Error("missing relation definition");
+      return listPendingImapFlagWrites(client, {
+        folderRelationDefinitionId: folderRelation.id,
+        mailboxFolderRelationDefinitionId: mailboxRelation.id,
+        mailboxItemId: fx.mailboxItemId,
+      });
+    });
     const setFlag = vi.fn(async () => {});
-    await createImapMailFlagWritebackAdapter({
-      setMessageFlag: setFlag,
-    } as unknown as import("../mail/imapReconcile.js").ImapMailClient).write(flagWrites[0]!);
+    await createImapMailFlagWritebackAdapter({ setMessageFlag: setFlag } as unknown as ImapMailClient).write(
+      flagWrites[0]!,
+    );
     expect(setFlag).toHaveBeenCalledWith("Archive", 23, "\\Seen", true);
     const reconciledFlag = vi.fn(async () => {});
     const reconcileClient = {
@@ -1849,273 +1303,102 @@ describe("mail move intent store", () => {
       setMessageFlag: reconciledFlag,
       appendMessage: async () => {},
       close: async () => {},
-    } satisfies import("../mail/imapReconcile.js").ImapMailClient;
-    await runInTenant(a, () =>
-      withTransaction(pool, async (client) => {
-        const files = await getDatabaseByModuleId(client, "files");
-        const attachments = await getPropertyByKey(client, fixture.emailDb, "attachments");
-        if (!files || !attachments) throw new Error("missing attachment schema");
-        await reconcileImapAccount(client, reconcileClient, {
-          mailboxItemId: fixture.mailboxId,
-          emailsDatabaseId: fixture.emailDb,
-          filesDatabaseId: files.id,
-          foldersDatabaseId: fixture.folderDb,
-          folderRelationPropertyId: fixture.folderProperty,
-          mailboxFolderRelationPropertyId: fixture.mailboxProperty,
-          attachmentsRelationPropertyId: attachments.id,
-          storage: new LocalFsBlobStorageWriter("/private/tmp/unused-move-test"),
-          storageKeyPrefix: fixture.mailboxId,
-        });
-      }),
-    );
+    } satisfies ImapMailClient;
+    await inTenant(async (client) => {
+      const files = await getDatabaseByModuleId(client, "files");
+      const attachments = await getPropertyByKey(client, fx.emailsDatabaseId, "attachments");
+      if (!files || !attachments) throw new Error("missing attachment schema");
+      await reconcileImapAccount(client, reconcileClient, {
+        mailboxItemId: fx.mailboxItemId,
+        emailsDatabaseId: fx.emailsDatabaseId,
+        filesDatabaseId: files.id,
+        foldersDatabaseId: fx.foldersDatabaseId,
+        folderRelationPropertyId: fx.folderPropertyId,
+        mailboxFolderRelationPropertyId: fx.mailboxPropertyId,
+        attachmentsRelationPropertyId: attachments.id,
+        storage: new LocalFsBlobStorageWriter("/private/tmp/unused-move-test"),
+        storageKeyPrefix: fx.mailboxItemId,
+      });
+    });
     expect(reconciledFlag).toHaveBeenCalledWith("Archive", 23, "\\Seen", true);
 
-    await runInTenant(a, () =>
-      withTransaction(pool, async (client) => {
-        await recordDesiredMailMessageMove(client, {
-          messageItemId: fixture.messageId,
-          mailboxItemId: fixture.mailboxId,
-          desiredPurpose: "inbox",
-          source: { provider: "imap", folderItemId: fixture.targetId, path: "Archive", uid: 23, uidValidity: "43" },
-        });
-        await deleteRelationWithClient(
-          client,
-          {
-            relationPropertyId: fixture.folderProperty,
-            callerItemId: fixture.messageId,
-            targetItemId: fixture.targetId,
-          },
-          EMAILS_RELATION_CONTEXT,
-        );
-        await createRelationWithClient(
-          client,
-          {
-            relationPropertyId: fixture.folderProperty,
-            callerItemId: fixture.messageId,
-            targetItemId: fixture.sourceId,
-          },
-          EMAILS_RELATION_CONTEXT,
-        );
-      }),
-    );
+    // A native MOVE that answers false stays uncertain and is not replayed.
+    await moveImapLocally(fx, "inbox", archiveSource, sourceId);
     const nativeMove = vi.fn(async () => false as const);
-    const native = {
+    const native = imapFlowOn("Archive", 43n, {
       capabilities: new Map([["MOVE", true]]),
-      mailbox: { path: "Archive", uidValidity: 43n },
-      mailboxOpen: async () => ({ path: "Archive", uidValidity: 43n }),
       search: async () => [23],
       messageMove: nativeMove,
-      logout: async () => {},
-      close: () => {},
-    } as unknown as import("imapflow").ImapFlow;
+    });
     const create = vi.fn(async () => new ImapFlowMailClient(native));
-    await runInTenant(a, () =>
-      drainImapMoves(
-        pool,
-        fixture.mailboxId,
-        create,
-        fixture.folderDb,
-        fixture.mailboxProperty,
-        fixture.folderProperty,
-      ),
-    );
-    await runInTenant(a, () =>
-      drainImapMoves(
-        pool,
-        fixture.mailboxId,
-        create,
-        fixture.folderDb,
-        fixture.mailboxProperty,
-        fixture.folderProperty,
-      ),
-    );
+    await drainImap(fx, create);
+    await drainImap(fx, create);
     expect(nativeMove).toHaveBeenCalledTimes(1);
     expect(create).toHaveBeenCalledTimes(1);
-    const uncertain = (
-      await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, fixture.mailboxId)))
-    )[0];
-    expect(uncertain).toMatchObject({ operation_phase: "uncertain", status: "pending" });
+    expect((await pendingMoves(fx.mailboxItemId))[0]).toMatchObject({
+      operation_phase: "uncertain",
+      status: "pending",
+    });
   });
 
   it("requires a verified IMAP source before the local edge changes and preserves it on later desires", async () => {
-    await runInTenant(a, () => seedSystem(pool));
-    const fixture = await runInTenant(a, () =>
-      withTransaction(pool, async (client) => {
-        const mailboxDb = await getDatabaseByModuleId(client, "mailboxes");
-        const emailDb = await getDatabaseByModuleId(client, "emails");
-        const folderDb = await getDatabaseByModuleId(client, "folders");
-        if (!mailboxDb || !emailDb || !folderDb) throw new Error("Missing mail databases");
-        const emailFolder = await getPropertyByKey(client, emailDb.id, "folder");
-        const folderMailbox = await getPropertyByKey(client, folderDb.id, "mailbox");
-        if (!emailFolder || !folderMailbox) throw new Error("Missing mail relation properties");
-        const mailbox = await createItemWithClient(client, {
-          databaseId: mailboxDb.id,
-          properties: { name: "Mailbox" },
-        });
-        const message = await createItemWithClient(
-          client,
-          { databaseId: emailDb.id, properties: { name: "Message" } },
-          { allowedSystemKeys: ["name"] },
-        );
-        const messageId = `<${randomUUID()}@example.test>`;
-        await upsertMailMessageMeta(client, {
-          itemId: message.id,
-          mailboxItemId: mailbox.id,
-          messageId,
-          envelope: {},
-        });
-        const folderId = await ensureFolderItem(client, {
-          foldersDatabaseId: folderDb.id,
-          mailboxItemId: mailbox.id,
-          mailboxRelationPropertyId: folderMailbox.id,
-          providerId: "INBOX",
-          name: "Inbox",
-          behavior: "folder",
-          specialPurpose: "inbox",
-        });
-        await ensureMailFolderSyncState(client, folderId);
-        await recordReconcile(client, { itemId: folderId, uidvalidity: "42", uidnext: "8", highestmodseq: null });
-        await createRelationWithClient(
-          client,
-          {
-            relationPropertyId: emailFolder.id,
-            callerItemId: message.id,
-            targetItemId: folderId,
-            metadata: { uid: 7 },
-          },
-          EMAILS_RELATION_CONTEXT,
-        );
-        return {
-          mailboxItemId: mailbox.id,
-          messageItemId: message.id,
-          messageId,
-          emailsDatabaseId: emailDb.id,
-          foldersDatabaseId: folderDb.id,
-          mailboxPropertyId: folderMailbox.id,
-          folderId,
-          propertyId: emailFolder.id,
-        };
-      }),
+    const fx = await imapFixture([{ path: "INBOX", purpose: "inbox", uidValidity: "42", uidNext: "8" }]);
+    const folderId = fx.folderIds[0]!;
+    const ids = { messageItemId: fx.messageItemId, mailboxItemId: fx.mailboxItemId };
+    const source = { provider: "imap" as const, folderItemId: folderId, path: "INBOX", uid: 7, uidValidity: "42" };
+    await expect(record({ ...ids, desiredPurpose: "archive" })).rejects.toThrow();
+    expect(await pendingMoves(fx.mailboxItemId)).toEqual([]);
+    await expect(record({ ...ids, desiredPurpose: "archive", source: { ...source, uid: 8 } })).rejects.toThrow(
+      "Mail move source is not verified",
     );
-    const source = {
-      provider: "imap" as const,
-      folderItemId: fixture.folderId,
-      path: "INBOX",
-      uid: 7,
-      uidValidity: "42",
-    };
+    expect(await pendingMoves(fx.mailboxItemId)).toEqual([]);
     await expect(
-      runInTenant(a, () =>
-        withTransaction(pool, (client) =>
-          recordDesiredMailMessageMove(client, { ...fixture, desiredPurpose: "archive" }),
-        ),
-      ),
-    ).rejects.toThrow();
-    expect(
-      await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, fixture.mailboxItemId))),
-    ).toEqual([]);
-    await expect(
-      runInTenant(a, () =>
-        withTransaction(pool, (client) =>
-          recordDesiredMailMessageMove(client, {
-            ...fixture,
-            desiredPurpose: "archive",
-            source: { ...source, uid: 8 },
-          }),
-        ),
-      ),
-    ).rejects.toThrow("Mail move source is not verified");
-    expect(
-      await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, fixture.mailboxItemId))),
-    ).toEqual([]);
-    await expect(
-      runInTenant(a, () =>
-        withTransaction(pool, async (client) => {
-          await recordDesiredMailMessageMove(client, { ...fixture, desiredPurpose: "archive", source });
-          throw new Error("abort source capture");
-        }),
-      ),
+      inTenant(async (client) => {
+        await recordDesiredMailMessageMove(client, { ...ids, desiredPurpose: "archive", source });
+        throw new Error("abort source capture");
+      }),
     ).rejects.toThrow("abort source capture");
-    expect(
-      await runInTenant(a, () => withTransaction(pool, (client) => listPendingMoves(client, fixture.mailboxItemId))),
-    ).toEqual([]);
-    const first = await runInTenant(a, () =>
-      withTransaction(pool, async (client) => {
-        const result = await recordDesiredMailMessageMove(client, { ...fixture, desiredPurpose: "archive", source });
-        await deleteRelationWithClient(
-          client,
-          {
-            relationPropertyId: fixture.propertyId,
-            callerItemId: fixture.messageItemId,
-            targetItemId: fixture.folderId,
-          },
-          EMAILS_RELATION_CONTEXT,
-        );
-        return result;
-      }),
-    );
+    expect(await pendingMoves(fx.mailboxItemId)).toEqual([]);
+    const first = await inTenant(async (client) => {
+      const result = await recordDesiredMailMessageMove(client, { ...ids, desiredPurpose: "archive", source });
+      await unlinkFolder(client, fx, folderId);
+      return result;
+    });
     const closeMissingAdapter = vi.fn(async () => {});
-    const missingAdapter = {
-      close: closeMissingAdapter,
-    } as unknown as import("../mail/imapReconcile.js").ImapMailClient;
     await expect(
-      runInTenant(a, () =>
-        drainImapMoves(
-          pool,
-          fixture.mailboxItemId,
-          async () => missingAdapter,
-          fixture.foldersDatabaseId,
-          fixture.mailboxPropertyId,
-          fixture.propertyId,
-        ),
-      ),
+      drainImap(fx, async () => ({ close: closeMissingAdapter }) as unknown as ImapMailClient),
     ).rejects.toThrow("IMAP move adapter is unavailable");
     expect(closeMissingAdapter).toHaveBeenCalledTimes(1);
-    const next = await runInTenant(a, () =>
-      withTransaction(pool, (client) =>
-        recordDesiredMailMessageMove(client, {
-          ...fixture,
-          desiredPurpose: "inbox",
-          source: { ...source, uid: 999 },
-        }),
-      ),
-    );
+    const next = await record({ ...ids, desiredPurpose: "inbox", source: { ...source, uid: 999 } });
     const observe = () =>
-      runInTenant(a, () =>
-        withTransaction(pool, (client) =>
-          ingestEmailMessage(client, {
-            emailsDatabaseId: fixture.emailsDatabaseId,
-            filesDatabaseId: randomUUID(),
-            folderRelationPropertyId: fixture.propertyId,
-            attachmentsRelationPropertyId: randomUUID(),
-            folderItemId: fixture.folderId,
-            mailboxItemId: fixture.mailboxItemId,
-            folderUid: 7,
-            messageId: fixture.messageId,
-            envelope: {},
-            attachments: [],
-            storage: new LocalFsBlobStorageWriter("/private/tmp/unused-move-test"),
-            storageKeyPrefix: fixture.mailboxItemId,
-          }),
-        ),
-      );
-    const countEdges = () =>
-      runInTenant(a, () =>
-        withTransaction(pool, async (client) => {
-          const result = await client.query<{ count: string }>(
-            "SELECT count(*)::text AS count FROM item_relations WHERE (item_a = $1 OR item_b = $1) AND (item_a = $2 OR item_b = $2)",
-            [fixture.messageItemId, fixture.folderId],
-          );
-          return result.rows[0]?.count;
+      inTenant((client) =>
+        ingestEmailMessage(client, {
+          emailsDatabaseId: fx.emailsDatabaseId,
+          filesDatabaseId: randomUUID(),
+          folderRelationPropertyId: fx.folderPropertyId,
+          attachmentsRelationPropertyId: randomUUID(),
+          folderItemId: folderId,
+          mailboxItemId: fx.mailboxItemId,
+          folderUid: 7,
+          messageId: fx.messageId,
+          envelope: {},
+          attachments: [],
+          storage: new LocalFsBlobStorageWriter("/private/tmp/unused-move-test"),
+          storageKeyPrefix: fx.mailboxItemId,
         }),
       );
+    const countEdges = async () =>
+      (
+        await inTenant((client) =>
+          client.query<{ count: string }>(
+            "SELECT count(*)::text AS count FROM item_relations WHERE (item_a = $1 OR item_b = $1) AND (item_a = $2 OR item_b = $2)",
+            [fx.messageItemId, folderId],
+          ),
+        )
+      ).rows[0]?.count;
     await observe();
     expect(await countEdges()).toBe("0");
-    expect(
-      await runInTenant(a, () =>
-        withTransaction(pool, (client) => markMoveConfirmed(client, fixture.messageItemId, next.desired_revision)),
-      ),
-    ).toBe(true);
+    expect(await confirm(fx.messageItemId, next.desired_revision)).toBe(true);
     await observe();
     expect(await countEdges()).toBe("1");
     expect(first.source_evidence).toEqual(source);

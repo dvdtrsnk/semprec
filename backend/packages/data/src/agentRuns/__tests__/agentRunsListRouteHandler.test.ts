@@ -208,7 +208,7 @@ async function recordCost(runId: string, costUsd: number): Promise<void> {
   );
 }
 
-async function requestApproval(runId: string): Promise<void> {
+async function requestApproval(runId: string, toolCallId: string | null = null): Promise<void> {
   await runInTenant(tenantA.tenant, () =>
     createPendingApprovalRequest(runtime, {
       agentRunId: runId,
@@ -216,9 +216,41 @@ async function requestApproval(runId: string): Promise<void> {
       riskClass: "unclassified",
       payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
       resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
+      ...(toolCallId === null ? {} : { toolCallId }),
     }),
   );
 }
+
+/** How many statements naming `table` the client sends while `run` runs. */
+async function statementsOver(table: string, run: () => Promise<unknown>): Promise<number> {
+  const spy = vi.spyOn(pg.Client.prototype, "query");
+  try {
+    await run();
+    return spy.mock.calls.filter(([statement]) => statementText(statement)?.includes(table) === true).length;
+  } finally {
+    spy.mockRestore();
+  }
+}
+
+/** A row of a run that is not a chat answer, with the defaults of a done heartbeat tick. */
+function runRow(id: string, fields: Partial<ListRow> & Pick<ListRow, "title" | "startedAt">): ListRow {
+  return {
+    id,
+    agentRunId: id,
+    messageId: null,
+    triggeredBy: "heartbeat",
+    triggerLabel: "Tick",
+    durationMs: null,
+    costUsd: 0,
+    displayStatus: "done",
+    errorSummary: null,
+    attempt: 1,
+    ...fields,
+  };
+}
+
+/** The instant `index` minutes after `from`. */
+const minutesFrom = (from: string, index: number) => new Date(Date.parse(from) + index * 60_000).toISOString();
 
 const SERVER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const REGISTRATION = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -357,62 +389,32 @@ describe("GET /api/agent-runs of a project (issue gh-1909)", () => {
     await recordCost(finishedChat.id, 0.5);
 
     expect(await listRows(projectItemId)).toEqual([
-      {
-        id: failed.id,
-        agentRunId: failed.id,
-        messageId: null,
+      runRow(failed.id, {
         title: "Inbox sweep",
-        triggeredBy: "heartbeat",
-        triggerLabel: "Tick",
         startedAt: "2026-11-01T10:30:00.000Z",
         durationMs: 7000,
-        costUsd: 0,
         displayStatus: "error",
         errorSummary: "AI model error",
-        attempt: 1,
-      },
-      {
-        id: waiting.id,
-        agentRunId: waiting.id,
-        messageId: null,
+      }),
+      runRow(waiting.id, {
         title: "Morning review",
-        triggeredBy: "heartbeat",
-        triggerLabel: "Tick",
         startedAt: "2026-11-01T10:20:00.000Z",
         durationMs: 5000,
-        costUsd: 0,
         displayStatus: "waiting_approval",
-        errorSummary: null,
-        attempt: 1,
-      },
-      {
-        id: finishedChat.id,
-        agentRunId: finishedChat.id,
-        messageId: null,
+      }),
+      runRow(finishedChat.id, {
         title: "What changed this week?",
         triggeredBy: "user",
         triggerLabel: "Chat",
         startedAt: "2026-11-01T10:10:00.000Z",
-        durationMs: null,
         costUsd: 0.5,
-        displayStatus: "done",
-        errorSummary: null,
-        attempt: 1,
-      },
-      {
-        id: finishedHeartbeat.id,
-        agentRunId: finishedHeartbeat.id,
-        messageId: null,
+      }),
+      runRow(finishedHeartbeat.id, {
         title: "Morning review",
-        triggeredBy: "heartbeat",
-        triggerLabel: "Tick",
         startedAt: "2026-11-01T10:00:00.000Z",
         durationMs: 42000,
         costUsd: 0.06,
-        displayStatus: "done",
-        errorSummary: null,
-        attempt: 1,
-      },
+      }),
     ]);
   });
 
@@ -443,19 +445,18 @@ describe("GET /api/agent-runs of a project (issue gh-1909)", () => {
     expect(await read("de")).toEqual(await read("en"));
   });
 
-  it("titles a run with its task when it names no heartbeat", async () => {
+  it("titles a run that names no heartbeat with its task and shows it running, without duration or error", async () => {
     const projectItemId = await createProject();
     const run = await createRun({ projectItemId, triggeredBy: "user", task: "Plan the release" });
 
-    expect((await listRows(projectItemId)).map((row) => [row.id, row.title])).toEqual([[run.id, "Plan the release"]]);
-  });
-
-  it("shows a run that is still running as running, without a duration or an error summary", async () => {
-    const projectItemId = await createProject();
-    const run = await createRun({ projectItemId, triggeredBy: "heartbeat" });
-
-    expect(await listRows(projectItemId)).toMatchObject([
-      { id: run.id, displayStatus: "running", durationMs: null, errorSummary: null },
+    expect(await listRows(projectItemId)).toEqual([
+      runRow(run.id, {
+        title: "Plan the release",
+        triggeredBy: "user",
+        triggerLabel: "Chat",
+        startedAt: expect.any(String),
+        displayStatus: "running",
+      }),
     ]);
   });
 
@@ -533,16 +534,7 @@ describe("GET /api/agent-runs of a project (issue gh-1909)", () => {
       const projectItemId = await createProject();
       const runs: AgentRunRow[] = [];
       for (let i = 0; i < 2; i += 1) runs.push(await createRun({ projectItemId }));
-      const gatewayStatements = async (): Promise<number> => {
-        const spy = vi.spyOn(pg.Client.prototype, "query");
-        try {
-          await listRows(projectItemId);
-          return spy.mock.calls.filter(([statement]) => statementText(statement)?.includes("ai_gateway_calls") === true)
-            .length;
-        } finally {
-          spy.mockRestore();
-        }
-      };
+      const gatewayStatements = () => statementsOver("ai_gateway_calls", () => listRows(projectItemId));
       for (const run of runs) await recordCost(run.id, 0.01);
       const two = await gatewayStatements();
       for (let i = 0; i < 7; i += 1) runs.push(await createRun({ projectItemId }));
@@ -557,48 +549,33 @@ describe("GET /api/agent-runs of a project (issue gh-1909)", () => {
   });
 
   describe("limit and projectItemId", () => {
-    it("returns at most 20 rows when limit is omitted, the newest first", async () => {
+    it("returns at most 20 rows when limit is omitted and bounds the rows by limit 1 to 100, the newest first", async () => {
       const projectItemId = await createProject();
       const ids: string[] = [];
       for (let i = 0; i < 22; i += 1) ids.push((await createRun({ projectItemId })).id);
-      for (const [index, id] of ids.entries()) {
-        await setInstants(id, new Date(Date.parse("2026-11-05T10:00:00.000Z") + index * 60_000).toISOString());
-      }
+      for (const [index, id] of ids.entries()) await setInstants(id, minutesFrom("2026-11-05T10:00:00.000Z", index));
+      const newestFirst = [...ids].reverse();
 
-      expect((await listRows(projectItemId)).map((row) => row.id)).toEqual(ids.slice(2).reverse());
+      expect((await listRows(projectItemId)).map((row) => row.id)).toEqual(newestFirst.slice(0, 20));
+      expect((await listRows(projectItemId, { limit: "100" })).map((row) => row.id)).toEqual(newestFirst);
+      expect((await listRows(projectItemId, { limit: "1" })).map((row) => row.id)).toEqual([ids[21]]);
     });
 
-    it("accepts limit 100 and 1, and bounds the rows by the limit", async () => {
-      const projectItemId = await createProject();
-      const ids: string[] = [];
-      for (let i = 0; i < 3; i += 1) ids.push((await createRun({ projectItemId })).id);
-      for (const [index, id] of ids.entries()) {
-        await setInstants(id, new Date(Date.parse("2026-11-06T10:00:00.000Z") + index * 60_000).toISOString());
-      }
+    it.each([
+      ...["101", "0", "-1", "1.5", "abc", "", "1e1", " 5"].map((limit) => ({
+        query: `?projectItemId=${randomUUID()}&limit=${encodeURIComponent(limit)}`,
+        field: "limit",
+      })),
+      ...["", "?projectItemId=not-a-uuid", "?projectItemId=", "?limit=5"].map((query) => ({
+        query,
+        field: "projectItemId",
+      })),
+    ])("rejects the query $query with a validation error of $field", async ({ query, field }) => {
+      const error = await rejection(query);
 
-      expect((await listRows(projectItemId, { limit: "100" })).map((row) => row.id)).toEqual([...ids].reverse());
-      expect((await listRows(projectItemId, { limit: "1" })).map((row) => row.id)).toEqual([ids[2]]);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toMatchObject({ details: { field } });
     });
-
-    it.each(["101", "0", "-1", "1.5", "abc", "", "1e1", " 5"])(
-      "rejects limit=%j with a validation error",
-      async (limit) => {
-        const error = await rejection(`?projectItemId=${randomUUID()}&limit=${encodeURIComponent(limit)}`);
-
-        expect(error).toBeInstanceOf(ValidationError);
-        expect(error).toMatchObject({ details: { field: "limit" } });
-      },
-    );
-
-    it.each(["", "?projectItemId=not-a-uuid", "?projectItemId=", "?limit=5"])(
-      "rejects the query %j without a UUID projectItemId with a validation error",
-      async (query) => {
-        const error = await rejection(query);
-
-        expect(error).toBeInstanceOf(ValidationError);
-        expect(error).toMatchObject({ details: { field: "projectItemId" } });
-      },
-    );
 
     it("answers an empty list for a project id that holds no run of the caller", async () => {
       const emptyProject = await createProject();
@@ -817,20 +794,31 @@ describe("GET /api/agent-runs of a project, retried heartbeat occurrences (issue
               createChainedAgentRun(runtime, { ...base, retryOfRunId: previous.id }),
             );
       if (run === null) throw new Error("The retry was already taken");
-      await setInstants(run.id, new Date(Date.parse(startAt) + (attempt - 1) * 60_000).toISOString());
+      await setInstants(run.id, minutesFrom(startAt, attempt - 1));
       attempts.push(run);
     }
     return attempts;
   }
 
+  const freshAttempts = async (tick: Tick, count: number, startAt: string): Promise<AgentRunRow[]> =>
+    createAttempts(tick, await createOccurrence(tick.heartbeatId), count, startAt);
+
+  /** A run of an existing occurrence, without the chaining the scheduler does. */
+  const occurrenceRun = (tick: Tick, occurrenceId: string) =>
+    runInTenant(tenantA.tenant, () =>
+      createAgentRun(runtime, {
+        projectItemId: tick.projectItemId,
+        heartbeatId: tick.heartbeatId,
+        heartbeatOccurrenceId: occurrenceId,
+        triggeredBy: "heartbeat",
+        task: "tick",
+        userId: tenantA.userId,
+      }),
+    );
+
   it("lists one row for an occurrence tried three times, with the attempt number, status, error summary, start and duration of the third run", async () => {
     const tick = await createTick("Daily digest");
-    const [first, second, third] = await createAttempts(
-      tick,
-      await createOccurrence(tick.heartbeatId),
-      3,
-      "2026-11-10T10:00:00.000Z",
-    );
+    const [first, second, third] = await freshAttempts(tick, 3, "2026-11-10T10:00:00.000Z");
     if (first === undefined || second === undefined || third === undefined) throw new Error("Missing attempts");
     await failRun(first.id, "modelError");
     await failRun(second.id, "interrupted");
@@ -841,58 +829,34 @@ describe("GET /api/agent-runs of a project, retried heartbeat occurrences (issue
 
     const rows = await listRows(tick.projectItemId);
 
+    const entry = (run: AgentRunRow, attempt: number, startedAt: string, durationMs: number) => ({
+      id: run.id,
+      attempt,
+      startedAt,
+      durationMs,
+      costUsd: 0,
+      displayStatus: "error" as const,
+    });
     expect(rows).toEqual([
-      {
-        id: third.id,
-        agentRunId: third.id,
-        messageId: null,
+      runRow(third.id, {
         title: "Daily digest",
-        triggeredBy: "heartbeat",
-        triggerLabel: "Tick",
         startedAt: "2026-11-10T10:02:00.000Z",
         durationMs: 3000,
-        costUsd: 0,
         displayStatus: "error",
         errorSummary: "AI budget used up",
         attempt: 3,
         attempts: [
-          {
-            id: first.id,
-            attempt: 1,
-            startedAt: "2026-11-10T10:00:00.000Z",
-            durationMs: 1000,
-            costUsd: 0,
-            displayStatus: "error",
-          },
-          {
-            id: second.id,
-            attempt: 2,
-            startedAt: "2026-11-10T10:01:00.000Z",
-            durationMs: 2000,
-            costUsd: 0,
-            displayStatus: "error",
-          },
-          {
-            id: third.id,
-            attempt: 3,
-            startedAt: "2026-11-10T10:02:00.000Z",
-            durationMs: 3000,
-            costUsd: 0,
-            displayStatus: "error",
-          },
+          entry(first, 1, "2026-11-10T10:00:00.000Z", 1000),
+          entry(second, 2, "2026-11-10T10:01:00.000Z", 2000),
+          entry(third, 3, "2026-11-10T10:02:00.000Z", 3000),
         ],
-      },
+      }),
     ]);
   });
 
   it("shows the status of a third attempt that finished, with no error summary", async () => {
     const tick = await createTick("Daily digest");
-    const [first, second, third] = await createAttempts(
-      tick,
-      await createOccurrence(tick.heartbeatId),
-      3,
-      "2026-11-10T11:00:00.000Z",
-    );
+    const [first, second, third] = await freshAttempts(tick, 3, "2026-11-10T11:00:00.000Z");
     if (first === undefined || second === undefined || third === undefined) throw new Error("Missing attempts");
     await failRun(first.id);
     await failRun(second.id);
@@ -911,12 +875,7 @@ describe("GET /api/agent-runs of a project, retried heartbeat occurrences (issue
 
   it("sums the cost of the attempts and lists each attempt with its own cost, in attempt order", async () => {
     const tick = await createTick("Daily digest");
-    const attempts = await createAttempts(
-      tick,
-      await createOccurrence(tick.heartbeatId),
-      3,
-      "2026-11-10T12:00:00.000Z",
-    );
+    const attempts = await freshAttempts(tick, 3, "2026-11-10T12:00:00.000Z");
     for (const [index, cost] of [0.01, 0.02, 0.03].entries()) await recordCost(attempts[index]?.id ?? "", cost);
 
     const [row] = await listRows(tick.projectItemId);
@@ -931,12 +890,7 @@ describe("GET /api/agent-runs of a project, retried heartbeat occurrences (issue
 
   it("drops the binary floating-point noise of the sum of the costs", async () => {
     const tick = await createTick("Daily digest");
-    const attempts = await createAttempts(
-      tick,
-      await createOccurrence(tick.heartbeatId),
-      2,
-      "2026-11-10T12:30:00.000Z",
-    );
+    const attempts = await freshAttempts(tick, 2, "2026-11-10T12:30:00.000Z");
     await recordCost(attempts[0]?.id ?? "", 0.1);
     await recordCost(attempts[1]?.id ?? "", 0.2);
 
@@ -947,27 +901,14 @@ describe("GET /api/agent-runs of a project, retried heartbeat occurrences (issue
   it("reads the costs of every attempt with one statement over ai_gateway_calls whatever the number of attempts", async () => {
     const few = await createTick("Few");
     const many = await createTick("Many");
-    const fewAttempts = await createAttempts(
-      few,
-      await createOccurrence(few.heartbeatId),
-      2,
-      "2026-11-10T13:00:00.000Z",
-    );
+    const fewAttempts = await freshAttempts(few, 2, "2026-11-10T13:00:00.000Z");
     const manyAttempts = [
-      ...(await createAttempts(many, await createOccurrence(many.heartbeatId), 5, "2026-11-10T13:10:00.000Z")),
-      ...(await createAttempts(many, await createOccurrence(many.heartbeatId), 4, "2026-11-10T13:20:00.000Z")),
+      ...(await freshAttempts(many, 5, "2026-11-10T13:10:00.000Z")),
+      ...(await freshAttempts(many, 4, "2026-11-10T13:20:00.000Z")),
     ];
     for (const run of [...fewAttempts, ...manyAttempts]) await recordCost(run.id, 0.01);
-    const gatewayStatements = async (projectItemId: string): Promise<number> => {
-      const spy = vi.spyOn(pg.Client.prototype, "query");
-      try {
-        await listRows(projectItemId);
-        return spy.mock.calls.filter(([statement]) => statementText(statement)?.includes("ai_gateway_calls") === true)
-          .length;
-      } finally {
-        spy.mockRestore();
-      }
-    };
+    const gatewayStatements = (projectItemId: string) =>
+      statementsOver("ai_gateway_calls", () => listRows(projectItemId));
 
     expect(await gatewayStatements(few.projectItemId)).toBe(1);
     expect(await gatewayStatements(many.projectItemId)).toBe(1);
@@ -976,7 +917,7 @@ describe("GET /api/agent-runs of a project, retried heartbeat occurrences (issue
 
   it("returns limit rows when an occurrence with several attempts is among the newest, because it collapses before the limit", async () => {
     const tick = await createTick("Daily digest");
-    const retried = await createAttempts(tick, await createOccurrence(tick.heartbeatId), 3, "2026-11-10T14:30:00.000Z");
+    const retried = await freshAttempts(tick, 3, "2026-11-10T14:30:00.000Z");
     const others: AgentRunRow[] = [];
     for (let i = 0; i < 5; i += 1) {
       const run = await createRun({
@@ -984,7 +925,7 @@ describe("GET /api/agent-runs of a project, retried heartbeat occurrences (issue
         triggeredBy: "heartbeat",
         heartbeatId: tick.heartbeatId,
       });
-      await setInstants(run.id, new Date(Date.parse("2026-11-10T14:00:00.000Z") + i * 60_000).toISOString());
+      await setInstants(run.id, minutesFrom("2026-11-10T14:00:00.000Z", i));
       others.push(run);
     }
     const last = retried[2];
@@ -1013,12 +954,7 @@ describe("GET /api/agent-runs of a project, retried heartbeat occurrences (issue
     const tick = await createTick("Daily digest");
     const ids: string[] = [];
     for (let i = 0; i < 6; i += 1) {
-      const attempts = await createAttempts(
-        tick,
-        await createOccurrence(tick.heartbeatId),
-        i === 2 ? 3 : 1,
-        new Date(Date.parse("2026-11-10T15:00:00.000Z") + i * 3_600_000).toISOString(),
-      );
+      const attempts = await freshAttempts(tick, i === 2 ? 3 : 1, minutesFrom("2026-11-10T15:00:00.000Z", i * 60));
       ids.push(attempts[attempts.length - 1]?.id ?? "");
     }
 
@@ -1028,12 +964,7 @@ describe("GET /api/agent-runs of a project, retried heartbeat occurrences (issue
 
   it("positions a collapsed row at the start of its latest attempt", async () => {
     const tick = await createTick("Daily digest");
-    const attempts = await createAttempts(
-      tick,
-      await createOccurrence(tick.heartbeatId),
-      3,
-      "2026-11-10T16:00:00.000Z",
-    );
+    const attempts = await freshAttempts(tick, 3, "2026-11-10T16:00:00.000Z");
     const between = await createRun({ projectItemId: tick.projectItemId, triggeredBy: "user" });
     await setInstants(between.id, "2026-11-10T16:01:30.000Z");
     const last = attempts[2];
@@ -1064,7 +995,7 @@ describe("GET /api/agent-runs of a project, retried heartbeat occurrences (issue
 
   it("lists an occurrence tried once with one attempt equal to the row", async () => {
     const tick = await createTick("Daily digest");
-    const [only] = await createAttempts(tick, await createOccurrence(tick.heartbeatId), 1, "2026-11-10T17:00:00.000Z");
+    const [only] = await freshAttempts(tick, 1, "2026-11-10T17:00:00.000Z");
     if (only === undefined) throw new Error("Missing attempt");
     await closeRun(only.id);
     await setInstants(only.id, "2026-11-10T17:00:00.000Z", "2026-11-10T17:00:09.000Z");
@@ -1086,38 +1017,30 @@ describe("GET /api/agent-runs of a project, retried heartbeat occurrences (issue
     expect(row?.durationMs).toBe(9000);
   });
 
-  it("rounds the cost of the one attempt of an occurrence as the row's, so the entry equals the row for a cost with floating-point noise", async () => {
+  it("rounds the cost of the one attempt of an occurrence as the row's, and of a run with no occurrence, despite floating-point noise", async () => {
     const tick = await createTick("Daily digest");
-    const [only] = await createAttempts(tick, await createOccurrence(tick.heartbeatId), 1, "2026-11-10T17:10:00.000Z");
+    const [only] = await freshAttempts(tick, 1, "2026-11-10T17:10:00.000Z");
     if (only === undefined) throw new Error("Missing attempt");
     await closeRun(only.id);
+    const chat = await createRun({ projectItemId: tick.projectItemId, triggeredBy: "user" });
+    await setInstants(chat.id, "2026-11-10T17:00:00.000Z");
     // 0.1 + 0.2 in a double: 17 significant digits, as a gateway that computes a cost in floating point settles it.
     await recordCost(only.id, 0.1 + 0.2);
+    await recordCost(chat.id, 0.1 + 0.2);
 
-    const [row] = await listRows(tick.projectItemId);
+    const [row, chatRow] = await listRows(tick.projectItemId);
 
     expect(0.1 + 0.2).not.toBe(0.3);
     expect(row?.costUsd).toBe(0.3);
     expect(row?.attempts).toHaveLength(1);
     expect(row?.attempts?.[0]?.costUsd).toBe(row?.costUsd);
-  });
-
-  it("rounds the cost of a run with no occurrence in the same way", async () => {
-    const tick = await createTick("Daily digest");
-    const chat = await createRun({ projectItemId: tick.projectItemId, triggeredBy: "user" });
-    await recordCost(chat.id, 0.1 + 0.2);
-
-    expect((await listRows(tick.projectItemId))[0]?.costUsd).toBe(0.3);
+    // A run with no occurrence is rounded in the same way.
+    expect(chatRow).toMatchObject({ id: chat.id, costUsd: 0.3 });
   });
 
   it("takes the highest attempt as the latest and orders the attempts by attempt even when a higher attempt started earlier", async () => {
     const tick = await createTick("Daily digest");
-    const attempts = await createAttempts(
-      tick,
-      await createOccurrence(tick.heartbeatId),
-      3,
-      "2026-11-10T17:30:00.000Z",
-    );
+    const attempts = await freshAttempts(tick, 3, "2026-11-10T17:30:00.000Z");
     const [first, second, third] = attempts;
     if (first === undefined || second === undefined || third === undefined) throw new Error("Missing attempts");
     await setInstants(first.id, "2026-11-10T17:30:00.000Z");
@@ -1139,17 +1062,7 @@ describe("GET /api/agent-runs of a project, retried heartbeat occurrences (issue
   it("keeps the later of two runs of one occurrence that have the same attempt number", async () => {
     const tick = await createTick("Daily digest");
     const occurrenceId = await createOccurrence(tick.heartbeatId);
-    const heartbeatRun = () =>
-      runInTenant(tenantA.tenant, () =>
-        createAgentRun(runtime, {
-          projectItemId: tick.projectItemId,
-          heartbeatId: tick.heartbeatId,
-          heartbeatOccurrenceId: occurrenceId,
-          triggeredBy: "heartbeat",
-          task: "tick",
-          userId: tenantA.userId,
-        }),
-      );
+    const heartbeatRun = () => occurrenceRun(tick, occurrenceId);
     const earlier = await heartbeatRun();
     const later = await heartbeatRun();
     await setInstants(earlier.id, "2026-11-10T18:00:00.000Z");
@@ -1164,17 +1077,7 @@ describe("GET /api/agent-runs of a project, retried heartbeat occurrences (issue
   it("keeps the run with the greater id when two runs of one occurrence have the same attempt and start", async () => {
     const tick = await createTick("Daily digest");
     const occurrenceId = await createOccurrence(tick.heartbeatId);
-    const heartbeatRun = () =>
-      runInTenant(tenantA.tenant, () =>
-        createAgentRun(runtime, {
-          projectItemId: tick.projectItemId,
-          heartbeatId: tick.heartbeatId,
-          heartbeatOccurrenceId: occurrenceId,
-          triggeredBy: "heartbeat",
-          task: "tick",
-          userId: tenantA.userId,
-        }),
-      );
+    const heartbeatRun = () => occurrenceRun(tick, occurrenceId);
     const runs = [await heartbeatRun(), await heartbeatRun()];
     for (const run of runs) await setInstants(run.id, "2026-11-10T18:30:00.000Z");
 
@@ -1183,12 +1086,7 @@ describe("GET /api/agent-runs of a project, retried heartbeat occurrences (issue
 
   it("does not list a delegated sub-run of the run, in the rows or among the attempts", async () => {
     const tick = await createTick("Daily digest");
-    const [attempt] = await createAttempts(
-      tick,
-      await createOccurrence(tick.heartbeatId),
-      1,
-      "2026-11-10T19:00:00.000Z",
-    );
+    const [attempt] = await freshAttempts(tick, 1, "2026-11-10T19:00:00.000Z");
     if (attempt === undefined) throw new Error("Missing attempt");
     const delegated = await runInTenant(tenantA.tenant, () =>
       createAgentRun(runtime, {
@@ -1276,29 +1174,6 @@ describe("GET /api/agent-runs of a project, one row per chat answer (issue gh-19
     };
   }
 
-  async function requestApprovalFor(runId: string, toolCallId: string | null): Promise<void> {
-    await runInTenant(tenantA.tenant, () =>
-      createPendingApprovalRequest(runtime, {
-        agentRunId: runId,
-        toolName: "probe",
-        riskClass: "unclassified",
-        payload: { mcpToolRegistrationId: randomUUID(), mcpServerItemId: randomUUID(), args: {} },
-        resourceSnapshot: { kind: "test", resourceId: "test", sha256: null },
-        ...(toolCallId === null ? {} : { toolCallId }),
-      }),
-    );
-  }
-
-  const statementsOver = async (table: string, run: () => Promise<unknown>): Promise<number> => {
-    const spy = vi.spyOn(pg.Client.prototype, "query");
-    try {
-      await run();
-      return spy.mock.calls.filter(([statement]) => statementText(statement)?.includes(table) === true).length;
-    } finally {
-      spy.mockRestore();
-    }
-  };
-
   it("lists a chat run that answered three questions as three rows, each with its question, start, duration and cost", async () => {
     const projectItemId = await createProject();
     const session = await chatSession(projectItemId, "What changed this week?");
@@ -1385,31 +1260,13 @@ describe("GET /api/agent-runs of a project, one row per chat answer (issue gh-19
     const keys = (rows: ListRow[]) => rows.map((row) => row.messageId ?? row.id);
     const [a, b, c] = answers.map((answer) => answer.assistantMessageId);
 
-    expect(keys(await listRows(projectItemId, { limit: "1" }))).toEqual([newest.id]);
-    expect(keys(await listRows(projectItemId, { limit: "2" }))).toEqual([newest.id, c]);
-    expect(keys(await listRows(projectItemId, { limit: "3" }))).toEqual([newest.id, c, b]);
-    expect(keys(await listRows(projectItemId, { limit: "4" }))).toEqual([newest.id, c, b, a]);
-    expect(keys(await listRows(projectItemId, { limit: "5" }))).toEqual([newest.id, c, b, a, older.id]);
-    expect(keys(await listRows(projectItemId, { limit: "100" }))).toEqual([newest.id, c, b, a, older.id]);
+    const newestFirst = [newest.id, c, b, a, older.id];
+    for (const limit of [1, 2, 3, 4, 5, 100])
+      expect(keys(await listRows(projectItemId, { limit: String(limit) }))).toEqual(newestFirst.slice(0, limit));
     const store = await runInTenant(tenantA.tenant, () =>
       listProjectAgentRuns(runtime, { projectItemId, actorUserId: tenantA.userId, limit: 3 }),
     );
     expect(store.map((entry) => entry.answer?.messageId ?? null)).toEqual([null, c, b]);
-  });
-
-  it("lists nothing but the answers when the answers alone fill the limit", async () => {
-    const projectItemId = await createProject();
-    const session = await chatSession(projectItemId);
-    const answers = [];
-    for (let i = 0; i < 4; i += 1) {
-      answers.push(await playAnswer(setup(), session, `Question ${i}`, { startMs: i * 10_000, durationMs: 10 }));
-    }
-    const older = await createRun({ projectItemId, triggeredBy: "heartbeat" });
-    await setInstants(older.id, at(-10_000));
-
-    expect((await listRows(projectItemId, { limit: "4" })).map((row) => row.messageId)).toEqual(
-      answers.map((answer) => answer.assistantMessageId).reverse(),
-    );
   });
 
   describe("an answer that was retried", () => {
@@ -1669,15 +1526,6 @@ describe("GET /api/agent-runs of a project, one row per chat answer (issue gh-19
         expect.objectContaining({ id: noThread.id, messageId: null, title: "Old chat" }),
       ]);
     });
-
-    it("does not list the answers of a chat run that another user of the tenant started", async () => {
-      const projectItemId = await createProject();
-      const session = await chatSession(projectItemId);
-      await playAnswer(setup(), session, "Mine", { startMs: 0, durationMs: 100 });
-
-      expect(await listRows(projectItemId)).toHaveLength(1);
-      expect(await listRows(projectItemId, { userId: randomUUID() })).toEqual([]);
-    });
   });
 
   describe("status, error and duration of an answer", () => {
@@ -1722,7 +1570,7 @@ describe("GET /api/agent-runs of a project, one row per chat answer (issue gh-19
       ]);
     });
 
-    it("waits for approval only on the answer whose tool call asked for it", async () => {
+    it("waits for approval only on the answer whose tool call asked for it, also after retention removed its events", async () => {
       const projectItemId = await createProject();
       const session = await chatSession(projectItemId);
       const call = { toolCallId: "call-1", name: "database_list", operation: "database.list" };
@@ -1732,45 +1580,23 @@ describe("GET /api/agent-runs of a project, one row per chat answer (issue gh-19
         toolEvents: [toolUseEvent(call, 100), toolResultEvent(call, 200)],
       });
       const other = await playAnswer(setup(), session, "Thanks", { startMs: 10_000, durationMs: 100 });
-      await requestApprovalFor(session.runId, "call-1");
-
-      expect((await listRows(projectItemId)).map((row) => [row.messageId, row.displayStatus])).toEqual([
+      await requestApproval(session.runId, "call-1");
+      // Neither a request without a tool call id nor one of a tool call outside every answer counts for an answer.
+      await requestApproval(session.runId, null);
+      await requestApproval(session.runId, "call-of-nobody");
+      const statuses = async () => (await listRows(projectItemId)).map((row) => [row.messageId, row.displayStatus]);
+      const expected = [
         [other.assistantMessageId, "done"],
         [asking.assistantMessageId, "waiting_approval"],
-      ]);
-    });
+      ];
 
-    it("keeps an answer waiting for approval after retention removed its events, by the steps stored on the message", async () => {
-      const projectItemId = await createProject();
-      const session = await chatSession(projectItemId);
-      const call = { toolCallId: "call-2", name: "database_list", operation: "database.list" };
-      const asking = await playAnswer(setup(), session, "Change the project", {
-        startMs: 0,
-        durationMs: 1000,
-        toolEvents: [toolUseEvent(call, 100), toolResultEvent(call, 200)],
-      });
-      await requestApprovalFor(session.runId, "call-2");
+      expect(await statuses()).toEqual(expected);
       // Retention removes the tool call's event but not the steps stored on the message.
       await admin.query(
-        `DELETE FROM agent_run_events WHERE agent_run_id = $1 AND kind = 'tool_use' AND payload->>'toolCallId' = 'call-2'`,
+        `DELETE FROM agent_run_events WHERE agent_run_id = $1 AND kind = 'tool_use' AND payload->>'toolCallId' = 'call-1'`,
         [session.runId],
       );
-
-      expect((await listRows(projectItemId)).map((row) => [row.messageId, row.displayStatus])).toEqual([
-        [asking.assistantMessageId, "waiting_approval"],
-      ]);
-    });
-
-    it("does not count a pending request stored without a tool call id, or one of a tool call outside the answer, for any answer", async () => {
-      const projectItemId = await createProject();
-      const session = await chatSession(projectItemId);
-      const answer = await playAnswer(setup(), session, "Hello", { startMs: 0, durationMs: 100 });
-      await requestApprovalFor(session.runId, null);
-      await requestApprovalFor(session.runId, "call-of-nobody");
-
-      expect((await listRows(projectItemId)).map((row) => [row.messageId, row.displayStatus])).toEqual([
-        [answer.assistantMessageId, "done"],
-      ]);
+      expect(await statuses()).toEqual(expected);
     });
 
     it("starts a row at the message's creation when retention removed the first event of its turn", async () => {

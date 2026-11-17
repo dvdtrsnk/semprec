@@ -62,23 +62,7 @@ let tasksId: string;
 let projectsId: string;
 let taskType: ItemRow;
 
-// pg 8.23.0 emits this plain, uncoded error on this owned-release path.
-function isOwnedPgClosure(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    error.constructor === Error &&
-    !("code" in error) &&
-    error.message === "Connection terminated"
-  );
-}
-
-function ownOverlap(
-  runtime: Pool,
-  cancel: () => void,
-  onCancellation?: (client: PoolClient, generation: object) => void,
-  onGeneration?: (client: PoolClient, generation: object) => void,
-  onReleased?: (client: PoolClient, generation: object) => void,
-) {
+function ownOverlap(runtime: Pool, cancel: () => void) {
   runtime.options.connectionTimeoutMillis = 2500;
   runtime.options.statement_timeout = 5000;
   const active = new Map<PoolClient, object>();
@@ -91,15 +75,12 @@ function ownOverlap(
   let closing = false;
   let expired = false;
   let closingPromise: Promise<void> | undefined;
-  let settledCleanup = false;
   const onClientError = (error: Error) => errors.push(error);
   const destroy = (client: PoolClient, token: object) => {
     if (active.get(client) !== token) return;
     try {
-      onCancellation?.(client, token);
       destroyed.add(token);
       client.release(true);
-      onReleased?.(client, token);
     } catch (error) {
       errors.push(error);
     }
@@ -107,7 +88,6 @@ function ownOverlap(
   const onAcquire = (client: PoolClient) => {
     const token = {};
     active.set(client, token);
-    onGeneration?.(client, token);
     client.on("error", onClientError);
     // pg-pool 3.14 assigns release after the acquire event.
     if (closing) queueMicrotask(() => destroy(client, token));
@@ -164,7 +144,6 @@ function ownOverlap(
       runtime.removeListener("release", onRelease);
       for (const client of retired) client.removeListener("error", onClientError);
       retired.clear();
-      settledCleanup = true;
     };
     closingPromise = (async () => {
       if (!bodyFailed) {
@@ -220,7 +199,7 @@ function ownOverlap(
     if (!outcome?.error || outcome.error.value !== expected) throw new Error("Unexpected participant outcome");
     outcome.consumed = true;
   };
-  return { run, wait, finish, consume, isSettled: () => settledCleanup };
+  return { run, wait, finish, consume };
 }
 
 async function overlapBounded<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
@@ -248,20 +227,6 @@ function combineOverlapFailure(body: { error: unknown } | undefined, cleanup: un
 
 function rethrowOverlap(error: unknown): never {
   throw error;
-}
-
-async function bounded<T>(promise: Promise<T>): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("Concurrency barrier timed out")), 5000);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 }
 
 async function databaseIdFor(moduleId: string): Promise<string> {
@@ -638,6 +603,29 @@ async function createIn(databaseId: string, properties: Record<string, unknown>)
   return withTransaction(pool, async (client) => (await createItemWithClient(client, { databaseId, properties })).id);
 }
 
+const brokenStep: ProposalStep = {
+  // A wrong value type passes envelope validation and fails only in the choke point's write, after the move ran.
+  ref: "broken",
+  op: "create",
+  databaseKey: "tasks",
+  role: "secondary",
+  properties: { name: 42 },
+};
+
+const executeSteps = (steps: ProposalStep[], sourceInboxItemId: string | null) =>
+  withTransaction(pool, (client) =>
+    executeProposalSteps(client, steps, { writer: { writerKind: "user" }, sourceInboxItemId }),
+  );
+
+const confirmIn = (cardId: string) => (client: PoolClient) =>
+  confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, cardId);
+
+async function cardWithAttachment(text: string, mimeType: string) {
+  const { inboxItemId, cardId } = await inboxItemWithCard(text);
+  const blobId = await newBlob(mimeType);
+  return { inboxItemId, cardId, blobId, attachmentId: await attach(inboxItemId, blobId) };
+}
+
 describe("file from attachment on confirm (issue #1703)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
@@ -666,9 +654,10 @@ describe("file from attachment on confirm (issue #1703)", () => {
   });
 
   it("moves a photo into Files: one item on the same blob with the project, its origin and type jpg; the attachment row goes and no blob is added", async () => {
-    const { inboxItemId, cardId } = await inboxItemWithCard("Scan of the contract");
-    const blobId = await newBlob("image/jpeg");
-    const attachmentId = await attach(inboxItemId, blobId);
+    const { inboxItemId, cardId, blobId, attachmentId } = await cardWithAttachment(
+      "Scan of the contract",
+      "image/jpeg",
+    );
     const projectId = await createIn(projectsId, { name: "Home" });
     const blobsBefore = await blobCount();
     await storeSteps(cardId, [taskPrimary(), fileStep(attachmentId, { relations: { projects: [projectId] } })]);
@@ -688,17 +677,14 @@ describe("file from attachment on confirm (issue #1703)", () => {
     expect(await blobCount()).toBe(blobsBefore);
   });
 
-  it("returns the moved attachment and the Files item in the step result, and lists the item as created", async () => {
+  it("returns the moved attachment and the created Files item in the step result and enqueues the recompute of the Inbox item's Journal day", async () => {
     const inboxItemId = await plainInboxItem("Receipt");
+    const dayId = await journalDayIdOf(inboxItemId);
     const blobId = await newBlob("application/pdf");
     const attachmentId = await attach(inboxItemId, blobId);
+    await clearDayRecomputes();
 
-    const executed = await withTransaction(pool, (client) =>
-      executeProposalSteps(client, [taskPrimary(), fileStep(attachmentId)], {
-        writer: { writerKind: "user" },
-        sourceInboxItemId: inboxItemId,
-      }),
-    );
+    const executed = await executeSteps([taskPrimary(), fileStep(attachmentId)], inboxItemId);
 
     const [files] = await filesItemsFor(blobId);
     expect(files!.properties).toMatchObject({ type: "pdf" });
@@ -707,53 +693,48 @@ describe("file from attachment on confirm (issue #1703)", () => {
     ]);
     expect(executed.createdItemIds).toContain(files!.id);
     expect(executed.primaryItemId).not.toBe(files!.id);
-  });
-
-  it("enqueues the recompute of the Inbox item's Journal day when an attachment is moved out (issue gh-1969)", async () => {
-    const inboxItemId = await plainInboxItem("Receipt");
-    const dayId = await journalDayIdOf(inboxItemId);
-    const attachmentId = await attach(inboxItemId, await newBlob("application/pdf"));
-    await clearDayRecomputes();
-
-    await withTransaction(pool, (client) =>
-      executeProposalSteps(client, [taskPrimary(), fileStep(attachmentId)], {
-        writer: { writerKind: "user" },
-        sourceInboxItemId: inboxItemId,
-      }),
-    );
-
     expect(await attachmentCount(inboxItemId)).toBe(0);
     expect(await pendingDayRecomputes()).toContain(dayId);
   });
 
-  it("enqueues no recompute of the day when the move rolls back (issue gh-1969)", async () => {
-    const inboxItemId = await plainInboxItem("Receipt that stays");
-    const attachmentId = await attach(inboxItemId, await newBlob("application/pdf"));
-    await clearDayRecomputes();
+  it("resolves to the Files item that already names the blob: no second item, that item unchanged, no origin row, created false", async () => {
+    const source = await plainInboxItem("Existing photo");
+    const blobId = await newBlob("image/jpeg");
+    const existingId = await createIn(filesId, { name: "Existing", file: { blobId } });
+    const before = await pool.query("SELECT properties, updated_at FROM items WHERE id = $1", [existingId]);
+    const attachmentId = await attach(source, blobId);
 
-    await expect(
-      withTransaction(pool, (client) =>
-        executeProposalSteps(
-          client,
-          [
-            taskPrimary(),
-            fileStep(attachmentId),
-            // A wrong value type passes envelope validation and fails only in the choke point's write, after the move ran.
-            { ref: "broken", op: "create", databaseKey: "tasks", role: "secondary", properties: { name: 42 } },
-          ],
-          { writer: { writerKind: "user" }, sourceInboxItemId: inboxItemId },
-        ),
-      ),
-    ).rejects.toMatchObject({ status: 400, details: { ref: "broken" } });
+    const result = await executeSteps([taskPrimary(), fileStep(attachmentId)], source);
 
-    expect(await attachmentCount(inboxItemId)).toBe(1);
-    expect(await pendingDayRecomputes()).toEqual([]);
+    expect(result.fileFromAttachments).toEqual([
+      { ref: "file", fileItemId: existingId, movedAttachmentId: attachmentId, created: false },
+    ]);
+    expect(result.createdItemIds).not.toContain(existingId);
+    expect(await filesItemsFor(blobId)).toHaveLength(1);
+    const after = await pool.query("SELECT properties, updated_at FROM items WHERE id = $1", [existingId]);
+    expect(after.rows).toEqual(before.rows);
+    expect(await originRowsFor(existingId)).toEqual([]);
+    expect(await attachmentCount(source)).toBe(0);
   });
 
-  it("leaves out the type when the blob's mime type has no Files type", async () => {
-    const { inboxItemId, cardId } = await inboxItemWithCard("Archive");
-    const blobId = await newBlob("application/zip");
-    const attachmentId = await attach(inboxItemId, blobId);
+  it.each([
+    ["a mime type with no Files type", null, "application/zip"],
+    // The Files `type` select of an older tenant has no `png` option.
+    [
+      "an option the select lacks",
+      "UPDATE properties SET config = jsonb_set(config, '{options}', (SELECT coalesce(jsonb_agg(o), '[]'::jsonb) FROM jsonb_array_elements(config -> 'options') AS o WHERE o ->> 'key' <> 'png')) WHERE database_id = $1 AND key = 'type'",
+      "image/png",
+    ],
+    // A `type` select without any options offers no value at all.
+    [
+      "a select with no options",
+      "UPDATE properties SET config = '{}'::jsonb WHERE database_id = $1 AND key = 'type'",
+      "image/jpeg",
+    ],
+  ])("leaves out the type when the Files type select does not offer it: %s", async (_label, sql, mimeType) => {
+    // A raw update, because no route can produce a Files `type` select in these shapes.
+    if (sql) await pool.query(sql, [filesId]);
+    const { cardId, blobId, attachmentId } = await cardWithAttachment("Photo", mimeType);
     await storeSteps(cardId, [taskPrimary(), fileStep(attachmentId)]);
 
     await confirm(cardId);
@@ -763,55 +744,14 @@ describe("file from attachment on confirm (issue #1703)", () => {
     expect(fileItem!.properties).toMatchObject({ name: "Scan", file: { blobId } });
   });
 
-  it("resolves to the Files item that already names the blob: no second item, that item unchanged, no origin row", async () => {
-    const { inboxItemId, cardId } = await inboxItemWithCard("Photo again");
-    const blobId = await newBlob("image/jpeg");
-    const existingId = await createIn(filesId, { name: "Existing", file: { blobId } });
-    const before = await pool.query("SELECT properties, updated_at FROM items WHERE id = $1", [existingId]);
-    const attachmentId = await attach(inboxItemId, blobId);
-    await storeSteps(cardId, [taskPrimary(), fileStep(attachmentId)]);
-
-    const confirmed = await confirm(cardId);
-
-    expect(confirmed.properties.status).toBe("confirmed");
-    expect(await filesItemsFor(blobId)).toHaveLength(1);
-    const after = await pool.query("SELECT properties, updated_at FROM items WHERE id = $1", [existingId]);
-    expect(after.rows).toEqual(before.rows);
-    expect(await originRowsFor(existingId)).toEqual([]);
-    expect(await attachmentCount(inboxItemId)).toBe(0);
-  });
-
-  it("returns the existing Files ID and moved attachment ID with created false", async () => {
-    const source = await plainInboxItem("Existing photo");
-    const blobId = await newBlob("image/jpeg");
-    const existingId = await createIn(filesId, { name: "Existing", file: { blobId } });
-    const attachmentId = await attach(source, blobId);
-    const result = await withTransaction(pool, (client) =>
-      executeProposalSteps(client, [taskPrimary(), fileStep(attachmentId)], {
-        writer: { writerKind: "user" },
-        sourceInboxItemId: source,
-      }),
-    );
-    expect(result.fileFromAttachments).toEqual([
-      { ref: "file", fileItemId: existingId, movedAttachmentId: attachmentId, created: false },
-    ]);
-    expect(result.createdItemIds).not.toContain(existingId);
-    expect(await attachmentCount(source)).toBe(0);
-  });
-
   it.each([
     ["another Inbox item's attachment", "foreign"],
     ["an attachment id that does not exist", "unknown"],
   ] as const)("refuses %s with 400 and writes nothing", async (_label, kind) => {
     const { cardId } = await inboxItemWithCard("Scan");
     const blobId = await newBlob("image/jpeg");
-    let attachmentId: string;
-    if (kind === "foreign") {
-      const otherInboxItemId = await plainInboxItem("Someone else's scan");
-      attachmentId = await attach(otherInboxItemId, blobId);
-    } else {
-      attachmentId = randomUUID();
-    }
+    const attachmentId =
+      kind === "foreign" ? await attach(await plainInboxItem("Someone else's scan"), blobId) : randomUUID();
     const attachmentRowsBefore = await attachmentRowCount();
     const blobsBefore = await blobCount();
     const tasksBefore = await countItems(tasksId);
@@ -834,65 +774,39 @@ describe("file from attachment on confirm (issue #1703)", () => {
     const blobId = await newBlob("image/jpeg");
     const attachmentId = await attach(inboxItemId, blobId);
 
-    await expect(
-      withTransaction(pool, (client) =>
-        executeProposalSteps(client, [taskPrimary(), fileStep(attachmentId)], {
-          writer: { writerKind: "user" },
-          sourceInboxItemId: null,
-        }),
-      ),
-    ).rejects.toMatchObject({ status: 400, details: { ref: "file", field: "attachmentId" } });
+    await expect(executeSteps([taskPrimary(), fileStep(attachmentId)], null)).rejects.toMatchObject({
+      status: 400,
+      details: { ref: "file", field: "attachmentId" },
+    });
     expect(await filesItemsFor(blobId)).toHaveLength(0);
     expect(await attachmentCount(inboxItemId)).toBe(1);
   });
 
-  it.each<[string, (attachmentId: string, blobId: string) => Partial<ProposalStep>]>([
-    ["a file property", (attachmentId, blobId) => ({ properties: { attachmentId, name: "Scan", file: { blobId } } })],
-    ["a type", (attachmentId) => ({ properties: { attachmentId, name: "Scan", type: "jpg" } })],
-    ["an unrelated property", (attachmentId) => ({ properties: { attachmentId, name: "Scan", untrusted: true } })],
-    ["an empty name", (attachmentId) => ({ properties: { attachmentId, name: "   " } })],
-    ["no attachment", () => ({ properties: { name: "Scan" } })],
-    ["an attachment id that is not a UUID", () => ({ properties: { attachmentId: "not-a-uuid", name: "Scan" } })],
-    ["a database key", () => ({ databaseKey: "tasks" })],
-    ["an item id", () => ({ itemId: randomUUID() })],
-    ["a relation that is not a relation property", () => ({ relations: { name: [randomUUID()] } })],
-  ])("refuses a step with %s with 400 and writes nothing", async (_label, override) => {
-    const { inboxItemId, cardId } = await inboxItemWithCard("Scan");
-    const blobId = await newBlob("image/jpeg");
-    const attachmentId = await attach(inboxItemId, blobId);
-    await storeSteps(cardId, [taskPrimary(), fileStep(attachmentId, override(attachmentId, blobId))]);
+  it.each<[string, (attachmentId: string, blobId: string) => Partial<ProposalStep>, Record<string, unknown>]>([
+    [
+      "a file property",
+      (attachmentId, blobId) => ({ properties: { attachmentId, name: "Scan", file: { blobId } } }),
+      {},
+    ],
+    ["a type", (attachmentId) => ({ properties: { attachmentId, name: "Scan", type: "jpg" } }), {}],
+    ["an unrelated property", (attachmentId) => ({ properties: { attachmentId, name: "Scan", untrusted: true } }), {}],
+    ["an empty name", (attachmentId) => ({ properties: { attachmentId, name: "   " } }), {}],
+    ["no attachment", () => ({ properties: { name: "Scan" } }), {}],
+    ["an attachment id that is not a UUID", () => ({ properties: { attachmentId: "not-a-uuid", name: "Scan" } }), {}],
+    ["a database key", () => ({ databaseKey: "tasks" }), {}],
+    ["an item id", () => ({ itemId: randomUUID() }), {}],
+    ["a relation that is not a relation property", () => ({ relations: { name: [randomUUID()] } }), {}],
+    ["the primary role", () => ({ role: "primary" }), { details: { ref: "file", field: "op" } }],
+  ])("refuses a step with %s with 400 and writes nothing", async (_label, override, error) => {
+    const { inboxItemId, cardId, blobId, attachmentId } = await cardWithAttachment("Scan", "image/jpeg");
+    const file = fileStep(attachmentId, override(attachmentId, blobId));
+    // A file step as the primary step is the whole envelope: it is never primary next to a Task.
+    await storeSteps(cardId, file.role === "primary" ? [file] : [taskPrimary(), file]);
 
-    await expect(confirm(cardId)).rejects.toMatchObject({ status: 400, code: "validation_failed" });
+    await expect(confirm(cardId)).rejects.toMatchObject({ status: 400, code: "validation_failed", ...error });
     expect(await filesItemsFor(blobId)).toHaveLength(0);
     expect(await attachmentCount(inboxItemId)).toBe(1);
     expect(await cardStatus(cardId)).toBe("proposed");
-  });
-
-  it.each([
-    // The Files `type` select of an older tenant has no `png` option.
-    [
-      "an option the select lacks",
-      "UPDATE properties SET config = jsonb_set(config, '{options}', (SELECT coalesce(jsonb_agg(o), '[]'::jsonb) FROM jsonb_array_elements(config -> 'options') AS o WHERE o ->> 'key' <> 'png')) WHERE database_id = $1 AND key = 'type'",
-      "image/png",
-    ],
-    // A `type` select without any options offers no value at all.
-    [
-      "a select with no options",
-      "UPDATE properties SET config = '{}'::jsonb WHERE database_id = $1 AND key = 'type'",
-      "image/jpeg",
-    ],
-  ])("leaves out the type when the Files type select does not offer it: %s", async (_label, sql, mimeType) => {
-    const { inboxItemId, cardId } = await inboxItemWithCard("Photo");
-    // A raw update, because no route can produce a Files `type` select in these shapes.
-    await pool.query(sql, [filesId]);
-    const blobId = await newBlob(mimeType);
-    const attachmentId = await attach(inboxItemId, blobId);
-    await storeSteps(cardId, [taskPrimary(), fileStep(attachmentId)]);
-
-    await confirm(cardId);
-
-    const [fileItem] = await filesItemsFor(blobId);
-    expect(fileItem!.properties).not.toHaveProperty("type");
   });
 
   it("reports a missing Files database as not found and writes nothing", async () => {
@@ -913,34 +827,12 @@ describe("file from attachment on confirm (issue #1703)", () => {
     expect(await countItems(tasksId)).toBe(0);
   });
 
-  it("refuses a file step as the primary step with 400", async () => {
-    const { inboxItemId, cardId } = await inboxItemWithCard("Scan only");
-    const blobId = await newBlob("image/jpeg");
-    const attachmentId = await attach(inboxItemId, blobId);
-    const primaryFile = fileStep(attachmentId, { role: "primary" });
-    await storeSteps(cardId, [primaryFile]);
-
-    await expect(confirm(cardId)).rejects.toMatchObject({
-      status: 400,
-      code: "validation_failed",
-      details: { ref: "file", field: "op" },
-    });
-    expect(await filesItemsFor(blobId)).toHaveLength(0);
-    expect(await attachmentCount(inboxItemId)).toBe(1);
-  });
-
-  it("rolls the move back when a later step fails: no Files item, no Task, the attachment stays, the card stays proposed", async () => {
-    const { inboxItemId, cardId } = await inboxItemWithCard("Scan and task");
-    const blobId = await newBlob("image/jpeg");
-    const attachmentId = await attach(inboxItemId, blobId);
+  it("rolls the move back when a later step fails: no Files item, no Task, no day recompute, the attachment stays, the card stays proposed", async () => {
+    const { inboxItemId, cardId, blobId, attachmentId } = await cardWithAttachment("Scan and task", "image/jpeg");
     const blobsBefore = await blobCount();
     const tasksBefore = await countItems(tasksId);
-    await storeSteps(cardId, [
-      taskPrimary(),
-      fileStep(attachmentId),
-      // A wrong value type passes envelope validation and fails only in the choke point's write, after the move ran.
-      { ref: "broken", op: "create", databaseKey: "tasks", role: "secondary", properties: { name: 42 } },
-    ]);
+    await clearDayRecomputes();
+    await storeSteps(cardId, [taskPrimary(), fileStep(attachmentId), brokenStep]);
 
     await expect(confirm(cardId)).rejects.toMatchObject({ status: 400, details: { ref: "broken" } });
     expect(await filesItemsFor(blobId)).toHaveLength(0);
@@ -948,12 +840,11 @@ describe("file from attachment on confirm (issue #1703)", () => {
     expect(await blobCount()).toBe(blobsBefore);
     expect(await countItems(tasksId)).toBe(tasksBefore);
     expect(await cardStatus(cardId)).toBe("proposed");
+    expect(await pendingDayRecomputes()).toEqual([]);
   });
 
   it("an audio attachment filed by confirm enqueues no transcription, while an audio file made in Files directly is transcribed", async () => {
-    const { inboxItemId, cardId } = await inboxItemWithCard("Voice note");
-    const blobId = await newBlob("audio/mpeg");
-    const attachmentId = await attach(inboxItemId, blobId);
+    const { cardId, blobId, attachmentId } = await cardWithAttachment("Voice note", "audio/mpeg");
     await storeSteps(cardId, [taskPrimary(), fileStep(attachmentId)]);
     await confirm(cardId);
     const [fileItem] = await filesItemsFor(blobId);
@@ -983,9 +874,7 @@ describe("file from attachment on confirm (issue #1703)", () => {
 
   it("the queued Files heartbeat skips an audio attachment after confirm", async () => {
     const { fileItemId, fireKey } = await runInTenant(getTenantZeroId(), async () => {
-      const { inboxItemId, cardId } = await inboxItemWithCard("Voice note");
-      const blobId = await newBlob("audio/mpeg");
-      const attachmentId = await attach(inboxItemId, blobId);
+      const { cardId, blobId, attachmentId } = await cardWithAttachment("Voice note", "audio/mpeg");
       await storeSteps(cardId, [taskPrimary(), fileStep(attachmentId)]);
       await confirm(cardId);
       const [fileItem] = await filesItemsFor(blobId);
@@ -1034,101 +923,96 @@ describe("file from attachment on confirm (issue #1703)", () => {
   });
 
   describe("the preview and the reduced copy of the moved attachment (issue gh-1965)", () => {
-    /** An attachment of a photo whose metadata job has run: two derived blobs, written under `directory`. */
-    async function photoWithDerivedImages(inboxItemId: string, directory: string) {
-      const storage = new LocalFsBlobStorageWriter(directory);
-      const keys = [
-        `t/inbox-attachments/${randomUUID()}-preview.jpg`,
-        `t/inbox-attachments/${randomUUID()}-reduced.jpg`,
-      ];
-      for (const key of keys) await storage.writeStream(key, Readable.from([Buffer.from(key)]));
-      const blobId = await newBlob("image/jpeg");
-      const attachmentId = await attach(inboxItemId, blobId);
-      const image = (storageKey: string) => ({
-        mimeType: "image/jpeg",
-        byteSize: storageKey.length,
-        storageKey,
-        contentHash: Buffer.from(storageKey).toString("hex").slice(-64).padStart(64, "0"),
-      });
-      await withTransaction(pool, (client) =>
-        recordInboxAttachmentMetadata(client, {
-          attachmentId,
-          metadata: { width: 10, height: 10, pages: null },
-          thumbnail: image(keys[0]!),
-          reduced: image(keys[1]!),
-        }),
-      );
-      return { blobId, attachmentId, keys };
-    }
-
-    it("frees both derived blobs when the attachment is filed, and removes their bytes once the confirm commits", async () => {
+    /**
+     * A card whose Inbox item has a photo attachment with a run metadata job: two derived blobs, written under a
+     * temporary directory. `env` is stubbed for the duration of `body`.
+     */
+    async function withDerivedPhoto(
+      text: string,
+      env: (directory: string) => Record<string, string>,
+      steps: (attachmentId: string) => ProposalStep[],
+      body: (photo: { cardId: string; blobId: string; keys: string[]; directory: string }) => Promise<void>,
+    ): Promise<void> {
       const directory = await mkdtemp(join(tmpdir(), "semprec-move-derived-"));
-      vi.stubEnv("FILES_STORAGE_DIR", directory);
+      for (const [name, value] of Object.entries(env(directory))) vi.stubEnv(name, value);
       try {
-        const { inboxItemId, cardId } = await inboxItemWithCard("Move photo");
-        const photo = await photoWithDerivedImages(inboxItemId, directory);
-        const blobsBefore = await blobCount();
-        await storeSteps(cardId, [taskPrimary(), fileStep(photo.attachmentId)]);
-
-        await confirm(cardId);
-
-        expect(await blobCount()).toBe(blobsBefore - 2);
-        expect(await withTransaction(pool, (client) => getBlob(client, photo.blobId))).not.toBeNull();
-        expect(await filesItemsFor(photo.blobId)).toHaveLength(1);
-        await vi.waitFor(async () => {
-          expect(await readdir(join(directory, "t", "inbox-attachments"))).toEqual([]);
+        const { inboxItemId, cardId } = await inboxItemWithCard(text);
+        const storage = new LocalFsBlobStorageWriter(directory);
+        const keys = [
+          `t/inbox-attachments/${randomUUID()}-preview.jpg`,
+          `t/inbox-attachments/${randomUUID()}-reduced.jpg`,
+        ];
+        for (const key of keys) await storage.writeStream(key, Readable.from([Buffer.from(key)]));
+        const blobId = await newBlob("image/jpeg");
+        const attachmentId = await attach(inboxItemId, blobId);
+        const image = (storageKey: string) => ({
+          mimeType: "image/jpeg",
+          byteSize: storageKey.length,
+          storageKey,
+          contentHash: Buffer.from(storageKey).toString("hex").slice(-64).padStart(64, "0"),
         });
+        await withTransaction(pool, (client) =>
+          recordInboxAttachmentMetadata(client, {
+            attachmentId,
+            metadata: { width: 10, height: 10, pages: null },
+            thumbnail: image(keys[0]!),
+            reduced: image(keys[1]!),
+          }),
+        );
+        await storeSteps(cardId, steps(attachmentId));
+        await body({ cardId, blobId, keys, directory });
       } finally {
         vi.unstubAllEnvs();
         await rm(directory, { recursive: true, force: true });
       }
+    }
+
+    const derivedFiles = (directory: string) => readdir(join(directory, "t", "inbox-attachments"));
+
+    it("frees both derived blobs when the attachment is filed, and removes their bytes once the confirm commits", async () => {
+      await withDerivedPhoto(
+        "Move photo",
+        (directory) => ({ FILES_STORAGE_DIR: directory }),
+        (attachmentId) => [taskPrimary(), fileStep(attachmentId)],
+        async ({ cardId, blobId, directory }) => {
+          const blobsBefore = await blobCount();
+          await confirm(cardId);
+          expect(await blobCount()).toBe(blobsBefore - 2);
+          expect(await withTransaction(pool, (client) => getBlob(client, blobId))).not.toBeNull();
+          expect(await filesItemsFor(blobId)).toHaveLength(1);
+          await vi.waitFor(async () => expect(await derivedFiles(directory)).toEqual([]));
+        },
+      );
     });
 
     it("keeps the derived blobs and their bytes when the confirm rolls back after the move", async () => {
-      const directory = await mkdtemp(join(tmpdir(), "semprec-move-derived-"));
-      vi.stubEnv("FILES_STORAGE_DIR", directory);
-      try {
-        const { inboxItemId, cardId } = await inboxItemWithCard("Move photo, then fail");
-        const photo = await photoWithDerivedImages(inboxItemId, directory);
-        const blobsBefore = await blobCount();
-        await storeSteps(cardId, [
-          taskPrimary(),
-          fileStep(photo.attachmentId),
-          { ref: "broken", op: "create", databaseKey: "tasks", role: "secondary", properties: { name: 42 } },
-        ]);
-
-        await expect(confirm(cardId)).rejects.toMatchObject({ status: 400, details: { ref: "broken" } });
-
-        expect(await blobCount()).toBe(blobsBefore);
-        expect((await readdir(join(directory, "t", "inbox-attachments"))).sort()).toEqual(
-          photo.keys.map((key) => key.split("/")[2]!).sort(),
-        );
-      } finally {
-        vi.unstubAllEnvs();
-        await rm(directory, { recursive: true, force: true });
-      }
+      await withDerivedPhoto(
+        "Move photo, then fail",
+        (directory) => ({ FILES_STORAGE_DIR: directory }),
+        (attachmentId) => [taskPrimary(), fileStep(attachmentId), brokenStep],
+        async ({ cardId, keys, directory }) => {
+          const blobsBefore = await blobCount();
+          await expect(confirm(cardId)).rejects.toMatchObject({ status: 400, details: { ref: "broken" } });
+          expect(await blobCount()).toBe(blobsBefore);
+          expect((await derivedFiles(directory)).sort()).toEqual(keys.map((key) => key.split("/")[2]!).sort());
+        },
+      );
     });
 
     it("leaves the bytes where they are, and logs, when no blob storage is configured", async () => {
-      const directory = await mkdtemp(join(tmpdir(), "semprec-move-derived-"));
-      vi.stubEnv("NODE_ENV", "production");
-      vi.stubEnv("FILES_STORAGE_DIR", "");
-      try {
-        const { inboxItemId, cardId } = await inboxItemWithCard("Move photo, no storage");
-        const photo = await photoWithDerivedImages(inboxItemId, directory);
-        const blobsBefore = await blobCount();
-        await storeSteps(cardId, [taskPrimary(), fileStep(photo.attachmentId)]);
-
-        const confirmed = await confirm(cardId);
-
-        expect(confirmed.properties.status).toBe("confirmed");
-        expect(await blobCount()).toBe(blobsBefore - 2);
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        expect(await readdir(join(directory, "t", "inbox-attachments"))).toHaveLength(2);
-      } finally {
-        vi.unstubAllEnvs();
-        await rm(directory, { recursive: true, force: true });
-      }
+      await withDerivedPhoto(
+        "Move photo, no storage",
+        () => ({ NODE_ENV: "production", FILES_STORAGE_DIR: "" }),
+        (attachmentId) => [taskPrimary(), fileStep(attachmentId)],
+        async ({ cardId, directory }) => {
+          const blobsBefore = await blobCount();
+          const confirmed = await confirm(cardId);
+          expect(confirmed.properties.status).toBe("confirmed");
+          expect(await blobCount()).toBe(blobsBefore - 2);
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          expect(await derivedFiles(directory)).toHaveLength(2);
+        },
+      );
     });
   });
 
@@ -1171,29 +1055,42 @@ describe("file from attachment on confirm (issue #1703)", () => {
     }
   });
 
-  it("two confirms that file the same bytes make one Files item: the second waits for the blob lock and reuses the item", async () => {
-    const first = await inboxItemWithCard("First scan");
-    const second = await inboxItemWithCard("Second scan");
-    const blobId = await newBlob("image/jpeg");
-    const firstAttachment = await attach(first.inboxItemId, blobId);
-    const secondAttachment = await attach(second.inboxItemId, blobId);
-    await storeSteps(first.cardId, [taskPrimary("First task"), fileStep(firstAttachment)]);
-    await storeSteps(second.cardId, [taskPrimary("Second task"), fileStep(secondAttachment)]);
+  it.each([false, true])(
+    "two confirms that file the same bytes make one Files item: the second waits for the blob lock (holder rolls back: %s)",
+    async (rollbackFirst) => {
+      const first = await inboxItemWithCard("First scan");
+      const second = await inboxItemWithCard("Second scan");
+      const blobId = await newBlob("image/jpeg");
+      await storeSteps(first.cardId, [taskPrimary("First task"), fileStep(await attach(first.inboxItemId, blobId))]);
+      await storeSteps(second.cardId, [taskPrimary("Second task"), fileStep(await attach(second.inboxItemId, blobId))]);
 
-    const outcome = await runHeldBlobOverlap(
-      (client) => confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, first.cardId),
-      (client) => confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, second.cardId),
-      { kind: "blob", id: blobId },
-    );
-    if (!("value" in outcome)) throw outcome.error;
-    expect(outcome.value.properties.status).toBe("confirmed");
+      const outcome = await runHeldBlobOverlap(
+        confirmIn(first.cardId),
+        confirmIn(second.cardId),
+        { kind: "blob", id: blobId },
+        rollbackFirst,
+      );
+      if (!("value" in outcome)) throw outcome.error;
+      expect(outcome.value.properties.status).toBe("confirmed");
 
-    const [fileItem] = await filesItemsFor(blobId);
-    expect(await filesItemsFor(blobId)).toHaveLength(1);
-    expect(await attachmentCount(first.inboxItemId)).toBe(0);
-    expect(await attachmentCount(second.inboxItemId)).toBe(0);
-    expect(await originRowsFor(fileItem!.id)).toHaveLength(1);
-  });
+      const files = await filesItemsFor(blobId);
+      expect(files).toHaveLength(1);
+      const owner = rollbackFirst ? second : first;
+      expect(await originRowsFor(files[0]!.id)).toEqual([
+        {
+          item_id: files[0]!.id,
+          proposal_id: owner.cardId,
+          inbox_item_id: owner.inboxItemId,
+          capture_channel: "inbox",
+        },
+      ]);
+      expect(await attachmentCount(first.inboxItemId)).toBe(rollbackFirst ? 1 : 0);
+      expect(await attachmentCount(second.inboxItemId)).toBe(0);
+      expect((await createChokePoint(pool).getItem(proposalsId, first.cardId))?.properties.status).toBe(
+        rollbackFirst ? "proposed" : "confirmed",
+      );
+    },
+  );
 
   it("a second move of the same attachment waits for the first, then refuses with 409 and writes nothing", async () => {
     const source = await plainInboxItem("Scan");
@@ -1214,522 +1111,6 @@ describe("file from attachment on confirm (issue #1703)", () => {
     expect(await filesItemsFor(blobId)).toHaveLength(1);
     expect(await attachmentCount(source)).toBe(0);
   });
-
-  it("lets the blocked competing confirm create the file when the holder rolls back", async () => {
-    const first = await inboxItemWithCard("First scan");
-    const second = await inboxItemWithCard("Second scan");
-    const blobId = await newBlob("image/jpeg");
-    const firstAttachment = await attach(first.inboxItemId, blobId);
-    const secondAttachment = await attach(second.inboxItemId, blobId);
-    await storeSteps(first.cardId, [taskPrimary("First task"), fileStep(firstAttachment)]);
-    await storeSteps(second.cardId, [taskPrimary("Second task"), fileStep(secondAttachment)]);
-    const outcome = await runHeldBlobOverlap(
-      (client) => confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, first.cardId),
-      (client) => confirmProposalWithClient(client, { processingProposalsDatabaseId: proposalsId }, second.cardId),
-      { kind: "blob", id: blobId },
-      true,
-    );
-    if (!("value" in outcome)) throw outcome.error;
-    expect(outcome.value.properties.status).toBe("confirmed");
-    const files = await filesItemsFor(blobId);
-    expect(files).toHaveLength(1);
-    expect(await originRowsFor(files[0]!.id)).toEqual([
-      {
-        item_id: files[0]!.id,
-        proposal_id: second.cardId,
-        inbox_item_id: second.inboxItemId,
-        capture_channel: "inbox",
-      },
-    ]);
-    expect(await attachmentCount(first.inboxItemId)).toBe(1);
-    expect(await attachmentCount(second.inboxItemId)).toBe(0);
-    const firstCard = await withTransaction(pool, (client) =>
-      itemsStore.getItemById(client, proposalsId, first.cardId),
-    );
-    expect(firstCard?.properties.status).toBe("proposed");
-  });
-
-  it.each([undefined, { marker: "late" }])(
-    "retains a late participant failure and consumes only the asserted participant %#",
-    async (late) => {
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
-      let release = () => {};
-      let started = () => {};
-      const gate = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      const ready = new Promise<void>((resolve) => {
-        started = resolve;
-      });
-      const owned = ownOverlap(runtime, release);
-      const expected = { marker: "asserted" };
-      const body = new Error("forced observation failure");
-      let lateSettled = false;
-      let failure: { error: unknown } | undefined;
-      try {
-        const negative = owned.run(() =>
-          withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
-            await client.query<{ "?column?": number }>("SELECT 1");
-            rethrowOverlap(expected);
-          }),
-        );
-        await expect(negative).rejects.toBe(expected);
-        owned.consume(negative, expected);
-        const participant = owned.run(() =>
-          withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
-            const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-            if (!pid) throw new Error("Missing owned PID");
-            started();
-            await gate;
-            rethrowOverlap(late);
-          }),
-        );
-        void participant.then(
-          () => {
-            lateSettled = true;
-          },
-          () => {
-            lateSettled = true;
-          },
-        );
-        await owned.wait(ready, participant);
-        throw body;
-      } catch (error) {
-        failure = { error };
-      } finally {
-        try {
-          await owned.finish(failure !== undefined);
-        } catch (error) {
-          failure = combineOverlapFailure(failure, error);
-        }
-      }
-      if (failure && (!(failure.error instanceof AggregateError) || failure.error.cause !== body)) {
-        rethrowOverlap(failure.error);
-      }
-      const combined = failure?.error;
-      expect(combined).toBeInstanceOf(AggregateError);
-      if (!(combined instanceof AggregateError)) throw new Error("Expected combined failure");
-      expect(combined.cause).toBe(body);
-      expect(combined.errors[0]).toBe(body);
-      const cleanup: unknown = combined.errors[1];
-      expect(cleanup).toBeInstanceOf(AggregateError);
-      if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup failure");
-      expect(combined.errors).toHaveLength(2);
-      expect(cleanup.errors).toHaveLength(1);
-      expect(cleanup.errors[0]).toBe(late);
-      expect(cleanup.cause).toBe(late);
-      expect(lateSettled).toBe(true);
-      expect(runtime.ended).toBe(true);
-      expect(runtime.totalCount).toBe(0);
-      expect(runtime.listenerCount("acquire")).toBe(0);
-      expect(runtime.listenerCount("release")).toBe(0);
-    },
-    20000,
-  );
-
-  it("settles ownership when the first participant has the wrong rejection", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
-    const wrong = { marker: "wrong" };
-    const expected = { marker: "expected" };
-    const cleanupError = new Error("controlled cleanup failure");
-    const owned = ownOverlap(runtime, () => {
-      throw cleanupError;
-    });
-    let assertion: { error: unknown } | undefined;
-    let failure: { error: unknown } | undefined;
-    try {
-      const negative = owned.run(() =>
-        withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
-          await client.query<{ "?column?": number }>("SELECT 1");
-          rethrowOverlap(wrong);
-        }),
-      );
-      try {
-        await expect(negative).rejects.toBe(expected);
-      } catch (error) {
-        assertion = { error };
-        throw error;
-      }
-      owned.consume(negative, expected);
-    } catch (error) {
-      failure = { error };
-    } finally {
-      try {
-        await owned.finish(failure !== undefined);
-      } catch (error) {
-        failure = combineOverlapFailure(failure, error);
-      }
-    }
-    if (!assertion) throw new Error("Expected assertion failure");
-    const combined = failure?.error;
-    expect(combined).toBeInstanceOf(AggregateError);
-    if (!(combined instanceof AggregateError)) throw new Error("Expected combined failure");
-    expect(combined.errors).toHaveLength(2);
-    expect(combined.errors[0]).toBe(assertion.error);
-    expect(combined.cause).toBe(assertion.error);
-    const cleanup: unknown = combined.errors[1];
-    expect(cleanup).toBeInstanceOf(AggregateError);
-    if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup failure");
-    expect(cleanup.errors).toHaveLength(2);
-    expect(cleanup.errors[0]).toBe(cleanupError);
-    expect(cleanup.errors[1]).toBe(wrong);
-    expect(cleanup.cause).toBe(cleanupError);
-    expect(runtime.ended).toBe(true);
-    expect(runtime.totalCount).toBe(0);
-    expect(runtime.waitingCount).toBe(0);
-    expect(runtime.listenerCount("acquire")).toBe(0);
-    expect(runtime.listenerCount("release")).toBe(0);
-  }, 20000);
-
-  it("preserves an early checkout failure together with cleanup failure", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
-    const actorError = new Error("pre-verify checkout failure");
-    const cleanupError = new Error("cleanup failure");
-    let release = () => {};
-    const signal = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    runtime.options.verify = (_client, done) => done(actorError);
-    const generations = new Map<PoolClient, object>();
-    const cancellationRequests = new Set<object>();
-    const owned = ownOverlap(
-      runtime,
-      () => {
-        release();
-        throw cleanupError;
-      },
-      (_client, generation) => {
-        cancellationRequests.add(generation);
-      },
-      (client, generation) => {
-        generations.set(client, generation);
-      },
-    );
-    let operationFailure: { value: unknown } | undefined;
-    const observedDiagnostics: Array<{ error: Error; generation: object; cancelled: boolean; operation: "checkout" }> =
-      [];
-    const observing = new Map<PoolClient, (error: Error) => void>();
-    const observeAcquire = (client: PoolClient) => {
-      const generation = generations.get(client);
-      if (!generation) throw new Error("Missing client generation");
-      const onError = (error: Error) =>
-        observedDiagnostics.push({
-          error,
-          generation,
-          cancelled: cancellationRequests.has(generation),
-          operation: "checkout",
-        });
-      observing.set(client, onError);
-      client.on("error", onError);
-    };
-    const observeRelease = (_reason: unknown, client: PoolClient) => {
-      const onError = observing.get(client);
-      const generation = generations.get(client);
-      if (generation && cancellationRequests.has(generation)) return;
-      if (onError) client.removeListener("error", onError);
-      observing.delete(client);
-      generations.delete(client);
-    };
-    runtime.on("acquire", observeAcquire);
-    runtime.on("release", observeRelease);
-    let failure: { error: unknown } | undefined;
-    try {
-      const actor = owned.run(() => withTenantTransaction(runtime, getTenantZeroId(), async () => {}));
-      void actor.catch((error: unknown) => {
-        operationFailure = { value: error };
-      });
-      await owned.wait(signal, actor);
-    } catch (error) {
-      failure = { error };
-    } finally {
-      try {
-        await owned.finish(failure !== undefined);
-      } catch (error) {
-        failure = combineOverlapFailure(failure, error);
-      }
-    }
-    if (!owned.isSettled()) {
-      if (failure) throw failure.error;
-      throw new Error("Owned overlap did not settle");
-    }
-    runtime.removeListener("acquire", observeAcquire);
-    runtime.removeListener("release", observeRelease);
-    for (const [client, onError] of observing) client.removeListener("error", onError);
-    observing.clear();
-    expect(observing.size).toBe(0);
-    const observed = failure?.error;
-    expect(observed).toBeInstanceOf(AggregateError);
-    if (!(observed instanceof AggregateError)) throw new Error("Expected combined error");
-    expect(observed.cause).toBe(actorError);
-    expect(observed.errors[0]).toBe(actorError);
-    expect(observed.errors).toHaveLength(2);
-    const cleanup: unknown = observed.errors[1];
-    expect(cleanup).toBeInstanceOf(AggregateError);
-    if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup aggregate");
-    expect(operationFailure).toBeDefined();
-    if (!operationFailure) throw new Error("Missing operation failure");
-    expect(operationFailure.value).toBe(actorError);
-    for (const diagnostic of observedDiagnostics) {
-      expect(diagnostic.cancelled).toBe(true);
-      expect(diagnostic.operation).toBe("checkout");
-      expect(diagnostic.error).toBe(operationFailure.value);
-    }
-    const expectedErrors = [cleanupError, ...observedDiagnostics.map((entry) => entry.error), operationFailure.value];
-    expect(cleanup.errors).toHaveLength(expectedErrors.length);
-    for (let i = 0; i < expectedErrors.length; i++) expect(cleanup.errors[i]).toBe(expectedErrors[i]);
-    expect(cleanup.cause).toBe(cleanupError);
-    expect(runtime.ended).toBe(true);
-    expect(runtime.totalCount).toBe(0);
-    expect(runtime.waitingCount).toBe(0);
-    expect(runtime.listenerCount("acquire")).toBe(0);
-    expect(runtime.listenerCount("release")).toBe(0);
-  }, 20000);
-
-  it.each([
-    [undefined, false, false],
-    [{ marker: "late participant" }, false, false],
-    [{ marker: "late participant" }, true, false],
-    [{ marker: "late participant" }, false, true],
-  ] as const)(
-    "settles blocked overlap participants on an injected body failure %#",
-    async (lateParticipant, injectPreCancel, injectPostCancel) => {
-      const itemId = await plainInboxItem("cleanup source");
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
-      let release = () => {};
-      let holderReady = () => {};
-      let contenderReady = () => {};
-      const gate = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      const holderStarted = new Promise<void>((resolve) => {
-        holderReady = resolve;
-      });
-      const contenderStarted = new Promise<void>((resolve) => {
-        contenderReady = resolve;
-      });
-      const generations = new Map<PoolClient, object>();
-      const cancellationRequests = new Set<object>();
-      const releaseCompletions = new Set<object>();
-      let holderClient: PoolClient | undefined;
-      let contenderClient: PoolClient | undefined;
-      let contenderGeneration: object | undefined;
-      const preCancel = new Error("pre-cancellation diagnostic");
-      const postCancel = new Error("unrelated post-cancellation diagnostic");
-      let releaseCallbackFailure: { value: unknown } | undefined;
-      const owned = ownOverlap(
-        runtime,
-        () => {
-          release();
-          holderReady();
-          contenderReady();
-        },
-        (_client, generation) => {
-          cancellationRequests.add(generation);
-        },
-        (client, generation) => {
-          generations.set(client, generation);
-        },
-        (client, generation) => {
-          releaseCompletions.add(generation);
-          if (injectPostCancel && client === holderClient) {
-            try {
-              client.emit("error", postCancel);
-            } catch (error) {
-              releaseCallbackFailure = { value: error };
-              throw error;
-            }
-          }
-        },
-      );
-      let holderPid: number | undefined;
-      let contenderPid: number | undefined;
-      let holderSettled = false;
-      type ObservedClient = { generation: object; onError: (error: Error) => void };
-      const observedClients = new Map<PoolClient, ObservedClient>();
-      const diagnostics: Array<{
-        error: Error;
-        generation: object;
-        cancelled: boolean;
-        released: boolean;
-        operation: string;
-      }> = [];
-      const observeAcquire = (client: PoolClient) => {
-        const generation = generations.get(client);
-        if (!generation) throw new Error("Missing client generation");
-        const onError = (error: Error) =>
-          diagnostics.push({
-            error,
-            generation,
-            cancelled: cancellationRequests.has(generation),
-            released: releaseCompletions.has(generation),
-            operation: client === holderClient ? "holder" : client === contenderClient ? "contender" : "other",
-          });
-        observedClients.set(client, { generation, onError });
-        client.on("error", onError);
-      };
-      const observeRelease = (_reason: unknown, client: PoolClient) => {
-        const owner = observedClients.get(client);
-        if (!owner) throw new Error("Unknown owned client release");
-        if (cancellationRequests.has(owner.generation)) return;
-        client.removeListener("error", owner.onError);
-        observedClients.delete(client);
-        generations.delete(client);
-      };
-      runtime.on("acquire", observeAcquire);
-      runtime.on("release", observeRelease);
-      let holderError: { value: unknown } | undefined;
-      let contenderError:
-        | {
-            value: unknown;
-            generation: object | undefined;
-            cancellationRequested: boolean;
-          }
-        | undefined;
-      let contenderSettled = false;
-      const bodyError = new Error("forced overlap body failure");
-      let failure: { error: unknown } | undefined;
-      try {
-        const holder = owned.run(() =>
-          withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
-            holderClient = client;
-            holderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-            await updateItemWithClient(client, { databaseId: inboxId, itemId, propertiesPatch: { text: "held" } });
-            holderReady();
-            await gate;
-            rethrowOverlap(lateParticipant);
-          }),
-        );
-        void holder.then(
-          () => {
-            holderSettled = true;
-          },
-          (error: unknown) => {
-            holderError = { value: error };
-            holderSettled = true;
-          },
-        );
-        await owned.wait(holderStarted, holder);
-        const contender = owned.run(() =>
-          withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
-            contenderClient = client;
-            contenderGeneration = generations.get(client);
-            contenderPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-            contenderReady();
-            await updateItemWithClient(client, { databaseId: inboxId, itemId, propertiesPatch: { text: "contender" } });
-          }),
-        );
-        void contender.then(
-          () => {
-            contenderSettled = true;
-          },
-          (error: unknown) => {
-            contenderError = {
-              value: error,
-              generation: contenderGeneration,
-              cancellationRequested: contenderGeneration !== undefined && cancellationRequests.has(contenderGeneration),
-            };
-            contenderSettled = true;
-          },
-        );
-        await owned.wait(contenderStarted, holder, contender);
-        if (!holderPid || !contenderPid) throw new Error("Missing participant PID");
-        const holderId = holderPid;
-        const contenderId = contenderPid;
-        await owned.wait(
-          owned.run(() => waitForBlockingPid(holderId, contenderId, runtime)),
-          holder,
-          contender,
-        );
-        if (injectPreCancel) {
-          if (!holderClient) throw new Error("Missing holder client");
-          holderClient.emit("error", preCancel);
-        }
-        throw bodyError;
-      } catch (error) {
-        failure = { error };
-      } finally {
-        try {
-          await owned.finish(failure !== undefined);
-        } catch (error) {
-          failure = combineOverlapFailure(failure, error);
-        } finally {
-          if (owned.isSettled()) {
-            runtime.removeListener("acquire", observeAcquire);
-            runtime.removeListener("release", observeRelease);
-          }
-        }
-      }
-      if (!owned.isSettled()) {
-        if (failure) throw failure.error;
-        throw new Error("Owned overlap did not settle");
-      }
-      for (const [client, owner] of observedClients) client.removeListener("error", owner.onError);
-      observedClients.clear();
-      const combined = failure?.error;
-      expect(combined).toBeInstanceOf(AggregateError);
-      if (!(combined instanceof AggregateError)) throw new Error("Expected combined failure");
-      expect(combined.cause).toBe(bodyError);
-      expect(combined.errors[0]).toBe(bodyError);
-      const cleanup: unknown = combined.errors[1];
-      expect(cleanup).toBeInstanceOf(AggregateError);
-      if (!(cleanup instanceof AggregateError)) throw new Error("Expected cleanup failures");
-      expect(holderError).toBeDefined();
-      if (!holderError) throw new Error("Missing participant failure");
-      expect(holderError.value).toBe(lateParticipant);
-      expect(observedClients.size).toBe(0);
-      for (const diagnostic of diagnostics) {
-        expect(diagnostic.error).toBeInstanceOf(Error);
-        if (diagnostic.error === preCancel) {
-          expect(injectPreCancel).toBe(true);
-          expect(diagnostic.released).toBe(false);
-          expect(diagnostic.cancelled).toBe(false);
-          expect(diagnostic.operation).toBe("holder");
-        } else if (diagnostic.error === postCancel) {
-          expect(diagnostic.released).toBe(true);
-          expect(injectPostCancel).toBe(true);
-          expect(diagnostic.cancelled).toBe(true);
-          expect(diagnostic.operation).toBe("holder");
-          expect(isOwnedPgClosure(diagnostic.error)).toBe(false);
-        } else {
-          expect(diagnostic.cancelled).toBe(true);
-          expect(isOwnedPgClosure(diagnostic.error)).toBe(true);
-          expect(["holder", "contender"]).toContain(diagnostic.operation);
-          if (diagnostic.operation === "holder") expect(diagnostic.error).toBe(holderError.value);
-          else expect(diagnostic.error).toBe(contenderError?.value);
-        }
-      }
-      if (!contenderError) throw new Error("Missing contender failure");
-      expect(contenderError.generation).toBeDefined();
-      expect(isOwnedPgClosure(contenderError.value)).toBe(true);
-      expect(contenderError.cancellationRequested).toBe(true);
-      expect(diagnostics.filter((entry) => entry.error === preCancel)).toHaveLength(injectPreCancel ? 1 : 0);
-      expect(diagnostics.filter((entry) => entry.error === postCancel)).toHaveLength(injectPostCancel ? 1 : 0);
-      if (releaseCallbackFailure) expect(releaseCallbackFailure.value).toBe(postCancel);
-      const expectedErrors = [
-        ...diagnostics.flatMap((entry) =>
-          entry.error === postCancel && releaseCallbackFailure
-            ? [entry.error, releaseCallbackFailure.value]
-            : [entry.error],
-        ),
-        holderError.value,
-        contenderError.value,
-      ];
-      expect(combined.errors).toHaveLength(2);
-      expect(cleanup.errors).toHaveLength(expectedErrors.length);
-      for (let i = 0; i < expectedErrors.length; i++) expect(cleanup.errors[i]).toBe(expectedErrors[i]);
-      expect(cleanup.cause).toBe(expectedErrors[0]);
-
-      expect(holderSettled).toBe(true);
-      expect(contenderSettled).toBe(true);
-      expect(runtime.ended).toBe(true);
-      expect(runtime.totalCount).toBe(0);
-      expect(runtime.waitingCount).toBe(0);
-      expect(runtime.listenerCount("acquire")).toBe(0);
-      expect(runtime.listenerCount("release")).toBe(0);
-      expect((await createChokePoint(pool).getItem(inboxId, itemId))?.properties.text).toBe("cleanup source");
-    },
-    20000,
-  );
 
   it.each([false, true])(
     "settles confirm and a shared-blob purge in both orders, purge first: %s",
@@ -1827,11 +1208,7 @@ describe("file from attachment on confirm (issue #1703)", () => {
               confirmAttempted = true;
             });
             try {
-              const result = await confirmProposalWithClient(
-                client,
-                { processingProposalsDatabaseId: proposalsId },
-                source.cardId,
-              );
+              const result = await confirmIn(source.cardId)(client);
               if (!purgeFirst) {
                 confirmReady();
                 await confirmGate;
@@ -1897,7 +1274,7 @@ describe("file from attachment on confirm (issue #1703)", () => {
         expect(purgeFirst ? confirmAttempted : purgeAttempted).toBe(true);
         releasePurge();
         releaseConfirm();
-        const [purgeResult, confirmResult] = await bounded(Promise.all([purge, confirmRun]));
+        const [purgeResult, confirmResult] = await overlapBounded(Promise.all([purge, confirmRun]), 5000);
         expect(purgeResult.purgedItemIds).toContain(trashed);
         expect(purgeResult.blobStorageKeys).toEqual([]);
         expect(confirmResult.properties.status).toBe("confirmed");

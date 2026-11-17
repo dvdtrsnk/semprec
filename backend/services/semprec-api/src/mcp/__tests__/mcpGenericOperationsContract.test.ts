@@ -78,8 +78,11 @@ const LINK_ENDING_OPERATIONS: readonly GenericOperationName[] = ["link.unlink"];
 let pool: Pool;
 let chokePoint: ChokePoint;
 let gateway: GenericOperationGateway;
+let servers: Server[] = [];
 
-async function authHeader(): Promise<{ Authorization: string }> {
+type Headers = Record<string, string>;
+
+async function sessionUser(): Promise<{ id: string; headers: Headers }> {
   const email = `${randomUUID()}@example.com`;
   const user = await createUser(pool, {
     tenantId: await tenantForNextTestUser(pool),
@@ -87,7 +90,11 @@ async function authHeader(): Promise<{ Authorization: string }> {
     passwordHash: await hashPassword(PASSWORD),
   });
   const { token } = await login(pool, { email: user.email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
-  return { Authorization: `Bearer ${token}` };
+  return { id: user.id, headers: { Authorization: `Bearer ${token}` } };
+}
+
+async function authHeader(): Promise<Headers> {
+  return (await sessionUser()).headers;
 }
 
 /**
@@ -100,10 +107,7 @@ async function tenantZeroUserId(): Promise<string> {
 }
 
 /** A single-run credential narrowed to exactly `capabilities`. */
-async function credentialHeader(
-  projectItemId: string,
-  capabilities: CapabilityId[],
-): Promise<{ Authorization: string }> {
+async function credentialHeader(projectItemId: string, capabilities: CapabilityId[]): Promise<Headers> {
   const userId = await tenantZeroUserId();
   const minted = await withTransaction(pool, (client) =>
     mintMcpRunCredential(client, { projectItemId, capabilities, userId }),
@@ -111,27 +115,49 @@ async function credentialHeader(
   return { Authorization: `Bearer ${minted.token}` };
 }
 
-/** The database every `ai_agent` actor's `agentProjectItemId` is checked against. */
-async function projectsDatabaseId(): Promise<string> {
-  const { rows } = await pool.query<{ id: string }>(`SELECT id FROM databases WHERE owner_module_id = 'projects'`);
-  if (!rows[0]) throw new Error("Projects database was not seeded");
-  return rows[0].id;
+async function moduleDatabase(moduleId: string, db: Pool = pool): Promise<{ id: string }> {
+  const found = await withTransaction(db, (client) => getDatabaseByModuleId(client, moduleId));
+  if (!found) throw new Error(`${moduleId} database was not seeded`);
+  return found;
 }
 
+/** An item of the database every `ai_agent` actor's `agentProjectItemId` is checked against. */
 async function createProjectItem(): Promise<string> {
-  const projectsDbId = await projectsDatabaseId();
-  const item = await chokePoint.createItem({ databaseId: projectsDbId, properties: {} });
-  return item.id;
+  const projects = await moduleDatabase("projects");
+  return (await chokePoint.createItem({ databaseId: projects.id, properties: {} })).id;
 }
 
-async function startServer(): Promise<{ server: Server; baseUrl: string }> {
+async function listen(listenerPool: Pool, listenerGateway: GenericOperationGateway): Promise<string> {
   const server = createServer(
-    await createMcpRequestListener(pool, gateway, ALL_CAPABILITIES, new ModuleRegistry(() => new Set())),
+    await createMcpRequestListener(
+      listenerPool,
+      listenerGateway,
+      ALL_CAPABILITIES,
+      new ModuleRegistry(() => new Set()),
+    ),
   );
-  await new Promise<void>((resolve) => server.listen(0, resolve));
+  servers.push(server);
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
-  return { server, baseUrl: `http://127.0.0.1:${address.port}` };
+  return `http://127.0.0.1:${address.port}`;
+}
+
+const startServer = (): Promise<string> => listen(pool, gateway);
+
+async function closeServers(): Promise<void> {
+  const closing = servers.splice(0);
+  await Promise.all(
+    closing.map(
+      (server) => new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))),
+    ),
+  );
 }
 
 interface JsonRpcResponse {
@@ -141,19 +167,46 @@ interface JsonRpcResponse {
   error?: { code: number; message: string; data?: unknown };
 }
 
-async function rpc(
-  baseUrl: string,
-  headers: Record<string, string>,
-  name: string,
-  args: unknown,
-): Promise<JsonRpcResponse> {
+async function post(baseUrl: string, headers: Headers, body: unknown): Promise<unknown> {
   const res = await fetch(`${baseUrl}/mcp`, {
     method: "POST",
     headers: { ...headers, "Content-Type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
+    body: JSON.stringify(body),
   });
   expect(res.status).toBe(200);
-  return (await res.json()) as JsonRpcResponse;
+  return res.json();
+}
+
+async function rpc(baseUrl: string, headers: Headers, name: string, args: unknown): Promise<JsonRpcResponse> {
+  const body = { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } };
+  return (await post(baseUrl, headers, body)) as JsonRpcResponse;
+}
+
+async function listToolNames(baseUrl: string, headers: Headers): Promise<string[]> {
+  return z
+    .object({ result: z.object({ tools: z.array(z.object({ name: z.string() })) }) })
+    .parse(await post(baseUrl, headers, { jsonrpc: "2.0", id: 1, method: "tools/list" }))
+    .result.tools.map((tool) => tool.name);
+}
+
+/** The parsed JSON of a successful tool call's first content part. */
+function output(response: JsonRpcResponse): unknown {
+  expect(response.error).toBeUndefined();
+  const text = response.result?.content[0]?.text;
+  if (!text) throw new Error("Missing MCP output");
+  return JSON.parse(text) as unknown;
+}
+
+const createdId = (response: JsonRpcResponse): string => z.object({ id: z.string().uuid() }).parse(output(response)).id;
+
+function expectInvalid(response: JsonRpcResponse, data: Record<string, unknown>): void {
+  expect(response.error?.code).toBe(-32602);
+  expect(response.error?.data).toMatchObject(data);
+}
+
+async function countApprovals(): Promise<number> {
+  const { rows } = await pool.query<{ n: number }>(`SELECT count(*)::int AS n FROM approval_requests`);
+  return rows[0]!.n;
 }
 
 interface Fixtures {
@@ -228,7 +281,6 @@ async function buildFixtures(agentProjectItemId?: string): Promise<Fixtures> {
     callerItemId: itemA.id,
     targetItemId: targetItem.id,
   });
-
   return {
     database,
     property,
@@ -244,13 +296,32 @@ async function buildFixtures(agentProjectItemId?: string): Promise<Fixtures> {
   };
 }
 
+/** Links `itemA.title` to `itemB.title`. */
+async function linkTitle(fx: Fixtures, extra: Partial<Parameters<typeof insertValueLink>[1]> = {}): Promise<void> {
+  await withTransaction(pool, (client) =>
+    insertValueLink(client, {
+      itemId: fx.itemA.id,
+      propertyKey: "title",
+      ruleKey: "test",
+      sources: [{ kind: "item", sourceItemId: fx.itemB.id, sourcePropertyKey: "title" }],
+      ...extra,
+    }),
+  );
+}
+
+async function createSubpage(fx: Fixtures): Promise<void> {
+  const created = await createDocStore(pool).createSubpage({ parent: { itemId: fx.itemA.id } }, "user");
+  fx.subpageItemId = created.pages[0]?.pageItemId;
+  fx.subpageBlockId = created.pages[0]?.blockId;
+}
+
 /**
  * The answer is the one for an invented tool name, apart from the repeated name, and the option
  * list is unchanged.
  */
 async function expectRefusedAsUnknownTool(
   baseUrl: string,
-  headers: Record<string, string>,
+  headers: Headers,
   body: JsonRpcResponse,
   name: string,
   fx: Fixtures,
@@ -264,8 +335,11 @@ async function expectRefusedAsUnknownTool(
 }
 
 interface Case {
-  /** MCP has no route layer to resolve a shorthand, unlike REST's `:propertyKey` relation route. */
-  tool: (fx: Fixtures) => { name: string; arguments: unknown };
+  /**
+   * The arguments of the tool `semprec.<operation>`. MCP has no route layer to resolve a shorthand,
+   * unlike REST's `:propertyKey` relation route.
+   */
+  args: (fx: Fixtures) => unknown;
   /**
    * State the operation itself does not create (archived, deleted, positioned), applied through
    * `chokePoint`, never through the tool under test.
@@ -280,312 +354,232 @@ interface Case {
  * tools by both.
  */
 const CASES: Record<GenericOperationName, Case> = {
-  "database.list": { tool: () => ({ name: "semprec.database.list", arguments: {} }) },
-  "database.get": { tool: (fx) => ({ name: "semprec.database.get", arguments: { databaseId: fx.database.id } }) },
-  "database.create": { tool: () => ({ name: "semprec.database.create", arguments: { name: "MCP Contract Create" } }) },
-  "database.patch": {
-    tool: (fx) => ({
-      name: "semprec.database.patch",
-      arguments: { databaseId: fx.database.id, patch: { name: "Renamed" } },
-    }),
-  },
-  "database.archive": {
-    tool: (fx) => ({ name: "semprec.database.archive", arguments: { databaseId: fx.database.id } }),
-  },
+  "database.list": { args: () => ({}) },
+  "database.get": { args: (fx) => ({ databaseId: fx.database.id }) },
+  "database.create": { args: () => ({ name: "MCP Contract Create" }) },
+  "database.patch": { args: (fx) => ({ databaseId: fx.database.id, patch: { name: "Renamed" } }) },
+  "database.archive": { args: (fx) => ({ databaseId: fx.database.id }) },
   "database.restore": {
-    tool: (fx) => ({ name: "semprec.database.restore", arguments: { databaseId: fx.database.id } }),
+    args: (fx) => ({ databaseId: fx.database.id }),
     prepare: async (fx) => {
       await chokePoint.archiveDatabase(fx.database.id);
     },
   },
-  "property.list": { tool: (fx) => ({ name: "semprec.property.list", arguments: { databaseId: fx.database.id } }) },
-  "property.get": { tool: (fx) => ({ name: "semprec.property.get", arguments: { propertyId: fx.property.id } }) },
+  "property.list": { args: (fx) => ({ databaseId: fx.database.id }) },
+  "property.get": { args: (fx) => ({ propertyId: fx.property.id }) },
   "property.getByKey": {
-    tool: (fx) => ({
-      name: "semprec.property.getByKey",
-      arguments: { databaseId: fx.database.id, key: fx.relationProperty.key, type: "relation" },
-    }),
+    args: (fx) => ({ databaseId: fx.database.id, key: fx.relationProperty.key, type: "relation" }),
   },
   "property.create": {
-    tool: (fx) => ({
-      name: "semprec.property.create",
-      arguments: { databaseId: fx.database.id, key: "score", name: "Score", type: "number" },
-    }),
+    args: (fx) => ({ databaseId: fx.database.id, key: "score", name: "Score", type: "number" }),
   },
-  "property.patch": {
-    tool: (fx) => ({
-      name: "semprec.property.patch",
-      arguments: { propertyId: fx.property.id, patch: { name: "New Title" } },
-    }),
-  },
-  "property.delete": {
-    tool: (fx) => ({ name: "semprec.property.delete", arguments: { propertyId: fx.property.id } }),
-  },
-  "property.option.add": {
-    tool: (fx) => ({
-      name: "semprec.property.option.add",
-      arguments: { propertyId: fx.optionProperty.id, label: "Spices" },
-    }),
-  },
+  "property.patch": { args: (fx) => ({ propertyId: fx.property.id, patch: { name: "New Title" } }) },
+  "property.delete": { args: (fx) => ({ propertyId: fx.property.id }) },
+  "property.option.add": { args: (fx) => ({ propertyId: fx.optionProperty.id, label: "Spices" }) },
   "property.option.update": {
-    tool: (fx) => ({
-      name: "semprec.property.option.update",
-      arguments: { propertyId: fx.optionProperty.id, key: "herbs", label: "Fresh herbs" },
-    }),
+    args: (fx) => ({ propertyId: fx.optionProperty.id, key: "herbs", label: "Fresh herbs" }),
   },
-  "view.list": { tool: () => ({ name: "semprec.view.list", arguments: {} }) },
-  "view.get": { tool: (fx) => ({ name: "semprec.view.get", arguments: { viewId: fx.view.id } }) },
-  "view.create": {
-    tool: (fx) => ({
-      name: "semprec.view.create",
-      arguments: { databaseId: fx.database.id, type: "table", name: "All rows" },
-    }),
-  },
-  "view.patch": {
-    tool: (fx) => ({ name: "semprec.view.patch", arguments: { viewId: fx.view.id, patch: { name: "Renamed view" } } }),
-  },
-  "view.delete": { tool: (fx) => ({ name: "semprec.view.delete", arguments: { viewId: fx.view.id } }) },
-  "view.query": { tool: (fx) => ({ name: "semprec.view.query", arguments: { viewId: fx.view.id } }) },
-  "viewItem.add": {
-    tool: (fx) => ({
-      name: "semprec.viewItem.add",
-      arguments: { viewId: fx.view.id, itemId: fx.itemB.id, position: 1 },
-    }),
-  },
-  "viewItem.remove": {
-    tool: (fx) => ({ name: "semprec.viewItem.remove", arguments: { viewId: fx.view.id, itemId: fx.itemA.id } }),
-  },
+  "view.list": { args: () => ({}) },
+  "view.get": { args: (fx) => ({ viewId: fx.view.id }) },
+  "view.create": { args: (fx) => ({ databaseId: fx.database.id, type: "table", name: "All rows" }) },
+  "view.patch": { args: (fx) => ({ viewId: fx.view.id, patch: { name: "Renamed view" } }) },
+  "view.delete": { args: (fx) => ({ viewId: fx.view.id }) },
+  "view.query": { args: (fx) => ({ viewId: fx.view.id }) },
+  "viewItem.add": { args: (fx) => ({ viewId: fx.view.id, itemId: fx.itemB.id, position: 1 }) },
+  "viewItem.remove": { args: (fx) => ({ viewId: fx.view.id, itemId: fx.itemA.id }) },
   "viewItem.reorder": {
-    tool: (fx) => ({
-      name: "semprec.viewItem.reorder",
-      arguments: { viewId: fx.view.id, itemId: fx.itemB.id, position: 0 },
-    }),
+    args: (fx) => ({ viewId: fx.view.id, itemId: fx.itemB.id, position: 0 }),
     prepare: async (fx) => {
       await chokePoint.addViewItem({ viewId: fx.view.id, itemId: fx.itemB.id, position: 1, actor: fx.viewActor });
     },
   },
-  "item.get": { tool: (fx) => ({ name: "semprec.item.get", arguments: { itemId: fx.itemA.id } }) },
+  "item.get": { args: (fx) => ({ itemId: fx.itemA.id }) },
   "item.create": {
-    tool: (fx) => ({
-      name: "semprec.item.create",
-      arguments: {
-        databaseId: fx.database.id,
-        properties: { title: "Contract Item" },
-        relations: [{ propertyKey: fx.relationProperty.key, targetItemIds: [fx.targetItem.id] }],
-      },
+    args: (fx) => ({
+      databaseId: fx.database.id,
+      properties: { title: "Contract Item" },
+      relations: [{ propertyKey: fx.relationProperty.key, targetItemIds: [fx.targetItem.id] }],
     }),
   },
   "item.patch": {
-    tool: (fx) => ({
-      name: "semprec.item.patch",
-      arguments: { itemId: fx.itemA.id, properties: { title: "Updated" }, ifVersion: fx.itemA.version },
-    }),
+    args: (fx) => ({ itemId: fx.itemA.id, properties: { title: "Updated" }, ifVersion: fx.itemA.version }),
   },
-  "item.delete": { tool: (fx) => ({ name: "semprec.item.delete", arguments: { itemId: fx.itemB.id } }) },
+  "item.delete": { args: (fx) => ({ itemId: fx.itemB.id }) },
   "item.restore": {
-    tool: (fx) => ({ name: "semprec.item.restore", arguments: { itemId: fx.itemB.id } }),
+    args: (fx) => ({ itemId: fx.itemB.id }),
     prepare: async (fx) => {
       await chokePoint.softDeleteItem(fx.database.id, fx.itemB.id);
     },
   },
-  "database.query": { tool: (fx) => ({ name: "semprec.database.query", arguments: { databaseId: fx.database.id } }) },
+  "database.query": { args: (fx) => ({ databaseId: fx.database.id }) },
   "relation.put": {
-    tool: (fx) => ({
-      name: "semprec.relation.put",
-      arguments: {
-        relationPropertyId: fx.relationProperty.id,
-        callerItemId: fx.itemB.id,
-        targetItemId: fx.targetItem.id,
-      },
+    args: (fx) => ({
+      relationPropertyId: fx.relationProperty.id,
+      callerItemId: fx.itemB.id,
+      targetItemId: fx.targetItem.id,
     }),
   },
   "relation.set": {
-    tool: (fx) => ({
-      name: "semprec.relation.set",
-      arguments: {
-        relationPropertyId: fx.singleRelationProperty.id,
-        callerItemId: fx.itemB.id,
-        targetItemId: fx.targetItem.id,
-      },
+    args: (fx) => ({
+      relationPropertyId: fx.singleRelationProperty.id,
+      callerItemId: fx.itemB.id,
+      targetItemId: fx.targetItem.id,
     }),
   },
   "relation.delete": {
-    tool: (fx) => ({
-      name: "semprec.relation.delete",
-      arguments: {
-        relationPropertyId: fx.relationProperty.id,
-        callerItemId: fx.itemA.id,
-        targetItemId: fx.targetItem.id,
-      },
+    args: (fx) => ({
+      relationPropertyId: fx.relationProperty.id,
+      callerItemId: fx.itemA.id,
+      targetItemId: fx.targetItem.id,
     }),
   },
-  "relation.list": { tool: (fx) => ({ name: "semprec.relation.list", arguments: { itemId: fx.itemA.id } }) },
-  "relation.related": { tool: (fx) => ({ name: "semprec.relation.related", arguments: { itemId: fx.itemA.id } }) },
-  "link.unlink": {
-    tool: (fx) => ({ name: "semprec.link.unlink", arguments: { itemId: fx.itemA.id, propertyKey: "title" } }),
-    prepare: async (fx) => {
-      await withTransaction(pool, (client) =>
-        insertValueLink(client, {
-          itemId: fx.itemA.id,
-          propertyKey: "title",
-          ruleKey: "test",
-          sources: [{ kind: "item", sourceItemId: fx.itemB.id, sourcePropertyKey: "title" }],
-        }),
-      );
-    },
-  },
+  "relation.list": { args: (fx) => ({ itemId: fx.itemA.id }) },
+  "relation.related": { args: (fx) => ({ itemId: fx.itemA.id }) },
+  "link.unlink": { args: (fx) => ({ itemId: fx.itemA.id, propertyKey: "title" }), prepare: (fx) => linkTitle(fx) },
   "link.relink": {
-    tool: (fx) => ({ name: "semprec.link.relink", arguments: { itemId: fx.itemA.id, propertyKey: "title" } }),
-    prepare: async (fx) => {
-      await withTransaction(pool, (client) =>
-        insertValueLink(client, {
-          itemId: fx.itemA.id,
-          propertyKey: "title",
-          ruleKey: "test",
-          state: "broken",
-          brokenBy: "user",
-          brokenAt: new Date(),
-          sources: [{ kind: "item", sourceItemId: fx.itemB.id, sourcePropertyKey: "title" }],
-        }),
-      );
-    },
+    args: (fx) => ({ itemId: fx.itemA.id, propertyKey: "title" }),
+    prepare: (fx) => linkTitle(fx, { state: "broken", brokenBy: "user", brokenAt: new Date() }),
   },
-  "page.ensure": { tool: (fx) => ({ name: "semprec.page.ensure", arguments: { itemId: fx.itemA.id } }) },
-  "page.ensureJournalPeriod": {
-    tool: () => ({ name: "semprec.page.ensureJournalPeriod", arguments: { type: "week", date: "2026-10-16" } }),
-  },
+  "page.ensure": { args: (fx) => ({ itemId: fx.itemA.id }) },
+  "page.ensureJournalPeriod": { args: () => ({ type: "week", date: "2026-10-16" }) },
   // The period has no duplicate, so a human session gets `{ merged: false }` and a run credential
   // is held for approval.
-  "page.mergeJournalDuplicates": {
-    tool: () => ({ name: "semprec.page.mergeJournalDuplicates", arguments: { type: "day", period: "2026-10-16" } }),
-  },
-  "page.insert": {
-    tool: (fx) => ({
-      name: "semprec.page.insert",
-      arguments: { itemId: fx.itemA.id, placement: "end", markdown: "Contract text" },
-    }),
-  },
+  "page.mergeJournalDuplicates": { args: () => ({ type: "day", period: "2026-10-16" }) },
+  "page.insert": { args: (fx) => ({ itemId: fx.itemA.id, placement: "end", markdown: "Contract text" }) },
   // Destructive for a run credential: held for approval with the page's current version token.
   "page.replace": {
-    tool: (fx) => ({
-      name: "semprec.page.replace",
-      arguments: { itemId: fx.itemA.id, markdown: "Contract replacement", expectedEtag: fx.pageEtag },
-    }),
+    args: (fx) => ({ itemId: fx.itemA.id, markdown: "Contract replacement", expectedEtag: fx.pageEtag }),
     prepare: async (fx) => {
       fx.pageEtag = (await createDocStore(pool).readPageMarkdown(fx.itemA.id)).etag;
     },
   },
-  "page.createSubpage": {
-    tool: (fx) => ({
-      name: "semprec.page.createSubpage",
-      arguments: { parent: { itemId: fx.itemA.id }, title: "Contract subpage" },
-    }),
-  },
-  "page.duplicate": {
-    tool: (fx) => ({ name: "semprec.page.duplicate", arguments: { pageItemId: fx.subpageItemId } }),
-    prepare: async (fx) => {
-      const created = await createDocStore(pool).createSubpage({ parent: { itemId: fx.itemA.id } }, "user");
-      fx.subpageItemId = created.pages[0]?.pageItemId;
-    },
-  },
-  "page.rename": {
-    tool: (fx) => ({
-      name: "semprec.page.rename",
-      arguments: { pageItemId: fx.subpageItemId, title: "Contract title" },
-    }),
-    prepare: async (fx) => {
-      const created = await createDocStore(pool).createSubpage({ parent: { itemId: fx.itemA.id } }, "user");
-      fx.subpageItemId = created.pages[0]?.pageItemId;
-    },
-  },
+  "page.createSubpage": { args: (fx) => ({ parent: { itemId: fx.itemA.id }, title: "Contract subpage" }) },
+  "page.duplicate": { args: (fx) => ({ pageItemId: fx.subpageItemId }), prepare: createSubpage },
+  "page.rename": { args: (fx) => ({ pageItemId: fx.subpageItemId, title: "Contract title" }), prepare: createSubpage },
   // Destructive for a run credential: held for approval with the current count of pages the block
   // names.
   "page.convertToBlock": {
-    tool: (fx) => ({
-      name: "semprec.page.convertToBlock",
-      arguments: { parentItemId: fx.itemA.id, blockId: fx.subpageBlockId, type: "text", confirmedPageCount: 1 },
-    }),
-    prepare: async (fx) => {
-      const created = await createDocStore(pool).createSubpage({ parent: { itemId: fx.itemA.id } }, "user");
-      fx.subpageItemId = created.pages[0]?.pageItemId;
-      fx.subpageBlockId = created.pages[0]?.blockId;
-    },
+    args: (fx) => ({ parentItemId: fx.itemA.id, blockId: fx.subpageBlockId, type: "text", confirmedPageCount: 1 }),
+    prepare: createSubpage,
   },
-  "page.get": { tool: (fx) => ({ name: "semprec.page.get", arguments: { itemId: fx.itemA.id, format: "summary" } }) },
-  "page.changes": {
-    tool: (fx) => ({
-      name: "semprec.page.changes",
-      arguments: { itemId: fx.itemA.id, since: new Date(Date.now() - 60 * 1000).toISOString() },
-    }),
-  },
+  "page.get": { args: (fx) => ({ itemId: fx.itemA.id, format: "summary" }) },
+  "page.changes": { args: (fx) => ({ itemId: fx.itemA.id, since: new Date(Date.now() - 60 * 1000).toISOString() }) },
   "page.restoreVersion": {
     // The block's update is dated an hour back, so the instant (half an hour back) sits inside the
     // history `prepare` opens.
-    tool: (fx) => ({
-      name: "semprec.page.restoreVersion",
-      arguments: { itemId: fx.itemA.id, at: new Date(Date.now() - 30 * 60 * 1000).toISOString() },
-    }),
+    args: (fx) => ({ itemId: fx.itemA.id, at: new Date(Date.now() - 30 * 60 * 1000).toISOString() }),
     prepare: async (fx) => {
       await createDocStore(pool).putBlock(
         fx.itemA.id,
         { id: "b1", flavour: "paragraph", fields: { content: "first" } },
         "user",
       );
-      await pool.query(`UPDATE docs SET history_available_from = now() - interval '1 hour' WHERE item_id = $1`, [
-        fx.itemA.id,
-      ]);
-      await pool.query(
-        `UPDATE doc_snapshot_history SET represented_at = now() - interval '1 hour'
-         WHERE through_update_id = 0 AND doc_id = (SELECT id FROM docs WHERE item_id = $1)`,
-        [fx.itemA.id],
-      );
-      await pool.query(
-        `UPDATE doc_updates SET created_at = now() - interval '1 hour'
-         WHERE doc_id = (SELECT id FROM docs WHERE item_id = $1)`,
-        [fx.itemA.id],
-      );
-      await pool.query(
-        `UPDATE doc_history_updates SET created_at = now() - interval '1 hour'
-         WHERE doc_id = (SELECT id FROM docs WHERE item_id = $1)`,
-        [fx.itemA.id],
-      );
+      const docOfItem = "doc_id = (SELECT id FROM docs WHERE item_id = $1)";
+      for (const sql of [
+        `UPDATE docs SET history_available_from = now() - interval '1 hour' WHERE item_id = $1`,
+        `UPDATE doc_snapshot_history SET represented_at = now() - interval '1 hour' WHERE through_update_id = 0 AND ${docOfItem}`,
+        `UPDATE doc_updates SET created_at = now() - interval '1 hour' WHERE ${docOfItem}`,
+        `UPDATE doc_history_updates SET created_at = now() - interval '1 hour' WHERE ${docOfItem}`,
+      ]) {
+        await pool.query(sql, [fx.itemA.id]);
+      }
     },
   },
-  "item.count": {
-    tool: (fx) => ({ name: "semprec.item.count", arguments: { items: [{ databaseId: fx.database.id }] } }),
-  },
-  "database.facets": {
-    tool: (fx) => ({
-      name: "semprec.database.facets",
-      arguments: { databaseId: fx.database.id, facets: [fx.relationProperty.key] },
-    }),
-  },
-  search: { tool: () => ({ name: "semprec.search", arguments: { q: "contract", scope: ["task", "event"] } }) },
+  "item.count": { args: (fx) => ({ items: [{ databaseId: fx.database.id }] }) },
+  "database.facets": { args: (fx) => ({ databaseId: fx.database.id, facets: [fx.relationProperty.key] }) },
+  search: { args: () => ({ q: "contract", scope: ["task", "event"] }) },
 };
 
-describe("generic operation MCP contract (issue #220)", () => {
-  let servers: Server[] = [];
+interface RuntimeHarness {
+  runtime: Pool;
+  cp: ChokePoint;
+  ownTenant: string;
+  foreignTenant: string;
+  /** Mints an own-tenant `core.item.write` run credential and serves MCP over the runtime role. */
+  connect: () => Promise<(name: string, args: unknown) => Promise<JsonRpcResponse>>;
+  snapshot: (tenantId: string) => Promise<unknown>;
+  targets: (tenantId: string, itemId: string, propertyId: string) => Promise<string[] | undefined>;
+}
 
-  it("sanitizes Emails.body on MCP item.get", async () => {
-    const raw = '<p onclick="evil()">safe</p><script>evil()</script><img src="https://tracker.example/pixel">';
-    const item = await withTransaction(pool, async (client) => {
-      const database = await getDatabaseByModuleId(client, "emails");
-      if (!database) throw new Error("Emails not seeded");
-      return createItemWithClient(
-        client,
-        { databaseId: database.id, properties: { body: raw } },
-        { allowedSystemKeys: ["body"] },
+/** Runs `test` against MCP served over a non-bypassing runtime role, with two tenants. */
+async function withRuntimeMcp(test: (harness: RuntimeHarness) => Promise<void>): Promise<void> {
+  const runtime = await createRuntimeRolePool(pool, "semprec_data");
+  let failure: { error: unknown } | undefined;
+  try {
+    const role = await runAsSystem("test:verify-runtime-role", () =>
+      runtime.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
+        "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+      ),
+    );
+    expect(role.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
+    const ownTenant = await createTestTenant(pool);
+    const foreignTenant = await createTestTenant(pool);
+    const user = await runAsSystem("test:create-mcp-user", () =>
+      createUser(pool, {
+        tenantId: ownTenant,
+        email: `${randomUUID()}@example.test`,
+        passwordHash: "unused-test-hash",
+      }),
+    );
+    const cp = createChokePoint(runtime);
+    const connect = async () => {
+      const credential = await runInTenant(ownTenant, async () => {
+        const projects = await moduleDatabase("projects", runtime);
+        const project = await cp.createItem({ databaseId: projects.id, properties: { name: "MCP runtime agent" } });
+        return withTransaction(runtime, (client) =>
+          mintMcpRunCredential(client, {
+            projectItemId: project.id,
+            capabilities: ["core.item.write"],
+            userId: user.id,
+          }),
+        );
+      });
+      const baseUrl = await listen(runtime, createGenericOperationGateway(runtime, testMetadataResolver));
+      const headers = { Authorization: `Bearer ${credential.token}` };
+      return (name: string, args: unknown) => rpc(baseUrl, headers, name, args);
+    };
+    const snapshot = (tenantId: string) =>
+      runInTenant(tenantId, async () => {
+        const items = await runtime.query<{
+          id: string;
+          database_id: string;
+          properties: unknown;
+          computed: unknown;
+          deleted_at: Date | null;
+          updated_at: Date;
+        }>("SELECT id, database_id, properties, computed, deleted_at, updated_at FROM items ORDER BY id");
+        const edges = await runtime.query<{ id: string; item_a: string; item_b: string }>(
+          "SELECT id, item_a, item_b FROM item_relations ORDER BY id",
+        );
+        const approvals = await runtime.query<{ id: string; status: string }>(
+          "SELECT id, status FROM approval_requests ORDER BY id",
+        );
+        return { items: items.rows, edges: edges.rows, approvals: approvals.rows };
+      });
+    const targets = (tenantId: string, itemId: string, propertyId: string) =>
+      runInTenant(tenantId, async () =>
+        (await cp.listItemRelations(itemId, propertyId))?.map((edge) => edge.targetItemId),
       );
-    });
+    await test({ runtime, cp, ownTenant, foreignTenant, connect, snapshot, targets });
+  } catch (error) {
+    failure = { error };
+  }
+  const cleanupErrors: unknown[] = [];
+  for (const step of [closeServers, () => runtime.end()]) {
+    try {
+      await step();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  if (failure) {
+    if (cleanupErrors.length > 0) console.error("MCP runtime fixture cleanup also failed", cleanupErrors);
+    throw failure.error;
+  }
+  if (cleanupErrors.length > 0) throw new AggregateError(cleanupErrors, "MCP runtime fixture cleanup failed");
+}
 
-    const { server, baseUrl } = await startServer();
-    servers.push(server);
-    const body = await rpc(baseUrl, await authHeader(), "semprec.item.get", { itemId: item.id });
-    expect(body.error).toBeUndefined();
-    const text = body.result?.content.map((part) => part.text).join("");
-    expect(text).toContain("safe");
-    expect(text).not.toMatch(/<script|onclick|https:\/\/tracker/i);
-  });
+describe("generic operation MCP contract", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     chokePoint ??= createChokePoint(pool);
@@ -596,11 +590,28 @@ describe("generic operation MCP contract (issue #220)", () => {
   });
 
   afterEach(async () => {
-    await Promise.all(servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
+    await closeServers();
   });
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  it("sanitizes Emails.body on MCP item.get", async () => {
+    const raw = '<p onclick="evil()">safe</p><script>evil()</script><img src="https://tracker.example/pixel">';
+    const emails = await moduleDatabase("emails");
+    const item = await withTransaction(pool, (client) =>
+      createItemWithClient(
+        client,
+        { databaseId: emails.id, properties: { body: raw } },
+        { allowedSystemKeys: ["body"] },
+      ),
+    );
+    const body = await rpc(await startServer(), await authHeader(), "semprec.item.get", { itemId: item.id });
+    expect(body.error).toBeUndefined();
+    const text = body.result?.content.map((part) => part.text).join("");
+    expect(text).toContain("safe");
+    expect(text).not.toMatch(/<script|onclick|https:\/\/tracker/i);
   });
 
   it("refuses a canvas as a page through MCP without changing its document", async () => {
@@ -619,9 +630,7 @@ describe("generic operation MCP contract (issue #220)", () => {
       );
     const before = await state();
     expect(before.rows).toHaveLength(1);
-    const { server, baseUrl } = await startServer();
-    servers.push(server);
-    const result = await rpc(baseUrl, await authHeader(), "semprec.page.get", {
+    const result = await rpc(await startServer(), await authHeader(), "semprec.page.get", {
       itemId: fx.itemA.id,
       format: "summary",
     });
@@ -631,45 +640,27 @@ describe("generic operation MCP contract (issue #220)", () => {
 
   it("ensures and reads the same page through a human MCP session", async () => {
     const fx = await buildFixtures();
-    const { server, baseUrl } = await startServer();
-    servers.push(server);
+    const baseUrl = await startServer();
     const headers = await authHeader();
-    const content = (response: JsonRpcResponse): unknown => {
-      expect(response.error).toBeUndefined();
-      const text = response.result?.content[0]?.text;
-      if (!text) throw new Error("Missing MCP output");
-      return JSON.parse(text) as unknown;
-    };
-    const first = z
-      .object({ docId: z.string() })
-      .parse(content(await rpc(baseUrl, headers, "semprec.page.ensure", { itemId: fx.itemA.id })));
-    expect(content(await rpc(baseUrl, headers, "semprec.page.ensure", { itemId: fx.itemA.id }))).toEqual(first);
+    const ensure = async () => output(await rpc(baseUrl, headers, "semprec.page.ensure", { itemId: fx.itemA.id }));
+    const first = z.object({ docId: z.string() }).parse(await ensure());
+    expect(await ensure()).toEqual(first);
     expect(
-      content(await rpc(baseUrl, headers, "semprec.page.get", { itemId: fx.itemA.id, format: "summary" })),
+      output(await rpc(baseUrl, headers, "semprec.page.get", { itemId: fx.itemA.id, format: "summary" })),
     ).toMatchObject(first);
     expect((await pool.query("SELECT id FROM docs WHERE item_id = $1", [fx.itemA.id])).rows).toHaveLength(1);
   });
 
-  it("writes a summary into the Journal week of a date through a run credential: the semprec.-prefixed name of page.ensureJournalPeriod, then page.insert authored ai_agent (issue #1861)", async () => {
-    const { server, baseUrl } = await startServer();
-    servers.push(server);
-    const projectItemId = await createProjectItem();
-    const headers = await credentialHeader(projectItemId, ["core.item.write"]);
-    const listed = await fetch(`${baseUrl}/mcp`, {
-      method: "POST",
-      headers: { ...headers, "Content-Type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
-    });
-    expect(JSON.stringify(await listed.json())).toContain('"semprec.page.ensureJournalPeriod"');
+  it("writes a summary into the Journal week of a date through a run credential: page.ensureJournalPeriod is listed, then page.insert is authored ai_agent", async () => {
+    const baseUrl = await startServer();
+    const headers = await credentialHeader(await createProjectItem(), ["core.item.write"]);
+    expect(await listToolNames(baseUrl, headers)).toContain("semprec.page.ensureJournalPeriod");
 
     const ensured = await rpc(baseUrl, headers, "semprec.page.ensureJournalPeriod", {
       type: "week",
       date: "2026-10-16",
     });
-    expect(ensured.error).toBeUndefined();
-    const text = ensured.result?.content[0]?.text;
-    if (!text) throw new Error("Missing MCP output");
-    const week = z.object({ itemId: z.string(), period: z.literal("2026-W42") }).parse(JSON.parse(text));
+    const week = z.object({ itemId: z.string(), period: z.literal("2026-W42") }).parse(output(ensured));
     const inserted = await rpc(baseUrl, headers, "semprec.page.insert", {
       itemId: week.itemId,
       placement: "end",
@@ -681,15 +672,12 @@ describe("generic operation MCP contract (issue #220)", () => {
       [week.itemId],
     );
     expect(authors.rows.map((row) => row.created_by)).toEqual(["ai_agent"]);
-    const approvals = await pool.query<{ n: number }>(`SELECT count(*)::int AS n FROM approval_requests`);
-    expect(approvals.rows[0]?.n).toBe(0);
+    expect(await countApprovals()).toBe(0);
   });
 
-  it("holds semprec.page.mergeJournalDuplicates for a day with two live entries for approval through a run credential, with the same operation as the AgentTool name, and merges nothing (issue #2017)", async () => {
-    const { server, baseUrl } = await startServer();
-    servers.push(server);
-    const journal = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "journal"));
-    if (!journal) throw new Error("Journal not seeded");
+  it("holds semprec.page.mergeJournalDuplicates for a day with two live entries for approval through a run credential, under the catalog operation name, and merges nothing", async () => {
+    const baseUrl = await startServer();
+    const journal = await moduleDatabase("journal");
     // Lazy creation never produces two live entries of one period, so the fixture creates them
     // directly.
     const entries: string[] = [];
@@ -703,15 +691,11 @@ describe("generic operation MCP contract (issue #220)", () => {
       );
       entries.push(created.id);
     }
-    const projectItemId = await createProjectItem();
-    const headers = await credentialHeader(projectItemId, ["core.item.write"]);
+    const headers = await credentialHeader(await createProjectItem(), ["core.item.write"]);
+    const merge = (period: string) =>
+      rpc(baseUrl, headers, "semprec.page.mergeJournalDuplicates", { type: "day", period });
 
-    const body = await rpc(baseUrl, headers, "semprec.page.mergeJournalDuplicates", {
-      type: "day",
-      period: "2037-05-02",
-    });
-
-    expect(body.error?.code).toBe(-32001);
+    expect((await merge("2037-05-02")).error?.code).toBe(-32001);
     const requests = await pool.query<{ tool_name: string; status: string; payload: { operationName?: string } }>(
       `SELECT tool_name, status, payload FROM approval_requests`,
     );
@@ -728,46 +712,31 @@ describe("generic operation MCP contract (issue #220)", () => {
       [entries],
     );
     expect(live.rows.map((row) => row.id).sort()).toEqual([...entries].sort());
-    const refused = await rpc(baseUrl, headers, "semprec.page.mergeJournalDuplicates", {
-      type: "day",
-      period: "2026-02-30",
-    });
-    expect(refused.error).toMatchObject({ code: -32602, data: { field: "period" } });
+    expectInvalid(await merge("2026-02-30"), { field: "period" });
   });
 
   it("creates a subpage under a Journal day that has no entry yet, in one call", async () => {
-    const { server, baseUrl } = await startServer();
-    servers.push(server);
-    const body = await rpc(baseUrl, await authHeader(), "semprec.page.createSubpage", {
+    const body = await rpc(await startServer(), await authHeader(), "semprec.page.createSubpage", {
       parent: { journal: { type: "day", period: "2026-10-16" } },
       title: "Day plan",
     });
-    expect(body.error).toBeUndefined();
-    const text = body.result?.content[0]?.text;
-    if (!text) throw new Error("Missing MCP output");
-    const created = z
-      .object({ pages: z.array(z.object({ pageItemId: z.string(), blockId: z.string() })).length(1) })
-      .parse(JSON.parse(text));
-    const journalDay = await pool.query<{ id: string }>(
-      `SELECT i.id FROM items i JOIN databases d ON d.id = i.database_id
-       WHERE d.owner_module_id = 'journal' AND i.properties->>'period' = '2026-10-16'`,
+    z.object({ pages: z.array(z.object({ pageItemId: z.string(), blockId: z.string() })).length(1) }).parse(
+      output(body),
     );
-    expect(journalDay.rows).toHaveLength(1);
     const dayPage = await pool.query<{ item_id: string }>(
-      `SELECT item_id FROM docs WHERE item_id = $1 AND kind = 'page'`,
-      [journalDay.rows[0]!.id],
+      `SELECT doc.item_id FROM items i JOIN databases d ON d.id = i.database_id JOIN docs doc ON doc.item_id = i.id
+       WHERE d.owner_module_id = 'journal' AND i.properties->>'period' = '2026-10-16' AND doc.kind = 'page'`,
     );
     expect(dayPage.rows).toHaveLength(1);
-    expect(created.pages[0]?.pageItemId).toEqual(expect.any(String));
   });
 
   it("validates Areas create and patch through MCP", async () => {
-    const database = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
-    if (!database) throw new Error("Areas not seeded");
+    const database = await moduleDatabase("areas");
     const item = await chokePoint.createItem({ databaseId: database.id, properties: { name: "Area" } });
-    const { server, baseUrl } = await startServer();
-    servers.push(server);
+    const baseUrl = await startServer();
     const headers = await authHeader();
+    const patch = (properties: Record<string, unknown>) =>
+      rpc(baseUrl, headers, "semprec.item.patch", { itemId: item.id, properties, ifVersion: item.version });
     for (const [field, value] of [
       ["icon", "rocket123"],
       ["color", "#123456"],
@@ -777,19 +746,9 @@ describe("generic operation MCP contract (issue #220)", () => {
         properties: { name: "Invalid", [field]: value },
       });
       expect(created.error).toMatchObject({ code: -32602, data: { field } });
-      const updated = await rpc(baseUrl, headers, "semprec.item.patch", {
-        itemId: item.id,
-        properties: { [field]: value },
-        ifVersion: item.version,
-      });
-      expect(updated.error).toMatchObject({ code: -32602, data: { field } });
+      expect((await patch({ [field]: value })).error).toMatchObject({ code: -32602, data: { field } });
     }
-    const accepted = await rpc(baseUrl, headers, "semprec.item.patch", {
-      itemId: item.id,
-      properties: { icon: "briefcase", color: "#5856D6" },
-      ifVersion: item.version,
-    });
-    expect(accepted.error).toBeUndefined();
+    expect((await patch({ icon: "briefcase", color: "#5856D6" })).error).toBeUndefined();
     expect((await chokePoint.getItem(database.id, item.id))?.properties).toMatchObject({
       icon: "briefcase",
       color: "#5856D6",
@@ -823,17 +782,11 @@ describe("generic operation MCP contract (issue #220)", () => {
         sources: [{ kind: "item", sourceItemId: source.id, sourcePropertyKey: "projects" }],
       }),
     );
-    const { server, baseUrl } = await startServer();
-    servers.push(server);
-    const result = await rpc(baseUrl, await authHeader(), "semprec.link.unlink", {
+    const result = await rpc(await startServer(), await authHeader(), "semprec.link.unlink", {
       itemId: file.id,
       propertyKey: "projects",
     });
-    expect(result.error).toBeUndefined();
-    const text = result.result?.content[0]?.text;
-    if (!text) throw new Error("Missing unlink output");
-    const body: unknown = JSON.parse(text);
-    expect(body).toMatchObject({
+    expect(output(result)).toMatchObject({
       itemId: file.id,
       propertyKey: "projects",
       valueKind: "inheritedBroken",
@@ -845,14 +798,11 @@ describe("generic operation MCP contract (issue #220)", () => {
   });
 
   it("refuses deletion of the system area and filters it from MCP queries", async () => {
-    const areas = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "areas"));
-    if (!areas) throw new Error("Areas missing");
-    const list = await chokePoint.listItems(areas.id);
-    const system = list.items.find((item) => item.properties.systemActive === true);
+    const areas = await moduleDatabase("areas");
+    const system = (await chokePoint.listItems(areas.id)).items.find((item) => item.properties.systemActive === true);
     if (!system) throw new Error("System area missing");
     const user = await chokePoint.createItem({ databaseId: areas.id, properties: { name: "User area" } });
-    const { server, baseUrl } = await startServer();
-    servers.push(server);
+    const baseUrl = await startServer();
     const headers = await authHeader();
     const deleted = await rpc(baseUrl, headers, "semprec.item.delete", { itemId: system.id });
     expect(deleted.error).toMatchObject({
@@ -864,61 +814,64 @@ describe("generic operation MCP contract (issue #220)", () => {
       databaseId: areas.id,
       filter: { type: "is_empty", property: "systemActive" },
     });
-    expect(queried.error).toBeUndefined();
-    const text = queried.result?.content[0]?.text;
-    if (!text) throw new Error("Missing query result");
-    const body: unknown = JSON.parse(text);
-    expect(body).toMatchObject({ items: [expect.objectContaining({ id: user.id })] });
-    expect(text).not.toContain(system.id);
+    expect(output(queried)).toMatchObject({ items: [expect.objectContaining({ id: user.id })] });
+    expect(JSON.stringify(output(queried))).not.toContain(system.id);
   });
 
-  it("returns project completion in the MCP patch response and refuses direct writes", async () => {
-    const databaseId = await projectsDatabaseId();
-    const item = await chokePoint.createItem({ databaseId, properties: { name: "Project", status: "inProgress" } });
-    const day = today(await withTransaction(pool, getSystemTimezone));
-    const { server, baseUrl } = await startServer();
-    servers.push(server);
+  /** A patch of a Projects item at its current version. */
+  async function projectPatcher(properties: Record<string, unknown>) {
+    const { id: databaseId } = await moduleDatabase("projects");
+    const item = await chokePoint.createItem({ databaseId, properties: { name: "Project", ...properties } });
+    const baseUrl = await startServer();
     const headers = await authHeader();
-    const result = await rpc(baseUrl, headers, "semprec.item.patch", {
-      itemId: item.id,
-      properties: { status: "done" },
-      ifVersion: item.version,
+    const read = async () => {
+      const current = await chokePoint.getItem(databaseId, item.id);
+      if (!current) throw new Error("Missing project fixture");
+      return current;
+    };
+    const patch = async (patchProperties: Record<string, unknown>) => {
+      const args: InputByOperation["item.patch"] = {
+        itemId: item.id,
+        properties: patchProperties,
+        ifVersion: (await read()).version,
+      };
+      return rpc(baseUrl, headers, "semprec.item.patch", args);
+    };
+    return { patch, properties: async () => (await read()).properties };
+  }
+
+  it("returns project completion in the MCP patch response and refuses direct writes", async () => {
+    const project = await projectPatcher({ status: "inProgress" });
+    const day = today(await withTransaction(pool, getSystemTimezone));
+    expect(output(await project.patch({ status: "done" }))).toMatchObject({
+      properties: { status: "done", completedAt: day },
     });
-    expect(result.error).toBeUndefined();
-    const text = result.result?.content[0]?.text;
-    if (!text) throw new Error("Missing MCP patch result");
-    const resultBody: unknown = JSON.parse(text);
-    expect(resultBody).toMatchObject({ properties: { status: "done", completedAt: day } });
-    const current = await chokePoint.getItem(databaseId, item.id);
-    if (!current) throw new Error("Missing project");
-    const refused = await rpc(baseUrl, headers, "semprec.item.patch", {
-      itemId: item.id,
-      properties: { completedAt: "2000-01-01" },
-      ifVersion: current.version,
-    });
-    expect(refused.error).toBeDefined();
-    expect((await chokePoint.getItem(databaseId, item.id))?.properties.completedAt).toBe(day);
+    expect((await project.patch({ completedAt: "2000-01-01" })).error).toBeDefined();
+    expect((await project.properties()).completedAt).toBe(day);
   });
 
   it("keeps and restores project deadlines through MCP", async () => {
-    const databaseId = await projectsDatabaseId();
-    const item = await chokePoint.createItem({
-      databaseId,
-      properties: { name: "Project", status: "inProgress", date: "2026-11-30" },
-    });
-    const { server, baseUrl } = await startServer();
-    servers.push(server);
-    const headers = await authHeader();
-    const patch = async (properties: Record<string, unknown>) => {
-      const current = await chokePoint.getItem(databaseId, item.id);
-      if (!current) throw new Error("Missing project");
-      return rpc(baseUrl, headers, "semprec.item.patch", { itemId: item.id, properties, ifVersion: current.version });
-    };
-    expect((await patch({ status: "longTerm" })).error).toBeUndefined();
-    expect((await chokePoint.getItem(databaseId, item.id))?.properties.date).toBeNull();
-    expect((await patch({ date: "2027-01-01" })).error).toMatchObject({ code: -32602, data: { field: "date" } });
-    expect((await patch({ status: "inProgress" })).error).toBeUndefined();
-    expect((await chokePoint.getItem(databaseId, item.id))?.properties.date).toBe("2026-11-30");
+    const project = await projectPatcher({ status: "inProgress", date: "2026-11-30" });
+    expect((await project.patch({ status: "longTerm" })).error).toBeUndefined();
+    expect((await project.properties()).date).toBeNull();
+    expectInvalid(await project.patch({ date: "2027-01-01" }), { field: "date" });
+    expect((await project.patch({ status: "inProgress" })).error).toBeUndefined();
+    expect((await project.properties()).date).toBe("2026-11-30");
+  });
+
+  it.each(["done", "archived"])("unpins Projects and refuses explicit terminal pins over MCP (%s)", async (status) => {
+    const project = await projectPatcher({ status: "inProgress", pinned: true });
+    expect(output(await project.patch({ status }))).toMatchObject({ properties: { status, pinned: false } });
+    for (const patch of [{ pinned: true }, { status, pinned: true }]) {
+      expectInvalid(await project.patch(patch), { field: "pinned" });
+      expect(await project.properties()).toMatchObject({ status, pinned: false });
+    }
+    for (const activeStatus of ["inProgress", "longTerm"]) {
+      expect((await project.patch({ status: activeStatus, pinned: true })).error).toBeUndefined();
+      expect(await project.properties()).toMatchObject({ status: activeStatus, pinned: true });
+    }
+    expectInvalid(await project.patch({ status, pinned: true }), { field: "pinned" });
+    expect(await project.properties()).toMatchObject({ status: "longTerm", pinned: true });
   });
 
   it("attributes session MCP relation deletion to its authenticated user", async () => {
@@ -931,22 +884,12 @@ describe("generic operation MCP contract (issue #220)", () => {
         sources: [],
       }),
     );
-    const user = await createUser(pool, {
-      tenantId: await tenantForNextTestUser(pool),
-      email: `${randomUUID()}@example.com`,
-      passwordHash: await hashPassword(PASSWORD),
-    });
-    const { token } = await login(pool, { email: user.email, password: PASSWORD, platform: "ios", ip: "127.0.0.1" });
-    const { server, baseUrl } = await startServer();
-    servers.push(server);
+    const user = await sessionUser();
+    const baseUrl = await startServer();
     const events: InvalidationEvent[] = [];
     setInvalidationHook((event) => events.push(event));
     try {
-      const result = await rpc(baseUrl, { Authorization: `Bearer ${token}` }, "semprec.relation.delete", {
-        relationPropertyId: fx.relationProperty.id,
-        callerItemId: fx.itemA.id,
-        targetItemId: fx.targetItem.id,
-      });
+      const result = await rpc(baseUrl, user.headers, "semprec.relation.delete", CASES["relation.delete"].args(fx));
       expect(result.error).toBeUndefined();
       expect(events.filter((event) => event.scope === "item" && event.itemId === fx.itemA.id)).toEqual([
         expect.objectContaining({ userId: user.id }),
@@ -956,110 +899,32 @@ describe("generic operation MCP contract (issue #220)", () => {
     }
   });
 
-  it.each(["done", "archived"])("unpins Projects and refuses explicit terminal pins over MCP (%s)", async (status) => {
-    const databaseId = await projectsDatabaseId();
-    const item = await chokePoint.createItem({
-      databaseId,
-      properties: { name: "Project", status: "inProgress", pinned: true },
-    });
-    const { server, baseUrl } = await startServer();
-    servers.push(server);
-    const headers = await authHeader();
-    async function patchProject(properties: Record<string, unknown>) {
-      const current = await chokePoint.getItem(databaseId, item.id);
-      if (!current) throw new Error("Missing project fixture");
-      const args: InputByOperation["item.patch"] = { itemId: item.id, properties, ifVersion: current.version };
-      return rpc(baseUrl, headers, "semprec.item.patch", args);
-    }
-    const answer = await patchProject({ status });
-    expect(answer.error).toBeUndefined();
-    const content = answer.result?.content.find((part) => part.type === "text")?.text;
-    if (!content) throw new Error("Missing MCP result");
-    const result: unknown = JSON.parse(content);
-    expect(result).toMatchObject({ properties: { status, pinned: false } });
-    for (const patch of [{ pinned: true }, { status, pinned: true }]) {
-      const rejected = await patchProject(patch);
-      expect(rejected.error?.code).toBe(-32602);
-      expect(rejected.error?.data).toMatchObject({ field: "pinned" });
-      expect((await chokePoint.getItem(databaseId, item.id))?.properties).toMatchObject({ status, pinned: false });
-    }
-    for (const activeStatus of ["inProgress", "longTerm"]) {
-      const accepted = await patchProject({ status: activeStatus, pinned: true });
-      expect(accepted.error).toBeUndefined();
-      expect((await chokePoint.getItem(databaseId, item.id))?.properties).toMatchObject({
-        status: activeStatus,
-        pinned: true,
-      });
-    }
-    const combined = await patchProject({ status, pinned: true });
-    expect(combined.error?.code).toBe(-32602);
-    expect(combined.error?.data).toMatchObject({ field: "pinned" });
-    expect((await chokePoint.getItem(databaseId, item.id))?.properties).toMatchObject({
-      status: "longTerm",
-      pinned: true,
-    });
-  });
-
   it("has exactly one contract case per operation in the closed catalog", () => {
     expect(Object.keys(CASES).sort()).toEqual([...GENERIC_OPERATION_NAMES].sort());
   });
 
-  it("lists no REST-only operation for a human session or a run credential holding its capability", async () => {
-    const { server, baseUrl } = await startServer();
-    servers.push(server);
-    const projectItemId = await createProjectItem();
-    const callers = [await authHeader(), await credentialHeader(projectItemId, ["core.schema.write"])];
-    for (const headers of callers) {
-      const response = await fetch(`${baseUrl}/mcp`, {
-        method: "POST",
-        headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
-      });
-      expect(response.status).toBe(200);
-      const names = z
-        .object({ result: z.object({ tools: z.array(z.object({ name: z.string() })) }) })
-        .parse(await response.json())
-        .result.tools.map((tool) => tool.name);
+  it("lists relation.set and both link operations, and no REST-only operation, for a human session and a run credential holding its capability", async () => {
+    const baseUrl = await startServer();
+    const human = await listToolNames(baseUrl, await authHeader());
+    expect(human).toEqual(
+      expect.arrayContaining(["semprec.relation.set", "semprec.link.unlink", "semprec.link.relink"]),
+    );
+    const agent = await listToolNames(
+      baseUrl,
+      await credentialHeader(await createProjectItem(), ["core.schema.write"]),
+    );
+    for (const names of [human, agent]) {
       // So the two are absent for being REST-only, not ungranted.
       expect(names).toContain("semprec.property.patch");
       for (const operation of REST_ONLY_OPERATION_NAMES) expect(names).not.toContain(`semprec.${operation}`);
     }
   });
 
-  it("lists relation.set and both link operations for a human session", async () => {
-    const { server, baseUrl } = await startServer();
-    servers.push(server);
-    const response = await fetch(`${baseUrl}/mcp`, {
-      method: "POST",
-      headers: { ...(await authHeader()), "Content-Type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
-    });
-    expect(response.status).toBe(200);
-    const body: unknown = await response.json();
-    expect(body).toMatchObject({
-      result: {
-        tools: expect.arrayContaining([
-          expect.objectContaining({ name: "semprec.relation.set" }),
-          expect.objectContaining({ name: "semprec.link.unlink" }),
-          expect.objectContaining({ name: "semprec.link.relink" }),
-        ]),
-      },
-    });
-  });
-
   it("refuses link operations without item write capability through MCP", async () => {
     const projectItemId = await createProjectItem();
     const fx = await buildFixtures(projectItemId);
-    await withTransaction(pool, (client) =>
-      insertValueLink(client, {
-        itemId: fx.itemA.id,
-        propertyKey: "title",
-        ruleKey: "test",
-        sources: [{ kind: "item", sourceItemId: fx.itemB.id, sourcePropertyKey: "title" }],
-      }),
-    );
-    const { server, baseUrl } = await startServer();
-    servers.push(server);
+    await linkTitle(fx);
+    const baseUrl = await startServer();
     const headers = await credentialHeader(projectItemId, ["core.item.read"]);
     const before = await chokePoint.getItem(fx.database.id, fx.itemA.id);
     const linksBefore = await chokePoint.getValueLinksForItems([fx.itemA.id]);
@@ -1072,29 +937,9 @@ describe("generic operation MCP contract (issue #220)", () => {
   });
 
   it("executes relation.set and item.create through MCP under tenant RLS", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
-    let server: Server | undefined;
-    let failure: { error: unknown } | undefined;
-    const cleanupErrors: unknown[] = [];
-    try {
-      const role = await runAsSystem("test:verify-runtime-role", () =>
-        runtime.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
-          "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
-        ),
-      );
-      expect(role.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
-      const ownTenant = await createTestTenant(pool);
-      const foreignTenant = await createTestTenant(pool);
-      const user = await runAsSystem("test:create-mcp-user", () =>
-        createUser(pool, {
-          tenantId: ownTenant,
-          email: `${randomUUID()}@example.test`,
-          passwordHash: "unused-test-hash",
-        }),
-      );
-      const cp = createChokePoint(runtime);
-      async function fixture(tenantId: string) {
-        return runInTenant(tenantId, async () => {
+    await withRuntimeMcp(async ({ runtime, cp, ownTenant, foreignTenant, connect, snapshot, targets }) => {
+      const fixture = (tenantId: string) =>
+        runInTenant(tenantId, async () => {
           await seedSystem(runtime, createViewTypeRegistry());
           const source = await cp.createDatabase({ name: "MCP runtime source" });
           const target = await cp.createDatabase({ name: "MCP runtime target" });
@@ -1106,81 +951,40 @@ describe("generic operation MCP contract (issue #220)", () => {
             cardinality: "one_to_one",
           });
           const caller = await cp.createItem({ databaseId: source.id, properties: {} });
-          const first = await cp.createItem({ databaseId: target.id, properties: {} });
-          const second = await cp.createItem({ databaseId: target.id, properties: {} });
-          const third = await cp.createItem({ databaseId: target.id, properties: {} });
+          const targetItem = () => cp.createItem({ databaseId: target.id, properties: {} });
+          const first = await targetItem();
+          const second = await targetItem();
+          const third = await targetItem();
           await cp.setRelation({ relationPropertyId: property.id, callerItemId: caller.id, targetItemId: first.id });
           return { source, target, property, caller, second, third };
         });
-      }
       const own = await fixture(ownTenant);
       const foreign = await fixture(foreignTenant);
-      const credential = await runInTenant(ownTenant, async () => {
-        const projects = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "projects"));
-        if (!projects) throw new Error("Missing projects database");
-        const project = await cp.createItem({ databaseId: projects.id, properties: { name: "MCP runtime agent" } });
-        return withTransaction(runtime, (client) =>
-          mintMcpRunCredential(client, {
-            projectItemId: project.id,
-            capabilities: ["core.item.write"],
-            userId: user.id,
-          }),
-        );
-      });
-      const runtimeGateway = createGenericOperationGateway(runtime, testMetadataResolver);
-      server = createServer(
-        await createMcpRequestListener(runtime, runtimeGateway, ALL_CAPABILITIES, new ModuleRegistry(() => new Set())),
-      );
-      const ownedServer = server;
-      await new Promise<void>((resolve, reject) => {
-        ownedServer.once("error", reject);
-        ownedServer.listen(0, "127.0.0.1", () => {
-          ownedServer.off("error", reject);
-          resolve();
+      const call = await connect();
+      const ownTargets = (itemId: string, propertyId = own.property.id) => targets(ownTenant, itemId, propertyId);
+      const createLinked = (targetItemId: string, extra: Record<string, unknown> = {}) =>
+        call("semprec.item.create", {
+          databaseId: own.source.id,
+          properties: {},
+          relations: [{ propertyKey: "link", targetItemIds: [targetItemId] }],
+          ...extra,
         });
-      });
-      const address = server.address();
-      if (!address || typeof address === "string") throw new Error("Missing MCP runtime address");
-      const port = address.port;
-      const schema = z.object({
-        result: z.object({ content: z.array(z.object({ type: z.string(), text: z.string() })) }).optional(),
-        error: z.object({ code: z.number(), message: z.string(), data: z.unknown().optional() }).optional(),
-      });
-      async function call(name: string, args: unknown) {
-        const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${credential.token}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
+      const setLink = (targetItemId: string) =>
+        call("semprec.relation.set", {
+          relationPropertyId: own.property.id,
+          callerItemId: own.caller.id,
+          targetItemId,
         });
-        expect(response.status).toBe(200);
-        return schema.parse(await response.json());
-      }
-      const moved = await call("semprec.relation.set", {
-        relationPropertyId: own.property.id,
-        callerItemId: own.caller.id,
-        targetItemId: own.second.id,
-      });
+
+      const moved = await setLink(own.second.id);
       expect(moved.error).toBeUndefined();
       expect(moved.result?.content).toHaveLength(1);
-      expect(await runInTenant(ownTenant, () => cp.listItemRelations(own.caller.id, own.property.id))).toMatchObject([
-        { targetItemId: own.second.id },
-      ]);
-      const created = await call("semprec.item.create", {
-        databaseId: own.source.id,
-        properties: {},
-        relations: [{ propertyKey: "link", targetItemIds: [own.third.id] }],
-      });
-      expect(created.error).toBeUndefined();
-      const content = created.result?.content[0]?.text;
-      if (!content) throw new Error("Missing MCP create result");
-      const parsed = z.object({ id: z.string().uuid() }).parse(JSON.parse(content));
-      expect(await runInTenant(ownTenant, () => cp.listItemRelations(parsed.id, own.property.id))).toMatchObject([
-        { targetItemId: own.third.id },
-      ]);
+      expect(await ownTargets(own.caller.id)).toEqual([own.second.id]);
+      expect(await ownTargets(createdId(await createLinked(own.third.id)))).toEqual([own.third.id]);
+
       const fileFixture = await runInTenant(ownTenant, async () => {
-        const files = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "files"));
-        const projects = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "projects"));
-        if (!files || !projects) throw new Error("Missing Files or Projects database");
+        const files = await moduleDatabase("files", runtime);
+        const projects = await moduleDatabase("projects", runtime);
         const property = (await cp.listProperties(files.id)).find((entry) => entry.key === "projects");
         if (!property) throw new Error("Missing Files.projects relation");
         const project = await cp.createItem({ databaseId: projects.id, properties: { name: "File project" } });
@@ -1191,93 +995,42 @@ describe("generic operation MCP contract (issue #220)", () => {
         properties: { name: "Linked file" },
         relations: [{ propertyKey: "projects", targetItemIds: [fileFixture.project.id] }],
       });
-      expect(file.error).toBeUndefined();
-      const fileContent = file.result?.content[0]?.text;
-      if (!fileContent) throw new Error("Missing MCP file result");
-      const fileResult = z.object({ id: z.string().uuid() }).parse(JSON.parse(fileContent));
-      expect(
-        await runInTenant(ownTenant, () => cp.listItemRelations(fileResult.id, fileFixture.property.id)),
-      ).toMatchObject([{ targetItemId: fileFixture.project.id }]);
-      async function snapshot(tenantId: string) {
-        return runInTenant(tenantId, async () => {
-          const items = await runtime.query<{
-            id: string;
-            database_id: string;
-            properties: unknown;
-            computed: unknown;
-            deleted_at: Date | null;
-            updated_at: Date;
-          }>("SELECT id, database_id, properties, computed, deleted_at, updated_at FROM items ORDER BY id");
-          const edges = await runtime.query<{ id: string; item_a: string; item_b: string }>(
-            "SELECT id, item_a, item_b FROM item_relations ORDER BY id",
-          );
-          const approvals = await runtime.query<{ id: string; status: string }>(
-            "SELECT id, status FROM approval_requests ORDER BY id",
-          );
-          return { items: items.rows, edges: edges.rows, approvals: approvals.rows };
-        });
-      }
+      expect(await ownTargets(createdId(file), fileFixture.property.id)).toEqual([fileFixture.project.id]);
+
       const ownBefore = await snapshot(ownTenant);
       const foreignBefore = await snapshot(foreignTenant);
-      const relationInProperties = await call("semprec.item.create", {
-        databaseId: own.source.id,
-        properties: { link: own.third.id },
-        relations: [{ propertyKey: "link", targetItemIds: [own.third.id] }],
-      });
-      expect(relationInProperties.error).toMatchObject({ code: -32602, data: { field: "link" } });
-      expect(await snapshot(ownTenant)).toEqual(ownBefore);
-      expect(await snapshot(foreignTenant)).toEqual(foreignBefore);
+      const expectUnchanged = async () => {
+        expect(await snapshot(ownTenant)).toEqual(ownBefore);
+        expect(await snapshot(foreignTenant)).toEqual(foreignBefore);
+      };
+      expectInvalid(await createLinked(own.third.id, { properties: { link: own.third.id } }), { field: "link" });
+      await expectUnchanged();
+      // A foreign target is refused exactly like a missing one.
       const missing = randomUUID();
-      for (const operation of ["relation.set", "item.create"] as const) {
-        const invoke = (targetItemId: string) =>
-          operation === "relation.set"
-            ? call("semprec.relation.set", {
-                relationPropertyId: own.property.id,
-                callerItemId: own.caller.id,
-                targetItemId,
-              })
-            : call("semprec.item.create", {
-                databaseId: own.source.id,
-                properties: {},
-                relations: [{ propertyKey: "link", targetItemIds: [targetItemId] }],
-              });
+      for (const invoke of [setLink, createLinked]) {
         const denied = await invoke(foreign.third.id);
         const absent = await invoke(missing);
-        expect(denied.error).toBeDefined();
-        expect(absent.error).toBeDefined();
         if (!denied.error || !absent.error) throw new Error("Expected MCP refusals");
         expect(JSON.stringify(denied.error).replaceAll(foreign.third.id, "<target>")).toBe(
           JSON.stringify(absent.error).replaceAll(missing, "<target>"),
         );
-        expect(await snapshot(ownTenant)).toEqual(ownBefore);
-        expect(await snapshot(foreignTenant)).toEqual(foreignBefore);
+        await expectUnchanged();
       }
+
+      // An idempotent replay answers the original item even after its relation property is deleted,
+      // while a fresh key is refused; neither writes anything nor enqueues a job.
       const replayTarget = await runInTenant(ownTenant, async () => {
         await cp.createProperty({ databaseId: own.source.id, key: "scalar", name: "Scalar", type: "text" });
         return cp.createItem({ databaseId: own.target.id, properties: {} });
       });
       const idempotencyKey = randomUUID();
-      const replayArgs = {
-        databaseId: own.source.id,
-        properties: {},
-        idempotencyKey,
-        relations: [{ propertyKey: "link", targetItemIds: [replayTarget.id] }],
-      };
-      const original = await call("semprec.item.create", replayArgs);
-      expect(original.error).toBeUndefined();
-      const originalText = original.result?.content[0]?.text;
-      if (!originalText) throw new Error("Missing original MCP item");
-      const originalItem = z.object({ id: z.string().uuid() }).parse(JSON.parse(originalText));
-      expect(await runInTenant(ownTenant, () => cp.listItemRelations(originalItem.id, own.property.id))).toMatchObject([
-        { targetItemId: replayTarget.id },
-      ]);
+      const originalId = createdId(await createLinked(replayTarget.id, { idempotencyKey }));
+      expect(await ownTargets(originalId)).toEqual([replayTarget.id]);
       await runInTenant(ownTenant, () => cp.deleteProperty(own.property.id));
       expect(await runInTenant(ownTenant, () => cp.listProperties(own.source.id))).not.toContainEqual(
         expect.objectContaining({ id: own.property.id }),
       );
-      const afterDelete = await snapshot(ownTenant);
-      const foreignAfterDelete = await snapshot(foreignTenant);
-      async function jobs() {
+      const state = async () => {
         const result = await pool.query<{ snapshot: string; task_identifier: string }>(
           "SELECT row_to_json(j)::text AS snapshot, task_identifier FROM graphile_worker.jobs j ORDER BY id",
         );
@@ -1291,108 +1044,39 @@ describe("generic operation MCP contract (issue #220)", () => {
             )
             .sort();
         }
-        return { rows: result.rows, payloads };
-      }
-      const jobsAfterDelete = await jobs();
+        return { own: await snapshot(ownTenant), foreign: await snapshot(foreignTenant), jobs: result.rows, payloads };
+      };
+      const afterDelete = await state();
       for (const propertyKey of ["link", "scalar"]) {
-        const replay = await call("semprec.item.create", {
-          ...replayArgs,
-          relations: [{ propertyKey, targetItemIds: [replayTarget.id] }],
-        });
-        expect(replay.error).toBeUndefined();
-        const text = replay.result?.content[0]?.text;
-        if (!text) throw new Error("Missing MCP replay item");
-        expect(z.object({ id: z.string().uuid() }).parse(JSON.parse(text)).id).toBe(originalItem.id);
-        expect(await snapshot(ownTenant)).toEqual(afterDelete);
-        expect(await snapshot(foreignTenant)).toEqual(foreignAfterDelete);
-        expect(await jobs()).toEqual(jobsAfterDelete);
-        const fresh = await call("semprec.item.create", {
-          ...replayArgs,
-          idempotencyKey: randomUUID(),
-          relations: [{ propertyKey, targetItemIds: [replayTarget.id] }],
-        });
-        expect(fresh.error).toMatchObject({ code: -32602, data: { field: "relations" } });
-        expect(await snapshot(ownTenant)).toEqual(afterDelete);
-        expect(await snapshot(foreignTenant)).toEqual(foreignAfterDelete);
-        expect(await jobs()).toEqual(jobsAfterDelete);
+        const relations = [{ propertyKey, targetItemIds: [replayTarget.id] }];
+        expect(createdId(await createLinked(replayTarget.id, { idempotencyKey, relations }))).toBe(originalId);
+        expect(await state()).toEqual(afterDelete);
+        const fresh = await createLinked(replayTarget.id, { idempotencyKey: randomUUID(), relations });
+        expectInvalid(fresh, { field: "relations" });
+        expect(await state()).toEqual(afterDelete);
       }
-    } catch (error) {
-      failure = { error };
-    } finally {
-      if (server?.listening) {
-        const ownedServer = server;
-        try {
-          await new Promise<void>((resolve, reject) =>
-            ownedServer.close((error) => (error ? reject(error) : resolve())),
-          );
-        } catch (error) {
-          cleanupErrors.push(error);
-        }
-      }
-      try {
-        await runtime.end();
-      } catch (error) {
-        cleanupErrors.push(error);
-      }
-    }
-    if (failure) {
-      if (cleanupErrors.length > 0) console.error("MCP runtime fixture cleanup also failed");
-      throw failure.error;
-    }
-    if (cleanupErrors.length > 0) throw new AggregateError(cleanupErrors, "MCP runtime fixture cleanup failed");
+    });
   });
 
-  it("refuses a run credential's generic Journal events writes with owner_violation under tenant RLS (gh-1609, gh-2016)", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
-    let server: Server | undefined;
-    let failure: { error: unknown } | undefined;
-    const cleanupErrors: unknown[] = [];
-    try {
-      const role = await runAsSystem("test:verify-runtime-role", () =>
-        runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
-          "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
-        ),
-      );
-      expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
-      const ownTenant = await createTestTenant(pool);
-      const foreignTenant = await createTestTenant(pool);
-      const user = await runAsSystem("test:create-mcp-user", () =>
-        createUser(pool, {
-          tenantId: ownTenant,
-          email: `${randomUUID()}@example.test`,
-          passwordHash: "unused-test-hash",
-        }),
-      );
-      const cp = createChokePoint(runtime);
-      async function fixture(tenantId: string) {
-        return runInTenant(tenantId, async () => {
+  it("refuses a run credential's generic Journal events writes with owner_violation under tenant RLS", async () => {
+    await withRuntimeMcp(async ({ runtime, cp, ownTenant, foreignTenant, connect, snapshot, targets }) => {
+      const fixture = (tenantId: string) =>
+        runInTenant(tenantId, async () => {
           await seedSystem(runtime, createViewTypeRegistry());
-          const database = async (moduleId: string) => {
-            const found = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, moduleId));
-            if (!found) throw new Error(`Missing ${moduleId} database`);
-            return found;
-          };
-          const journal = await database("journal");
-          const relationProperty = async (key: string) => {
-            const found = (await cp.listProperties(journal.id)).find((entry) => entry.key === key);
-            if (!found) throw new Error(`Missing Journal.${key}`);
-            return found;
-          };
-          const events = await relationProperty("events");
-          const project = await relationProperty("project");
+          const journal = await moduleDatabase("journal", runtime);
+          const journalProperties = await cp.listProperties(journal.id);
+          const events = journalProperties.find((entry) => entry.key === "events");
+          const project = journalProperties.find((entry) => entry.key === "project");
+          if (!events || !project) throw new Error("Missing Journal relations");
           if (events.ownerProcess === null) throw new Error("Journal.events has no owner process");
           const day = await withTransaction(runtime, (client) => ensureJournalPeriodDoc(client, "day", "2026-10-16"));
-          const eventsDb = await database("events");
-          const standup = await cp.createItem({
-            databaseId: eventsDb.id,
-            properties: { name: "Standup", date: "2026-10-16" },
-          });
-          const linked = await cp.createItem({
-            databaseId: eventsDb.id,
-            properties: { name: "Retro", date: "2026-10-16" },
-          });
+          const eventsDb = await moduleDatabase("events", runtime);
+          const event = (name: string) =>
+            cp.createItem({ databaseId: eventsDb.id, properties: { name, date: "2026-10-16" } });
+          const standup = await event("Standup");
+          const linked = await event("Retro");
           const projectItem = await cp.createItem({
-            databaseId: (await database("projects")).id,
+            databaseId: (await moduleDatabase("projects", runtime)).id,
             properties: { name: "Journal project" },
           });
           // Written as the owning process (the event-link sync) writes it, through the system choke
@@ -1407,97 +1091,47 @@ describe("generic operation MCP contract (issue #220)", () => {
           );
           return { events, project, day: day.itemId, standup, linked, projectItem };
         });
-      }
       const own = await fixture(ownTenant);
       const foreign = await fixture(foreignTenant);
-      const credential = await runInTenant(ownTenant, async () => {
-        const projects = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "projects"));
-        if (!projects) throw new Error("Missing projects database");
-        const agent = await cp.createItem({ databaseId: projects.id, properties: { name: "Journal agent" } });
-        return withTransaction(runtime, (client) =>
-          mintMcpRunCredential(client, { projectItemId: agent.id, capabilities: ["core.item.write"], userId: user.id }),
-        );
-      });
-      const runtimeGateway = createGenericOperationGateway(runtime, testMetadataResolver);
-      server = createServer(
-        await createMcpRequestListener(runtime, runtimeGateway, ALL_CAPABILITIES, new ModuleRegistry(() => new Set())),
-      );
-      const ownedServer = server;
-      await new Promise<void>((resolve, reject) => {
-        ownedServer.once("error", reject);
-        ownedServer.listen(0, "127.0.0.1", () => {
-          ownedServer.off("error", reject);
-          resolve();
-        });
-      });
-      const address = server.address();
-      if (!address || typeof address === "string") throw new Error("Missing MCP runtime address");
-      const port = address.port;
-      const schema = z.object({
-        result: z.object({ content: z.array(z.object({ type: z.string(), text: z.string() })) }).optional(),
-        error: z.object({ code: z.number(), message: z.string(), data: z.unknown().optional() }).optional(),
-      });
-      async function call(name: string, args: unknown) {
-        const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${credential.token}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
-        });
-        expect(response.status).toBe(200);
-        return schema.parse(await response.json());
-      }
-      async function snapshot(tenantId: string) {
-        return runInTenant(tenantId, async () => {
-          const edges = await runtime.query<{ id: string; item_a: string; item_b: string }>(
-            "SELECT id, item_a, item_b FROM item_relations ORDER BY id",
-          );
-          const approvals = await runtime.query<{ id: string; status: string }>(
-            "SELECT id, status FROM approval_requests ORDER BY id",
-          );
-          return { edges: edges.rows, approvals: approvals.rows };
-        });
-      }
-      const targets = (property: { id: string }) =>
-        runInTenant(ownTenant, async () =>
-          ((await cp.listItemRelations(own.day, property.id)) ?? []).map((edge) => edge.targetItemId),
-        );
-      expect(await targets(own.events)).toEqual([own.linked.id]);
+      const call = await connect();
+      const dayTargets = (property: { id: string }) => targets(ownTenant, own.day, property.id);
+      expect(await dayTargets(own.events)).toEqual([own.linked.id]);
       const ownBefore = await snapshot(ownTenant);
       const foreignBefore = await snapshot(foreignTenant);
 
       const invalidations: InvalidationEvent[] = [];
       setInvalidationHook((event) => invalidations.push(event));
-      for (const [name, targetItemId] of [
-        ["semprec.relation.put", own.standup.id],
-        ["semprec.relation.delete", own.linked.id],
-      ] as const) {
-        const refused = await call(name, { relationPropertyId: own.events.id, callerItemId: own.day, targetItemId });
-        expect(refused.result).toBeUndefined();
-        expect(refused.error).toMatchObject({ code: -32000, data: { code: "owner_violation" } });
+      try {
+        for (const [name, targetItemId] of [
+          ["semprec.relation.put", own.standup.id],
+          ["semprec.relation.delete", own.linked.id],
+        ] as const) {
+          const refused = await call(name, { relationPropertyId: own.events.id, callerItemId: own.day, targetItemId });
+          expect(refused.result).toBeUndefined();
+          expect(refused.error).toMatchObject({ code: -32000, data: { code: "owner_violation" } });
+        }
+      } finally {
+        setInvalidationHook(() => {});
       }
-      setInvalidationHook(() => {});
       expect(invalidations).toEqual([]);
       expect(await snapshot(ownTenant)).toEqual(ownBefore);
       expect(await snapshot(foreignTenant)).toEqual(foreignBefore);
 
       // So the refusals above are the relation's ownership, not a missing grant or the approval
       // requirement.
-      const put = await call("semprec.relation.put", {
+      const projectEdge = {
         relationPropertyId: own.project.id,
         callerItemId: own.day,
         targetItemId: own.projectItem.id,
-      });
-      expect(put.error).toBeUndefined();
-      expect(await targets(own.project)).toEqual([own.projectItem.id]);
-      const removal = await call("semprec.relation.delete", {
-        relationPropertyId: own.project.id,
-        callerItemId: own.day,
-        targetItemId: own.projectItem.id,
-      });
-      expect(removal.error?.code).toBe(-32001);
-      expect((await snapshot(ownTenant)).approvals).toEqual([{ id: expect.any(String), status: "pending" }]);
-      expect(await targets(own.project)).toEqual([own.projectItem.id]);
-      expect(await targets(own.events)).toEqual([own.linked.id]);
+      };
+      expect((await call("semprec.relation.put", projectEdge)).error).toBeUndefined();
+      expect(await dayTargets(own.project)).toEqual([own.projectItem.id]);
+      expect((await call("semprec.relation.delete", projectEdge)).error?.code).toBe(-32001);
+      expect(z.object({ approvals: z.array(z.unknown()) }).parse(await snapshot(ownTenant)).approvals).toEqual([
+        { id: expect.any(String), status: "pending" },
+      ]);
+      expect(await dayTargets(own.project)).toEqual([own.projectItem.id]);
+      expect(await dayTargets(own.events)).toEqual([own.linked.id]);
 
       const crossTenant = await call("semprec.relation.put", {
         relationPropertyId: foreign.events.id,
@@ -1513,55 +1147,26 @@ describe("generic operation MCP contract (issue #220)", () => {
       expect(crossTenant.error?.code).toBe(unknown.error?.code);
       expect(crossTenant.error?.data).toEqual(unknown.error?.data);
       expect(await snapshot(foreignTenant)).toEqual(foreignBefore);
-    } catch (error) {
-      failure = { error };
-    } finally {
-      setInvalidationHook(() => {});
-      if (server?.listening) {
-        const ownedServer = server;
-        try {
-          await new Promise<void>((resolve, reject) =>
-            ownedServer.close((error) => (error ? reject(error) : resolve())),
-          );
-        } catch (error) {
-          cleanupErrors.push(error);
-        }
-      }
-      try {
-        await runtime.end();
-      } catch (error) {
-        cleanupErrors.push(error);
-      }
-    }
-    if (failure) {
-      if (cleanupErrors.length > 0) console.error("MCP Journal events fixture cleanup also failed");
-      throw failure.error;
-    }
-    if (cleanupErrors.length > 0) throw new AggregateError(cleanupErrors, "MCP Journal events fixture cleanup failed");
+    });
   });
 
   it("creates the requested initial relation through MCP", async () => {
-    const { server, baseUrl } = await startServer();
-    servers.push(server);
     const fx = await buildFixtures();
-    const { name, arguments: args } = CASES["item.create"].tool(fx);
-    const response = await rpc(baseUrl, await authHeader(), name, args);
-    expect(response.error).toBeUndefined();
-    const { rows } = await pool.query<{ id: string }>(
-      "SELECT id FROM items WHERE database_id = $1 AND properties->>'title' = $2",
-      [fx.database.id, "Contract Item"],
+    const response = await rpc(
+      await startServer(),
+      await authHeader(),
+      "semprec.item.create",
+      CASES["item.create"].args(fx),
     );
-    expect(rows).toHaveLength(1);
-    const created = rows[0];
-    if (!created) throw new Error("Expected created item");
-    expect(await chokePoint.listItemRelations(created.id, fx.relationProperty.id)).toMatchObject([
+    const id = createdId(response);
+    expect((await chokePoint.getItem(fx.database.id, id))?.properties.title).toBe("Contract Item");
+    expect(await chokePoint.listItemRelations(id, fx.relationProperty.id)).toMatchObject([
       { targetItemId: fx.targetItem.id },
     ]);
   });
 
   it("forbids MCP database creation with properties but permits a bare create", async () => {
-    const { server, baseUrl } = await startServer();
-    servers.push(server);
+    const baseUrl = await startServer();
     const headers = await authHeader();
     const footprint = async () =>
       (
@@ -1574,42 +1179,27 @@ describe("generic operation MCP contract (issue #220)", () => {
       name: "MCP with properties",
       properties: [{ key: "note", name: "Note", type: "text" }],
     });
-    expect(rejected.error?.code).toBe(-32000);
-    expect(rejected.error?.data).toMatchObject({ code: "forbidden" });
+    expect(rejected.error).toMatchObject({ code: -32000, data: { code: "forbidden" } });
     expect(await footprint()).toEqual(before);
-    const bare = await rpc(baseUrl, headers, "semprec.database.create", { name: "MCP bare" });
-    expect(bare.error).toBeUndefined();
+    expect((await rpc(baseUrl, headers, "semprec.database.create", { name: "MCP bare" })).error).toBeUndefined();
     expect((await chokePoint.listDatabases()).some((database) => database.name === "MCP bare")).toBe(true);
   });
 
-  it.each(["relation.list", "relation.related", "page.restoreVersion"] as const)(
-    "rejects malformed %s item IDs at the MCP boundary",
-    async (operation) => {
-      const { server, baseUrl } = await startServer();
-      servers.push(server);
-      const args =
-        operation === "page.restoreVersion"
-          ? { itemId: "not-a-uuid", at: new Date().toISOString() }
-          : { itemId: "not-a-uuid" };
-      const response = await rpc(baseUrl, await authHeader(), `semprec.${operation}`, args);
-      expect(response.error?.code).toBe(-32602);
-      expect(response.error?.data).toMatchObject({ field: "itemId" });
-    },
-  );
-
   it("counts a database with relation groups through MCP item.count and refuses an oversized batch and an ungroupable key", async () => {
-    const { server, baseUrl } = await startServer();
-    servers.push(server);
+    const baseUrl = await startServer();
     const fx = await buildFixtures();
     const headers = await authHeader();
+    const count = (items: unknown[]) => rpc(baseUrl, headers, "semprec.item.count", { items });
 
-    const counted = await rpc(baseUrl, headers, "semprec.item.count", {
-      items: [{ databaseId: fx.database.id, groupBy: fx.relationProperty.key }, { databaseId: fx.targetDatabase.id }],
-    });
-    expect(counted.error).toBeUndefined();
-    const counts: unknown = JSON.parse(z.string().parse(counted.result?.content[0]?.text));
     // `itemA` is linked to the target item and `itemB` to none.
-    expect(counts).toEqual([
+    expect(
+      output(
+        await count([
+          { databaseId: fx.database.id, groupBy: fx.relationProperty.key },
+          { databaseId: fx.targetDatabase.id },
+        ]),
+      ),
+    ).toEqual([
       {
         databaseId: fx.database.id,
         count: 2,
@@ -1620,29 +1210,16 @@ describe("generic operation MCP contract (issue #220)", () => {
       },
       { databaseId: fx.targetDatabase.id, count: 1 },
     ]);
-
-    const oversized = await rpc(baseUrl, headers, "semprec.item.count", {
-      items: Array.from({ length: 21 }, () => ({ databaseId: fx.database.id })),
-    });
-    expect(oversized.error?.code).toBe(-32602);
-    expect(oversized.error?.data).toMatchObject({ field: "items" });
-
-    const ungroupable = await rpc(baseUrl, headers, "semprec.item.count", {
-      items: [{ databaseId: fx.database.id, groupBy: fx.property.key }],
-    });
-    expect(ungroupable.error?.code).toBe(-32602);
-    expect(ungroupable.error?.data).toMatchObject({ field: "groupBy" });
+    expectInvalid(await count(Array.from({ length: 21 }, () => ({ databaseId: fx.database.id }))), { field: "items" });
+    expectInvalid(await count([{ databaseId: fx.database.id, groupBy: fx.property.key }]), { field: "groupBy" });
   });
 
-  it("lists the collections related to an item through MCP relation.related (issue #1839)", async () => {
-    const { server, baseUrl } = await startServer();
-    servers.push(server);
+  it("lists the collections related to an item through MCP relation.related", async () => {
+    const baseUrl = await startServer();
     const fx = await buildFixtures();
-
     const related = await rpc(baseUrl, await authHeader(), "semprec.relation.related", { itemId: fx.itemA.id });
-    expect(related.error).toBeUndefined();
     // `itemA` is linked to the target item; the target database holds the inverse property.
-    expect(JSON.parse(z.string().parse(related.result?.content[0]?.text))).toEqual([
+    expect(output(related)).toEqual([
       {
         databaseKey: null,
         databaseId: fx.targetDatabase.id,
@@ -1654,21 +1231,19 @@ describe("generic operation MCP contract (issue #220)", () => {
   });
 
   it("reads the facets of a database through MCP database.facets and refuses an oversized list, an own-property condition under or and a key that is no facet", async () => {
-    const { server, baseUrl } = await startServer();
-    servers.push(server);
+    const baseUrl = await startServer();
     const fx = await buildFixtures();
     const headers = await authHeader();
     const titled = (value: string) => ({ type: "equals", property: fx.property.key, value });
+    const facets = (args: Record<string, unknown>) =>
+      rpc(baseUrl, headers, "semprec.database.facets", { databaseId: fx.database.id, ...args });
 
-    const answered = await rpc(baseUrl, headers, "semprec.database.facets", {
-      databaseId: fx.database.id,
+    const answered = await facets({
       filter: titled("Dune"),
       facets: [fx.relationProperty.key, fx.property.key],
       extra: { open: titled("Arrival") },
     });
-    expect(answered.error).toBeUndefined();
-    const facets: unknown = JSON.parse(z.string().parse(answered.result?.content[0]?.text));
-    expect(facets).toEqual([
+    expect(output(answered)).toEqual([
       // Under the filter only `itemB` counts, which is linked to no target and is not titled "Arrival".
       { property: fx.relationProperty.key, all: 1, open: 0, values: [{ value: null, count: 1 }] },
       // The title facet leaves the title condition out: both items count, `itemA` is the open one.
@@ -1682,44 +1257,25 @@ describe("generic operation MCP contract (issue #220)", () => {
         ],
       },
     ]);
-
-    const oversized = await rpc(baseUrl, headers, "semprec.database.facets", {
-      databaseId: fx.database.id,
-      facets: Array.from({ length: 21 }, () => fx.property.key),
-    });
-    expect(oversized.error?.code).toBe(-32602);
-    expect(oversized.error?.data).toMatchObject({ field: "facets" });
-
-    const underOr = await rpc(baseUrl, headers, "semprec.database.facets", {
-      databaseId: fx.database.id,
-      filter: { type: "or", nodes: [titled("Dune"), titled("Arrival")] },
-      facets: [fx.property.key],
-    });
-    expect(underOr.error?.code).toBe(-32602);
-    expect(underOr.error?.data).toMatchObject({ field: "filter" });
-
-    const noFacet = await rpc(baseUrl, headers, "semprec.database.facets", {
-      databaseId: fx.database.id,
-      facets: ["missing"],
-    });
-    expect(noFacet.error?.code).toBe(-32602);
-    expect(noFacet.error?.data).toMatchObject({ field: "facets" });
+    expectInvalid(await facets({ facets: Array.from({ length: 21 }, () => fx.property.key) }), { field: "facets" });
+    expectInvalid(
+      await facets({ filter: { type: "or", nodes: [titled("Dune"), titled("Arrival")] }, facets: [fx.property.key] }),
+      { field: "filter" },
+    );
+    expectInvalid(await facets({ facets: ["missing"] }), { field: "facets" });
   });
 
   it("searches through MCP search, grouped with the structured subtitle, and refuses an invalid input without repeating the query", async () => {
-    const tasks = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "tasks"));
-    if (!tasks) throw new Error("Tasks not seeded");
+    const tasks = await moduleDatabase("tasks");
     const task = await chokePoint.createItem({
       databaseId: tasks.id,
       properties: { name: "Odeslat fakturu", date: "2026-10-16", timeFrom: "14:00", timeTo: "15:30" },
     });
-    const { server, baseUrl } = await startServer();
-    servers.push(server);
+    const baseUrl = await startServer();
     const headers = await authHeader();
+    const search = (args: Record<string, unknown>) => rpc(baseUrl, headers, "semprec.search", args);
 
-    const answered = await rpc(baseUrl, headers, "semprec.search", { q: "fakturu" });
-    expect(answered.error).toBeUndefined();
-    expect(JSON.parse(z.string().parse(answered.result?.content[0]?.text))).toEqual({
+    expect(output(await search({ q: "fakturu" }))).toEqual({
       groups: [
         {
           type: "task",
@@ -1741,171 +1297,123 @@ describe("generic operation MCP contract (issue #220)", () => {
         },
       ],
     });
-
     const secret = "tajny-dotaz-v-chybe";
-    const twoTypesWithCursor = await rpc(baseUrl, headers, "semprec.search", {
-      q: secret,
-      scope: ["task", "event"],
-      cursor: "x",
-    });
-    expect(twoTypesWithCursor.error?.code).toBe(-32602);
-    expect(twoTypesWithCursor.error?.data).toMatchObject({ field: "cursor" });
+    const twoTypesWithCursor = await search({ q: secret, scope: ["task", "event"], cursor: "x" });
+    expectInvalid(twoTypesWithCursor, { field: "cursor" });
     expect(JSON.stringify(twoTypesWithCursor.error)).not.toContain(secret);
-    const emptyQuery = await rpc(baseUrl, headers, "semprec.search", { q: "" });
-    expect(emptyQuery.error?.code).toBe(-32602);
-    expect(emptyQuery.error?.data).toMatchObject({ field: "q" });
-  });
-
-  it("rejects an empty database patch at the MCP operation boundary", async () => {
-    const database = await chokePoint.createDatabase({ name: "MCP patch fixture" });
-    const { server, baseUrl } = await startServer();
-    servers.push(server);
-    const response = await rpc(baseUrl, await authHeader(), "semprec.database.patch", {
-      databaseId: database.id,
-      patch: {},
-    });
-    expect(response.error?.code).toBe(-32602);
-    expect(response.error?.data).toMatchObject({ reason: "empty_patch" });
-    expect((await chokePoint.getDatabase(database.id))?.name).toBe("MCP patch fixture");
-  });
-
-  describe("dispatch through a plain human-session actor", () => {
-    for (const operation of GENERIC_OPERATION_NAMES) {
-      it(`dispatches ${operation} through the MCP adapter`, async () => {
-        const { server, baseUrl } = await startServer();
-        servers.push(server);
-        const fx = await buildFixtures();
-        const testCase = CASES[operation];
-        await testCase.prepare?.(fx);
-        const { name, arguments: args } = testCase.tool(fx);
-
-        const headers = await authHeader();
-
-        const body = await rpc(baseUrl, headers, name, args);
-
-        if (REST_ONLY_OPERATION_NAMES.some((restOnly) => restOnly === operation)) {
-          await expectRefusedAsUnknownTool(baseUrl, headers, body, name, fx);
-          return;
-        }
-        expect(body.error).toBeUndefined();
-      });
-    }
-  });
-
-  describe("approval gate for a restricted run-credential actor", () => {
-    for (const operation of GENERIC_OPERATION_NAMES) {
-      const isDestructive = DESTRUCTIVE_OPERATIONS.includes(operation) || LINK_ENDING_OPERATIONS.includes(operation);
-      it(`${isDestructive ? "queues an approval request for" : "executes"} ${operation}`, async () => {
-        const { server, baseUrl } = await startServer();
-        servers.push(server);
-        const projectItemId = await createProjectItem();
-        const fx = await buildFixtures(projectItemId);
-        const testCase = CASES[operation];
-        await testCase.prepare?.(fx);
-        const { name, arguments: args } = testCase.tool(fx);
-        const headers = await credentialHeader(projectItemId, [OPERATION_METADATA[operation].requiresCapability]);
-
-        const body = await rpc(baseUrl, headers, name, args);
-
-        if (REST_ONLY_OPERATION_NAMES.some((restOnly) => restOnly === operation)) {
-          await expectRefusedAsUnknownTool(baseUrl, headers, body, name, fx);
-          return;
-        }
-        if (isDestructive) {
-          expect(body.error?.code).toBe(-32001);
-          const { rows } = await pool.query<{ count: number }>(`SELECT count(*)::int AS count FROM approval_requests`);
-          expect(rows[0]!.count).toBe(1);
-        } else {
-          expect(body.error).toBeUndefined();
-        }
-      });
-    }
+    expectInvalid(await search({ q: "" }), { field: "q" });
   });
 
   /**
    * MCP-adapter equivalents of REST parity cases covered in
-   * `itemsHandler.test.ts`/`propertiesHandler.test.ts`.
+   * `itemsHandler.test.ts`/`propertiesHandler.test.ts`, and malformed input refused at the MCP
+   * boundary. Each leaves the fixture database's definition unchanged.
    */
-  describe("issue #220 REST/MCP parity: database_archived, actor spoofing, relation patch rejection", () => {
-    it("surfaces database_archived (issue #83) as a JSON-RPC -32000 for a write against an archived database", async () => {
-      const { server, baseUrl } = await startServer();
-      servers.push(server);
-      const fx = await buildFixtures();
-      await chokePoint.archiveDatabase(fx.database.id);
-
-      const body = await rpc(baseUrl, await authHeader(), "semprec.item.create", {
-        databaseId: fx.database.id,
-        properties: { title: "Arrival" },
-      });
-
-      expect(body.error?.code).toBe(-32000);
-      expect((body.error?.data as { code?: string } | undefined)?.code).toBe("database_archived");
-    });
-
-    it("rejects an actor-identity-shaped field smuggled into tool arguments with -32602", async () => {
-      const { server, baseUrl } = await startServer();
-      servers.push(server);
-      const fx = await buildFixtures();
-
+  it.each<{
+    title: string;
+    prepare?: (fx: Fixtures) => Promise<unknown>;
+    operation: GenericOperationName;
+    args: (fx: Fixtures) => unknown;
+    error: { code: number; data?: Record<string, unknown> };
+  }>([
+    {
+      title: "surfaces database_archived as -32000 for a write against an archived database",
+      prepare: (fx) => chokePoint.archiveDatabase(fx.database.id),
+      operation: "item.create",
+      args: (fx) => ({ databaseId: fx.database.id, properties: { title: "Arrival" } }),
+      error: { code: -32000, data: { code: "database_archived" } },
+    },
+    {
       // Every input schema is a strict zod object without `AuthenticatedActor`'s field names, so
-      // smuggling an identity through `arguments` fails validation instead of being ignored or
-      // honored.
-      const body = await rpc(baseUrl, await authHeader(), "semprec.view.create", {
+      // smuggling an identity through `arguments` fails validation instead of being ignored or honored.
+      title: "rejects an actor-identity-shaped field smuggled into tool arguments with -32602",
+      operation: "view.create",
+      args: (fx) => ({
         databaseId: fx.database.id,
         type: "table",
         name: "Stolen view",
         agentProjectItemId: randomUUID(),
         runId: randomUUID(),
         userId: randomUUID(),
-      });
-
-      expect(body.error?.code).toBe(-32602);
-    });
-
-    it("rejects patch.type on a relation property with -32602 validation_failed relation_definition_required (issue #219)", async () => {
-      const { server, baseUrl } = await startServer();
-      servers.push(server);
-      const fx = await buildFixtures();
-
-      const body = await rpc(baseUrl, await authHeader(), "semprec.property.patch", {
+      }),
+      error: { code: -32602 },
+    },
+    ...(["type", "config"] as const).map((field) => ({
+      title: `rejects patch.${field} on a relation property with relation_definition_required`,
+      operation: "property.patch" as const,
+      args: (fx: Fixtures) => ({
         propertyId: fx.relationProperty.id,
-        patch: { type: "text" },
-      });
-
-      expect(body.error?.code).toBe(-32602);
-      expect(body.error?.data).toMatchObject({ field: "type", reason: "relation_definition_required" });
-    });
-
-    it("rejects patch.config on a relation property with -32602 validation_failed relation_definition_required (issue #219)", async () => {
-      const { server, baseUrl } = await startServer();
-      servers.push(server);
-      const fx = await buildFixtures();
-
-      const body = await rpc(baseUrl, await authHeader(), "semprec.property.patch", {
-        propertyId: fx.relationProperty.id,
-        patch: { config: { note: "x" } },
-      });
-
-      expect(body.error?.code).toBe(-32602);
-      expect(body.error?.data).toMatchObject({ field: "config", reason: "relation_definition_required" });
-    });
-
-    it("rejects a non-relation property id supplied directly as relationPropertyId — contrast with REST's key-based route resolution", async () => {
-      const { server, baseUrl } = await startServer();
-      servers.push(server);
-      const fx = await buildFixtures();
-
+        patch: field === "type" ? { type: "text" } : { config: { note: "x" } },
+      }),
+      error: { code: -32602, data: { field, reason: "relation_definition_required" } },
+    })),
+    {
       // REST resolves `:propertyKey` against the caller item's database and 404s for no match. MCP
-      // has no route layer: it takes `relationPropertyId` directly and the choke point rejects an
-      // id that names no relation property.
-      const body = await rpc(baseUrl, await authHeader(), "semprec.relation.put", {
-        relationPropertyId: fx.property.id,
-        callerItemId: fx.itemA.id,
-        targetItemId: fx.targetItem.id,
-      });
+      // has no route layer: it takes `relationPropertyId` directly and the choke point rejects an id
+      // that names no relation property.
+      title: "rejects a non-relation property id supplied directly as relationPropertyId",
+      operation: "relation.put",
+      args: (fx) => ({ relationPropertyId: fx.property.id, callerItemId: fx.itemA.id, targetItemId: fx.targetItem.id }),
+      error: { code: -32602, data: { field: "relationPropertyId" } },
+    },
+    {
+      title: "rejects an empty database patch",
+      operation: "database.patch",
+      args: (fx) => ({ databaseId: fx.database.id, patch: {} }),
+      error: { code: -32602, data: { reason: "empty_patch" } },
+    },
+    ...(["relation.list", "relation.related", "page.restoreVersion"] as const).map((operation) => ({
+      title: `rejects a malformed ${operation} item ID`,
+      operation,
+      args: () =>
+        operation === "page.restoreVersion"
+          ? { itemId: "not-a-uuid", at: new Date().toISOString() }
+          : { itemId: "not-a-uuid" },
+      error: { code: -32602, data: { field: "itemId" } },
+    })),
+  ])("$title", async ({ prepare, operation, args, error }) => {
+    const baseUrl = await startServer();
+    const fx = await buildFixtures();
+    await prepare?.(fx);
+    const databaseBefore = await chokePoint.getDatabase(fx.database.id);
+    const body = await rpc(baseUrl, await authHeader(), `semprec.${operation}`, args(fx));
+    expect(body.error?.code).toBe(error.code);
+    if (error.data) expect(body.error?.data).toMatchObject(error.data);
+    expect(await chokePoint.getDatabase(fx.database.id)).toEqual(databaseBefore);
+  });
 
-      expect(body.error?.code).toBe(-32602);
-      expect(body.error?.data).toMatchObject({ field: "relationPropertyId" });
+  describe.each([
+    { actor: "a plain human-session actor", agent: false },
+    { actor: "a run credential scoped to the operation's capability", agent: true },
+  ])("catalog dispatch through $actor", ({ agent }) => {
+    it.each(
+      GENERIC_OPERATION_NAMES.map((operation) => {
+        const gated =
+          agent && (DESTRUCTIVE_OPERATIONS.includes(operation) || LINK_ENDING_OPERATIONS.includes(operation));
+        return { operation, gated, outcome: gated ? "queues an approval request for" : "executes" };
+      }),
+    )("$outcome $operation", async ({ operation, gated }) => {
+      const baseUrl = await startServer();
+      const projectItemId = agent ? await createProjectItem() : undefined;
+      const fx = await buildFixtures(projectItemId);
+      const testCase = CASES[operation];
+      await testCase.prepare?.(fx);
+      const name = `semprec.${operation}`;
+      const headers =
+        projectItemId === undefined
+          ? await authHeader()
+          : await credentialHeader(projectItemId, [OPERATION_METADATA[operation].requiresCapability]);
+
+      const body = await rpc(baseUrl, headers, name, testCase.args(fx));
+
+      if (REST_ONLY_OPERATION_NAMES.some((restOnly) => restOnly === operation)) {
+        await expectRefusedAsUnknownTool(baseUrl, headers, body, name, fx);
+      } else if (gated) {
+        expect(body.error?.code).toBe(-32001);
+        expect(await countApprovals()).toBe(1);
+      } else {
+        expect(body.error).toBeUndefined();
+      }
     });
   });
 });

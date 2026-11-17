@@ -86,44 +86,341 @@ let chokePoint: ChokePoint;
 
 const ALL_CAPABILITIES = new Set(CAPABILITY_IDS);
 const NO_CAPABILITIES = new Set<(typeof CAPABILITY_IDS)[number]>();
+const COUNT_REQUESTS = "SELECT count(*)::int AS count FROM approval_requests";
+const COUNT_NOTIFICATIONS = "SELECT count(*)::int AS count FROM notifications";
+
+type GenericRequest = ApprovalRequest & { payload: GenericOperationApprovalRequestPayload };
+type RelationHookContext = Parameters<Parameters<typeof registerRelationEdgeWriteHook>[0]>[0];
+type ItemHookContext = Parameters<Parameters<typeof registerItemUpdateHook>[0]>[0];
+type Decision = Parameters<typeof decideAndEnqueueApprovalRequest>[1]["decision"];
+
+// Write hooks cannot be unregistered, so each test's hook acts only until the `afterEach` below clears its flag.
+const hookFlags: Array<{ active: boolean }> = [];
+
+afterEach(() => {
+  for (const flag of hookFlags.splice(0)) flag.active = false;
+  setInvalidationHook(() => {});
+});
+
+/** Requires approval for every write to `propertyId`'s edges; `observe` runs first, for every writer. */
+function gateRelationWrites(propertyId: string, observe?: (context: RelationHookContext) => Promise<void> | void) {
+  const flag = { active: true };
+  hookFlags.push(flag);
+  registerRelationEdgeWriteHook(async (context) => {
+    if (!flag.active || context.edgeContext.property.id !== propertyId) return;
+    await observe?.(context);
+    requireApprovalForWrite(context.client, context.writer, [{ kind: "testReason" }]);
+  });
+}
+
+/** Requires approval for every update of `itemId`; `observe` runs first, for every writer. */
+function gateItemUpdates(itemId: string, observe?: (context: ItemHookContext) => Promise<void> | void) {
+  const flag = { active: true };
+  hookFlags.push(flag);
+  registerItemUpdateHook(async (context) => {
+    if (!flag.active || context.item.id !== itemId) return;
+    await observe?.(context);
+    requireApprovalForWrite(context.client, context.writer, [{ kind: "testReason" }]);
+  });
+}
+
+function captureInvalidations(): unknown[] {
+  const events: unknown[] = [];
+  setInvalidationHook((event) => events.push(event));
+  return events;
+}
+
+function signal<T = void>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => (resolve = settle));
+  return { promise, resolve };
+}
+
+/** Waits for `barrier`, failing if `work` ends first. */
+function reachBarrier(barrier: Promise<unknown>, work: Promise<unknown>, label: string): Promise<unknown> {
+  return Promise.race([
+    barrier,
+    work.then(() => {
+      throw new Error(`${label} ended before its barrier`);
+    }),
+  ]);
+}
+
+/** Settles `pending`, then rethrows the primary failure and every distinct rejection, aggregated when several. */
+async function throwFailures(failure: { error: unknown } | undefined, pending: Promise<unknown>[]): Promise<void> {
+  const errors: unknown[] = failure ? [failure.error] : [];
+  for (const result of await Promise.allSettled(pending)) {
+    if (result.status === "rejected" && !errors.includes(result.reason)) errors.push(result.reason);
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, "Test and cleanup failed");
+}
+
+async function withRuntimePool(fn: (runtime: Pool) => Promise<void>): Promise<void> {
+  const runtime = await createRuntimeRolePool(pool, "semprec_data");
+  let failure: { error: unknown } | undefined;
+  try {
+    await fn(runtime);
+  } catch (error) {
+    failure = { error };
+  }
+  await throwFailures(failure, [runtime.end()]);
+}
+
+/** Wraps `target` so each checked-out client runs `connect` and every `query` goes through `query`. */
+function interceptPool(
+  target: Pool,
+  hooks: {
+    connect?: (client: PoolClient) => Promise<void>;
+    query?: (client: PoolClient, args: unknown[], next: () => Promise<unknown>) => Promise<unknown>;
+  },
+): Pool {
+  const bound = (object: object, key: string | symbol, receiver: unknown): unknown => {
+    const value: unknown = Reflect.get(object, key, receiver);
+    return typeof value === "function" ? value.bind(object) : value;
+  };
+  return new Proxy(target, {
+    get(original, key, receiver) {
+      if (key !== "connect") return bound(original, key, receiver);
+      return async () => {
+        const client = await original.connect();
+        await hooks.connect?.(client);
+        const query = hooks.query;
+        if (!query) return client;
+        return new Proxy(client, {
+          get(inner, field, innerReceiver) {
+            if (field !== "query") return bound(inner, field, innerReceiver);
+            return (...args: unknown[]) =>
+              query(inner, args, async () => {
+                const result: unknown = await Reflect.apply(inner.query.bind(inner), inner, args);
+                return result;
+              });
+          },
+        });
+      };
+    },
+  });
+}
+
+/** Runs `onMatch` after every query whose text `matches` on clients `target` hands out; returns the restore. */
+function afterMatchingQuery(
+  target: Pool,
+  matches: (text: unknown) => boolean,
+  onMatch: (client: PoolClient) => Promise<void>,
+): () => void {
+  const originals = new Map<PoolClient, PoolClient["query"]>();
+  const instrument = (client: PoolClient) => {
+    if (originals.has(client)) return;
+    // The proxy forwards the original receiver, and the restore puts the method back before the pool closes.
+    /* eslint-disable @typescript-eslint/unbound-method */
+    originals.set(client, client.query);
+    client.query = new Proxy(client.query, {
+      apply(method, receiver, args: unknown[]) {
+        const result: unknown = Reflect.apply(method, receiver, args);
+        if (!matches(args[0])) return result;
+        return Promise.resolve(result).then(async (value: unknown) => {
+          await onMatch(client);
+          return value;
+        });
+      },
+    });
+    /* eslint-enable @typescript-eslint/unbound-method */
+  };
+  target.on("acquire", instrument);
+  return () => {
+    target.off("acquire", instrument);
+    for (const [client, original] of originals) client.query = original;
+  };
+}
+
+async function backendPid(client: PoolClient): Promise<number> {
+  return (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+}
+
+/** Waits until the backend `contenderPid()` names is blocked by `holderPid`. */
+async function expectBlockedBy(contenderPid: () => number, holderPid: number): Promise<void> {
+  await vi.waitFor(async () => {
+    expect(contenderPid()).toBeGreaterThan(0);
+    const { rows } = await pool.query<{ pids: number[] }>("SELECT pg_blocking_pids($1) AS pids", [contenderPid()]);
+    expect(rows[0]?.pids).toContain(holderPid);
+  });
+}
+
+async function countOf(sql: string, params: unknown[] = [], db: Pool = pool): Promise<number> {
+  return (await db.query<{ count: number }>(sql, params)).rows[0]?.count ?? 0;
+}
+
+async function jobRows() {
+  return (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
+    .rows;
+}
+
+async function threadMessages(threadId: string): Promise<string[]> {
+  const { rows } = await pool.query<{ system_key: string }>(
+    "SELECT system_key FROM semp_messages WHERE thread_id = $1 ORDER BY created_at, id",
+    [threadId],
+  );
+  return rows.map((row) => row.system_key);
+}
 
 async function createUser(): Promise<string> {
   return (await createTenantZeroUser(pool)).id;
 }
 
+function chatThread(): Promise<string> {
+  return withTransaction(pool, (client) => createSempChatThread(client));
+}
+
 /** A real Projects item id: `viewDeleteWithClient` enforces `assertAuthenticatedAgentIdentity`, the other destructive mutations do not. */
 async function createRealAgentProjectItemId(): Promise<string> {
   const projectsDatabase = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "projects"));
-  const chokePointHandle = createChokePoint(pool);
-  const item = await chokePointHandle.createItem({ databaseId: projectsDatabase!.id, properties: {} });
+  const item = await createChokePoint(pool).createItem({ databaseId: projectsDatabase!.id, properties: {} });
   return item.id;
 }
 
-/** Invokes a destructive operation, extracts the queued `approvalRequestId` and approves it. */
-async function approveDestructive(
+async function agentActor(options: { db?: Pool; threadId?: string; realProject?: boolean } = {}) {
+  const projectItemId = options.realProject ? await createRealAgentProjectItemId() : randomUUID();
+  const run = await createAgentRun(options.db ?? pool, {
+    projectItemId,
+    triggeredBy: "user",
+    task: "agent task",
+    ...(options.threadId ? { threadId: options.threadId } : {}),
+  });
+  const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+  return { run, projectItemId, actor };
+}
+
+/** The announcements of a request that reached a terminal state or was raised: the request, the badge and the run. */
+function requestAnnouncements(approvalRequestId: unknown, run: AgentRunRow, projectItemId: string) {
+  return [
+    { scope: "approvalRequest", approvalRequestId, userId: run.actorUserId },
+    { scope: "badgeCounts", userId: run.actorUserId },
+    { scope: "agentRuns", projectItemId, agentRunId: run.id, userId: run.actorUserId },
+  ];
+}
+
+function gatewayFor(db: Pool = pool) {
+  return createGenericOperationGateway(db, testMetadataResolver);
+}
+
+/** Invokes an approval-gated operation and returns the id of the request it raised. */
+async function requestApproval(
   operation: GenericOperationName,
   actor: AuthenticatedActor,
   input: unknown,
+  { db = pool, ...options }: { db?: Pool; reason?: string; toolCallId?: string } = {},
 ): Promise<string> {
-  const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-  let requestId: string;
   try {
-    await gateway.invoke(operation, actor, ALL_CAPABILITIES, input);
-    expect.unreachable("expected ApprovalRequiredError");
-    return "";
-  } catch (err) {
-    requestId = (err as ApprovalRequiredError).details.approvalRequestId;
+    await gatewayFor(db).invoke(operation, actor, ALL_CAPABILITIES, input, options);
+  } catch (error) {
+    if (error instanceof ApprovalRequiredError) return error.details.approvalRequestId;
+    throw error;
   }
-  const decidedByUserId = actor.userId;
-  await inTenantZero(() =>
-    withTransaction(pool, (client) =>
-      decideAndEnqueueApprovalRequest(client, { approvalRequestId: requestId, decision: "approved", decidedByUserId }),
+  throw new Error(`Expected ${operation} to require approval`);
+}
+
+function decide(
+  approvalRequestId: string,
+  decidedByUserId: string,
+  { db = pool, decision = "approved" }: { db?: Pool; decision?: Decision } = {},
+) {
+  return inTenantZero(() =>
+    withTransaction(db, (client) =>
+      decideAndEnqueueApprovalRequest(client, { approvalRequestId, decision, decidedByUserId }),
     ),
   );
+}
+
+async function loadGeneric(requestId: string, db: Pool = pool): Promise<GenericRequest> {
+  const request = await getApprovalRequest(db, requestId);
+  if (!request || !isGenericOperationApprovalRequestPayload(request.payload)) {
+    throw new Error("Expected a generic-operation approval request");
+  }
+  return { ...request, payload: request.payload };
+}
+
+/** Raises a request for `operation` and approves it as the actor's owner. */
+async function approveAgentRequest(
+  operation: GenericOperationName,
+  actor: AuthenticatedActor,
+  input: unknown,
+  db: Pool = pool,
+): Promise<string> {
+  const requestId = await requestApproval(operation, actor, input, { db });
+  await decide(requestId, actor.userId, { db });
   return requestId;
 }
 
-describe("createGenericOperationGateway (issue #220)", () => {
+async function replayById(requestId: string, db: Pool = pool) {
+  return replayApprovedGenericOperation(db, await loadGeneric(requestId, db));
+}
+
+async function statusOf(requestId: string, db: Pool = pool) {
+  return (await getApprovalRequest(db, requestId))?.executionStatus;
+}
+
+async function relationFixture(
+  cp: ChokePoint,
+  options: Pick<Parameters<ChokePoint["createRelationProperty"]>[0], "cardinality" | "inverse"> & {
+    name?: string;
+  } = {},
+) {
+  const { name = "Relation", ...relation } = options;
+  const source = await cp.createDatabase({ name: `${name} source` });
+  const target = await cp.createDatabase({ name: `${name} target` });
+  const pair = await cp.createRelationProperty({
+    sourceDatabaseId: source.id,
+    targetDatabaseId: target.id,
+    key: "target",
+    name: "Target",
+    ...relation,
+  });
+  const caller = await cp.createItem({ databaseId: source.id, properties: {} });
+  const first = await cp.createItem({ databaseId: target.id, properties: {} });
+  const second = await cp.createItem({ databaseId: target.id, properties: {} });
+  const third = await cp.createItem({ databaseId: target.id, properties: {} });
+  return {
+    source,
+    target,
+    property: pair.property,
+    inverseProperty: pair.inverseProperty,
+    caller,
+    first,
+    second,
+    third,
+  };
+}
+
+function addTargetCount(cp: ChokePoint, databaseId: string) {
+  return cp.createProperty({
+    databaseId,
+    key: "targetCount",
+    name: "Target count",
+    type: "rollup",
+    config: { relationPropertyKey: "target", aggregation: "count" },
+  });
+}
+
+function coreTaskList(genericOperationApprovalReplay?: typeof replayApprovedGenericOperation) {
+  // Only the trailing `genericOperationApprovalReplay` parameter matters to these tests.
+  return createCoreTaskList(
+    pool,
+    new Map(),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    genericOperationApprovalReplay,
+  );
+}
+
+async function expectNoApprovalOrNotification(): Promise<void> {
+  expect(await countOf(COUNT_REQUESTS)).toBe(0);
+  expect(await countOf(COUNT_NOTIFICATIONS)).toBe(0);
+}
+
+describe("createGenericOperationGateway", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     chokePoint ??= createChokePoint(pool);
@@ -138,123 +435,71 @@ describe("createGenericOperationGateway (issue #220)", () => {
 
   it("defers a flagged relation replacement and replays once with the same active hook", async () =>
     inTenantZero(async () => {
-      const source = await chokePoint.createDatabase({ name: "Flag source" });
-      const target = await chokePoint.createDatabase({ name: "Flag target" });
-      const { property } = await chokePoint.createRelationProperty({
-        sourceDatabaseId: source.id,
-        targetDatabaseId: target.id,
-        key: "target",
-        name: "Target",
+      const { source, property, caller, first, second, third } = await relationFixture(chokePoint, {
         cardinality: "one_to_one",
       });
-      const caller = await chokePoint.createItem({ databaseId: source.id, properties: {} });
-      const first = await chokePoint.createItem({ databaseId: target.id, properties: {} });
-      const second = await chokePoint.createItem({ databaseId: target.id, properties: {} });
-      const third = await chokePoint.createItem({ databaseId: target.id, properties: {} });
       const original = await chokePoint.setRelation({
         relationPropertyId: property.id,
         callerItemId: caller.id,
         targetItemId: first.id,
       });
       if (!original) throw new Error("Expected initial relation");
-      await chokePoint.createProperty({
-        databaseId: source.id,
-        key: "targetCount",
-        name: "Target count",
-        type: "rollup",
-        config: { relationPropertyKey: "target", aggregation: "count" },
-      });
+      await addTargetCount(chokePoint, source.id);
       await withTransaction(pool, (client) =>
         insertValueLink(client, { itemId: caller.id, propertyKey: "target", ruleKey: "test", sources: [] }),
       );
-      const projectItemId = randomUUID();
-      // No public chat-thread creator exists.
-      const thread = await pool.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id");
-      const run = await createAgentRun(pool, {
-        projectItemId,
-        triggeredBy: "user",
-        task: "change relation",
-        threadId: thread.rows[0]!.id,
-      });
-      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
+      const threadId = await chatThread();
+      const { run, projectItemId, actor } = await agentActor({ threadId });
       const seen: Array<{ writerKind: string; approvedRequestId?: string }> = [];
-      const delivered: unknown[] = [];
       const mutationError = new ValidationError("forced mutation failure");
       let failMutation = false;
       let sawDeleted = false;
       let sawMutationJob = false;
       let jobCount = 0;
-      let active = true;
-      registerRelationEdgeWriteHook(async ({ client, edgeContext, writer }) => {
-        if (!active || edgeContext.property.id !== property.id) return;
+      gateRelationWrites(property.id, async ({ client, writer }) => {
         seen.push({ writerKind: writer.writerKind, approvedRequestId: writer.approvedRequestId });
-        requireApprovalForWrite(client, writer, [{ kind: "testReason" }]);
-        if (failMutation && writer.approvedRequestId) {
-          const edges = await client.query<{ count: string }>(
-            "SELECT count(*)::text AS count FROM item_relations WHERE id = $1",
-            [original.id],
-          );
-          sawDeleted = edges.rows[0]?.count === "0";
-          const jobs = await client.query<{ count: string }>(
-            "SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE task_identifier = $1",
-            [CORE_TASK_NAMES.ROLLUP_RECOMPUTE],
-          );
-          sawMutationJob = Number(jobs.rows[0]?.count) > jobCount;
-          throw mutationError;
-        }
+        if (!failMutation || !writer.approvedRequestId) return;
+        const edges = await client.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM item_relations WHERE id = $1",
+          [original.id],
+        );
+        sawDeleted = edges.rows[0]?.count === 0;
+        const jobs = await client.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM graphile_worker.jobs WHERE task_identifier = $1",
+          [CORE_TASK_NAMES.ROLLUP_RECOMPUTE],
+        );
+        sawMutationJob = (jobs.rows[0]?.count ?? 0) > jobCount;
+        throw mutationError;
       });
-      try {
-        const input = {
-          relationPropertyId: property.id.toUpperCase(),
-          callerItemId: caller.id,
-          targetItemId: second.id,
-        };
-        let requestId = "";
-        try {
-          await gateway.invoke("relation.set", actor, ALL_CAPABILITIES, input);
-          expect.unreachable("Expected approval");
-        } catch (err) {
-          if (!(err instanceof ApprovalRequiredError)) throw err;
-          requestId = err.details.approvalRequestId;
-        }
-        expect((await chokePoint.listItemRelations(caller.id, property.id))?.map((edge) => edge.targetItemId)).toEqual([
-          first.id,
-        ]);
-        const pending = await getApprovalRequest(pool, requestId);
-        // The active link on the replaced relation makes this a `breaksLink` request.
-        expect(pending?.description).toMatchObject({
+      const targetsOf = async () =>
+        (await chokePoint.listItemRelations(caller.id, property.id))?.map((edge) => edge.targetItemId);
+      const rollupJobs = () => countJobsByIdentifier(pool, CORE_TASK_NAMES.ROLLUP_RECOMPUTE);
+      const input = { relationPropertyId: property.id.toUpperCase(), callerItemId: caller.id, targetItemId: second.id };
+      const requestId = await requestApproval("relation.set", actor, input);
+      expect(await targetsOf()).toEqual([first.id]);
+      const pending = await getApprovalRequest(pool, requestId);
+      // The active link on the replaced relation makes this a `breaksLink` request.
+      expect(pending).toMatchObject({
+        riskClass: "breaksLink",
+        description: {
           key: "approval.breaksLink",
           params: { propertyName: "Target" },
           breaksLinks: [{ itemId: caller.id, propertyKey: "target" }],
-        });
-        expect(JSON.stringify(pending?.description)).not.toContain(second.id);
-        expect(pending?.riskClass).toBe("breaksLink");
-        await inTenantZero(() =>
-          withTransaction(pool, (client) =>
-            decideAndEnqueueApprovalRequest(client, {
-              approvalRequestId: requestId,
-              decision: "approved",
-              decidedByUserId: run.actorUserId,
-            }),
-          ),
-        );
-        const request = await getApprovalRequest(pool, requestId);
-        if (!request || !isGenericOperationApprovalRequestPayload(request.payload))
-          throw new Error("Expected generic request");
-        const typed = { ...request, payload: request.payload };
-        const baselineActivity = new Date("2020-01-01T00:00:00.000Z");
-        await pool.query("UPDATE semp_threads SET last_activity_at = $2 WHERE id = $1", [
-          thread.rows[0]!.id,
-          baselineActivity,
-        ]);
-        jobCount = await countJobsByIdentifier(pool, CORE_TASK_NAMES.ROLLUP_RECOMPUTE);
-        setInvalidationHook((event) => delivered.push(event));
-        failMutation = true;
-        await expect(replayApprovedGenericOperation(pool, typed)).rejects.toBe(mutationError);
-        expect(sawDeleted).toBe(true);
-        expect(sawMutationJob).toBe(true);
-        expect(await chokePoint.listItemRelations(caller.id, property.id)).toMatchObject([{ targetItemId: first.id }]);
+        },
+      });
+      expect(JSON.stringify(pending?.description)).not.toContain(second.id);
+      await decide(requestId, run.actorUserId);
+      const typed = await loadGeneric(requestId);
+      const baselineActivity = new Date("2020-01-01T00:00:00.000Z");
+      await pool.query("UPDATE semp_threads SET last_activity_at = $2 WHERE id = $1", [threadId, baselineActivity]);
+      const lastActivity = async () =>
+        (await pool.query<{ at: Date }>("SELECT last_activity_at AS at FROM semp_threads WHERE id = $1", [threadId]))
+          .rows[0]?.at;
+      jobCount = await rollupJobs();
+      const delivered = captureInvalidations();
+      /** Asserts the failed replay left the relation, its link, the jobs, the request and the thread untouched. */
+      const expectRolledBack = async () => {
+        expect(await targetsOf()).toEqual([first.id]);
         const originalEdge = await pool.query<{ id: string; metadata: unknown }>(
           "SELECT id, metadata FROM item_relations WHERE id = $1",
           [original.id],
@@ -265,121 +510,67 @@ describe("createGenericOperationGateway (issue #220)", () => {
           [caller.id, "target"],
         );
         expect(link.rows).toEqual([{ state: "on" }]);
-        expect(await countJobsByIdentifier(pool, CORE_TASK_NAMES.ROLLUP_RECOMPUTE)).toBe(jobCount);
+        expect(await rollupJobs()).toBe(jobCount);
         expect(delivered).toEqual([]);
-        const rolledBack = await getApprovalRequest(pool, requestId);
-        expect(rolledBack).toMatchObject({ status: "approved", executionStatus: "queued", executionResult: null });
-        const messages = await pool.query<{ count: string }>(
-          "SELECT count(*)::text AS count FROM semp_messages WHERE thread_id = $1",
-          [thread.rows[0]!.id],
-        );
-        expect(messages.rows[0]?.count).toBe("0");
-        failMutation = false;
-        const outcomeError = new Error("forced outcome rollback");
-        let sawOutcome = false;
-        const failAfterOutcomePool = new Proxy(pool, {
-          get(targetPool, key, receiver) {
-            if (key !== "connect") {
-              const value: unknown = Reflect.get(targetPool, key, receiver);
-              return typeof value === "function" ? value.bind(targetPool) : value;
-            }
-            return async () => {
-              const client = await targetPool.connect();
-              return new Proxy(client, {
-                get(targetClient, field, clientReceiver) {
-                  if (field !== "query") {
-                    const value: unknown = Reflect.get(targetClient, field, clientReceiver);
-                    return typeof value === "function" ? value.bind(targetClient) : value;
-                  }
-                  return async (...args: unknown[]) => {
-                    const result: unknown = await Reflect.apply(
-                      targetClient.query.bind(targetClient),
-                      targetClient,
-                      args,
-                    );
-                    if (typeof args[0] === "string" && args[0].includes("UPDATE semp_threads SET last_activity_at")) {
-                      const inserted = await targetClient.query<{ count: string }>(
-                        "SELECT count(*)::text AS count FROM semp_messages WHERE thread_id = $1",
-                        [thread.rows[0]!.id],
-                      );
-                      const activity = await targetClient.query<{ last_activity_at: Date }>(
-                        "SELECT last_activity_at FROM semp_threads WHERE id = $1",
-                        [thread.rows[0]!.id],
-                      );
-                      sawOutcome =
-                        inserted.rows[0]?.count === "1" &&
-                        (activity.rows[0]?.last_activity_at.getTime() ?? 0) > baselineActivity.getTime();
-                      throw outcomeError;
-                    }
-                    return result;
-                  };
-                },
-              });
-            };
-          },
+        expect(await getApprovalRequest(pool, requestId)).toMatchObject({
+          status: "approved",
+          executionStatus: "queued",
+          executionResult: null,
         });
-        await expect(replayApprovedGenericOperation(failAfterOutcomePool, typed)).rejects.toBe(outcomeError);
-        expect(sawOutcome).toBe(true);
-        expect(
-          (
-            await pool.query<{ last_activity_at: Date }>("SELECT last_activity_at FROM semp_threads WHERE id = $1", [
-              thread.rows[0]!.id,
-            ])
-          ).rows[0]?.last_activity_at,
-        ).toEqual(baselineActivity);
-        expect((await getApprovalRequest(pool, requestId))?.executionStatus).toBe("queued");
-        expect(await chokePoint.listItemRelations(caller.id, property.id)).toMatchObject([{ targetItemId: first.id }]);
-        expect(
-          (
-            await pool.query<{ count: string }>(
-              "SELECT count(*)::text AS count FROM semp_messages WHERE thread_id = $1",
-              [thread.rows[0]!.id],
-            )
-          ).rows[0]?.count,
-        ).toBe("0");
-        expect(await countJobsByIdentifier(pool, CORE_TASK_NAMES.ROLLUP_RECOMPUTE)).toBe(jobCount);
-        expect(delivered).toEqual([]);
-        expect((await replayApprovedGenericOperation(pool, typed)).error).toBe(false);
-        expect((await replayApprovedGenericOperation(pool, typed)).error).toBe(false);
-        expect(delivered.length).toBeGreaterThan(0);
-        expect(delivered).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({ scope: "item", itemId: caller.id }),
-            expect.objectContaining({ scope: "relation", itemId: caller.id }),
-          ]),
-        );
-        const afterSuccess = [...delivered];
-        const successMessages = await pool.query<{ system_key: string }>(
-          "SELECT system_key FROM semp_messages WHERE thread_id = $1",
-          [thread.rows[0]!.id],
-        );
-        expect(successMessages.rows).toEqual([{ system_key: "approval.outcome.executed" }]);
-        expect((await chokePoint.listItemRelations(caller.id, property.id))?.map((edge) => edge.targetItemId)).toEqual([
-          second.id,
-        ]);
-        // The first call never reached the hook: the replaced link asked for approval before any edge guard ran.
-        expect(seen).toEqual([
-          { writerKind: "agent", approvedRequestId: requestId },
-          { writerKind: "agent", approvedRequestId: requestId },
-          { writerKind: "agent", approvedRequestId: requestId },
-        ]);
-        await expect(
-          gateway.invoke("relation.set", actor, ALL_CAPABILITIES, { ...input, targetItemId: third.id }),
-        ).rejects.toBeInstanceOf(ApprovalRequiredError);
-        // Raising the next request announces the request and changes no item or relation.
-        expect(delivered).toEqual([
-          ...afterSuccess,
-          { scope: "approvalRequest", approvalRequestId: expect.any(String), userId: run.actorUserId },
-          { scope: "badgeCounts", userId: run.actorUserId },
-          { scope: "agentRuns", projectItemId, agentRunId: run.id, userId: run.actorUserId },
-        ]);
-        expect((await chokePoint.listItemRelations(caller.id, property.id))?.map((edge) => edge.targetItemId)).toEqual([
-          second.id,
-        ]);
-      } finally {
-        active = false;
-        setInvalidationHook(() => {});
-      }
+        expect(await threadMessages(threadId)).toEqual([]);
+        expect(await lastActivity()).toEqual(baselineActivity);
+      };
+
+      failMutation = true;
+      await expect(replayApprovedGenericOperation(pool, typed)).rejects.toBe(mutationError);
+      expect(sawDeleted).toBe(true);
+      expect(sawMutationJob).toBe(true);
+      await expectRolledBack();
+
+      failMutation = false;
+      const outcomeError = new Error("forced outcome rollback");
+      let sawOutcome = false;
+      const failAfterOutcomePool = interceptPool(pool, {
+        query: async (client, args, next) => {
+          const result = await next();
+          if (typeof args[0] !== "string" || !args[0].includes("UPDATE semp_threads SET last_activity_at"))
+            return result;
+          const inserted = await client.query<{ count: number }>(
+            "SELECT count(*)::int AS count FROM semp_messages WHERE thread_id = $1",
+            [threadId],
+          );
+          const activity = await client.query<{ at: Date }>(
+            "SELECT last_activity_at AS at FROM semp_threads WHERE id = $1",
+            [threadId],
+          );
+          sawOutcome =
+            inserted.rows[0]?.count === 1 && (activity.rows[0]?.at.getTime() ?? 0) > baselineActivity.getTime();
+          throw outcomeError;
+        },
+      });
+      await expect(replayApprovedGenericOperation(failAfterOutcomePool, typed)).rejects.toBe(outcomeError);
+      expect(sawOutcome).toBe(true);
+      await expectRolledBack();
+
+      expect((await replayApprovedGenericOperation(pool, typed)).error).toBe(false);
+      expect((await replayApprovedGenericOperation(pool, typed)).error).toBe(false);
+      expect(delivered).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ scope: "item", itemId: caller.id }),
+          expect.objectContaining({ scope: "relation", itemId: caller.id }),
+        ]),
+      );
+      const afterSuccess = [...delivered];
+      expect(await threadMessages(threadId)).toEqual(["approval.outcome.executed"]);
+      expect(await targetsOf()).toEqual([second.id]);
+      // The first call never reached the hook: the replaced link asked for approval before any edge guard ran.
+      expect(seen).toEqual(Array(3).fill({ writerKind: "agent", approvedRequestId: requestId }));
+      await expect(
+        gatewayFor().invoke("relation.set", actor, ALL_CAPABILITIES, { ...input, targetItemId: third.id }),
+      ).rejects.toBeInstanceOf(ApprovalRequiredError);
+      // Raising the next request announces the request and changes no item or relation.
+      expect(delivered).toEqual([...afterSuccess, ...requestAnnouncements(expect.any(String), run, projectItemId)]);
+      expect(await targetsOf()).toEqual([second.id]);
     }));
 
   it.each(["insert", "upsert", "metadata", "delete"] as const)(
@@ -388,223 +579,129 @@ describe("createGenericOperationGateway (issue #220)", () => {
       const runtime = await createRuntimeRolePool(pool, "semprec_data");
       const cp = createChokePoint(runtime);
       const foreignTenant = await createTestTenant(pool);
-      const foreignFixture = await runInTenant(foreignTenant, async () => {
-        const foreignSource = await cp.createDatabase({ name: "Foreign source" });
-        const foreignTarget = await cp.createDatabase({ name: "Foreign target" });
-        const foreignPair = await cp.createRelationProperty({
-          sourceDatabaseId: foreignSource.id,
-          targetDatabaseId: foreignTarget.id,
-          key: "target",
-          name: "Target",
-        });
-        const left = await cp.createItem({ databaseId: foreignSource.id, properties: {} });
-        const right = await cp.createItem({ databaseId: foreignTarget.id, properties: {} });
-        return { property: foreignPair.property, left, right };
-      });
-      let startForeign!: (execute: boolean) => void;
-      const foreignGate = new Promise<boolean>((resolve) => (startForeign = resolve));
+      const foreign = await runInTenant(foreignTenant, () => relationFixture(cp, { name: "Foreign" }));
+      const foreignStart = signal<boolean>();
       const foreignWork = (async () => {
-        if (!(await foreignGate)) return;
+        if (!(await foreignStart.promise)) return;
         await runInTenant(foreignTenant, () =>
           cp.createRelation({
-            relationPropertyId: foreignFixture.property.id,
-            callerItemId: foreignFixture.left.id,
-            targetItemId: foreignFixture.right.id,
+            relationPropertyId: foreign.property.id,
+            callerItemId: foreign.caller.id,
+            targetItemId: foreign.first.id,
           }),
         );
       })();
       return inTenantZero(async () => {
-        let active = true;
         let pauseApproval = false;
         let approvalPid = 0;
-        let reachedApproval!: () => void;
-        let releaseApproval!: () => void;
-        const atApproval = new Promise<void>((resolve) => (reachedApproval = resolve));
-        const approvalGate = new Promise<void>((resolve) => (releaseApproval = resolve));
+        const atApproval = signal();
+        const approvalGate = signal();
         try {
-          const source = await cp.createDatabase({ name: "Reservation source" });
-          const target = await cp.createDatabase({ name: "Reservation target" });
-          const pair = await cp.createRelationProperty({
-            sourceDatabaseId: source.id,
-            targetDatabaseId: target.id,
-            key: "target",
-            name: "Target",
+          const { source, target, property, inverseProperty, caller, first, second } = await relationFixture(cp, {
+            name: "Reservation",
             cardinality: "many_to_many",
             inverse: { key: "sources", name: "Sources" },
           });
-          if (!pair.inverseProperty) throw new Error("Expected inverse property");
-          const caller = await cp.createItem({ databaseId: source.id, properties: {} });
-          const first = await cp.createItem({ databaseId: target.id, properties: {} });
-          const second = await cp.createItem({ databaseId: target.id, properties: {} });
-          const unrelatedPair = await cp.createRelationProperty({
+          if (!inverseProperty) throw new Error("Expected inverse property");
+          const { property: unrelated } = await cp.createRelationProperty({
             sourceDatabaseId: source.id,
             targetDatabaseId: target.id,
             key: "unrelated",
             name: "Unrelated",
           });
           const original = await cp.createRelation({
-            relationPropertyId: pair.property.id,
+            relationPropertyId: property.id,
             callerItemId: caller.id,
             targetItemId: first.id,
             metadata: { version: "original" },
           });
-          await cp.createProperty({
-            databaseId: source.id,
-            key: "targetCount",
-            name: "Target count",
-            type: "rollup",
-            config: { relationPropertyKey: "target", aggregation: "count" },
+          await addTargetCount(cp, source.id);
+          const threadId = await chatThread();
+          const { actor } = await agentActor({ db: runtime, threadId });
+          gateRelationWrites(property.id, async ({ client, writer }) => {
+            if (!pauseApproval || !writer.approvedRequestId) return;
+            approvalPid = await backendPid(client);
+            atApproval.resolve();
+            await approvalGate.promise;
           });
-          // No production chat-thread creator exists.
-          const thread = await withTransaction(pool, (client) =>
-            client.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id"),
-          );
-          const projectItemId = randomUUID();
-          const run = await createAgentRun(runtime, {
-            projectItemId,
-            triggeredBy: "user",
-            task: "reserve relation",
-            threadId: thread.rows[0]!.id,
-          });
-          const actor: AuthenticatedActor = {
-            userId: run.actorUserId,
-            runId: run.id,
-            agentProjectItemId: projectItemId,
-          };
-          registerRelationEdgeWriteHook(async ({ client, edgeContext, writer }) => {
-            if (!active || edgeContext.property.id !== pair.property.id) return;
-            requireApprovalForWrite(client, writer, [{ kind: "testReason" }]);
-            if (pauseApproval && writer.approvedRequestId) {
-              const result = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
-              approvalPid = result.rows[0]!.pid;
-              reachedApproval();
-              await approvalGate;
-            }
-          });
-          const gateway = createGenericOperationGateway(runtime, testMetadataResolver);
-          async function request() {
-            let id = "";
-            try {
-              await gateway.invoke("relation.put", actor, ALL_CAPABILITIES, {
-                relationPropertyId: pair.property.id,
-                callerItemId: caller.id,
-                targetItemId: first.id,
-                metadata: { version: "approved" },
-              });
-              expect.unreachable("Expected approval");
-            } catch (error) {
-              if (!(error instanceof ApprovalRequiredError)) throw error;
-              id = error.details.approvalRequestId;
-            }
-            await withTransaction(runtime, (client) =>
-              decideAndEnqueueApprovalRequest(client, {
-                approvalRequestId: id,
-                decision: "approved",
-                decidedByUserId: run.actorUserId,
-              }),
+          const putInput = { relationPropertyId: property.id, callerItemId: caller.id, targetItemId: first.id };
+          const approvedPut = async () =>
+            loadGeneric(
+              await approveAgentRequest(
+                "relation.put",
+                actor,
+                { ...putInput, metadata: { version: "approved" } },
+                runtime,
+              ),
+              runtime,
             );
-            const result = await getApprovalRequest(runtime, id);
-            if (!result || !isGenericOperationApprovalRequestPayload(result.payload))
-              throw new Error("Expected request");
-            return { ...result, payload: result.payload };
-          }
           const input = {
-            relationPropertyId: pair.inverseProperty.id,
+            relationPropertyId: inverseProperty.id,
             callerItemId: kind === "insert" ? second.id : first.id,
             targetItemId: caller.id,
           };
-          const ordinary = (handle: ChokePoint) => {
-            if (kind === "insert" || kind === "upsert")
-              return handle.createRelation({ ...input, metadata: { version: "normal" } });
-            if (kind === "metadata") return handle.updateRelation({ ...input, metadata: { version: "normal" } });
-            return handle.deleteRelation(input);
-          };
-          const firstRequest = await request();
-          const baselineJobs = await countJobsByIdentifier(pool, CORE_TASK_NAMES.ROLLUP_RECOMPUTE);
-          const delivered: unknown[] = [];
-          setInvalidationHook((event) => delivered.push(event));
+          const ordinary = (handle: ChokePoint) =>
+            kind === "insert" || kind === "upsert"
+              ? handle.createRelation({ ...input, metadata: { version: "normal" } })
+              : kind === "metadata"
+                ? handle.updateRelation({ ...input, metadata: { version: "normal" } })
+                : handle.deleteRelation(input);
+          const rollupJobs = () => countJobsByIdentifier(pool, CORE_TASK_NAMES.ROLLUP_RECOMPUTE);
+          let protectedPid = 0;
+          const upsertProtected = () =>
+            withTransaction(runtime, async (client) => {
+              protectedPid = await backendPid(client);
+              return createRelationWithClient(
+                client,
+                { ...putInput, targetItemId: second.id },
+                { ownerProcess: VALUE_LINKS_OWNER_PROCESS },
+              );
+            });
+
+          const firstRequest = await approvedPut();
+          const baselineJobs = await rollupJobs();
+          const delivered = captureInvalidations();
           let normalPid = 0;
-          let atCommit!: () => void;
-          let releaseCommit!: () => void;
-          const commitReached = new Promise<void>((resolve) => (atCommit = resolve));
-          const commitGate = new Promise<void>((resolve) => (releaseCommit = resolve));
-          const heldPool = new Proxy(runtime, {
-            get(targetPool, property, receiver) {
-              if (property !== "connect") {
-                const value: unknown = Reflect.get(targetPool, property, receiver);
-                return typeof value === "function" ? value.bind(targetPool) : value;
+          const atCommit = signal();
+          const commitGate = signal();
+          const heldPool = interceptPool(runtime, {
+            connect: async (client) => {
+              normalPid = await backendPid(client);
+            },
+            query: async (_client, args, next) => {
+              if (args[0] === "COMMIT") {
+                atCommit.resolve();
+                await commitGate.promise;
               }
-              return async () => {
-                const client = await targetPool.connect();
-                const result = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
-                normalPid = result.rows[0]!.pid;
-                return new Proxy(client, {
-                  get(targetClient, key, clientReceiver) {
-                    if (key !== "query") {
-                      const value: unknown = Reflect.get(targetClient, key, clientReceiver);
-                      return typeof value === "function" ? value.bind(targetClient) : value;
-                    }
-                    return async (...args: unknown[]) => {
-                      if (args[0] === "COMMIT") {
-                        atCommit();
-                        await commitGate;
-                      }
-                      return Reflect.apply(targetClient.query.bind(targetClient), targetClient, args);
-                    };
-                  },
-                });
-              };
+              return next();
             },
           });
           let replayPid = 0;
-          const observedReplayPool = new Proxy(runtime, {
-            get(targetPool, property, receiver) {
-              if (property !== "connect") {
-                const value: unknown = Reflect.get(targetPool, property, receiver);
-                return typeof value === "function" ? value.bind(targetPool) : value;
-              }
-              return async () => {
-                const client = await targetPool.connect();
-                const identity = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
-                replayPid = identity.rows[0]!.pid;
-                return client;
-              };
+          const observedReplayPool = interceptPool(runtime, {
+            connect: async (client) => {
+              replayPid = await backendPid(client);
             },
           });
+
+          // Ordinary writer first: the approved replay finds the resource busy and changes nothing.
           const normalFirst = ordinary(createChokePoint(heldPool));
           let normalFailure: { error: unknown } | undefined;
           try {
-            await Promise.race([
-              commitReached,
-              normalFirst.then(() => {
-                throw new Error("Ordinary writer ended before its commit barrier");
-              }),
-            ]);
+            await reachBarrier(atCommit.promise, normalFirst, "Ordinary writer");
             expect(normalPid).toBeGreaterThan(0);
             if (kind === "insert") {
-              const count = async () =>
-                (await runtime.query<{ count: string }>("SELECT count(*)::text AS count FROM approval_requests"))
-                  .rows[0]?.count;
-              const before = await count();
+              const before = await countOf(COUNT_REQUESTS, [], runtime);
               await expect(
-                gateway.invoke("relation.put", actor, ALL_CAPABILITIES, {
-                  relationPropertyId: pair.property.id,
-                  callerItemId: caller.id,
-                  targetItemId: first.id,
-                }),
+                gatewayFor(runtime).invoke("relation.put", actor, ALL_CAPABILITIES, putInput),
               ).rejects.toBeInstanceOf(ApprovalResourceBusyError);
-              expect(await count()).toBe(before);
+              expect(await countOf(COUNT_REQUESTS, [], runtime)).toBe(before);
             }
-            let busy: unknown;
-            try {
-              await replayApprovedGenericOperation(observedReplayPool, firstRequest);
-              expect.unreachable("Expected busy reservation");
-            } catch (error) {
-              busy = error;
-            }
+            const busy = await replayApprovedGenericOperation(observedReplayPool, firstRequest).then(
+              () => undefined,
+              (error: unknown) => error,
+            );
             expect(replayPid).toBeGreaterThan(0);
             expect(replayPid).not.toBe(normalPid);
-            process.stdout.write(`reservation normal-first ${kind}: holder=${normalPid} contender=${replayPid}\n`);
             expect(busy).toBeInstanceOf(ApprovalResourceBusyError);
             expect(busy).toMatchObject({
               status: 409,
@@ -612,16 +709,9 @@ describe("createGenericOperationGateway (issue #220)", () => {
               message: "Approval resource is busy",
               details: undefined,
             });
-            expect(await countJobsByIdentifier(pool, CORE_TASK_NAMES.ROLLUP_RECOMPUTE)).toBe(baselineJobs);
+            expect(await rollupJobs()).toBe(baselineJobs);
             expect(delivered).toEqual([]);
-            expect(
-              (
-                await pool.query<{ count: string }>(
-                  "SELECT count(*)::text AS count FROM semp_messages WHERE thread_id = $1",
-                  [thread.rows[0]!.id],
-                )
-              ).rows[0]?.count,
-            ).toBe("0");
+            expect(await threadMessages(threadId)).toEqual([]);
             expect(await getApprovalRequest(runtime, firstRequest.id)).toMatchObject({
               status: "approved",
               executionStatus: "queued",
@@ -630,115 +720,62 @@ describe("createGenericOperationGateway (issue #220)", () => {
           } catch (error) {
             normalFailure = { error };
           } finally {
-            releaseCommit();
+            commitGate.resolve();
           }
-          const [normalSettled] = await Promise.allSettled([normalFirst]);
-          if (normalSettled.status === "rejected") {
-            if (normalFailure && normalFailure.error !== normalSettled.reason)
-              throw new AggregateError(
-                [normalFailure.error, normalSettled.reason],
-                "Ordinary contender and cleanup failed",
-              );
-            throw normalSettled.reason;
-          }
-          if (normalFailure) throw normalFailure.error;
-          expect(await countJobsByIdentifier(pool, CORE_TASK_NAMES.ROLLUP_RECOMPUTE)).toBeGreaterThan(baselineJobs);
+          await throwFailures(normalFailure, [normalFirst]);
+          expect(await rollupJobs()).toBeGreaterThan(baselineJobs);
           expect(delivered.length).toBeGreaterThan(0);
-          const conflict = await replayApprovedGenericOperation(runtime, firstRequest);
-          expect(conflict.error).toBe(true);
-          expect((await getApprovalRequest(runtime, firstRequest.id))?.executionStatus).toBe("conflict");
-          if (kind === "delete")
-            await cp.createRelation({
-              relationPropertyId: pair.property.id,
-              callerItemId: caller.id,
-              targetItemId: first.id,
-              metadata: { version: "reset" },
-            });
-          if (kind === "insert")
-            await cp.deleteRelation({
-              relationPropertyId: pair.inverseProperty.id,
-              callerItemId: second.id,
-              targetItemId: caller.id,
-            });
+          expect((await replayApprovedGenericOperation(runtime, firstRequest)).error).toBe(true);
+          expect(await statusOf(firstRequest.id, runtime)).toBe("conflict");
+
+          if (kind === "delete") await cp.createRelation({ ...putInput, metadata: { version: "reset" } });
+          if (kind === "insert") await cp.deleteRelation(input);
           if (kind === "upsert") {
             await withTransaction(runtime, (client) =>
               insertValueLink(client, { itemId: caller.id, propertyKey: "target", ruleKey: "test", sources: [] }),
             );
           }
-          const secondRequest = await request();
+
+          // Approved replay first: unrelated, foreign and protected writers proceed or refuse, the ordinary one waits.
+          const secondRequest = await approvedPut();
           pauseApproval = true;
           const replay = replayApprovedGenericOperation(runtime, secondRequest);
           let normalLater: ReturnType<typeof ordinary> | undefined;
           let approvalFailure: { error: unknown } | undefined;
           try {
-            await Promise.race([
-              atApproval,
-              replay.then(() => {
-                throw new Error("Approval replay ended before its mutation barrier");
-              }),
-            ]);
+            await reachBarrier(atApproval.promise, replay, "Approval replay");
             if (kind === "insert") {
               await cp.createRelation({
-                relationPropertyId: unrelatedPair.property.id,
+                relationPropertyId: unrelated.id,
                 callerItemId: caller.id,
                 targetItemId: second.id,
               });
-              startForeign(true);
+              foreignStart.resolve(true);
               await foreignWork;
             }
             if (kind === "upsert") {
-              let protectedPid = 0;
-              await expect(
-                withTransaction(runtime, async (client) => {
-                  const identity = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
-                  protectedPid = identity.rows[0]!.pid;
-                  return createRelationWithClient(
-                    client,
-                    { relationPropertyId: pair.property.id, callerItemId: caller.id, targetItemId: second.id },
-                    { ownerProcess: VALUE_LINKS_OWNER_PROCESS },
-                  );
-                }),
-              ).rejects.toBeInstanceOf(ValueLinkBusyError);
+              await expect(upsertProtected()).rejects.toBeInstanceOf(ValueLinkBusyError);
               expect(protectedPid).toBeGreaterThan(0);
               expect(protectedPid).not.toBe(approvalPid);
-              process.stdout.write(`reservation protected: holder=${approvalPid} contender=${protectedPid}\n`);
-              const protectedEdges = await cp.listItemRelations(caller.id, pair.property.id);
-              expect(protectedEdges).toHaveLength(1);
+              expect(await cp.listItemRelations(caller.id, property.id)).toHaveLength(1);
             }
             normalPid = 0;
-            // This gate is already open; the proxy still records the actual contender backend.
+            // The commit gate is already open; the proxy still records the contender's backend.
             normalLater = ordinary(createChokePoint(heldPool));
             void normalLater.catch(() => {});
-            await vi.waitFor(async () => {
-              expect(normalPid).toBeGreaterThan(0);
-              const result = await pool.query<{ blocked: number[] }>("SELECT pg_blocking_pids($1) AS blocked", [
-                normalPid,
-              ]);
-              expect(result.rows[0]?.blocked).toContain(approvalPid);
-            });
-            process.stdout.write(`reservation approval-first ${kind}: holder=${approvalPid} contender=${normalPid}\n`);
+            await expectBlockedBy(() => normalPid, approvalPid);
           } catch (error) {
             approvalFailure = { error };
           } finally {
-            releaseApproval();
+            approvalGate.resolve();
           }
-          const settled = await Promise.allSettled(normalLater ? [replay, normalLater] : [replay]);
-          const failures: unknown[] = approvalFailure ? [approvalFailure.error] : [];
-          for (const result of settled) {
-            if (result.status === "rejected" && !failures.includes(result.reason)) failures.push(result.reason);
-          }
-          if (failures.length === 1) throw failures[0];
-          if (failures.length > 1) throw new AggregateError(failures, "Approval contender and cleanup failed");
-          expect((await getApprovalRequest(runtime, secondRequest.id))?.executionStatus).toBe("succeeded");
-          const outcomes = await pool.query<{ system_key: string }>(
-            "SELECT system_key FROM semp_messages WHERE thread_id = $1 ORDER BY created_at, id",
-            [thread.rows[0]!.id],
-          );
-          expect(outcomes.rows.map((row) => row.system_key).sort()).toEqual([
+          await throwFailures(approvalFailure, normalLater ? [replay, normalLater] : [replay]);
+          expect(await statusOf(secondRequest.id, runtime)).toBe("succeeded");
+          expect((await threadMessages(threadId)).sort()).toEqual([
             "approval.outcome.conflict",
             "approval.outcome.executed",
           ]);
-          const edges = await cp.listItemRelations(caller.id, pair.property.id);
+          const edges = await cp.listItemRelations(caller.id, property.id);
           if (kind === "delete") expect(edges).toEqual([]);
           else if (kind === "insert") expect(edges).toHaveLength(2);
           else {
@@ -750,21 +787,13 @@ describe("createGenericOperationGateway (issue #220)", () => {
             expect(stored.rows).toEqual([{ id: original.id, metadata: { version: "normal" } }]);
           }
           if (kind === "upsert") {
-            await withTransaction(runtime, (client) =>
-              createRelationWithClient(
-                client,
-                { relationPropertyId: pair.property.id, callerItemId: caller.id, targetItemId: second.id },
-                { ownerProcess: VALUE_LINKS_OWNER_PROCESS },
-              ),
-            );
-            expect(await cp.listItemRelations(caller.id, pair.property.id)).toHaveLength(2);
+            await upsertProtected();
+            expect(await cp.listItemRelations(caller.id, property.id)).toHaveLength(2);
           }
         } finally {
-          active = false;
-          startForeign(false);
+          foreignStart.resolve(false);
           await foreignWork;
-          setInvalidationHook(() => {});
-          releaseApproval();
+          approvalGate.resolve();
           await runtime.end();
         }
       });
@@ -774,105 +803,74 @@ describe("createGenericOperationGateway (issue #220)", () => {
   it("releases relation projection reservations after a managed rollback", async () => {
     const firstPool = await createRuntimeRolePool(pool, "semprec_data");
     const secondPool = await createRuntimeRolePool(pool, "semprec_data");
-    const delivered: unknown[] = [];
-    let failure: unknown;
+    let failure: { error: unknown } | undefined;
     try {
       await inTenantZero(async () => {
         const cp = createChokePoint(firstPool);
-        const source = await cp.createDatabase({ name: "Rollback source" });
-        const target = await cp.createDatabase({ name: "Rollback target" });
-        const { property } = await cp.createRelationProperty({
-          sourceDatabaseId: source.id,
-          targetDatabaseId: target.id,
-          key: "target",
-          name: "Target",
-        });
-        const caller = await cp.createItem({ databaseId: source.id, properties: {} });
-        const destination = await cp.createItem({ databaseId: target.id, properties: {} });
+        const { property, caller, first } = await relationFixture(cp);
         const edge = await cp.createRelation({
           relationPropertyId: property.id,
           callerItemId: caller.id,
-          targetItemId: destination.id,
+          targetItemId: first.id,
         });
         const beforeRelations = await cp.listItemRelations(caller.id, property.id);
-        const readEdge = () =>
-          withTransaction(firstPool, (client) =>
-            client.query<{ id: string; metadata: unknown }>("SELECT id, metadata FROM item_relations WHERE id = $1", [
-              edge.id,
-            ]),
-          );
+        const readEdge = async () =>
+          (
+            await withTransaction(firstPool, (client) =>
+              client.query<{ id: string; metadata: unknown }>("SELECT id, metadata FROM item_relations WHERE id = $1", [
+                edge.id,
+              ]),
+            )
+          ).rows;
         const beforeEdge = await readEdge();
-        expect(beforeEdge.rowCount).toBe(1);
+        expect(beforeEdge).toHaveLength(1);
         const check = {
           operation: "relation.put",
-          input: { relationPropertyId: property.id, callerItemId: caller.id, targetItemId: destination.id },
+          input: { relationPropertyId: property.id, callerItemId: caller.id, targetItemId: first.id },
         } as const;
         const counts = async () =>
           (
-            await pool.query<{ requests: string; messages: string; jobs: string }>(
-              "SELECT (SELECT count(*) FROM approval_requests)::text AS requests, (SELECT count(*) FROM semp_messages)::text AS messages, (SELECT count(*) FROM graphile_worker.jobs)::text AS jobs",
+            await pool.query<{ requests: number; messages: number; jobs: number }>(
+              "SELECT (SELECT count(*) FROM approval_requests)::int AS requests, (SELECT count(*) FROM semp_messages)::int AS messages, (SELECT count(*) FROM graphile_worker.jobs)::int AS jobs",
             )
           ).rows[0];
         const before = await counts();
         const originalError = new Error("forced reservation rollback");
         let firstPid = 0;
         let secondPid = 0;
-        setInvalidationHook((event) => delivered.push(event));
+        const delivered = captureInvalidations();
         await expect(
           withTransaction(firstPool, async (client) => {
-            firstPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+            firstPid = await backendPid(client);
             await computeDestructiveResourceProjection(client, check);
             throw originalError;
           }),
         ).rejects.toBe(originalError);
         await withTransaction(secondPool, async (client) => {
-          secondPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+          secondPid = await backendPid(client);
           await computeDestructiveResourceProjection(client, check);
         });
         expect(firstPid).toBeGreaterThan(0);
-        expect(secondPid).toBeGreaterThan(0);
         expect(secondPid).not.toBe(firstPid);
-        process.stdout.write(`reservation rollback: first=${firstPid} second=${secondPid}\n`);
         expect(await cp.listItemRelations(caller.id, property.id)).toEqual(beforeRelations);
-        expect((await readEdge()).rows).toEqual(beforeEdge.rows);
+        expect(await readEdge()).toEqual(beforeEdge);
         expect(await counts()).toEqual(before);
         expect(delivered).toEqual([]);
       });
     } catch (error) {
-      failure = error;
+      failure = { error };
     }
-    setInvalidationHook(() => {});
-    const cleanup = await Promise.allSettled([firstPool.end(), secondPool.end()]);
-    const errors = [
-      ...(failure === undefined ? [] : [failure]),
-      ...cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])),
-    ];
-    if (errors.length === 1) throw errors[0];
-    if (errors.length > 1) throw new AggregateError(errors, "Reservation test and cleanup failed");
+    await throwFailures(failure, [firstPool.end(), secondPool.end()]);
   });
 
-  it("rejects relation reservations outside a managed READ COMMITTED tenant transaction", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
-    try {
+  it("rejects relation reservations outside a managed READ COMMITTED tenant transaction", () =>
+    withRuntimePool(async (runtime) => {
       await inTenantZero(async () => {
         const cp = createChokePoint(runtime);
-        const source = await cp.createDatabase({ name: "Isolation source" });
-        const target = await cp.createDatabase({ name: "Isolation target" });
-        const { property } = await cp.createRelationProperty({
-          sourceDatabaseId: source.id,
-          targetDatabaseId: target.id,
-          key: "target",
-          name: "Target",
-        });
-        const caller = await cp.createItem({ databaseId: source.id, properties: {} });
-        const destination = await cp.createItem({ databaseId: target.id, properties: {} });
+        const { property, caller, first } = await relationFixture(cp);
         const check = {
           operation: "relation.put",
-          input: {
-            relationPropertyId: property.id,
-            callerItemId: caller.id,
-            targetItemId: destination.id,
-          },
+          input: { relationPropertyId: property.id, callerItemId: caller.id, targetItemId: first.id },
         } as const;
         await expect(
           withTransaction(runtime, (client) => computeDestructiveResourceProjection(client, check), {
@@ -896,49 +894,28 @@ describe("createGenericOperationGateway (issue #220)", () => {
           withTransaction(runtime, (client) =>
             computeDestructiveResourceProjection(client, {
               operation: "relation.put",
-              input: {
-                relationPropertyId: randomUUID(),
-                callerItemId: randomUUID(),
-                targetItemId: randomUUID(),
-              },
+              input: { relationPropertyId: randomUUID(), callerItemId: randomUUID(), targetItemId: randomUUID() },
             }),
           ),
         ),
       ).rejects.toThrow("Relation approval requires a tenant scope");
-    } finally {
-      await runtime.end();
-    }
-  });
+    }));
 
   it("refuses foreign and random relation endpoints without changing either tenant", async () => {
     const foreignTenant = await createTestTenant(pool);
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
-    try {
+    await withRuntimePool(async (runtime) => {
       const cp = createChokePoint(runtime);
       const foreignItem = await runInTenant(foreignTenant, async () => {
         const database = await cp.createDatabase({ name: "Foreign" });
         return cp.createItem({ databaseId: database.id, properties: {} });
       });
       await inTenantZero(async () => {
-        const source = await cp.createDatabase({ name: "Owner source" });
-        const target = await cp.createDatabase({ name: "Owner target" });
-        const { property } = await cp.createRelationProperty({
-          sourceDatabaseId: source.id,
-          targetDatabaseId: target.id,
-          key: "target",
-          name: "Target",
-          cardinality: "one_to_one",
-        });
-        const caller = await cp.createItem({ databaseId: source.id, properties: {} });
-        const validTarget = await cp.createItem({ databaseId: target.id, properties: {} });
-        const projectItemId = randomUUID();
-        const run = await createAgentRun(runtime, { projectItemId, triggeredBy: "user", task: "relation isolation" });
-        const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
-        const gateway = createGenericOperationGateway(runtime, testMetadataResolver);
+        const { property, caller, first } = await relationFixture(cp, { cardinality: "one_to_one" });
+        const { actor } = await agentActor({ db: runtime });
         for (const operation of ["relation.put", "relation.set"] as const) {
           for (const endpoint of [foreignItem.id, randomUUID()]) {
             await expect(
-              gateway.invoke(operation, actor, ALL_CAPABILITIES, {
+              gatewayFor(runtime).invoke(operation, actor, ALL_CAPABILITIES, {
                 relationPropertyId: property.id,
                 callerItemId: caller.id,
                 targetItemId: endpoint,
@@ -947,24 +924,14 @@ describe("createGenericOperationGateway (issue #220)", () => {
           }
         }
         expect(await cp.listItemRelations(caller.id, property.id)).toEqual([]);
-        await cp.createRelation({
-          relationPropertyId: property.id,
-          callerItemId: caller.id,
-          targetItemId: validTarget.id,
-        });
-        expect(await cp.listItemRelations(caller.id, property.id)).toMatchObject([{ targetItemId: validTarget.id }]);
-        const requests = await runtime.query<{ count: string }>(
-          "SELECT count(*)::text AS count FROM approval_requests",
-        );
-        expect(requests.rows[0]?.count).toBe("0");
+        await cp.createRelation({ relationPropertyId: property.id, callerItemId: caller.id, targetItemId: first.id });
+        expect(await cp.listItemRelations(caller.id, property.id)).toMatchObject([{ targetItemId: first.id }]);
+        expect(await countOf(COUNT_REQUESTS, [], runtime)).toBe(0);
       });
       await runInTenant(foreignTenant, async () => {
-        const visible = await cp.getItem(foreignItem.databaseId, foreignItem.id);
-        expect(visible?.id).toBe(foreignItem.id);
+        expect((await cp.getItem(foreignItem.databaseId, foreignItem.id))?.id).toBe(foreignItem.id);
       });
-    } finally {
-      await runtime.end();
-    }
+    });
   });
 
   it.each(["archive-first", "approval-first"] as const)(
@@ -972,11 +939,8 @@ describe("createGenericOperationGateway (issue #220)", () => {
     async (order) =>
       inTenantZero(async () => {
         const scoped = await createRuntimeRolePool(pool, "semprec_data");
-        let active = true;
-        let release!: () => void;
-        let reached!: () => void;
-        const gate = new Promise<void>((resolve) => (release = resolve));
-        const barrier = new Promise<void>((resolve) => (reached = resolve));
+        const release = signal();
+        const reached = signal();
         let approvalPid = 0;
         let archivePid = 0;
         let replayPid = 0;
@@ -986,109 +950,49 @@ describe("createGenericOperationGateway (issue #220)", () => {
           const db = await cp.createDatabase({ name: "Archive reservation" });
           await cp.createProperty({ databaseId: db.id, key: "note", name: "Note", type: "text" });
           const item = await cp.createItem({ databaseId: db.id, properties: { note: "before" } });
-          const projectItemId = randomUUID();
-          const run = await createAgentRun(scoped, { projectItemId, triggeredBy: "user", task: "patch" });
-          const actor: AuthenticatedActor = {
-            userId: run.actorUserId,
-            runId: run.id,
-            agentProjectItemId: projectItemId,
-          };
-          registerItemUpdateHook(async ({ client, item: changed, writer }) => {
-            if (!active || changed.id !== item.id) return;
-            requireApprovalForWrite(client, writer, [{ kind: "testReason" }]);
-            if (pause && writer.approvedRequestId) {
-              approvalPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
-              reached();
-              await gate;
-            }
+          const { actor } = await agentActor({ db: scoped });
+          gateItemUpdates(item.id, async ({ client, writer }) => {
+            if (!pause || !writer.approvedRequestId) return;
+            approvalPid = await backendPid(client);
+            reached.resolve();
+            await release.promise;
           });
-          const gateway = createGenericOperationGateway(scoped, testMetadataResolver);
           const input = { itemId: item.id, properties: { note: "after" }, ifVersion: item.version };
-          let requestId = "";
-          try {
-            await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, input);
-            expect.unreachable("Expected approval");
-          } catch (error) {
-            if (!(error instanceof ApprovalRequiredError)) throw error;
-            requestId = error.details.approvalRequestId;
-          }
-          await withTransaction(scoped, (client) =>
-            decideAndEnqueueApprovalRequest(client, {
-              approvalRequestId: requestId,
-              decision: "approved",
-              decidedByUserId: run.actorUserId,
-            }),
-          );
-          const request = await getApprovalRequest(scoped, requestId);
-          if (!request || !isGenericOperationApprovalRequestPayload(request.payload))
-            throw new Error("Missing request");
-          const typed = { ...request, payload: request.payload };
-          const observedReplayPool = new Proxy(scoped, {
-            get(target, key, receiver) {
-              if (key !== "connect") {
-                const value: unknown = Reflect.get(target, key, receiver);
-                return typeof value === "function" ? value.bind(target) : value;
-              }
-              return async () => {
-                const client = await target.connect();
-                replayPid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
-                return client;
-              };
+          const requestId = await approveAgentRequest("item.patch", actor, input, scoped);
+          const typed = await loadGeneric(requestId, scoped);
+          const observedReplayPool = interceptPool(scoped, {
+            connect: async (client) => {
+              replayPid = await backendPid(client);
             },
           });
-          const archivePool = new Proxy(scoped, {
-            get(target, key, receiver) {
-              if (key !== "connect") {
-                const value: unknown = Reflect.get(target, key, receiver);
-                return typeof value === "function" ? value.bind(target) : value;
+          const archivePool = interceptPool(scoped, {
+            connect: async (client) => {
+              archivePid = await backendPid(client);
+            },
+            query: async (_client, args, next) => {
+              if (order === "archive-first" && args[0] === "COMMIT") {
+                reached.resolve();
+                await release.promise;
               }
-              return async () => {
-                const client = await target.connect();
-                archivePid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
-                return new Proxy(client, {
-                  get(inner, field, receiver2) {
-                    if (field !== "query") {
-                      const value: unknown = Reflect.get(inner, field, receiver2);
-                      return typeof value === "function" ? value.bind(inner) : value;
-                    }
-                    return async (...args: unknown[]) => {
-                      if (order === "archive-first" && args[0] === "COMMIT") {
-                        reached();
-                        await gate;
-                      }
-                      return Reflect.apply(inner.query.bind(inner), inner, args);
-                    };
-                  },
-                });
-              };
+              return next();
             },
           });
+          const archive = () => createChokePoint(archivePool).archiveDatabase(db.id);
+          let failure: { error: unknown } | undefined;
           if (order === "archive-first") {
-            const archive = createChokePoint(archivePool).archiveDatabase(db.id);
-            let failure: { error: unknown } | undefined;
+            const archiving = archive();
             try {
-              await Promise.race([
-                barrier,
-                archive.then(() => {
-                  throw new Error("Archive ended before barrier");
-                }),
-              ]);
+              await reachBarrier(reached.promise, archiving, "Archive");
               await expect(replayApprovedGenericOperation(observedReplayPool, typed)).rejects.toBeInstanceOf(
                 ApprovalResourceBusyError,
               );
               expect(replayPid).toBeGreaterThan(0);
               expect(replayPid).not.toBe(archivePid);
-              process.stdout.write(`item archive-first: holder=${archivePid} contender=${replayPid}\n`);
-              const beforeCount = (
-                await scoped.query<{ count: string }>("SELECT count(*)::text AS count FROM approval_requests")
-              ).rows[0]?.count;
-              await expect(gateway.invoke("item.patch", actor, ALL_CAPABILITIES, input)).rejects.toBeInstanceOf(
-                ApprovalResourceBusyError,
-              );
-              expect(
-                (await scoped.query<{ count: string }>("SELECT count(*)::text AS count FROM approval_requests")).rows[0]
-                  ?.count,
-              ).toBe(beforeCount);
+              const beforeCount = await countOf(COUNT_REQUESTS, [], scoped);
+              await expect(
+                gatewayFor(scoped).invoke("item.patch", actor, ALL_CAPABILITIES, input),
+              ).rejects.toBeInstanceOf(ApprovalResourceBusyError);
+              expect(await countOf(COUNT_REQUESTS, [], scoped)).toBe(beforeCount);
               await expect(
                 withTransaction(scoped, async (client) => {
                   try {
@@ -1101,266 +1005,129 @@ describe("createGenericOperationGateway (issue #220)", () => {
                   }
                 }),
               ).rejects.toBeInstanceOf(ApprovalResourceBusyError);
-              expect((await getApprovalRequest(scoped, requestId))?.executionStatus).toBe("queued");
+              expect(await statusOf(requestId, scoped)).toBe("queued");
             } catch (error) {
               failure = { error };
             } finally {
-              release();
+              release.resolve();
             }
-            const [done] = await Promise.allSettled([archive]);
-            if (done.status === "rejected") {
-              if (failure && failure.error !== done.reason) throw new AggregateError([failure.error, done.reason]);
-              throw done.reason;
-            }
-            if (failure) throw failure.error;
+            await throwFailures(failure, [archiving]);
             expect((await replayApprovedGenericOperation(scoped, typed)).error).toBe(true);
-            expect((await getApprovalRequest(scoped, requestId))?.executionStatus).toBe("conflict");
+            expect(await statusOf(requestId, scoped)).toBe("conflict");
             expect((await cp.getItem(db.id, item.id))?.properties.note).toBe("before");
           } else {
             pause = true;
             const replay = replayApprovedGenericOperation(scoped, typed);
-            let archive: Promise<unknown> | undefined;
-            let failure: { error: unknown } | undefined;
+            let archiving: Promise<unknown> | undefined;
             try {
-              await Promise.race([
-                barrier,
-                replay.then(() => {
-                  throw new Error("Replay ended before barrier");
-                }),
-              ]);
-              archive = createChokePoint(archivePool).archiveDatabase(db.id);
-              void archive.catch(() => {});
-              await vi.waitFor(async () => {
-                expect(archivePid).toBeGreaterThan(0);
-                const blocked = await pool.query<{ pids: number[] }>("SELECT pg_blocking_pids($1) AS pids", [
-                  archivePid,
-                ]);
-                expect(blocked.rows[0]?.pids).toContain(approvalPid);
-              });
-              process.stdout.write(`item approval-first: holder=${approvalPid} contender=${archivePid}\n`);
+              await reachBarrier(reached.promise, replay, "Replay");
+              archiving = archive();
+              void archiving.catch(() => {});
+              await expectBlockedBy(() => archivePid, approvalPid);
             } catch (error) {
               failure = { error };
             } finally {
-              release();
+              release.resolve();
             }
-            const results = await Promise.allSettled(archive ? [replay, archive] : [replay]);
-            const errors: unknown[] = failure ? [failure.error] : [];
-            for (const result of results)
-              if (result.status === "rejected" && !errors.includes(result.reason)) errors.push(result.reason);
-            if (errors.length === 1) throw errors[0];
-            if (errors.length > 1) throw new AggregateError(errors);
-            expect((await getApprovalRequest(scoped, requestId))?.executionStatus).toBe("succeeded");
+            await throwFailures(failure, archiving ? [replay, archiving] : [replay]);
+            expect(await statusOf(requestId, scoped)).toBe("succeeded");
             expect((await cp.getItem(db.id, item.id))?.properties.note).toBe("after");
           }
         } finally {
-          active = false;
-          release();
+          release.resolve();
           await scoped.end();
         }
       }),
   );
 
-  it("approves a recurrence change exactly once", async () =>
-    inTenantZero(async () => {
-      const tasks = await withTransaction(pool, (client) => getDatabaseByModuleId(client, "tasks"));
-      if (!tasks) throw new Error("Tasks missing");
-      const item = await chokePoint.createItem({
-        databaseId: tasks.id,
-        properties: { name: "Task", date: "2026-10-22" },
-      });
-      const weekly = await chokePoint.updateItem({
-        databaseId: tasks.id,
-        itemId: item.id,
-        propertiesPatch: { recurrence: { preset: "weekly" } },
-      });
-      const projectItemId = randomUUID();
-      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "change recurrence" });
-      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-      let requestId = "";
-      try {
-        await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
-          itemId: item.id,
-          properties: { recurrence: { preset: "monthly" } },
-          ifVersion: weekly.version,
-        });
-        expect.unreachable("Expected approval");
-      } catch (error) {
-        if (!(error instanceof ApprovalRequiredError)) throw error;
-        requestId = error.details.approvalRequestId;
-      }
-      expect((await chokePoint.findItem(item.id))?.properties.recurrence).toEqual(weekly.properties.recurrence);
-      const pending = await getApprovalRequest(pool, requestId);
-      expect(pending?.description?.key).toBe("approval.changesSeries");
-      await withTransaction(pool, (client) =>
-        decideAndEnqueueApprovalRequest(client, {
-          approvalRequestId: requestId,
-          decision: "approved",
-          decidedByUserId: run.actorUserId,
-        }),
-      );
-      const request = await getApprovalRequest(pool, requestId);
-      if (!request || !isGenericOperationApprovalRequestPayload(request.payload)) throw new Error("Missing request");
-      expect((await replayApprovedGenericOperation(pool, { ...request, payload: request.payload })).error).toBe(false);
-      const after = await chokePoint.findItem(item.id);
-      expect(after?.properties.recurrence).toMatchObject({
-        preset: "monthly",
-        rule: { kind: "monthDates", dates: [22] },
-      });
-      expect((await replayApprovedGenericOperation(pool, { ...request, payload: request.payload })).error).toBe(false);
-      expect(await chokePoint.findItem(item.id)).toEqual(after);
-    }));
-
-  it("executes a new series immediately, leaves a rejected ending unchanged, and conflicts on a stale series", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
-    let failure: { error: unknown } | undefined;
-    try {
-      await runInTenant(getTenantZeroId(), async () => {
+  it("executes a new series immediately, leaves a rejected ending unchanged, and conflicts on a stale series", () =>
+    withRuntimePool((runtime) =>
+      inTenantZero(async () => {
         const tasks = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "tasks"));
         if (!tasks) throw new Error("Tasks missing");
         const cp = createChokePoint(runtime);
         const item = await cp.createItem({ databaseId: tasks.id, properties: { name: "Task", date: "2026-10-22" } });
-        const projectItemId = randomUUID();
-        const run = await withTransaction(runtime, (client) =>
-          createAgentRun(client, { projectItemId, triggeredBy: "user", task: "recurrence" }),
-        );
-        const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
-        const gateway = createGenericOperationGateway(runtime, testMetadataResolver);
-        const initial = await cp.findItem(item.id);
+        const { run, projectItemId, actor } = await agentActor({ db: runtime });
+        const person: AuthenticatedActor = { userId: actor.userId, restSession: true };
+        const patch = (properties: Record<string, unknown>, ifVersion: string, who = actor, caps = ALL_CAPABILITIES) =>
+          gatewayFor(runtime).invoke("item.patch", who, caps, { itemId: item.id, properties, ifVersion });
+        const findTask = () => cp.findItem(item.id);
+        const thursday = { kind: "weekdays", days: ["thu"] };
+        const monthly22 = { kind: "monthDates", dates: [22] };
+        const everyDay = { kind: "weekdays", days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] };
+
+        const initial = await findTask();
         await expect(
-          gateway.invoke("item.patch", actor, NO_CAPABILITIES, {
-            itemId: item.id,
-            properties: { recurrence: { preset: "weekly" } },
-            ifVersion: item.version,
-          }),
+          patch({ recurrence: { preset: "weekly" } }, item.version, actor, NO_CAPABILITIES),
         ).rejects.toMatchObject({ status: 404, code: "not_found" });
-        expect(await cp.findItem(item.id)).toEqual(initial);
-        const created = await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
-          itemId: item.id,
-          properties: { recurrence: { preset: "weekly" } },
-          ifVersion: item.version,
-        });
+        expect(await findTask()).toEqual(initial);
+        const created = await patch({ recurrence: { preset: "weekly" } }, item.version);
         expect(created.properties.recurrence).toMatchObject({ preset: "weekly" });
         expect(created.properties.seriesId).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/));
-        const seriesSnapshot = () =>
-          runtime.query<{
-            item_id: string;
-            series_id: string;
-            active: boolean;
-            mode: string;
-            rule: unknown;
-            anchor_date: Date | null;
-            template: unknown;
-          }>(
-            "SELECT item_id, series_id, active, mode, rule, anchor_date, template FROM task_recurrence WHERE series_id = $1",
-            [created.properties.seriesId],
-          );
-        const originalSeries = await seriesSnapshot();
-        expect(originalSeries.rows).toMatchObject([
-          { active: true, mode: "fixed", rule: { kind: "weekdays", days: ["thu"] } },
-        ]);
-        const weekly = await cp.findItem(item.id);
+        const seriesRows = async (seriesId: unknown = created.properties.seriesId) =>
+          (
+            await runtime.query<{ active: boolean; mode: string; rule: unknown; anchor_date: Date | null }>(
+              "SELECT item_id, series_id, active, mode, rule, anchor_date, template FROM task_recurrence WHERE series_id = $1",
+              [seriesId],
+            )
+          ).rows;
+        const setSeriesRule = (rule: unknown) =>
+          runtime.query("UPDATE task_recurrence SET rule = $2::jsonb WHERE series_id = $1", [
+            created.properties.seriesId,
+            JSON.stringify(rule),
+          ]);
+        const originalSeries = await seriesRows();
+        expect(originalSeries).toMatchObject([{ active: true, mode: "fixed", rule: thursday }]);
+        const weekly = await findTask();
         if (!weekly) throw new Error("Task missing");
         expect(weekly.properties.recurrence).toMatchObject({ preset: "weekly" });
-        const requestFor = async (value: unknown, version: string, ordinary: Record<string, unknown> = {}) => {
-          try {
-            await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
-              itemId: item.id,
-              properties: { ...ordinary, recurrence: value },
-              ifVersion: version,
-            });
-          } catch (error) {
-            if (error instanceof ApprovalRequiredError) return error.details.approvalRequestId;
-            throw error;
-          }
-          throw new Error("Approval was not requested");
+        const requestFor = (recurrence: unknown, version: string, ordinary: Record<string, unknown> = {}) =>
+          requestApproval(
+            "item.patch",
+            actor,
+            { itemId: item.id, properties: { ...ordinary, recurrence }, ifVersion: version },
+            { db: runtime },
+          );
+        const approveAndLoad = async (requestId: string) => {
+          await decide(requestId, actor.userId, { db: runtime });
+          return loadGeneric(requestId, runtime);
         };
-        const rejected = await requestFor(null, weekly.version);
-        expect((await seriesSnapshot()).rows).toEqual(originalSeries.rows);
-        await withTransaction(runtime, (client) =>
-          decideAndEnqueueApprovalRequest(client, {
-            approvalRequestId: rejected,
-            decision: "rejected",
-            decidedByUserId: actor.userId,
-          }),
-        );
-        expect(await cp.findItem(item.id)).toEqual(weekly);
-        expect((await seriesSnapshot()).rows).toEqual(originalSeries.rows);
-        const seriesOnly = await requestFor({ preset: "monthly" }, weekly.version);
-        expect((await seriesSnapshot()).rows).toEqual(originalSeries.rows);
-        // Synthetic intervening state: normal recurrence owners update the item projection too.
-        const seriesOnlyRule = { kind: "weekdays", days: ["mon"] };
-        await runtime.query("UPDATE task_recurrence SET rule = $2::jsonb WHERE series_id = $1", [
-          created.properties.seriesId,
-          JSON.stringify(seriesOnlyRule),
-        ]);
-        expect(await cp.findItem(item.id)).toEqual(weekly);
-        await withTransaction(runtime, (client) =>
-          decideAndEnqueueApprovalRequest(client, {
-            approvalRequestId: seriesOnly,
-            decision: "approved",
-            decidedByUserId: actor.userId,
-          }),
-        );
-        const seriesOnlyRequest = await withTransaction(runtime, (client) => getApprovalRequest(client, seriesOnly));
-        if (!seriesOnlyRequest || !isGenericOperationApprovalRequestPayload(seriesOnlyRequest.payload))
-          throw new Error("Missing series-only request");
-        const jobsBeforeConflict = await pool.query<{ id: string; key: string | null }>(
-          "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
-        );
-        const conflictInvalidations: unknown[] = [];
-        setInvalidationHook((event) => conflictInvalidations.push(event));
-        try {
-          expect(
-            (
-              await replayApprovedGenericOperation(runtime, {
-                ...seriesOnlyRequest,
-                payload: seriesOnlyRequest.payload,
-              })
-            ).error,
-          ).toBe(true);
-        } finally {
+        /** Replays `request` expecting `error`, asserts it changed no task, series or job, and returns its announcements. */
+        const replayChangingNothing = async (request: GenericRequest, error: boolean) => {
+          const before = { task: await findTask(), series: await seriesRows(), jobs: await jobRows() };
+          const events = captureInvalidations();
+          expect((await replayApprovedGenericOperation(runtime, request)).error).toBe(error);
           setInvalidationHook(() => {});
-        }
-        expect(await cp.findItem(item.id)).toEqual(weekly);
-        expect(
-          (
-            await runtime.query<{ rule: unknown }>("SELECT rule FROM task_recurrence WHERE series_id = $1", [
-              created.properties.seriesId,
-            ])
-          ).rows,
-        ).toEqual([{ rule: seriesOnlyRule }]);
-        expect(
-          (await withTransaction(runtime, (client) => getApprovalRequest(client, seriesOnly)))?.executionStatus,
-        ).toBe("conflict");
-        expect(
-          (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
-            .rows,
-        ).toEqual(jobsBeforeConflict.rows);
+          expect({ task: await findTask(), series: await seriesRows(), jobs: await jobRows() }).toEqual(before);
+          return events;
+        };
+
+        const rejected = await requestFor(null, weekly.version);
+        expect(await seriesRows()).toEqual(originalSeries);
+        await decide(rejected, actor.userId, { db: runtime, decision: "rejected" });
+        expect(await findTask()).toEqual(weekly);
+        expect(await seriesRows()).toEqual(originalSeries);
+
+        const seriesOnly = await requestFor({ preset: "monthly" }, weekly.version);
+        expect(await seriesRows()).toEqual(originalSeries);
+        // Synthetic intervening state: normal recurrence owners update the item projection too.
+        await setSeriesRule({ kind: "weekdays", days: ["mon"] });
+        expect(await findTask()).toEqual(weekly);
         // The conflict changed no data; it announces only the request that reached its terminal state, and the owner's count.
-        expect(conflictInvalidations).toEqual([
-          { scope: "approvalRequest", approvalRequestId: seriesOnly, userId: actor.userId },
-          { scope: "badgeCounts", userId: actor.userId },
-          { scope: "agentRuns", projectItemId, agentRunId: run.id, userId: actor.userId },
-        ]);
-        await runtime.query("UPDATE task_recurrence SET rule = $2::jsonb WHERE series_id = $1", [
-          created.properties.seriesId,
-          JSON.stringify({ kind: "weekdays", days: ["thu"] }),
-        ]);
-        const stale = await requestFor({ preset: "monthly" }, weekly.version, {
-          name: "Changed only after approval",
-        });
-        expect(await cp.findItem(item.id)).toEqual(weekly);
-        const pending = await withTransaction(runtime, (client) => getApprovalRequest(client, stale));
-        expect(pending).toMatchObject({
+        expect(await replayChangingNothing(await approveAndLoad(seriesOnly), true)).toEqual(
+          requestAnnouncements(seriesOnly, run, projectItemId),
+        );
+        expect(await findTask()).toEqual(weekly);
+        expect(await statusOf(seriesOnly, runtime)).toBe("conflict");
+
+        await setSeriesRule(thursday);
+        const stale = await requestFor({ preset: "monthly" }, weekly.version, { name: "Changed only after approval" });
+        expect(await findTask()).toEqual(weekly);
+        expect(await getApprovalRequest(runtime, stale)).toMatchObject({
           riskClass: "write",
           description: {
             key: "approval.changesSeries",
-            params: {
-              taskName: "Task",
-              fromRule: JSON.stringify({ kind: "weekdays", days: ["thu"] }),
-              toRule: JSON.stringify({ kind: "monthDates", dates: [22] }),
-            },
+            params: { taskName: "Task", fromRule: JSON.stringify(thursday), toRule: JSON.stringify(monthly22) },
           },
         });
         const notifications = await runtime.query<{ id: string; kind: string; body: string | null }>(
@@ -1371,324 +1138,123 @@ describe("createGenericOperationGateway (issue #220)", () => {
           {
             id: expect.any(String),
             kind: "approval_pending",
-            body: `Změnit opakování úkolu „Task“ z ${JSON.stringify({ kind: "weekdays", days: ["thu"] })} na ${JSON.stringify({ kind: "monthDates", dates: [22] })}. Lze ji později vzít zpět.`,
+            body: `Změnit opakování úkolu „Task“ z ${JSON.stringify(thursday)} na ${JSON.stringify(monthly22)}. Lze ji později vzít zpět.`,
           },
         ]);
-        const notificationId = notifications.rows[0]?.id;
-        if (!notificationId) throw new Error("Missing approval notification");
-        const fanout = await pool.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = $1", [
-          `notification-fanout:${notificationId}`,
-        ]);
-        expect(fanout.rows).toEqual([{ key: `notification-fanout:${notificationId}` }]);
-        const changed = await gateway.invoke(
-          "item.patch",
-          { userId: actor.userId, restSession: true },
-          ALL_CAPABILITIES,
-          {
-            itemId: item.id,
-            properties: { recurrence: { preset: "daily" } },
-            ifVersion: weekly.version,
-          },
-        );
-        const changedProjection = await cp.findItem(item.id);
+        const fanoutKey = `notification-fanout:${notifications.rows[0]?.id}`;
+        expect(
+          (await pool.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = $1", [fanoutKey])).rows,
+        ).toEqual([{ key: fanoutKey }]);
+
+        const changed = await patch({ recurrence: { preset: "daily" } }, weekly.version, person);
+        const changedProjection = await findTask();
         expect(changedProjection?.updatedAt).toBe(changed.updatedAt);
         expect(changedProjection?.properties.recurrence).toMatchObject({
           preset: "daily",
           mode: "fixed",
-          rule: { kind: "weekdays", days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] },
+          rule: everyDay,
         });
-        expect((await seriesSnapshot()).rows).toMatchObject([
-          {
-            active: true,
-            mode: "fixed",
-            rule: { kind: "weekdays", days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] },
-          },
-        ]);
-        await withTransaction(runtime, (client) =>
-          decideAndEnqueueApprovalRequest(client, {
-            approvalRequestId: stale,
-            decision: "approved",
-            decidedByUserId: actor.userId,
-          }),
+        expect(await seriesRows()).toMatchObject([{ active: true, mode: "fixed", rule: everyDay }]);
+        expect(await replayChangingNothing(await approveAndLoad(stale), true)).toEqual(
+          requestAnnouncements(stale, run, projectItemId),
         );
-        const request = await withTransaction(runtime, (client) => getApprovalRequest(client, stale));
-        if (!request || !isGenericOperationApprovalRequestPayload(request.payload)) throw new Error("Missing request");
-        const seriesBeforeConflict = await seriesSnapshot();
-        const jobsBeforeUserConflict = await pool.query<{ id: string; key: string | null }>(
-          "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
+        expect(await statusOf(stale, runtime)).toBe("conflict");
+
+        const approvedChange = await approveAndLoad(
+          await requestFor({ preset: "monthly" }, changed.version, { name: "Approved together" }),
         );
-        const userConflictInvalidations: unknown[] = [];
-        setInvalidationHook((event) => userConflictInvalidations.push(event));
-        try {
-          expect((await replayApprovedGenericOperation(runtime, { ...request, payload: request.payload })).error).toBe(
-            true,
-          );
-        } finally {
-          setInvalidationHook(() => {});
-        }
-        expect(await cp.findItem(item.id)).toEqual(changedProjection);
-        expect((await seriesSnapshot()).rows).toEqual(seriesBeforeConflict.rows);
-        expect(
-          (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
-            .rows,
-        ).toEqual(jobsBeforeUserConflict.rows);
-        // The conflict changed no data; it announces only the request that reached its terminal state, and the owner's count.
-        expect(userConflictInvalidations).toEqual([
-          { scope: "approvalRequest", approvalRequestId: stale, userId: actor.userId },
-          { scope: "badgeCounts", userId: actor.userId },
-          { scope: "agentRuns", projectItemId, agentRunId: run.id, userId: actor.userId },
-        ]);
-        expect((await withTransaction(runtime, (client) => getApprovalRequest(client, stale)))?.executionStatus).toBe(
-          "conflict",
-        );
-        const changeRequest = await requestFor({ preset: "monthly" }, changed.version, {
-          name: "Approved together",
-        });
-        await withTransaction(runtime, (client) =>
-          decideAndEnqueueApprovalRequest(client, {
-            approvalRequestId: changeRequest,
-            decision: "approved",
-            decidedByUserId: actor.userId,
-          }),
-        );
-        const approvedChange = await withTransaction(runtime, (client) => getApprovalRequest(client, changeRequest));
-        if (!approvedChange || !isGenericOperationApprovalRequestPayload(approvedChange.payload))
-          throw new Error("Missing change request");
-        expect(
-          (await replayApprovedGenericOperation(runtime, { ...approvedChange, payload: approvedChange.payload })).error,
-        ).toBe(false);
-        const changedTogether = await cp.findItem(item.id);
-        expect(changedTogether?.properties).toMatchObject({
-          name: "Approved together",
-          recurrence: { preset: "monthly", mode: "fixed", rule: { kind: "monthDates", dates: [22] } },
-        });
-        expect(
-          (
-            await runtime.query<{ rule: unknown }>("SELECT rule FROM task_recurrence WHERE series_id = $1", [
-              created.properties.seriesId,
-            ])
-          ).rows,
-        ).toEqual([{ rule: { kind: "monthDates", dates: [22] } }]);
-        const seriesAfterChange = await seriesSnapshot();
-        const jobsAfterChange = await pool.query<{ id: string; key: string | null }>(
-          "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
-        );
-        const replayInvalidations: unknown[] = [];
-        setInvalidationHook((event) => replayInvalidations.push(event));
-        try {
-          expect(
-            (await replayApprovedGenericOperation(runtime, { ...approvedChange, payload: approvedChange.payload }))
-              .error,
-          ).toBe(false);
-        } finally {
-          setInvalidationHook(() => {});
-        }
-        expect(await cp.findItem(item.id)).toEqual(changedTogether);
-        expect((await seriesSnapshot()).rows).toEqual(seriesAfterChange.rows);
-        expect(
-          (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
-            .rows,
-        ).toEqual(jobsAfterChange.rows);
-        expect(replayInvalidations).toEqual([]);
+        expect((await replayApprovedGenericOperation(runtime, approvedChange)).error).toBe(false);
+        const changedTogether = await findTask();
         if (!changedTogether) throw new Error("Missing changed task");
-        const ending = await requestFor(null, changedTogether.version);
-        await withTransaction(runtime, (client) =>
-          decideAndEnqueueApprovalRequest(client, {
-            approvalRequestId: ending,
-            decision: "approved",
-            decidedByUserId: actor.userId,
-          }),
-        );
-        const approvedEnd = await withTransaction(runtime, (client) => getApprovalRequest(client, ending));
-        if (!approvedEnd || !isGenericOperationApprovalRequestPayload(approvedEnd.payload))
-          throw new Error("Missing ending request");
-        expect(
-          (await replayApprovedGenericOperation(runtime, { ...approvedEnd, payload: approvedEnd.payload })).error,
-        ).toBe(false);
-        const ended = await cp.findItem(item.id);
-        expect(ended?.properties).toMatchObject({ recurrence: null, seriesId: null, occurrenceDate: null });
-        const rowsAfterEnd = await runtime.query<{ active: boolean }>(
-          "SELECT active FROM task_recurrence WHERE series_id = $1",
-          [created.properties.seriesId],
-        );
-        expect(rowsAfterEnd.rows).toEqual([{ active: false }]);
-        const seriesAfterEnd = await seriesSnapshot();
-        const jobsAfterEnd = await pool.query<{ id: string; key: string | null }>(
-          "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
-        );
-        expect(
-          (await replayApprovedGenericOperation(runtime, { ...approvedEnd, payload: approvedEnd.payload })).error,
-        ).toBe(false);
-        expect(await cp.findItem(item.id)).toEqual(ended);
-        expect((await seriesSnapshot()).rows).toEqual(seriesAfterEnd.rows);
-        expect(
-          (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
-            .rows,
-        ).toEqual(jobsAfterEnd.rows);
+        expect(changedTogether.properties).toMatchObject({
+          name: "Approved together",
+          recurrence: { preset: "monthly", mode: "fixed", rule: monthly22 },
+        });
+        expect(await seriesRows()).toMatchObject([{ rule: monthly22 }]);
+        expect(await replayChangingNothing(approvedChange, false)).toEqual([]);
+
+        const approvedEnd = await approveAndLoad(await requestFor(null, changedTogether.version));
+        expect((await replayApprovedGenericOperation(runtime, approvedEnd)).error).toBe(false);
+        const ended = await findTask();
         if (!ended) throw new Error("Missing ended task");
-        const requestsBeforeUser = await runtime.query<{ id: string }>("SELECT id FROM approval_requests ORDER BY id");
-        const userStart = await gateway.invoke(
-          "item.patch",
-          { userId: actor.userId, restSession: true },
-          ALL_CAPABILITIES,
-          {
-            itemId: item.id,
-            properties: { recurrence: { preset: "daily" } },
-            ifVersion: ended.version,
-          },
-        );
-        const userStarted = await cp.findItem(item.id);
+        expect(ended.properties).toMatchObject({ recurrence: null, seriesId: null, occurrenceDate: null });
+        expect(await seriesRows()).toMatchObject([{ active: false }]);
+        await replayChangingNothing(approvedEnd, false);
+
+        // A person starts and ends a series without any approval request.
+        const requestsBeforeUser = await countOf(COUNT_REQUESTS, [], runtime);
+        const userStart = await patch({ recurrence: { preset: "daily" } }, ended.version, person);
+        const userStarted = await findTask();
         expect(userStarted?.updatedAt).toBe(userStart.updatedAt);
         const userSeriesId = userStarted?.properties.seriesId;
         expect(userSeriesId).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/));
-        const userEnd = await gateway.invoke(
-          "item.patch",
-          { userId: actor.userId, restSession: true },
-          ALL_CAPABILITIES,
-          {
-            itemId: item.id,
-            properties: { recurrence: null },
-            ifVersion: userStart.version,
-          },
-        );
-        expect((await cp.findItem(item.id))?.properties).toMatchObject({
-          recurrence: null,
-          seriesId: null,
-          occurrenceDate: null,
+        const userEnd = await patch({ recurrence: null }, userStart.version, person);
+        expect(await findTask()).toMatchObject({
+          updatedAt: userEnd.updatedAt,
+          properties: { recurrence: null, seriesId: null, occurrenceDate: null },
         });
-        expect((await cp.findItem(item.id))?.updatedAt).toBe(userEnd.updatedAt);
-        expect(
-          (
-            await runtime.query<{ active: boolean }>("SELECT active FROM task_recurrence WHERE series_id = $1", [
-              userSeriesId,
-            ])
-          ).rows,
-        ).toEqual([{ active: false }]);
-        expect((await runtime.query<{ id: string }>("SELECT id FROM approval_requests ORDER BY id")).rows).toEqual(
-          requestsBeforeUser.rows,
-        );
-      });
-    } catch (error) {
-      failure = { error };
-    }
-    try {
-      await runtime.end();
-    } catch (cleanupError) {
-      if (failure)
-        throw new AggregateError([failure.error, cleanupError], "Recurrence test and cleanup failed", {
-          // The test failure is primary; the cleanup error remains in the aggregate.
-          // eslint-disable-next-line preserve-caught-error
-          cause: failure.error,
-        });
-      throw cleanupError;
-    }
-    if (failure) throw failure.error;
-  });
+        expect(await seriesRows(userSeriesId)).toMatchObject([{ active: false }]);
+        expect(await countOf(COUNT_REQUESTS, [], runtime)).toBe(requestsBeforeUser);
+      }),
+    ));
 
   it("rolls back a recurrence approval request if its notification insert fails", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
     let failure: { error: unknown } | undefined;
     let triggerCreated = false;
-    const invalidations: unknown[] = [];
     try {
-      await runInTenant(getTenantZeroId(), async () => {
-        const tasks = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "tasks"));
-        if (!tasks) throw new Error("Tasks missing");
-        const cp = createChokePoint(runtime);
-        const item = await cp.createItem({
-          databaseId: tasks.id,
-          properties: { name: "Atomic task", date: "2026-10-22" },
-        });
-        const weekly = await cp.updateItem({
-          databaseId: tasks.id,
-          itemId: item.id,
-          propertiesPatch: { recurrence: { preset: "weekly" } },
-        });
-        const projectItemId = randomUUID();
-        const run = await createAgentRun(runtime, {
-          projectItemId,
-          triggeredBy: "user",
-          task: "change recurrence",
-        });
-        const actor: AuthenticatedActor = {
-          userId: run.actorUserId,
-          runId: run.id,
-          agentProjectItemId: projectItemId,
-        };
-        const gateway = createGenericOperationGateway(runtime, testMetadataResolver);
-        const beforeItem = await cp.findItem(item.id);
-        const beforeSeries = await runtime.query<{ item_id: string; mode: string; rule: unknown; active: boolean }>(
-          "SELECT item_id, mode, rule, active FROM task_recurrence WHERE item_id = $1",
-          [item.id],
-        );
-        const beforeRequests = await runtime.query<{ id: string }>("SELECT id FROM approval_requests ORDER BY id");
-        const beforeNotifications = await runtime.query<{ id: string }>("SELECT id FROM notifications ORDER BY id");
-        const beforeJobs = await pool.query<{ id: string; key: string | null }>(
-          "SELECT id, key FROM graphile_worker.jobs ORDER BY id",
-        );
-        await pool.query(`CREATE FUNCTION reject_recurrence_notification_test() RETURNS trigger LANGUAGE plpgsql AS $$
-          BEGIN RAISE EXCEPTION 'injected recurrence notification failure'; END $$`);
-        await pool.query(`CREATE TRIGGER reject_recurrence_notification_test BEFORE INSERT ON notifications
-          FOR EACH ROW WHEN (NEW.kind = 'approval_pending') EXECUTE FUNCTION reject_recurrence_notification_test()`);
-        triggerCreated = true;
-        setInvalidationHook((event) => invalidations.push(event));
-        await expect(
-          gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
+      await withRuntimePool((runtime) =>
+        inTenantZero(async () => {
+          const tasks = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "tasks"));
+          if (!tasks) throw new Error("Tasks missing");
+          const cp = createChokePoint(runtime);
+          const item = await cp.createItem({
+            databaseId: tasks.id,
+            properties: { name: "Atomic task", date: "2026-10-22" },
+          });
+          const weekly = await cp.updateItem({
+            databaseId: tasks.id,
             itemId: item.id,
-            properties: { recurrence: { preset: "monthly" }, name: "Not committed" },
-            ifVersion: weekly.version,
-          }),
-        ).rejects.toThrow("injected recurrence notification failure");
-        expect(await cp.findItem(item.id)).toEqual(beforeItem);
-        expect(
-          (
-            await runtime.query<{ item_id: string; mode: string; rule: unknown; active: boolean }>(
-              "SELECT item_id, mode, rule, active FROM task_recurrence WHERE item_id = $1",
-              [item.id],
-            )
-          ).rows,
-        ).toEqual(beforeSeries.rows);
-        expect((await runtime.query<{ id: string }>("SELECT id FROM approval_requests ORDER BY id")).rows).toEqual(
-          beforeRequests.rows,
-        );
-        expect((await runtime.query<{ id: string }>("SELECT id FROM notifications ORDER BY id")).rows).toEqual(
-          beforeNotifications.rows,
-        );
-        expect(
-          (await pool.query<{ id: string; key: string | null }>("SELECT id, key FROM graphile_worker.jobs ORDER BY id"))
-            .rows,
-        ).toEqual(beforeJobs.rows);
-        expect(invalidations).toEqual([]);
-      });
+            propertiesPatch: { recurrence: { preset: "weekly" } },
+          });
+          const { actor } = await agentActor({ db: runtime });
+          const snapshot = async () => ({
+            item: await cp.findItem(item.id),
+            series: (
+              await runtime.query<{ item_id: string; mode: string; rule: unknown; active: boolean }>(
+                "SELECT item_id, mode, rule, active FROM task_recurrence WHERE item_id = $1",
+                [item.id],
+              )
+            ).rows,
+            requests: (await runtime.query<{ id: string }>("SELECT id FROM approval_requests ORDER BY id")).rows,
+            notifications: (await runtime.query<{ id: string }>("SELECT id FROM notifications ORDER BY id")).rows,
+            jobs: await jobRows(),
+          });
+          const before = await snapshot();
+          await pool.query(`CREATE FUNCTION reject_recurrence_notification_test() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN RAISE EXCEPTION 'injected recurrence notification failure'; END $$`);
+          await pool.query(`CREATE TRIGGER reject_recurrence_notification_test BEFORE INSERT ON notifications
+            FOR EACH ROW WHEN (NEW.kind = 'approval_pending') EXECUTE FUNCTION reject_recurrence_notification_test()`);
+          triggerCreated = true;
+          const invalidations = captureInvalidations();
+          await expect(
+            gatewayFor(runtime).invoke("item.patch", actor, ALL_CAPABILITIES, {
+              itemId: item.id,
+              properties: { recurrence: { preset: "monthly" }, name: "Not committed" },
+              ifVersion: weekly.version,
+            }),
+          ).rejects.toThrow("injected recurrence notification failure");
+          expect(await snapshot()).toEqual(before);
+          expect(invalidations).toEqual([]);
+        }),
+      );
     } catch (error) {
       failure = { error };
     }
-    setInvalidationHook(() => {});
-    const cleanup: unknown[] = [];
-    for (const step of [
-      async () => {
-        if (triggerCreated) await pool.query("DROP TRIGGER reject_recurrence_notification_test ON notifications");
-      },
-      async () => {
-        await pool.query("DROP FUNCTION IF EXISTS reject_recurrence_notification_test()");
-      },
-      async () => {
-        await runtime.end();
-      },
-    ]) {
-      try {
-        await step();
-      } catch (error) {
-        cleanup.push(error);
-      }
-    }
-    if (cleanup.length)
-      throw new AggregateError(
-        failure ? [failure.error, ...cleanup] : cleanup,
-        "Recurrence notification cleanup failed",
-        { cause: failure ? failure.error : cleanup[0] },
-      );
-    if (failure) throw failure.error;
+    const cleanup = async () => {
+      if (triggerCreated) await pool.query("DROP TRIGGER reject_recurrence_notification_test ON notifications");
+      await pool.query("DROP FUNCTION IF EXISTS reject_recurrence_notification_test()");
+    };
+    await throwFailures(failure, [cleanup()]);
   });
 
   it("snapshots and replays a flagged item patch without the original version guard", async () =>
@@ -1700,66 +1266,36 @@ describe("createGenericOperationGateway (issue #220)", () => {
         databaseId: database.id,
         properties: { note: "before", headline: "Patch title" },
       });
-      const projectItemId = randomUUID();
-      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "patch item" });
-      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-      let active = true;
-      registerItemUpdateHook(async ({ client, item: changed, writer }) => {
-        if (active && changed.id === item.id) requireApprovalForWrite(client, writer, [{ kind: "testReason" }]);
+      const { run, actor } = await agentActor();
+      gateItemUpdates(item.id);
+      const requestId = await requestApproval("item.patch", actor, {
+        itemId: item.id,
+        properties: { note: "after" },
+        ifVersion: item.version,
       });
-      try {
-        let requestId = "";
-        try {
-          await gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
-            itemId: item.id,
-            properties: { note: "after" },
-            ifVersion: item.version,
-          });
-          expect.unreachable("Expected approval");
-        } catch (err) {
-          if (!(err instanceof ApprovalRequiredError)) throw err;
-          requestId = err.details.approvalRequestId;
-        }
-        expect((await chokePoint.findItem(item.id))?.properties.note).toBe("before");
-        const pending = await getApprovalRequest(pool, requestId);
-        expect(pending?.description).toEqual({
-          key: "approval.itemPatch",
-          params: { itemName: "Patch title", databaseKey: database.key, databaseName: "Flag patch" },
-        });
-        expect(JSON.stringify(pending?.description)).not.toContain("after");
-        expect(JSON.stringify(pending?.description)).not.toContain(item.id);
-        expect(pending?.resourceSnapshot.kind).toBe("item_patch");
-        await inTenantZero(() =>
-          withTransaction(pool, (client) =>
-            decideAndEnqueueApprovalRequest(client, {
-              approvalRequestId: requestId,
-              decision: "approved",
-              decidedByUserId: run.actorUserId,
-            }),
-          ),
-        );
-        // Simulate a stored stale client token without changing the snapshotted resource.
-        await pool.query(
-          "UPDATE approval_requests SET payload = jsonb_set(payload, '{canonicalInput,ifVersion}', to_jsonb($2::text)) WHERE id = $1",
-          [requestId, "2000-01-01T00:00:00.000Z"],
-        );
-        const request = await getApprovalRequest(pool, requestId);
-        if (!request || !isGenericOperationApprovalRequestPayload(request.payload))
-          throw new Error("Expected generic request");
-        expect((await replayApprovedGenericOperation(pool, { ...request, payload: request.payload })).error).toBe(
-          false,
-        );
-        expect((await chokePoint.findItem(item.id))?.properties.note).toBe("after");
-        await chokePoint.updateItem({
-          databaseId: database.id,
-          itemId: item.id,
-          propertiesPatch: { headline: "Renamed" },
-        });
-        expect((await getApprovalRequest(pool, requestId))?.description).toEqual(pending?.description);
-      } finally {
-        active = false;
-      }
+      expect((await chokePoint.findItem(item.id))?.properties.note).toBe("before");
+      const pending = await getApprovalRequest(pool, requestId);
+      expect(pending?.description).toEqual({
+        key: "approval.itemPatch",
+        params: { itemName: "Patch title", databaseKey: database.key, databaseName: "Flag patch" },
+      });
+      expect(JSON.stringify(pending?.description)).not.toContain("after");
+      expect(JSON.stringify(pending?.description)).not.toContain(item.id);
+      expect(pending?.resourceSnapshot.kind).toBe("item_patch");
+      await decide(requestId, run.actorUserId);
+      // Simulate a stored stale client token without changing the snapshotted resource.
+      await pool.query(
+        "UPDATE approval_requests SET payload = jsonb_set(payload, '{canonicalInput,ifVersion}', to_jsonb($2::text)) WHERE id = $1",
+        [requestId, "2000-01-01T00:00:00.000Z"],
+      );
+      expect((await replayById(requestId)).error).toBe(false);
+      expect((await chokePoint.findItem(item.id))?.properties.note).toBe("after");
+      await chokePoint.updateItem({
+        databaseId: database.id,
+        itemId: item.id,
+        propertiesPatch: { headline: "Renamed" },
+      });
+      expect((await getApprovalRequest(pool, requestId))?.description).toEqual(pending?.description);
     }));
 
   it("keeps a flagged relation-set description after the source is renamed", async () =>
@@ -1776,46 +1312,24 @@ describe("createGenericOperationGateway (issue #220)", () => {
       });
       const caller = await chokePoint.createItem({ databaseId: source.id, properties: { headline: "Original title" } });
       const destination = await chokePoint.createItem({ databaseId: target.id, properties: {} });
-      const projectItemId = randomUUID();
-      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "link" });
-      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
-      let active = true;
-      registerRelationEdgeWriteHook(async ({ client, edgeContext, writer }) => {
-        if (active && edgeContext.property.id === property.id)
-          requireApprovalForWrite(client, writer, [{ kind: "testReason" }]);
+      const { actor } = await agentActor();
+      gateRelationWrites(property.id);
+      const requestId = await requestApproval("relation.set", actor, {
+        relationPropertyId: property.id,
+        callerItemId: caller.id,
+        targetItemId: destination.id,
       });
-      try {
-        let requestId = "";
-        try {
-          await createGenericOperationGateway(pool, testMetadataResolver).invoke(
-            "relation.set",
-            actor,
-            ALL_CAPABILITIES,
-            {
-              relationPropertyId: property.id,
-              callerItemId: caller.id,
-              targetItemId: destination.id,
-            },
-          );
-          expect.unreachable("Expected approval");
-        } catch (error) {
-          if (!(error instanceof ApprovalRequiredError)) throw error;
-          requestId = error.details.approvalRequestId;
-        }
-        const description = (await getApprovalRequest(pool, requestId))?.description;
-        expect(description).toEqual({
-          key: "approval.relationSet",
-          params: { fromItemName: "Original title", fromDatabaseKey: source.key, propertyName: "Target" },
-        });
-        await chokePoint.updateItem({
-          databaseId: source.id,
-          itemId: caller.id,
-          propertiesPatch: { headline: "Renamed" },
-        });
-        expect((await getApprovalRequest(pool, requestId))?.description).toEqual(description);
-      } finally {
-        active = false;
-      }
+      const description = (await getApprovalRequest(pool, requestId))?.description;
+      expect(description).toEqual({
+        key: "approval.relationSet",
+        params: { fromItemName: "Original title", fromDatabaseKey: source.key, propertyName: "Target" },
+      });
+      await chokePoint.updateItem({
+        databaseId: source.id,
+        itemId: caller.id,
+        propertiesPatch: { headline: "Renamed" },
+      });
+      expect((await getApprovalRequest(pool, requestId))?.description).toEqual(description);
     }));
 
   it("snapshots and replays a flagged relation put", async () =>
@@ -1836,75 +1350,49 @@ describe("createGenericOperationGateway (issue #220)", () => {
         properties: { headline: "Declared title", name: "Other name" },
       });
       const destination = await chokePoint.createItem({ databaseId: target.id, properties: { name: "Fallback name" } });
-      const projectItemId = randomUUID();
-      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "link items" });
-      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
-      let active = true;
-      registerRelationEdgeWriteHook(async ({ client, edgeContext, writer }) => {
-        if (active && edgeContext.property.id === property.id)
-          requireApprovalForWrite(client, writer, [{ kind: "testReason" }]);
+      const { actor } = await agentActor();
+      gateRelationWrites(property.id);
+      const requestId = await approveAgentRequest("relation.put", actor, {
+        relationPropertyId: property.id,
+        callerItemId: caller.id.toUpperCase(),
+        targetItemId: destination.id.toUpperCase(),
       });
-      try {
-        const requestId = await approveDestructive("relation.put", actor, {
-          relationPropertyId: property.id,
-          callerItemId: caller.id.toUpperCase(),
-          targetItemId: destination.id.toUpperCase(),
-        });
-        expect(await chokePoint.listItemRelations(caller.id, property.id)).toEqual([]);
-        const request = await getApprovalRequest(pool, requestId);
-        if (!request || !isGenericOperationApprovalRequestPayload(request.payload))
-          throw new Error("Expected generic request");
-        expect(request.description).toEqual({
-          key: "approval.relationPut",
-          params: {
-            fromItemName: "Declared title",
-            fromDatabaseKey: source.key,
-            toItemName: "Fallback name",
-            toDatabaseKey: target.key,
-          },
-        });
-        expect(JSON.stringify(request.description)).not.toContain(destination.id);
-        expect(request.resourceSnapshot.kind).toBe("relation_put");
-        expect((await replayApprovedGenericOperation(pool, { ...request, payload: request.payload })).error).toBe(
-          false,
-        );
-        expect(await chokePoint.listItemRelations(caller.id, property.id)).toMatchObject([
-          { targetItemId: destination.id },
-        ]);
-        await chokePoint.updateItem({
-          databaseId: source.id,
-          itemId: caller.id,
-          propertiesPatch: { headline: "Renamed" },
-        });
-        await chokePoint.updateItem({
-          databaseId: target.id,
-          itemId: destination.id,
-          propertiesPatch: { name: "Renamed" },
-        });
-        expect((await getApprovalRequest(pool, requestId))?.description).toEqual(request.description);
-      } finally {
-        active = false;
-      }
+      expect(await chokePoint.listItemRelations(caller.id, property.id)).toEqual([]);
+      const request = await loadGeneric(requestId);
+      expect(request.description).toEqual({
+        key: "approval.relationPut",
+        params: {
+          fromItemName: "Declared title",
+          fromDatabaseKey: source.key,
+          toItemName: "Fallback name",
+          toDatabaseKey: target.key,
+        },
+      });
+      expect(JSON.stringify(request.description)).not.toContain(destination.id);
+      expect(request.resourceSnapshot.kind).toBe("relation_put");
+      expect((await replayApprovedGenericOperation(pool, request)).error).toBe(false);
+      expect(await chokePoint.listItemRelations(caller.id, property.id)).toMatchObject([
+        { targetItemId: destination.id },
+      ]);
+      await chokePoint.updateItem({
+        databaseId: source.id,
+        itemId: caller.id,
+        propertiesPatch: { headline: "Renamed" },
+      });
+      await chokePoint.updateItem({
+        databaseId: target.id,
+        itemId: destination.id,
+        propertiesPatch: { name: "Renamed" },
+      });
+      expect((await getApprovalRequest(pool, requestId))?.description).toEqual(request.description);
     }));
 
   it("keeps unflagged relation sets immediate and permits flagged user and system writers", async () => {
-    const source = await chokePoint.createDatabase({ name: "Immediate source" });
-    const target = await chokePoint.createDatabase({ name: "Immediate target" });
-    const { property } = await chokePoint.createRelationProperty({
-      sourceDatabaseId: source.id,
-      targetDatabaseId: target.id,
-      key: "target",
-      name: "Target",
+    const { property, caller, first, second, third } = await relationFixture(chokePoint, {
       cardinality: "one_to_one",
     });
-    const caller = await chokePoint.createItem({ databaseId: source.id, properties: {} });
-    const first = await chokePoint.createItem({ databaseId: target.id, properties: {} });
-    const second = await chokePoint.createItem({ databaseId: target.id, properties: {} });
-    const third = await chokePoint.createItem({ databaseId: target.id, properties: {} });
-    const projectItemId = randomUUID();
-    const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "link" });
-    const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
-    const gateway = createGenericOperationGateway(pool, testMetadataResolver);
+    const { run, actor } = await agentActor();
+    const gateway = gatewayFor();
     const input = { relationPropertyId: property.id, callerItemId: caller.id };
     await expect(
       gateway.invoke("relation.set", actor, ALL_CAPABILITIES, {
@@ -1913,118 +1401,57 @@ describe("createGenericOperationGateway (issue #220)", () => {
         approvedRequestId: randomUUID(),
       }),
     ).rejects.toBeInstanceOf(ValidationError);
-    await gateway.invoke("relation.set", actor, ALL_CAPABILITIES, { ...input, targetItemId: first.id });
-    await gateway.invoke("relation.set", actor, ALL_CAPABILITIES, { ...input, targetItemId: first.id });
-    await gateway.invoke("relation.set", actor, ALL_CAPABILITIES, { ...input, targetItemId: second.id });
-    expect(await chokePoint.listItemRelations(caller.id, property.id)).toMatchObject([{ targetItemId: second.id }]);
-    let active = true;
-    const writers: string[] = [];
-    registerRelationEdgeWriteHook(async ({ client, edgeContext, writer }) => {
-      if (!active || edgeContext.property.id !== property.id) return;
-      writers.push(writer.writerKind);
-      requireApprovalForWrite(client, writer, [{ kind: "testReason" }]);
-    });
-    try {
-      await gateway.invoke("relation.set", { userId: run.actorUserId, restSession: true }, ALL_CAPABILITIES, {
-        ...input,
-        targetItemId: third.id,
-      });
-      await chokePoint.setRelation({ ...input, targetItemId: first.id });
-      expect(writers).toEqual(["user", "system"]);
-      expect(await chokePoint.listItemRelations(caller.id, property.id)).toMatchObject([{ targetItemId: first.id }]);
-      const requests = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM approval_requests");
-      expect(requests.rows[0]?.count).toBe("0");
-    } finally {
-      active = false;
+    for (const target of [first, first, second]) {
+      await gateway.invoke("relation.set", actor, ALL_CAPABILITIES, { ...input, targetItemId: target.id });
     }
+    expect(await chokePoint.listItemRelations(caller.id, property.id)).toMatchObject([{ targetItemId: second.id }]);
+    const writers: string[] = [];
+    gateRelationWrites(property.id, ({ writer }) => {
+      writers.push(writer.writerKind);
+    });
+    await gateway.invoke("relation.set", { userId: run.actorUserId, restSession: true }, ALL_CAPABILITIES, {
+      ...input,
+      targetItemId: third.id,
+    });
+    await chokePoint.setRelation({ ...input, targetItemId: first.id });
+    expect(writers).toEqual(["user", "system"]);
+    expect(await chokePoint.listItemRelations(caller.id, property.id)).toMatchObject([{ targetItemId: first.id }]);
+    expect(await countOf(COUNT_REQUESTS)).toBe(0);
   });
 
   it.each(["changed", "sourceDeleted", "targetDeleted", "rejected"] as const)(
     "leaves the relation unchanged when a flagged request is %s",
     async (scenario) =>
       inTenantZero(async () => {
-        const source = await chokePoint.createDatabase({ name: "Conflict source" });
-        const target = await chokePoint.createDatabase({ name: "Conflict target" });
-        const { property } = await chokePoint.createRelationProperty({
-          sourceDatabaseId: source.id,
-          targetDatabaseId: target.id,
-          key: "target",
-          name: "Target",
+        const { source, target, property, caller, first, second, third } = await relationFixture(chokePoint, {
           cardinality: "one_to_one",
         });
-        const caller = await chokePoint.createItem({ databaseId: source.id, properties: {} });
-        const first = await chokePoint.createItem({ databaseId: target.id, properties: {} });
-        const second = await chokePoint.createItem({ databaseId: target.id, properties: {} });
-        const third = await chokePoint.createItem({ databaseId: target.id, properties: {} });
         const input = { relationPropertyId: property.id, callerItemId: caller.id };
         const original = await chokePoint.setRelation({ ...input, targetItemId: first.id });
         if (!original) throw new Error("Expected initial edge");
-        // No production chat-thread creator exists.
-        const thread = await pool.query<{ id: string }>("INSERT INTO semp_threads (kind) VALUES ('chat') RETURNING id");
-        const projectItemId = randomUUID();
-        const run = await createAgentRun(pool, {
-          projectItemId,
-          triggeredBy: "user",
-          task: "replace",
-          threadId: thread.rows[0]!.id,
-        });
-        const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
-        const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-        let active = true;
-        registerRelationEdgeWriteHook(async ({ client, edgeContext, writer }) => {
-          if (active && edgeContext.property.id === property.id)
-            requireApprovalForWrite(client, writer, [{ kind: "testReason" }]);
-        });
-        try {
-          let requestId = "";
-          try {
-            await gateway.invoke("relation.set", actor, ALL_CAPABILITIES, { ...input, targetItemId: second.id });
-            expect.unreachable("Expected approval");
-          } catch (err) {
-            if (!(err instanceof ApprovalRequiredError)) throw err;
-            requestId = err.details.approvalRequestId;
-          }
-          if (scenario === "changed") await chokePoint.setRelation({ ...input, targetItemId: third.id });
-          if (scenario === "sourceDeleted") await chokePoint.softDeleteItem(source.id, caller.id);
-          if (scenario === "targetDeleted") await chokePoint.softDeleteItem(target.id, second.id);
-          const expected = scenario === "changed" ? third.id : first.id;
-          await inTenantZero(() =>
-            withTransaction(pool, (client) =>
-              decideAndEnqueueApprovalRequest(client, {
-                approvalRequestId: requestId,
-                decision: scenario === "rejected" ? "rejected" : "approved",
-                decidedByUserId: run.actorUserId,
-              }),
-            ),
-          );
-          const request = await getApprovalRequest(pool, requestId);
-          if (!request || !isGenericOperationApprovalRequestPayload(request.payload))
-            throw new Error("Expected generic request");
-          if (scenario !== "rejected") {
-            const outcome = await replayApprovedGenericOperation(pool, { ...request, payload: request.payload });
-            expect(outcome.error).toBe(true);
-            expect((await getApprovalRequest(pool, requestId))?.executionStatus).toBe("conflict");
-          }
-          if (scenario === "sourceDeleted") {
-            const edges = await pool.query<{ id: string }>("SELECT id FROM item_relations WHERE id = $1", [
-              original.id,
-            ]);
-            expect(edges.rows).toEqual([{ id: original.id }]);
-          } else {
-            expect(await chokePoint.listItemRelations(caller.id, property.id)).toMatchObject([
-              { targetItemId: expected },
-            ]);
-          }
-          const messages = await pool.query<{ system_key: string }>(
-            "SELECT system_key FROM semp_messages WHERE thread_id = $1",
-            [thread.rows[0]!.id],
-          );
-          expect(messages.rows).toEqual([
-            { system_key: scenario === "rejected" ? "approval.outcome.rejected" : "approval.outcome.conflict" },
-          ]);
-        } finally {
-          active = false;
+        const threadId = await chatThread();
+        const { run, actor } = await agentActor({ threadId });
+        gateRelationWrites(property.id);
+        const requestId = await requestApproval("relation.set", actor, { ...input, targetItemId: second.id });
+        if (scenario === "changed") await chokePoint.setRelation({ ...input, targetItemId: third.id });
+        if (scenario === "sourceDeleted") await chokePoint.softDeleteItem(source.id, caller.id);
+        if (scenario === "targetDeleted") await chokePoint.softDeleteItem(target.id, second.id);
+        await decide(requestId, run.actorUserId, { decision: scenario === "rejected" ? "rejected" : "approved" });
+        if (scenario !== "rejected") {
+          expect((await replayById(requestId)).error).toBe(true);
+          expect(await statusOf(requestId)).toBe("conflict");
         }
+        if (scenario === "sourceDeleted") {
+          const edges = await pool.query<{ id: string }>("SELECT id FROM item_relations WHERE id = $1", [original.id]);
+          expect(edges.rows).toEqual([{ id: original.id }]);
+        } else {
+          expect(await chokePoint.listItemRelations(caller.id, property.id)).toMatchObject([
+            { targetItemId: scenario === "changed" ? third.id : first.id },
+          ]);
+        }
+        expect(await threadMessages(threadId)).toEqual([
+          scenario === "rejected" ? "approval.outcome.rejected" : "approval.outcome.conflict",
+        ]);
       }),
   );
 
@@ -2033,15 +1460,28 @@ describe("createGenericOperationGateway (issue #220)", () => {
       const users = await pool.query<{ id: string }>("SELECT id FROM users WHERE tenant_id = $1", [getTenantZeroId()]);
       const user = users.rows[0];
       if (!user) throw new Error("Missing tenant user");
-      const actor: AuthenticatedActor = { userId: user.id };
       const database = await chokePoint.createDatabase({ name: "Collation" });
       await chokePoint.createProperty({ databaseId: database.id, key: "name", name: "Name", type: "title" });
       for (const name of ["Hrad", "Chalupa", "Rybník", "Řeka"]) {
         await chokePoint.createItem({ databaseId: database.id, properties: { name } });
       }
       const view = await chokePoint.createView({ databaseId: database.id, type: "table", name: "Names" });
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
+      const gateway = gatewayFor();
       const sort = [{ property: "name", direction: "asc" }] as const;
+      const queryPage = (operation: "database.query" | "view.query", cursor: string | undefined) =>
+        operation === "database.query"
+          ? gateway.invoke(operation, { userId: user.id }, ALL_CAPABILITIES, {
+              databaseId: database.id,
+              sort,
+              cursor,
+              limit: 2,
+            })
+          : gateway.invoke(operation, { userId: user.id }, ALL_CAPABILITIES, {
+              viewId: view.id,
+              sort,
+              cursor,
+              limit: 2,
+            });
       for (const [locale, expected] of [
         ["cs", ["Hrad", "Chalupa", "Rybník", "Řeka"]],
         ["en", ["Chalupa", "Hrad", "Řeka", "Rybník"]],
@@ -2052,14 +1492,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
           const names: string[] = [];
           let cursor: string | undefined;
           for (let page = 0; page < 3; page++) {
-            const input =
-              operation === "database.query"
-                ? { databaseId: database.id, sort, cursor, limit: 2 }
-                : { viewId: view.id, sort, cursor, limit: 2 };
-            const result =
-              operation === "database.query"
-                ? await gateway.invoke("database.query", actor, ALL_CAPABILITIES, input)
-                : await gateway.invoke("view.query", actor, ALL_CAPABILITIES, input);
+            const result = await queryPage(operation, cursor);
             names.push(...result.items.map((item) => String(item.properties.name)));
             if (result.nextCursor === null) break;
             cursor = result.nextCursor;
@@ -2072,7 +1505,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
 
   it("item.patch carries the transactional pre-image through the production gateway and service", async () => {
     await inTenantZero(async () => {
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
+      const gateway = gatewayFor();
       const actor: AuthenticatedActor = { userId: await createUser() };
       const db = await chokePoint.createDatabase({ name: "Patch values" });
       for (const key of ["due", "note", "unset"]) {
@@ -2090,48 +1523,41 @@ describe("createGenericOperationGateway (issue #220)", () => {
       expect(result).toMatchObject({
         id: item.id,
         properties: { due: "2026-10-28T09:00:00Z", note: "Keep", unset: "Now set" },
-        previous: { due: "2026-10-27T14:00:00Z", unset: null },
       });
       expect(result.previous).toEqual({ due: "2026-10-27T14:00:00Z", unset: null });
-      const rejected = await Promise.allSettled([
+      await expect(
         gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
           itemId: item.id,
           properties: { due: "Rejected" },
           ifVersion: "2000-01-01T00:00:00.000Z",
         }),
-      ]);
-      expect(rejected).toEqual([{ status: "rejected", reason: expect.any(ConflictError) }]);
-      const persisted = await chokePoint.getItem(db.id, item.id);
-      expect(persisted?.properties).toEqual(result.properties);
-      expect(persisted?.updatedAt).toBe(result.updatedAt);
+      ).rejects.toBeInstanceOf(ConflictError);
+      expect(await chokePoint.getItem(db.id, item.id)).toMatchObject({
+        properties: result.properties,
+        updatedAt: result.updatedAt,
+      });
     });
   });
 
   it("item.patch exposes previous values only inside the owning tenant on a runtime-role pool", async () => {
-    const tenantA = getTenantZeroId();
     const tenantB = await createTestTenant(pool);
     const runtimePool = await inTenantZero(() => createRuntimeRolePool(pool, "semprec_data"));
     try {
-      const fixture = await runInTenant(tenantA, async () => {
+      const fixture = await inTenantZero(async () => {
         const cp = createChokePoint(runtimePool);
         const db = await cp.createDatabase({ name: "Private patch" });
         await cp.createProperty({ databaseId: db.id, key: "title", name: "Title", type: "text" });
         return { db, item: await cp.createItem({ databaseId: db.id, properties: { title: "Private" } }) };
       });
       const actor: AuthenticatedActor = { userId: await createUser() };
-      const gateway = createGenericOperationGateway(runtimePool, testMetadataResolver);
+      const gateway = gatewayFor(runtimePool);
       const input = { itemId: fixture.item.id, properties: { title: "Changed" }, ifVersion: fixture.item.version };
-      const foreign = await runInTenant(tenantB, () =>
-        Promise.allSettled([
-          gateway.invoke("item.patch", actor, ALL_CAPABILITIES, input),
-          gateway.invoke("item.patch", actor, ALL_CAPABILITIES, { ...input, itemId: randomUUID() }),
-        ]),
-      );
-      expect(foreign).toEqual([
-        { status: "rejected", reason: expect.any(NotFoundError) },
-        { status: "rejected", reason: expect.any(NotFoundError) },
-      ]);
-      await runInTenant(tenantA, async () => {
+      for (const itemId of [fixture.item.id, randomUUID()]) {
+        await expect(
+          runInTenant(tenantB, () => gateway.invoke("item.patch", actor, ALL_CAPABILITIES, { ...input, itemId })),
+        ).rejects.toBeInstanceOf(NotFoundError);
+      }
+      await inTenantZero(async () => {
         expect(await createChokePoint(runtimePool).getItem(fixture.db.id, fixture.item.id)).toEqual({
           ...fixture.item,
           fromInbox: false,
@@ -2145,15 +1571,20 @@ describe("createGenericOperationGateway (issue #220)", () => {
     }
   });
 
-  it("serves the page operations under the item capabilities and grants nothing to the page capabilities (issue #1844)", async () => {
+  it("serves the page operations under the item capabilities and grants nothing to the page capabilities", async () => {
     const actor: AuthenticatedActor = { userId: await createUser() };
     const database = await chokePoint.createDatabase({ name: "Pages" });
     const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
-    const gateway = createGenericOperationGateway(pool, testMetadataResolver);
+    const gateway = gatewayFor();
     const itemOnly = new Set<(typeof CAPABILITY_IDS)[number]>(["core.item.read", "core.item.write"]);
     const pageOperations = GENERIC_OPERATION_NAMES.filter((operation) => operation.startsWith("page."));
     expect(pageOperations).toContain("page.restoreVersion");
     for (const operation of pageOperations) expect(gateway.listOperations(itemOnly)).toContain(operation);
+    // The approval of page operations exists, so the writing ones list under the item write capability alone.
+    expect(gateway.listOperations(new Set(["core.item.write"] as const))).toEqual(
+      expect.arrayContaining(["page.insert", "page.replace"]),
+    );
+    expect(OPERATION_METADATA["page.replace"].requiresCapability).toBe("core.item.write");
     const pages = new Set<(typeof CAPABILITY_IDS)[number]>(["core.page.read", "core.page.write"]);
     expect(gateway.listOperations(pages)).toEqual([]);
     await expect(
@@ -2165,30 +1596,32 @@ describe("createGenericOperationGateway (issue #220)", () => {
     expect(await gateway.invoke("page.get", actor, itemOnly, { itemId: item.id, format: "summary" })).toMatchObject({
       docId: null,
     });
-    expect((await pool.query("SELECT id FROM docs WHERE item_id = $1", [item.id])).rows).toHaveLength(0);
+    expect((await pool.query<{ id: string }>("SELECT id FROM docs WHERE item_id = $1", [item.id])).rows).toHaveLength(
+      0,
+    );
   });
 
   describe("listOperations", () => {
     it("returns only the operations whose capability is granted, never present-but-forbidden", () => {
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-
+      const gateway = gatewayFor();
       expect(gateway.listOperations(NO_CAPABILITIES)).toEqual([]);
       expect(gateway.listOperations(ALL_CAPABILITIES)).toEqual(
         GENERIC_OPERATION_NAMES.filter((operation) => !REST_ONLY_OPERATION_NAMES.some((name) => name === operation)),
       );
-
-      const readOnly = new Set(["core.item.read"] as const);
-      const expected = GENERIC_OPERATION_NAMES.filter(
-        (operation) => OPERATION_METADATA[operation].requiresCapability === "core.item.read",
+      expect(gateway.listOperations(new Set(["core.item.read"] as const))).toEqual(
+        GENERIC_OPERATION_NAMES.filter(
+          (operation) => OPERATION_METADATA[operation].requiresCapability === "core.item.read",
+        ),
       );
-      expect(gateway.listOperations(readOnly)).toEqual(expected);
     });
 
     it("lists no REST-only operation, although the capability it names lists its other operations", () => {
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-      const schemaWrite = new Set(["core.schema.write"] as const);
-
-      expect(gateway.listOperations(schemaWrite)).toEqual(["property.create", "property.patch", "property.delete"]);
+      const gateway = gatewayFor();
+      expect(gateway.listOperations(new Set(["core.schema.write"] as const))).toEqual([
+        "property.create",
+        "property.patch",
+        "property.delete",
+      ]);
       for (const operation of REST_ONLY_OPERATION_NAMES) {
         expect(gateway.listOperations(ALL_CAPABILITIES)).not.toContain(operation);
         expect(gateway.listOperations(new Set([OPERATION_METADATA[operation].requiresCapability]))).not.toContain(
@@ -2196,37 +1629,22 @@ describe("createGenericOperationGateway (issue #220)", () => {
         );
       }
     });
-
-    it("lists page.replace and page.insert under core.item.write: the approval of page operations exists (issue #1844)", () => {
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-      const itemWrite = new Set(["core.item.write"] as const);
-
-      const listed = gateway.listOperations(itemWrite);
-      expect(listed).toContain("page.insert");
-      expect(listed).toContain("page.replace");
-      expect(OPERATION_METADATA["page.replace"].requiresCapability).toBe("core.item.write");
-    });
   });
 
   describe("invoke", () => {
-    it("throws NotFoundError for an operation whose capability isn't granted, indistinguishable from unknown", async () => {
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-      const actor: AuthenticatedActor = { userId: await createUser() };
+    async function personAndAgent(): Promise<AuthenticatedActor[]> {
+      return [{ userId: await createUser() }, (await agentActor({ realProject: true })).actor];
+    }
 
-      await expect(gateway.invoke("item.get", actor, NO_CAPABILITIES, { itemId: randomUUID() })).rejects.toThrow(
+    it("throws NotFoundError for an operation whose capability isn't granted, indistinguishable from unknown", async () => {
+      const actor: AuthenticatedActor = { userId: await createUser() };
+      await expect(gatewayFor().invoke("item.get", actor, NO_CAPABILITIES, { itemId: randomUUID() })).rejects.toThrow(
         NotFoundError,
       );
     });
 
     it("refuses both REST-only option operations for a person and for an agent run like an unknown operation, writing nothing", async () => {
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-      const userId = await createUser();
-      const projectItemId = await createRealAgentProjectItemId();
-      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "option probe" });
-      const actors: AuthenticatedActor[] = [
-        { userId },
-        { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId },
-      ];
+      const gateway = gatewayFor();
       const database = await chokePoint.createDatabase({ name: "Gateway options" });
       const property = await chokePoint.createProperty({
         databaseId: database.id,
@@ -2235,8 +1653,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
         type: "multi_select",
         config: { options: [{ key: "herbs", label: "Herbs" }] },
       });
-
-      for (const actor of actors) {
+      for (const actor of await personAndAgent()) {
         // The same arguments run through the port for a REST caller, so only the gateway refuses them here.
         const refusals = [
           gateway.invoke("property.option.add", actor, ALL_CAPABILITIES, { propertyId: property.id, label: "Spices" }),
@@ -2251,73 +1668,43 @@ describe("createGenericOperationGateway (issue #220)", () => {
         }
       }
       expect((await chokePoint.getProperty(property.id))?.config).toEqual(property.config);
-      const { rows } = await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM approval_requests");
-      expect(rows[0]?.count).toBe(0);
+      expect(await countOf(COUNT_REQUESTS)).toBe(0);
     });
 
-    it("answers page.replace on an unknown item with not found for a person and for an agent run, creating no approval request (issue #1844)", async () => {
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-      const userId = await createUser();
-      const projectItemId = await createRealAgentProjectItemId();
-      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "page replace probe" });
-      const actors: AuthenticatedActor[] = [
-        { userId },
-        { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId },
-      ];
-
-      for (const actor of actors) {
+    it("answers page.replace on an unknown item with not found for a person and for an agent run, creating no approval request", async () => {
+      for (const actor of await personAndAgent()) {
         // Valid arguments for an item that does not exist: the replace projection answers not found for both actors.
         await expect(
-          gateway.invoke("page.replace", actor, ALL_CAPABILITIES, {
+          gatewayFor().invoke("page.replace", actor, ALL_CAPABILITIES, {
             itemId: randomUUID(),
             markdown: "Replacement",
             expectedEtag: "A".repeat(43),
           }),
         ).rejects.toMatchObject({ name: "NotFoundError", code: "not_found", status: 404 });
       }
-      const { rows } = await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM approval_requests");
-      expect(rows[0]?.count).toBe(0);
+      expect(await countOf(COUNT_REQUESTS)).toBe(0);
     });
 
-    it("rejects an agent actor carrying runId without agentProjectItemId as owner_violation", async () => {
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-      const actor: AuthenticatedActor = { userId: await createUser(), runId: randomUUID() };
-
-      try {
-        await gateway.invoke("item.get", actor, ALL_CAPABILITIES, { itemId: randomUUID() });
-        expect.unreachable("expected ForbiddenError");
-      } catch (err) {
-        expect(err).toBeInstanceOf(ForbiddenError);
-        expect((err as ForbiddenError).code).toBe("owner_violation");
-      }
+    it.each([
+      { carries: "runId without agentProjectItemId", partial: { runId: randomUUID() } },
+      { carries: "agentProjectItemId without runId", partial: { agentProjectItemId: randomUUID() } },
+    ])("rejects an agent actor carrying $carries as owner_violation", async ({ partial }) => {
+      const actor: AuthenticatedActor = { userId: await createUser(), ...partial };
+      const refusal = gatewayFor().invoke("item.get", actor, ALL_CAPABILITIES, { itemId: randomUUID() });
+      await expect(refusal).rejects.toBeInstanceOf(ForbiddenError);
+      await expect(refusal).rejects.toMatchObject({ code: "owner_violation" });
     });
 
-    it("rejects an agent actor carrying agentProjectItemId without runId as owner_violation", async () => {
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-      const actor: AuthenticatedActor = { userId: await createUser(), agentProjectItemId: randomUUID() };
-
-      try {
-        await gateway.invoke("item.get", actor, ALL_CAPABILITIES, { itemId: randomUUID() });
-        expect.unreachable("expected ForbiddenError");
-      } catch (err) {
-        expect(err).toBeInstanceOf(ForbiddenError);
-        expect((err as ForbiddenError).code).toBe("owner_violation");
-      }
-    });
-
-    it("throws ValidationError for input that fails the operation's own zod binding", async () => {
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-      const actor: AuthenticatedActor = { userId: await createUser() };
-
-      await expect(gateway.invoke("item.get", actor, ALL_CAPABILITIES, {})).rejects.toThrow(ValidationError);
-    });
-
-    it("names the offending field when property.create fails its union schema", async () => {
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
+    it("throws ValidationError for input that fails the operation's own strict schema, naming the field", async () => {
+      const gateway = gatewayFor();
       const actor: AuthenticatedActor = { userId: await createUser() };
       const database = await chokePoint.createDatabase({ name: "Gateway DB" });
       const base = { databaseId: database.id, key: "rel", name: "Rel" };
-
+      await expect(gateway.invoke("item.get", actor, ALL_CAPABILITIES, {})).rejects.toThrow(ValidationError);
+      // A reason belongs to the invocation options, never to the operation input.
+      await expect(
+        gateway.invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: randomUUID(), reason: "x" }),
+      ).rejects.toBeInstanceOf(ValidationError);
       await expect(
         gateway.invoke("property.create", actor, ALL_CAPABILITIES, {
           ...base,
@@ -2331,514 +1718,237 @@ describe("createGenericOperationGateway (issue #220)", () => {
       ).rejects.toMatchObject({ details: { field: "type" } });
     });
 
-    it("executes a non-destructive operation immediately for a REST-style human actor", async () => {
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-      const actor: AuthenticatedActor = { userId: await createUser() };
+    it("executes non-destructive operations for people and agents, and destructive ones for people, immediately", async () => {
+      const gateway = gatewayFor();
+      const userId = await createUser();
       const database = await chokePoint.createDatabase({ name: "Gateway DB" });
       await chokePoint.createProperty({ databaseId: database.id, key: "title", name: "Title", type: "title" });
-
-      const created = await gateway.invoke("item.create", actor, ALL_CAPABILITIES, {
-        databaseId: database.id,
-        properties: { title: "Made by gateway" },
-      });
-
-      expect(created.id).toBeDefined();
-      const persisted = await chokePoint.findItem(created.id);
-      expect(persisted?.properties).toMatchObject({ title: "Made by gateway" });
-    });
-
-    it("executes a destructive operation immediately for a REST-style human actor (no runId, so never approval-gated)", async () => {
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-      const actor: AuthenticatedActor = { userId: await createUser() };
-      const database = await chokePoint.createDatabase({ name: "Gateway DB 2" });
+      const { run, projectItemId } = await agentActor();
+      for (const actor of [{ userId }, { userId, runId: run.id, agentProjectItemId: projectItemId }]) {
+        const created = await gateway.invoke("item.create", actor, ALL_CAPABILITIES, {
+          databaseId: database.id,
+          properties: { title: "Made by gateway" },
+        });
+        expect((await chokePoint.findItem(created.id))?.properties).toMatchObject({ title: "Made by gateway" });
+      }
+      // A person carries no runId, so a destructive operation is never approval-gated for them.
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
-
-      await gateway.invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id });
-
+      await gateway.invoke("item.delete", { userId }, ALL_CAPABILITIES, { itemId: item.id });
       expect(await chokePoint.findItem(item.id)).toBeNull();
-      const { rows } = await pool.query(`SELECT count(*)::int AS count FROM approval_requests`);
-      expect(rows[0].count).toBe(0);
+      expect(await countOf(COUNT_REQUESTS)).toBe(0);
     });
 
     it("defers a destructive operation for a full agent actor: no execution, one pending approval_requests row, ApprovalRequiredError", async () => {
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
       const database = await chokePoint.createDatabase({ name: "Gateway DB 3" });
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
-      const projectItemId = randomUUID();
-      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete it" });
-      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
-
-      try {
-        await gateway.invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id });
-        expect.unreachable("expected ApprovalRequiredError");
-      } catch (err) {
-        expect(err).toBeInstanceOf(ApprovalRequiredError);
-        const details = (err as ApprovalRequiredError).details;
-        expect(details.approvalRequestId).toBeDefined();
-        expect(details.link).toContain(details.approvalRequestId);
-
-        const request = await getApprovalRequest(pool, details.approvalRequestId);
-        expect(request).not.toBeNull();
-        expect(request!.status).toBe("pending");
-        expect(request!.agentRunId).toBe(run.id);
-        expect(request!.toolName).toBe("item.delete");
-        expect(request!.riskClass).toBe("destructive");
-      }
-
-      // The operation itself never executed.
+      const { run, actor } = await agentActor();
+      const error = await gatewayFor()
+        .invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id })
+        .then(
+          () => undefined,
+          (thrown: unknown) => thrown,
+        );
+      if (!(error instanceof ApprovalRequiredError)) throw new Error("expected ApprovalRequiredError");
+      expect(error.details.link).toContain(error.details.approvalRequestId);
+      const request = await loadGeneric(error.details.approvalRequestId);
+      expect(request).toMatchObject({
+        status: "pending",
+        agentRunId: run.id,
+        toolName: "item.delete",
+        riskClass: "destructive",
+      });
+      expect(request.payload.resourceSnapshot).toEqual(request.resourceSnapshot);
       expect(await chokePoint.findItem(item.id)).not.toBeNull();
-      const { rows } = await pool.query(`SELECT count(*)::int AS count FROM approval_requests`);
-      expect(rows[0].count).toBe(1);
+      expect(await countOf(COUNT_REQUESTS)).toBe(1);
     });
 
-    it("stores the agent's reason on the request without putting it in the canonical input or the snapshot (issue #1420)", async () => {
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
+    it("stores the agent's reason on the request without putting it in the canonical input or the snapshot", async () => {
       const database = await chokePoint.createDatabase({ name: "Gateway DB reason" });
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
-      const projectItemId = randomUUID();
-      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete it" });
-      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
-
-      const withReason = (await gateway
-        .invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id }, { reason: "You never use it." })
-        .catch((err: unknown) => err)) as ApprovalRequiredError;
-      const withoutReason = (await gateway
-        .invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id })
-        .catch((err: unknown) => err)) as ApprovalRequiredError;
-
-      const request = await getApprovalRequest(pool, withReason.details.approvalRequestId);
-      expect(request!.reason).toBe("You never use it.");
-      expect(JSON.stringify(request!.payload)).not.toContain("You never use it.");
-      expect(JSON.stringify(request!.resourceSnapshot)).not.toContain("You never use it.");
-      expect(request!.payload).toMatchObject({ canonicalInput: { itemId: item.id } });
-      expect((await getApprovalRequest(pool, withoutReason.details.approvalRequestId))!.reason).toBeNull();
+      const { actor } = await agentActor();
+      const withReason = await requestApproval(
+        "item.delete",
+        actor,
+        { itemId: item.id },
+        { reason: "You never use it." },
+      );
+      const withoutReason = await requestApproval("item.delete", actor, { itemId: item.id });
+      const request = await getApprovalRequest(pool, withReason);
+      expect(request?.reason).toBe("You never use it.");
+      expect(JSON.stringify(request?.payload)).not.toContain("You never use it.");
+      expect(JSON.stringify(request?.resourceSnapshot)).not.toContain("You never use it.");
+      expect(request?.payload).toMatchObject({ canonicalInput: { itemId: item.id } });
+      expect((await getApprovalRequest(pool, withoutReason))?.reason).toBeNull();
     });
 
-    it("stores the tool call id on the request, and leaves it NULL when none is supplied (issue #1618)", async () => {
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
+    it("stores the tool call id on the request, and leaves it NULL when none is supplied", async () => {
       const database = await chokePoint.createDatabase({ name: "Gateway DB tool call" });
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
-      const projectItemId = randomUUID();
-      // No public writer creates a chat thread with a historical activity timestamp.
-      const thread = await withTransaction(pool, (client) =>
-        client.query<{ id: string }>(
-          "INSERT INTO semp_threads (kind, last_activity_at) VALUES ('chat', '2020-01-01') RETURNING id",
-        ),
-      );
-      const threadId = thread.rows[0]!.id;
-      const run = await createAgentRun(pool, { projectItemId, threadId, triggeredBy: "user", task: "delete it" });
-      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
-
-      const linked = (await gateway
-        .invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id }, { toolCallId: "call_1" })
-        .catch((err: unknown) => err)) as ApprovalRequiredError;
-      const redelivered = (await gateway
-        .invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id }, { toolCallId: "call_1" })
-        .catch((err: unknown) => err)) as ApprovalRequiredError;
-      const unlinked = (await gateway
-        .invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id })
-        .catch((err: unknown) => err)) as ApprovalRequiredError;
-
-      expect((await getApprovalRequest(pool, linked.details.approvalRequestId))!.toolCallId).toBe("call_1");
-      expect(redelivered.details.approvalRequestId).toBe(linked.details.approvalRequestId);
-      expect((await getApprovalRequest(pool, unlinked.details.approvalRequestId))!.toolCallId).toBeNull();
-      const activity = await withTransaction(pool, (client) =>
-        client.query<{ last_activity_at: Date; requested_at: Date }>(
-          "SELECT t.last_activity_at, r.requested_at FROM semp_threads t JOIN approval_requests r ON r.id = $2 WHERE t.id = $1",
-          [threadId, unlinked.details.approvalRequestId],
-        ),
+      const threadId = await chatThread();
+      // No public writer sets a historical activity timestamp.
+      await pool.query("UPDATE semp_threads SET last_activity_at = '2020-01-01' WHERE id = $1", [threadId]);
+      const { actor } = await agentActor({ threadId });
+      const input = { itemId: item.id };
+      const linked = await requestApproval("item.delete", actor, input, { toolCallId: "call_1" });
+      const redelivered = await requestApproval("item.delete", actor, input, { toolCallId: "call_1" });
+      const unlinked = await requestApproval("item.delete", actor, input);
+      expect((await getApprovalRequest(pool, linked))?.toolCallId).toBe("call_1");
+      expect(redelivered).toBe(linked);
+      expect((await getApprovalRequest(pool, unlinked))?.toolCallId).toBeNull();
+      const activity = await pool.query<{ last_activity_at: Date; requested_at: Date }>(
+        "SELECT t.last_activity_at, r.requested_at FROM semp_threads t JOIN approval_requests r ON r.id = $2 WHERE t.id = $1",
+        [threadId, unlinked],
       );
       expect(activity.rows).toHaveLength(1);
       expect(activity.rows[0]!.last_activity_at.getTime()).toBe(activity.rows[0]!.requested_at.getTime());
     });
-
-    it("still rejects a reason field inside the operation input as strict-schema ValidationError (issue #1420)", async () => {
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-      const actor: AuthenticatedActor = { userId: randomUUID() };
-      await expect(
-        gateway.invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: randomUUID(), reason: "x" }),
-      ).rejects.toBeInstanceOf(ValidationError);
-    });
-
-    it("executes a non-destructive operation immediately for a full agent actor (no approval gate)", async () => {
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-      const userId = await createUser();
-      const database = await chokePoint.createDatabase({ name: "Gateway DB 4" });
-      await chokePoint.createProperty({ databaseId: database.id, key: "title", name: "Title", type: "title" });
-      const projectItemId = randomUUID();
-      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "create it" });
-      const actor: AuthenticatedActor = { userId, runId: run.id, agentProjectItemId: projectItemId };
-
-      const created = await gateway.invoke("item.create", actor, ALL_CAPABILITIES, {
-        databaseId: database.id,
-        properties: { title: "Made by an agent" },
-      });
-
-      expect(await chokePoint.findItem(created.id)).not.toBeNull();
-      const { rows } = await pool.query(`SELECT count(*)::int AS count FROM approval_requests`);
-      expect(rows[0].count).toBe(0);
-    });
   });
 
   describe("replayApprovedGenericOperation", () => {
-    async function createPendingDelete(): Promise<{
-      requestId: string;
-      run: { id: string };
-      item: { id: string; databaseId: string };
-    }> {
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
+    /** An approved, queued item.delete request: the executor runs only such a row, so no queue job is needed. */
+    async function approvedDelete() {
       const database = await chokePoint.createDatabase({ name: "Replay DB" });
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
-      const projectItemId = randomUUID();
-      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete it" });
-      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
-
-      let requestId: string;
-      try {
-        await gateway.invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id });
-        expect.unreachable("expected ApprovalRequiredError");
-        return { requestId: "", run, item };
-      } catch (err) {
-        requestId = (err as ApprovalRequiredError).details.approvalRequestId;
-      }
-
-      // The executor rejects a row that isn't `approved` + `queued`, so these direct-call tests decide the request
-      // first, without running the queue job.
-      await inTenantZero(() =>
-        withTransaction(pool, (client) =>
-          decideAndEnqueueApprovalRequest(client, {
-            approvalRequestId: requestId,
-            decision: "approved",
-            decidedByUserId: run.actorUserId,
-          }),
-        ),
-      );
-
-      return { requestId, run, item };
+      const { run, actor } = await agentActor();
+      return { requestId: await approveAgentRequest("item.delete", actor, { itemId: item.id }), run, item };
     }
+    type Fixture = Awaited<ReturnType<typeof approvedDelete>>;
+    const driftProvenance = (runId: string) =>
+      pool.query("UPDATE agent_runs SET project_item_id = $1 WHERE id = $2", [randomUUID(), runId]);
 
-    it("replays an approved, untouched request: executes the real operation and returns its result", async () => {
-      const { requestId, item } = await createPendingDelete();
-      const request = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
-        payload: GenericOperationApprovalRequestPayload;
-      };
-
-      const outcome = await replayApprovedGenericOperation(pool, request);
-
-      expect(outcome.error).toBe(false);
-      expect(JSON.parse(outcome.result).result).toMatchObject({ id: item.id });
-      expect(await chokePoint.findItem(item.id)).toBeNull();
-    });
-
-    it("rejects a request whose payload no longer matches the run's persisted provenance (project_item_id changed) as owner_violation, without executing", async () => {
-      const { requestId, run, item } = await createPendingDelete();
-      const request = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
-        payload: GenericOperationApprovalRequestPayload;
-      };
-
-      await pool.query(`UPDATE agent_runs SET project_item_id = $1 WHERE id = $2`, [randomUUID(), run.id]);
-
-      const outcome = await replayApprovedGenericOperation(pool, request);
-
+    it.each<{
+      when: string;
+      tamper: (fixture: Fixture) => Promise<unknown>;
+      result: (itemId: string) => object;
+      contains?: string;
+    }>([
+      {
+        when: "the run's persisted provenance no longer matches the payload",
+        tamper: ({ run }) => driftProvenance(run.id),
+        contains: "owner_violation",
+        result: () => ({ error: { code: "version_conflict" } }),
+      },
+      {
+        when: "the stored canonicalInput no longer satisfies the operation's schema",
+        // A stored payload that no longer parses must fail cleanly, not crash inside the binding.
+        tamper: ({ requestId }) =>
+          pool.query(
+            "UPDATE approval_requests SET payload = jsonb_set(payload, '{canonicalInput}', '{}'::jsonb) WHERE id = $1",
+            [requestId],
+          ),
+        contains: "validation_failed",
+        result: () => ({ error: { code: "version_conflict" } }),
+      },
+      {
+        when: "the resource changed after approval",
+        // `item_delete`'s snapshot hashes `updatedAt`, so this change makes it differ from the approved one.
+        tamper: ({ item }) => pool.query("UPDATE items SET updated_at = now() WHERE id = $1", [item.id]),
+        result: () => ({ error: { code: "version_conflict", details: { currentResource: expect.anything() } } }),
+      },
+      {
+        when: "the database was archived after approval",
+        // The hash still matches, but the projection rejects with a domain failure other than not found.
+        tamper: ({ item }) => pool.query("UPDATE databases SET archived_at = now() WHERE id = $1", [item.databaseId]),
+        result: (itemId) => ({ error: { details: { reason: "database_archived", currentResource: { id: itemId } } } }),
+      },
+    ])("terminalizes as conflict without executing when $when", async ({ tamper, result, contains }) => {
+      const fixture = await approvedDelete();
+      await tamper(fixture);
+      const outcome = await replayById(fixture.requestId);
       expect(outcome.error).toBe(true);
-      expect(outcome.result).toContain("owner_violation");
-      expect(await chokePoint.findItem(item.id)).not.toBeNull();
-
-      // A drifted-provenance rejection is a terminal conflict, not a rollback that leaves the row `queued` forever.
-      const persisted = await getApprovalRequest(pool, requestId);
-      expect(persisted!.executionStatus).toBe("conflict");
-      expect(persisted!.executedAt).not.toBeNull();
-      expect((persisted!.executionResult as { error: { code: string } }).error.code).toBe("version_conflict");
-    });
-
-    it("rejects a request whose stored canonicalInput no longer satisfies the operation's current schema, without executing", async () => {
-      const { requestId, item } = await createPendingDelete();
-      // Simulates a stored payload that no longer parses: it must fail cleanly, not crash inside the binding.
-      await pool.query(
-        `UPDATE approval_requests SET payload = jsonb_set(payload, '{canonicalInput}', '{}'::jsonb) WHERE id = $1`,
-        [requestId],
-      );
-      const request = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
-        payload: GenericOperationApprovalRequestPayload;
-      };
-
-      const outcome = await replayApprovedGenericOperation(pool, request);
-
-      expect(outcome.error).toBe(true);
-      expect(outcome.result).toContain("validation_failed");
-      expect(await chokePoint.findItem(item.id)).not.toBeNull();
-
-      const persisted = await getApprovalRequest(pool, requestId);
-      expect(persisted!.executionStatus).toBe("conflict");
-      expect(persisted!.executedAt).not.toBeNull();
-    });
-
-    it("terminalizes as conflict, without executing, when the resource changed after approval (snapshot hash mismatch)", async () => {
-      const { requestId, item } = await createPendingDelete();
-
-      // `item_delete`'s snapshot hashes `updatedAt`, so this change makes it differ from the approved one.
-      await pool.query(`UPDATE items SET updated_at = now() WHERE id = $1`, [item.id]);
-      const request = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
-        payload: GenericOperationApprovalRequestPayload;
-      };
-
-      const outcome = await replayApprovedGenericOperation(pool, request);
-
-      expect(outcome.error).toBe(true);
-      expect(await chokePoint.findItem(item.id)).not.toBeNull();
-
-      const persisted = await getApprovalRequest(pool, requestId);
-      expect(persisted!.executionStatus).toBe("conflict");
-      expect(
-        (persisted!.executionResult as { error: { code: string; details: { currentResource: unknown } } }).error.code,
-      ).toBe("version_conflict");
-      expect(
-        (persisted!.executionResult as { error: { details: { currentResource: unknown } } }).error.details
-          .currentResource,
-      ).not.toBeNull();
-    });
-
-    it("terminalizes as conflict with a populated currentResource for a non-not-found domain failure (database archived after approval)", async () => {
-      const { requestId, item } = await createPendingDelete();
-
-      // The snapshot hash still matches, but the archived database makes the projection reject with
-      // `database_archived`: the revalidation-error branch rather than the hash-mismatch one.
-      await pool.query(`UPDATE databases SET archived_at = now() WHERE id = $1`, [item.databaseId]);
-      const request = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
-        payload: GenericOperationApprovalRequestPayload;
-      };
-
-      const outcome = await replayApprovedGenericOperation(pool, request);
-
-      expect(outcome.error).toBe(true);
-      const parsed = JSON.parse(outcome.result) as { error: { code: string; details: Record<string, unknown> } };
-      expect(parsed.error.details.reason).toBe("database_archived");
-      expect(parsed.error.details.currentResource).not.toBeNull();
-      expect((parsed.error.details.currentResource as { id: string }).id).toBe(item.id);
-    });
-
-    it("replaying an already-succeeded request is a no-op: returns the persisted result without executing again", async () => {
-      const { requestId, item } = await createPendingDelete();
-      const request = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
-        payload: GenericOperationApprovalRequestPayload;
-      };
-
-      const first = await replayApprovedGenericOperation(pool, request);
-      expect(first.error).toBe(false);
-      expect(await chokePoint.findItem(item.id)).toBeNull();
-
-      const reloaded = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
-        payload: GenericOperationApprovalRequestPayload;
-      };
-      const second = await replayApprovedGenericOperation(pool, reloaded);
-
-      // `second.result` round-tripped through jsonb, which may reorder keys, so compare parsed content.
-      expect(second.error).toBe(first.error);
-      expect(JSON.parse(second.result)).toEqual(JSON.parse(first.result));
+      if (contains) expect(outcome.result).toContain(contains);
+      expect(JSON.parse(outcome.result)).toMatchObject(result(fixture.item.id));
+      expect(await chokePoint.findItem(fixture.item.id)).not.toBeNull();
+      const persisted = await getApprovalRequest(pool, fixture.requestId);
+      expect(persisted?.executionStatus).toBe("conflict");
+      expect(persisted?.executedAt).not.toBeNull();
+      expect(persisted?.executionResult).toMatchObject(result(fixture.item.id));
     });
 
     it("replaying an already-conflicted request is a no-op: returns the persisted conflict without re-authorizing", async () => {
-      const { requestId, run, item } = await createPendingDelete();
-      await pool.query(`UPDATE agent_runs SET project_item_id = $1 WHERE id = $2`, [randomUUID(), run.id]);
-      const request = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
-        payload: GenericOperationApprovalRequestPayload;
-      };
-
+      const { requestId, run, item } = await approvedDelete();
+      await driftProvenance(run.id);
+      const request = await loadGeneric(requestId);
       const first = await replayApprovedGenericOperation(pool, request);
       expect(first.error).toBe(true);
-
+      expect(first.result).toContain("owner_violation");
       // With the drift fixed, a redelivered job must still see the row as terminal and re-run nothing.
-      await pool.query(`UPDATE agent_runs SET project_item_id = $1 WHERE id = $2`, [
+      await pool.query("UPDATE agent_runs SET project_item_id = $1 WHERE id = $2", [
         request.payload.actor.agentProjectItemId,
         run.id,
       ]);
-      const reloaded = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
-        payload: GenericOperationApprovalRequestPayload;
-      };
-      const second = await replayApprovedGenericOperation(pool, reloaded);
-
-      expect(second.error).toBe(first.error);
+      const second = await replayById(requestId);
+      expect(second.error).toBe(true);
       expect(JSON.parse(second.result)).toEqual(JSON.parse(first.result));
       expect(await chokePoint.findItem(item.id)).not.toBeNull();
     });
   });
 
-  describe("DestructiveApprovalPreflight (issue #89)", () => {
-    async function expectNoApprovalOrNotification(): Promise<void> {
-      const { rows: requestRows } = await pool.query(`SELECT count(*)::int AS count FROM approval_requests`);
-      expect(requestRows[0].count).toBe(0);
-      const { rows: notificationRows } = await pool.query(`SELECT count(*)::int AS count FROM notifications`);
-      expect(notificationRows[0].count).toBe(0);
-    }
-
-    it("creates no approval_requests row and no notification when the resource is unauthorized (not found)", async () => {
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-      const projectItemId = randomUUID();
-      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete a ghost" });
-      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
-
-      await expect(gateway.invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: randomUUID() })).rejects.toThrow(
-        NotFoundError,
-      );
-
+  describe("DestructiveApprovalPreflight", () => {
+    it.each([
+      {
+        when: "the actor's persisted provenance no longer matches (owner_violation)",
+        arrange: async () => {
+          const database = await chokePoint.createDatabase({ name: "Preflight Provenance" });
+          const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
+          const { run, actor } = await agentActor();
+          // The run's persisted provenance drifted from what `actor` claims, caught before a request is queued.
+          await pool.query("UPDATE agent_runs SET project_item_id = $1 WHERE id = $2", [randomUUID(), run.id]);
+          return {
+            refuse: () => gatewayFor().invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id }),
+            code: "owner_violation",
+            remains: async () => (await chokePoint.findItem(item.id)) !== null,
+          };
+        },
+      },
+      {
+        when: "the resource is locked (paired relation property locked)",
+        arrange: async () => {
+          const tasks = await chokePoint.createDatabase({ name: "Preflight Locked Tasks" });
+          const participants = await chokePoint.createDatabase({ name: "Preflight Locked Participants" });
+          const { property } = await chokePoint.createRelationProperty({
+            sourceDatabaseId: tasks.id,
+            key: "assignedTo",
+            name: "Assigned To",
+            targetDatabaseId: participants.id,
+            inverse: { key: "assignedTasks", name: "Assigned Tasks", locked: true },
+          });
+          const { actor } = await agentActor();
+          return {
+            refuse: () => gatewayFor().invoke("property.delete", actor, ALL_CAPABILITIES, { propertyId: property.id }),
+            code: undefined,
+            remains: async () => (await chokePoint.listProperties(tasks.id)).some((p) => p.id === property.id),
+          };
+        },
+      },
+    ])("creates no approval request and no notification when $when", async ({ arrange }) => {
+      const { refuse, code, remains } = await arrange();
+      const refusal = refuse();
+      await expect(refusal).rejects.toBeInstanceOf(ForbiddenError);
+      if (code) await expect(refusal).rejects.toMatchObject({ code });
+      expect(await remains()).toBe(true);
       await expectNoApprovalOrNotification();
-    });
-
-    it("creates no approval_requests row and no notification when the actor's persisted provenance no longer matches (owner_violation)", async () => {
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-      const database = await chokePoint.createDatabase({ name: "Preflight Provenance" });
-      const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
-      const projectItemId = randomUUID();
-      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete it" });
-      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
-
-      // The run's persisted provenance drifted from what `actor` claims, caught before a request is queued.
-      await pool.query(`UPDATE agent_runs SET project_item_id = $1 WHERE id = $2`, [randomUUID(), run.id]);
-
-      try {
-        await gateway.invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id });
-        expect.unreachable("expected ForbiddenError");
-      } catch (err) {
-        expect(err).toBeInstanceOf(ForbiddenError);
-        expect((err as ForbiddenError).code).toBe("owner_violation");
-      }
-
-      expect(await chokePoint.findItem(item.id)).not.toBeNull();
-      await expectNoApprovalOrNotification();
-    });
-
-    it("creates no approval_requests row and no notification when the resource is locked (paired relation property locked)", async () => {
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-      const tasks = await chokePoint.createDatabase({ name: "Preflight Locked Tasks" });
-      const participants = await chokePoint.createDatabase({ name: "Preflight Locked Participants" });
-      const { property: assignedTo } = await chokePoint.createRelationProperty({
-        sourceDatabaseId: tasks.id,
-        key: "assignedTo",
-        name: "Assigned To",
-        targetDatabaseId: participants.id,
-        inverse: { key: "assignedTasks", name: "Assigned Tasks", locked: true },
-      });
-      const projectItemId = randomUUID();
-      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete a property" });
-      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
-
-      await expect(
-        gateway.invoke("property.delete", actor, ALL_CAPABILITIES, { propertyId: assignedTo.id }),
-      ).rejects.toBeInstanceOf(ForbiddenError);
-
-      expect((await chokePoint.listProperties(tasks.id)).some((p) => p.id === assignedTo.id)).toBe(true);
-      await expectNoApprovalOrNotification();
-    });
-
-    it("persists resourceSnapshot inside the payload, matching the row's own resourceSnapshot column", async () => {
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-      const database = await chokePoint.createDatabase({ name: "Preflight Snapshot Payload" });
-      const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
-      const projectItemId = randomUUID();
-      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete it" });
-      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
-
-      let requestId: string;
-      try {
-        await gateway.invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id });
-        expect.unreachable("expected ApprovalRequiredError");
-        return;
-      } catch (err) {
-        requestId = (err as ApprovalRequiredError).details.approvalRequestId;
-      }
-
-      const request = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
-        payload: GenericOperationApprovalRequestPayload;
-      };
-      expect(request.payload.resourceSnapshot).toEqual(request.resourceSnapshot);
     });
   });
 
-  describe("approval description snapshot (issue #1683)", () => {
-    async function makeActor(): Promise<AuthenticatedActor> {
-      const projectItemId = await createRealAgentProjectItemId();
-      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "describe" });
-      return { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+  describe("approval description and notification", () => {
+    /** Raises and approves the request with the recipient's locale set to English, so the body reads in English. */
+    async function raiseInEnglish(operation: GenericOperationName, actor: AuthenticatedActor, input: unknown) {
+      await pool.query("UPDATE users SET locale = 'en'");
+      return approveAgentRequest(operation, actor, input);
     }
 
-    async function descriptionOf(requestId: string) {
-      return (await getApprovalRequest(pool, requestId))!.description;
+    /** The stored description and the one notification's body; every approval carries the fixed title. */
+    async function describedAs(requestId: string) {
+      const { rows } = await pool.query<{ title: string; body: string | null }>(
+        "SELECT title, body FROM notifications WHERE source_id = $1 AND kind = 'approval_pending'",
+        [requestId],
+      );
+      expect(rows).toEqual([{ title: "Semp needs approval", body: expect.any(String) }]);
+      return { description: (await getApprovalRequest(pool, requestId))?.description, body: rows[0]?.body };
     }
 
-    it("property.delete snapshots names and the count of items with a value, unchanged by later edits", async () => {
-      const database = await chokePoint.createDatabase({ name: "Journal" });
-      const property = await chokePoint.createProperty({
-        databaseId: database.id,
-        key: "mood",
-        name: "Mood",
-        type: "text",
-      });
-      await chokePoint.createItem({ databaseId: database.id, properties: { mood: "ok" } });
-      await chokePoint.createItem({ databaseId: database.id, properties: { mood: "great" } });
-      await chokePoint.createItem({ databaseId: database.id, properties: {} });
-      const actor = await makeActor();
-
-      const requestId = await approveDestructive("property.delete", actor, { propertyId: property.id });
-      const expected = {
-        key: "approval.propertyDelete",
-        params: { propertyName: "Mood", databaseKey: null, databaseName: "Journal", affectedCount: 2 },
-      };
-      expect(await descriptionOf(requestId)).toEqual(expected);
-
-      await pool.query(`UPDATE properties SET name = 'Renamed' WHERE id = $1`, [property.id]);
-      await chokePoint.createItem({ databaseId: database.id, properties: { mood: "late" } });
-      expect(await descriptionOf(requestId)).toEqual(expected);
-    });
-
-    it("item.delete snapshots the name, database key, linked count and trash retention, without ids", async () => {
-      const tasks = await chokePoint.createDatabase({ name: "Tasks" });
-      const people = await chokePoint.createDatabase({ name: "People" });
-      await chokePoint.createProperty({ databaseId: tasks.id, key: "title", name: "Title", type: "title" });
-      const { property: assignedTo } = await chokePoint.createRelationProperty({
-        sourceDatabaseId: tasks.id,
-        key: "assignedTo",
-        name: "Assigned To",
-        targetDatabaseId: people.id,
-        inverse: { key: "assignedTasks", name: "Assigned Tasks" },
-      });
-      const { property: reviewedBy } = await chokePoint.createRelationProperty({
-        sourceDatabaseId: tasks.id,
-        key: "reviewedBy",
-        name: "Reviewed By",
-        targetDatabaseId: people.id,
-        inverse: { key: "reviewedTasks", name: "Reviewed Tasks" },
-      });
-      const task = await chokePoint.createItem({ databaseId: tasks.id, properties: { title: "Tax return" } });
-      const person = await chokePoint.createItem({ databaseId: people.id, properties: {} });
-      await chokePoint.createRelation({
-        relationPropertyId: assignedTo.id,
-        callerItemId: task.id,
-        targetItemId: person.id,
-      });
-      await chokePoint.createRelation({
-        relationPropertyId: reviewedBy.id,
-        callerItemId: task.id,
-        targetItemId: person.id,
-      });
-      const actor = await makeActor();
-
-      const requestId = await approveDestructive("item.delete", actor, { itemId: task.id });
-      const description = await descriptionOf(requestId);
-
-      expect(description).toEqual({
-        key: "approval.itemDelete",
-        params: {
-          itemName: "Tax return",
-          databaseKey: null,
-          databaseName: "Tasks",
-          linkedCount: 1,
-          restorableDays: 30,
-        },
-      });
-      expect(JSON.stringify(description)).not.toContain(task.id);
-    });
-
-    it("database.archive, view.delete and relation.delete store their templates", async () => {
+    async function tasksAndPeople() {
       const tasks = await chokePoint.createDatabase({ name: "Tasks" });
       const people = await chokePoint.createDatabase({ name: "People" });
       await chokePoint.createProperty({ databaseId: tasks.id, key: "title", name: "Title", type: "title" });
@@ -2857,74 +1967,11 @@ describe("createGenericOperationGateway (issue #220)", () => {
         callerItemId: task.id,
         targetItemId: person.id,
       });
-      const actor = await makeActor();
-      const view = await chokePoint.createView(
-        { databaseId: tasks.id, type: "table", name: "Open tasks" },
-        { type: "ai_agent", agentProjectItemId: actor.agentProjectItemId },
-      );
-
-      const archiveId = await approveDestructive("database.archive", actor, { databaseId: tasks.id });
-      const viewId = await approveDestructive("view.delete", actor, { viewId: view.id });
-      const relationId = await approveDestructive("relation.delete", actor, {
-        relationPropertyId: assignedTo.id,
-        callerItemId: task.id,
-        targetItemId: person.id,
-      });
-
-      expect(await descriptionOf(archiveId)).toEqual({
-        key: "approval.databaseArchive",
-        params: { databaseName: "Tasks", affectedCount: 1 },
-      });
-      expect(await descriptionOf(viewId)).toEqual({
-        key: "approval.viewDelete",
-        params: { viewName: "Open tasks", databaseName: "Tasks" },
-      });
-      expect(await descriptionOf(relationId)).toEqual({
-        key: "approval.relationDelete",
-        params: { fromItemName: "Tax return", fromDatabaseKey: null, toItemName: "Eva", toDatabaseKey: null },
-      });
-    });
-
-    it("retains legacy name and null fallback when no declared title exists", async () => {
-      const database = await chokePoint.createDatabase({ name: "Legacy" });
-      await chokePoint.createProperty({ databaseId: database.id, key: "name", name: "Name", type: "text" });
-      const named = await chokePoint.createItem({ databaseId: database.id, properties: { name: "Legacy name" } });
-      const unnamed = await chokePoint.createItem({ databaseId: database.id, properties: {} });
-      const actor = await makeActor();
-      const namedRequest = await approveDestructive("item.delete", actor, { itemId: named.id });
-      const unnamedRequest = await approveDestructive("item.delete", actor, { itemId: unnamed.id });
-      expect(await descriptionOf(namedRequest)).toMatchObject({ params: { itemName: "Legacy name" } });
-      expect(await descriptionOf(unnamedRequest)).toMatchObject({ params: { itemName: null } });
-    });
-  });
-
-  describe("approval notification body (issue #1773)", () => {
-    async function makeActor(): Promise<AuthenticatedActor> {
-      const projectItemId = await createRealAgentProjectItemId();
-      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "notify" });
-      return { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
+      const { actor } = await agentActor({ realProject: true });
+      return { tasks, people, assignedTo, task, person, actor };
     }
 
-    /** Raises the request with the recipient's locale set to English, so the body can be asserted in English. */
-    async function raiseInEnglish(
-      operation: GenericOperationName,
-      actor: AuthenticatedActor,
-      input: unknown,
-    ): Promise<string> {
-      await pool.query(`UPDATE users SET locale = 'en'`);
-      return approveDestructive(operation, actor, input);
-    }
-
-    async function notificationOf(requestId: string): Promise<{ title: string; body: string | null }> {
-      const { rows } = await pool.query<{ title: string; body: string | null }>(
-        `SELECT title, body FROM notifications WHERE source_id = $1 AND kind = 'approval_pending'`,
-        [requestId],
-      );
-      expect(rows).toHaveLength(1);
-      return rows[0]!;
-    }
-
-    it("gives every approval the fixed title, and property.delete the no-app-undo sentence", async () => {
+    it("property.delete snapshots names and the count of items with a value, unchanged by later edits", async () => {
       const database = await chokePoint.createDatabase({ name: "Journal" });
       const property = await chokePoint.createProperty({
         databaseId: database.id,
@@ -2932,202 +1979,237 @@ describe("createGenericOperationGateway (issue #220)", () => {
         name: "Mood",
         type: "text",
       });
-      const actor = await makeActor();
-
+      for (const properties of [{ mood: "ok" }, { mood: "great" }, {}]) {
+        await chokePoint.createItem({ databaseId: database.id, properties });
+      }
+      const { actor } = await agentActor({ realProject: true });
       const requestId = await raiseInEnglish("property.delete", actor, { propertyId: property.id });
-
-      expect(await notificationOf(requestId)).toEqual({
-        title: "Semp needs approval",
-        body: 'Delete "Mood" from "Journal" (unnamed); 0 items affected. Semp cannot undo this action.',
+      const expected = {
+        key: "approval.propertyDelete",
+        params: { propertyName: "Mood", databaseKey: null, databaseName: "Journal", affectedCount: 2 },
+      };
+      expect(await describedAs(requestId)).toEqual({
+        description: expected,
+        body: 'Delete "Mood" from "Journal" (unnamed); 2 items affected. Semp cannot undo this action.',
       });
+      await pool.query("UPDATE properties SET name = 'Renamed' WHERE id = $1", [property.id]);
+      await chokePoint.createItem({ databaseId: database.id, properties: { mood: "late" } });
+      expect((await describedAs(requestId)).description).toEqual(expected);
     });
 
-    it("gives item.delete a body that ends with the undo sentence, because the item goes to the trash", async () => {
-      const tasks = await chokePoint.createDatabase({ name: "Tasks" });
-      await chokePoint.createProperty({ databaseId: tasks.id, key: "name", name: "Name", type: "text" });
-      const task = await chokePoint.createItem({ databaseId: tasks.id, properties: { name: "Tax return" } });
-      const actor = await makeActor();
-
-      const requestId = await raiseInEnglish("item.delete", actor, { itemId: task.id });
-
-      expect((await notificationOf(requestId)).body).toBe(
-        'Delete "Tax return" from "Tasks" (unnamed); 0 linked items, retained for 30 days. This can be undone later.',
-      );
-    });
-
-    it("renders an item without a name as the unnamed label, never as a placeholder", async () => {
-      const tasks = await chokePoint.createDatabase({ name: "Tasks" });
-      const task = await chokePoint.createItem({ databaseId: tasks.id, properties: {} });
-      const actor = await makeActor();
-
-      const requestId = await raiseInEnglish("item.delete", actor, { itemId: task.id });
-
-      expect((await notificationOf(requestId)).body).toBe(
-        'Delete "unnamed" from "Tasks" (unnamed); 0 linked items, retained for 30 days. This can be undone later.',
-      );
-    });
-
-    it("gives database.archive an undo sentence and view.delete and relation.delete the no-app-undo one", async () => {
-      const tasks = await chokePoint.createDatabase({ name: "Tasks" });
-      const people = await chokePoint.createDatabase({ name: "People" });
-      await chokePoint.createProperty({ databaseId: tasks.id, key: "name", name: "Name", type: "text" });
-      await chokePoint.createProperty({ databaseId: people.id, key: "name", name: "Name", type: "text" });
-      const { property: assignedTo } = await chokePoint.createRelationProperty({
+    it("item.delete snapshots the name, database key, linked count and trash retention, without ids, and says it can be undone", async () => {
+      const { tasks, people, task, person, actor } = await tasksAndPeople();
+      const { property: reviewedBy } = await chokePoint.createRelationProperty({
         sourceDatabaseId: tasks.id,
-        key: "assignedTo",
-        name: "Assigned To",
+        key: "reviewedBy",
+        name: "Reviewed By",
         targetDatabaseId: people.id,
-        inverse: { key: "assignedTasks", name: "Assigned Tasks" },
+        inverse: { key: "reviewedTasks", name: "Reviewed Tasks" },
       });
-      const task = await chokePoint.createItem({ databaseId: tasks.id, properties: { name: "Tax return" } });
-      const person = await chokePoint.createItem({ databaseId: people.id, properties: { name: "Eva" } });
       await chokePoint.createRelation({
-        relationPropertyId: assignedTo.id,
+        relationPropertyId: reviewedBy.id,
         callerItemId: task.id,
         targetItemId: person.id,
       });
-      const actor = await makeActor();
+      const { description, body } = await describedAs(await raiseInEnglish("item.delete", actor, { itemId: task.id }));
+      expect(description).toEqual({
+        key: "approval.itemDelete",
+        params: {
+          itemName: "Tax return",
+          databaseKey: null,
+          databaseName: "Tasks",
+          linkedCount: 1,
+          restorableDays: 30,
+        },
+      });
+      expect(JSON.stringify(description)).not.toContain(task.id);
+      expect(body).toBe(
+        'Delete "Tax return" from "Tasks" (unnamed); 1 linked items, retained for 30 days. This can be undone later.',
+      );
+    });
+
+    it("database.archive, view.delete and relation.delete store their templates and their undo sentences", async () => {
+      const { tasks, assignedTo, task, person, actor } = await tasksAndPeople();
       const view = await chokePoint.createView(
         { databaseId: tasks.id, type: "table", name: "Open tasks" },
         { type: "ai_agent", agentProjectItemId: actor.agentProjectItemId },
       );
+      const cases: Array<[GenericOperationName, unknown, unknown, string]> = [
+        [
+          "database.archive",
+          { databaseId: tasks.id },
+          { key: "approval.databaseArchive", params: { databaseName: "Tasks", affectedCount: 1 } },
+          'Archive "Tasks"; 1 items affected. This can be undone later.',
+        ],
+        [
+          "view.delete",
+          { viewId: view.id },
+          { key: "approval.viewDelete", params: { viewName: "Open tasks", databaseName: "Tasks" } },
+          'Delete view "Open tasks" from "Tasks". Semp cannot undo this action.',
+        ],
+        [
+          "relation.delete",
+          { relationPropertyId: assignedTo.id, callerItemId: task.id, targetItemId: person.id },
+          {
+            key: "approval.relationDelete",
+            params: { fromItemName: "Tax return", fromDatabaseKey: null, toItemName: "Eva", toDatabaseKey: null },
+          },
+          'Remove the link from "Tax return" (unnamed) to "Eva" (unnamed). Semp cannot undo this action.',
+        ],
+      ];
+      for (const [operation, input, description, body] of cases) {
+        expect(await describedAs(await raiseInEnglish(operation, actor, input))).toEqual({ description, body });
+      }
+    });
 
-      const archiveId = await raiseInEnglish("database.archive", actor, { databaseId: tasks.id });
-      expect((await notificationOf(archiveId)).body).toBe(
-        'Archive "Tasks"; 1 items affected. This can be undone later.',
-      );
-
-      const viewId = await raiseInEnglish("view.delete", actor, { viewId: view.id });
-      expect((await notificationOf(viewId)).body).toBe(
-        'Delete view "Open tasks" from "Tasks". Semp cannot undo this action.',
-      );
-
-      const relationId = await raiseInEnglish("relation.delete", actor, {
-        relationPropertyId: assignedTo.id,
-        callerItemId: task.id,
-        targetItemId: person.id,
-      });
-      expect((await notificationOf(relationId)).body).toBe(
-        'Remove the link from "Tax return" (unnamed) to "Eva" (unnamed). Semp cannot undo this action.',
+    it("falls back to a legacy name, and renders an item without one as the unnamed label", async () => {
+      const database = await chokePoint.createDatabase({ name: "Legacy" });
+      await chokePoint.createProperty({ databaseId: database.id, key: "name", name: "Name", type: "text" });
+      const named = await chokePoint.createItem({ databaseId: database.id, properties: { name: "Legacy name" } });
+      const unnamed = await chokePoint.createItem({ databaseId: database.id, properties: {} });
+      const { actor } = await agentActor({ realProject: true });
+      const namedRequest = await describedAs(await raiseInEnglish("item.delete", actor, { itemId: named.id }));
+      const unnamedRequest = await describedAs(await raiseInEnglish("item.delete", actor, { itemId: unnamed.id }));
+      expect(namedRequest.description).toMatchObject({ params: { itemName: "Legacy name" } });
+      expect(unnamedRequest.description).toMatchObject({ params: { itemName: null } });
+      expect(unnamedRequest.body).toBe(
+        'Delete "unnamed" from "Legacy" (unnamed); 0 linked items, retained for 30 days. This can be undone later.',
       );
     });
   });
 
-  describe("approval notification link (issue #1787)", () => {
-    /** Raises an `item.delete` request for `run` and returns its id with the link of its one notification. */
-    async function raiseFor(run: AgentRunRow): Promise<{ requestId: string; linkHref: string | null }> {
+  describe("approval notification link", () => {
+    it.each<{ raisedBy: string; page: string; startRun: () => Promise<AgentRunRow> }>([
+      {
+        raisedBy: "a Semp chat",
+        page: "?page=semp-chats&tab=semp",
+        startRun: async () =>
+          createAgentRun(pool, {
+            projectItemId: randomUUID(),
+            triggeredBy: "user",
+            unit: "session",
+            task: "chat",
+            threadId: await chatThread(),
+          }),
+      },
+      {
+        raisedBy: "an automatic task tick",
+        page: "?page=inbox",
+        startRun: async () => {
+          const projectItemId = randomUUID();
+          const tick = await withTransaction(pool, async (client) => {
+            const heartbeat = await createHeartbeat(client, {
+              projectItemId,
+              name: "Sunday planning",
+              rule: { kind: "weekly", days: ["sun"], at: "21:00" },
+              actionId: CORE_AGENT_RUN_ACTION_ID,
+              actionConfig: { task: "Plan the week" },
+            });
+            return { heartbeatId: heartbeat.id, threadId: (await getOrCreateTickThread(client, heartbeat.id)).id };
+          });
+          return createAgentRun(pool, { projectItemId, triggeredBy: "heartbeat", task: "Plan the week", ...tick });
+        },
+      },
+      {
+        raisedBy: "an MCP client",
+        page: "?page=inbox",
+        startRun: () =>
+          createAgentRun(pool, { projectItemId: randomUUID(), triggeredBy: "mcp", task: "MCP run-credential session" }),
+      },
+    ])("links a request raised by $raisedBy to $page, naming the request and no user", async ({ page, startRun }) => {
+      const run = await startRun();
       if (run.projectItemId === null) throw new Error("The run names no project");
       const database = await chokePoint.createDatabase({ name: "Tasks" });
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
-      const actor: AuthenticatedActor = {
-        userId: run.actorUserId,
-        runId: run.id,
-        agentProjectItemId: run.projectItemId,
-      };
-      const requestId = await createGenericOperationGateway(pool, testMetadataResolver)
-        .invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id })
-        .then(
-          () => {
-            throw new Error("Expected an approval request");
-          },
-          (error: unknown) => {
-            if (error instanceof ApprovalRequiredError) return error.details.approvalRequestId;
-            throw error;
-          },
-        );
+      const actor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: run.projectItemId };
+      const requestId = await requestApproval("item.delete", actor, { itemId: item.id });
       const { rows } = await pool.query<{ link_href: string | null }>(
         `SELECT link_href FROM notifications
          WHERE kind = 'approval_pending' AND source_table = 'approval_requests' AND source_id = $1`,
         [requestId],
       );
-      const row = rows[0];
-      if (!row || rows.length !== 1) throw new Error(`Expected one notification, found ${rows.length}`);
-      return { requestId, linkHref: row.link_href };
-    }
-
-    it("links a request raised in a Semp chat to the Semp chats page, naming the request and no user", async () => {
-      const threadId = await withTransaction(pool, (client) => createSempChatThread(client));
-      const run = await createAgentRun(pool, {
-        projectItemId: randomUUID(),
-        triggeredBy: "user",
-        unit: "session",
-        task: "chat",
-        threadId,
-      });
-
-      const { requestId, linkHref } = await raiseFor(run);
-
-      expect(linkHref).toBe(`?page=semp-chats&tab=semp&approvalRequestId=${requestId}`);
-      expect(linkHref).not.toContain(run.actorUserId);
-    });
-
-    it("links a request raised by an automatic task tick to the Inbox, naming the request and no user", async () => {
-      const projectItemId = randomUUID();
-      const tick = await withTransaction(pool, async (client) => {
-        const heartbeat = await createHeartbeat(client, {
-          projectItemId,
-          name: "Sunday planning",
-          rule: { kind: "weekly", days: ["sun"], at: "21:00" },
-          actionId: CORE_AGENT_RUN_ACTION_ID,
-          actionConfig: { task: "Plan the week" },
-        });
-        return { heartbeatId: heartbeat.id, threadId: (await getOrCreateTickThread(client, heartbeat.id)).id };
-      });
-      const run = await createAgentRun(pool, {
-        projectItemId,
-        triggeredBy: "heartbeat",
-        task: "Plan the week",
-        ...tick,
-      });
-
-      const { requestId, linkHref } = await raiseFor(run);
-
-      expect(linkHref).toBe(`?page=inbox&approvalRequestId=${requestId}`);
-      expect(linkHref).not.toContain(run.actorUserId);
-    });
-
-    it("links a request raised by an MCP client to the Inbox, naming the request and no user", async () => {
-      const run = await createAgentRun(pool, {
-        projectItemId: randomUUID(),
-        triggeredBy: "mcp",
-        task: "MCP run-credential session",
-      });
-
-      const { requestId, linkHref } = await raiseFor(run);
-
-      expect(linkHref).toBe(`?page=inbox&approvalRequestId=${requestId}`);
-      expect(linkHref).not.toContain(run.actorUserId);
+      expect(rows).toEqual([{ link_href: `${page}&approvalRequestId=${requestId}` }]);
+      expect(rows[0]?.link_href).not.toContain(run.actorUserId);
     });
   });
 
-  describe("replay parity for all five destructive operations (issue #89 acceptance criteria)", () => {
-    async function makeAgentActor(): Promise<AuthenticatedActor> {
-      const projectItemId = await createRealAgentProjectItemId();
-      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "replay parity" });
-      return { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
-    }
-
-    async function replay(requestId: string) {
-      const request = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
-        payload: GenericOperationApprovalRequestPayload;
-      };
-      const outcome = await replayApprovedGenericOperation(pool, request);
-      const finished = await getApprovalRequest(pool, requestId);
-      return { outcome, finished };
-    }
-
-    it("database.archive: preflight, approve, and replay archive the database exactly once", async () => {
-      const database = await chokePoint.createDatabase({ name: "Replay Parity Archive" });
-      const actor = await makeAgentActor();
-
-      const requestId = await approveDestructive("database.archive", actor, { databaseId: database.id });
-      const { outcome, finished } = await replay(requestId);
-
-      expect(outcome.error).toBe(false);
-      expect(finished!.executionStatus).toBe("succeeded");
-      const reloaded = await chokePoint.getDatabase(database.id);
-      expect(reloaded?.archivedAt).not.toBeNull();
-    });
+  describe("replay parity for all destructive operations", () => {
+    it.each<{
+      operation: GenericOperationName;
+      arrange: (actor: AuthenticatedActor) => Promise<{ input: unknown; gone: () => Promise<boolean> }>;
+    }>([
+      {
+        operation: "database.archive",
+        arrange: async () => {
+          const database = await chokePoint.createDatabase({ name: "Replay Parity Archive" });
+          return {
+            input: { databaseId: database.id },
+            gone: async () => (await chokePoint.getDatabase(database.id))?.archivedAt != null,
+          };
+        },
+      },
+      {
+        operation: "property.delete",
+        arrange: async () => {
+          const database = await chokePoint.createDatabase({ name: "Replay Parity Property" });
+          const property = await chokePoint.createProperty({
+            databaseId: database.id,
+            key: "notes",
+            name: "Notes",
+            type: "text",
+          });
+          return {
+            input: { propertyId: property.id },
+            gone: async () => !(await chokePoint.listProperties(database.id)).some((p) => p.id === property.id),
+          };
+        },
+      },
+      {
+        operation: "view.delete",
+        arrange: async (actor) => {
+          const database = await chokePoint.createDatabase({ name: "Replay Parity View" });
+          const view = await chokePoint.createView(
+            { databaseId: database.id, type: "table", name: "Agent View" },
+            { type: "ai_agent", agentProjectItemId: actor.agentProjectItemId },
+          );
+          return { input: { viewId: view.id }, gone: async () => (await chokePoint.getView(view.id)) === null };
+        },
+      },
+      {
+        operation: "relation.delete",
+        arrange: async () => {
+          const tasks = await chokePoint.createDatabase({ name: "Replay Parity Rel Tasks" });
+          const participants = await chokePoint.createDatabase({ name: "Replay Parity Rel Participants" });
+          const { property } = await chokePoint.createRelationProperty({
+            sourceDatabaseId: tasks.id,
+            key: "assignedTo",
+            name: "Assigned To",
+            targetDatabaseId: participants.id,
+            inverse: { key: "assignedTasks", name: "Assigned Tasks" },
+          });
+          const task = await chokePoint.createItem({ databaseId: tasks.id, properties: {} });
+          const person = await chokePoint.createItem({ databaseId: participants.id, properties: {} });
+          const input = { relationPropertyId: property.id, callerItemId: task.id, targetItemId: person.id };
+          const edge = await chokePoint.createRelation(input);
+          return {
+            input,
+            gone: async () =>
+              (await countOf("SELECT count(*)::int AS count FROM item_relations WHERE id = $1", [edge.id])) === 0,
+          };
+        },
+      },
+    ])(
+      "$operation: preflight, approve, and replay apply the operation exactly once",
+      async ({ operation, arrange }) => {
+        const { actor } = await agentActor({ realProject: true });
+        const { input, gone } = await arrange(actor);
+        const requestId = await approveAgentRequest(operation, actor, input);
+        expect(await gone()).toBe(false);
+        expect((await replayById(requestId)).error).toBe(false);
+        expect(await statusOf(requestId)).toBe("succeeded");
+        expect(await gone()).toBe(true);
+      },
+    );
 
     it("recounts dependent rollups after approved database.archive replay through the worker", async () => {
       const { projects, tasks, project } = await inTenantZero(async () => {
@@ -3140,20 +2222,12 @@ describe("createGenericOperationGateway (issue #220)", () => {
           key: "tasks",
           name: "Tasks",
         });
-        await chokePoint.createProperty({
-          databaseId: projects.id,
-          key: "taskCount",
-          name: "Count",
-          type: "rollup",
-          config: { relationPropertyKey: "tasks", aggregation: "count" },
-        });
-        await chokePoint.createProperty({
-          databaseId: projects.id,
-          key: "totalHours",
-          name: "Sum",
-          type: "rollup",
-          config: { relationPropertyKey: "tasks", aggregation: "sum", targetPropertyKey: "hours" },
-        });
+        for (const [key, config] of [
+          ["taskCount", { relationPropertyKey: "tasks", aggregation: "count" }],
+          ["totalHours", { relationPropertyKey: "tasks", aggregation: "sum", targetPropertyKey: "hours" }],
+        ] as const) {
+          await chokePoint.createProperty({ databaseId: projects.id, key, name: key, type: "rollup", config });
+        }
         const project = await chokePoint.createItem({ databaseId: projects.id, properties: {} });
         for (const hours of [3, 4]) {
           const task = await chokePoint.createItem({ databaseId: tasks.id, properties: { hours } });
@@ -3165,16 +2239,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
         }
         return { projects, tasks, project };
       });
-      const taskList = createCoreTaskList(
-        pool,
-        new Map(),
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        replayApprovedGenericOperation,
-      );
+      const taskList = coreTaskList(replayApprovedGenericOperation);
       const drainUntil = async (count: number, sum: number | null) => {
         for (let pass = 0; pass < 10; pass++) {
           await runOnce({ pgPool: pool, taskList });
@@ -3196,125 +2261,53 @@ describe("createGenericOperationGateway (issue #220)", () => {
         throw new Error(`Rollup worker did not reach count ${count} and sum ${String(sum)}`);
       };
       await drainUntil(2, 7);
-      const actor = await inTenantZero(() => makeAgentActor());
+      const { actor } = await inTenantZero(() => agentActor({ realProject: true }));
       const requestId = await inTenantZero(() =>
-        approveDestructive("database.archive", actor, { databaseId: tasks.id }),
+        approveAgentRequest("database.archive", actor, { databaseId: tasks.id }),
       );
-      const { outcome, finished } = await inTenantZero(() => replay(requestId));
-      expect(outcome.error).toBe(false);
-      expect(finished?.executionStatus).toBe("succeeded");
+      expect((await inTenantZero(() => replayById(requestId))).error).toBe(false);
+      expect(await statusOf(requestId)).toBe("succeeded");
       expect((await chokePoint.getDatabase(tasks.id))?.archivedAt).not.toBeNull();
       expect(await countJobsByIdentifier(pool, CORE_TASK_NAMES.ROLLUP_RECOMPUTE_FULL)).toBe(2);
       await drainUntil(0, null);
       const current = await inTenantZero(() => chokePoint.getItem(projects.id, project.id));
       expect(current?.computed).toMatchObject({ taskCount: 0, totalHours: null });
     });
-
-    it("property.delete: preflight, approve, and replay delete the property exactly once", async () => {
-      const database = await chokePoint.createDatabase({ name: "Replay Parity Property" });
-      const property = await chokePoint.createProperty({
-        databaseId: database.id,
-        key: "notes",
-        name: "Notes",
-        type: "text",
-      });
-      const actor = await makeAgentActor();
-
-      const requestId = await approveDestructive("property.delete", actor, { propertyId: property.id });
-      const { outcome, finished } = await replay(requestId);
-
-      expect(outcome.error).toBe(false);
-      expect(finished!.executionStatus).toBe("succeeded");
-      const remaining = await chokePoint.listProperties(database.id);
-      expect(remaining.some((p) => p.id === property.id)).toBe(false);
-    });
-
-    it("view.delete: preflight, approve, and replay delete the view exactly once", async () => {
-      const database = await chokePoint.createDatabase({ name: "Replay Parity View" });
-      const actor = await makeAgentActor();
-      const view = await chokePoint.createView(
-        { databaseId: database.id, type: "table", name: "Agent View" },
-        { type: "ai_agent", agentProjectItemId: actor.agentProjectItemId },
-      );
-
-      const requestId = await approveDestructive("view.delete", actor, { viewId: view.id });
-      const { outcome, finished } = await replay(requestId);
-
-      expect(outcome.error).toBe(false);
-      expect(finished!.executionStatus).toBe("succeeded");
-      expect(await chokePoint.getView(view.id)).toBeNull();
-    });
-
-    it("relation.delete: preflight, approve, and replay delete the edge exactly once", async () => {
-      const tasks = await chokePoint.createDatabase({ name: "Replay Parity Rel Tasks" });
-      const participants = await chokePoint.createDatabase({ name: "Replay Parity Rel Participants" });
-      const { property: assignedTo } = await chokePoint.createRelationProperty({
-        sourceDatabaseId: tasks.id,
-        key: "assignedTo",
-        name: "Assigned To",
-        targetDatabaseId: participants.id,
-        inverse: { key: "assignedTasks", name: "Assigned Tasks" },
-      });
-      const task = await chokePoint.createItem({ databaseId: tasks.id, properties: {} });
-      const person = await chokePoint.createItem({ databaseId: participants.id, properties: {} });
-      const edge = await chokePoint.createRelation({
-        relationPropertyId: assignedTo.id,
-        callerItemId: task.id,
-        targetItemId: person.id,
-      });
-      const actor = await makeAgentActor();
-
-      const requestId = await approveDestructive("relation.delete", actor, {
-        relationPropertyId: assignedTo.id,
-        callerItemId: task.id,
-        targetItemId: person.id,
-      });
-      const { outcome, finished } = await replay(requestId);
-
-      expect(outcome.error).toBe(false);
-      expect(finished!.executionStatus).toBe("succeeded");
-      const { rows } = await pool.query(`SELECT count(*)::int AS count FROM item_relations WHERE id = $1`, [edge.id]);
-      expect(rows[0].count).toBe(0);
-    });
   });
 
-  describe("page.restoreVersion through the approval gate (issue #1617)", () => {
-    async function makeAgentActor(): Promise<AuthenticatedActor> {
-      const projectItemId = await createRealAgentProjectItemId();
-      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "page restore" });
-      return { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
-    }
-
-    async function replayRequest(requestId: string) {
-      const request = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
-        payload: GenericOperationApprovalRequestPayload;
-      };
-      const outcome = await replayApprovedGenericOperation(pool, request);
-      return { outcome, finished: await getApprovalRequest(pool, requestId) };
-    }
-
+  describe("page.restoreVersion through the approval gate", () => {
     /**
      * A page whose history starts two hours before the database clock, with block `b1` written an hour
      * before it. The instant returned is half an hour before the clock, so it sits between the two.
      */
-    async function pageWithFirstBlock(): Promise<{ itemId: string; docId: string; at: Date }> {
+    async function pageWithFirstBlock() {
       const docStore = createDocStore(pool);
-      const { rows } = await pool.query<{ now: Date }>(`SELECT transaction_timestamp() AS now`);
+      const { rows } = await pool.query<{ now: Date }>("SELECT transaction_timestamp() AS now");
       const now = rows[0]!.now;
       const hoursBefore = (hours: number) => new Date(now.getTime() - hours * 60 * 60 * 1000);
       const database = await chokePoint.createDatabase({ name: "Pages" });
       await chokePoint.createProperty({ databaseId: database.id, key: "name", name: "Name", type: "text" });
       const item = await chokePoint.createItem({ databaseId: database.id, properties: { name: "Chapter one" } });
       const doc = await docStore.getOrCreateDoc(item.id, "page");
-      await pool.query(`UPDATE docs SET history_available_from = $2 WHERE id = $1`, [doc.id, hoursBefore(2)]);
+      await pool.query("UPDATE docs SET history_available_from = $2 WHERE id = $1", [doc.id, hoursBefore(2)]);
       await pool.query(
-        `UPDATE doc_snapshot_history SET represented_at = $2 WHERE doc_id = $1 AND through_update_id = 0`,
+        "UPDATE doc_snapshot_history SET represented_at = $2 WHERE doc_id = $1 AND through_update_id = 0",
         [doc.id, hoursBefore(2)],
       );
       await docStore.putBlock(item.id, { id: "b1", flavour: "paragraph", fields: { content: "first" } }, "user");
-      await pool.query(`UPDATE doc_updates SET created_at = $2 WHERE doc_id = $1`, [doc.id, hoursBefore(1)]);
-      await pool.query(`UPDATE doc_history_updates SET created_at = $2 WHERE doc_id = $1`, [doc.id, hoursBefore(1)]);
-      return { itemId: item.id, docId: doc.id, at: hoursBefore(0.5) };
+      await pool.query("UPDATE doc_updates SET created_at = $2 WHERE doc_id = $1", [doc.id, hoursBefore(1)]);
+      await pool.query("UPDATE doc_history_updates SET created_at = $2 WHERE doc_id = $1", [doc.id, hoursBefore(1)]);
+      const { actor } = await agentActor({ realProject: true });
+      const at = hoursBefore(0.5);
+      return { itemId: item.id, docId: doc.id, at, actor, input: { itemId: item.id, at: at.toISOString() } };
+    }
+
+    function addSecondBlock(itemId: string) {
+      return createDocStore(pool).putBlock(
+        itemId,
+        { id: "b2", flavour: "paragraph", fields: { content: "second" } },
+        "user",
+      );
     }
 
     async function blockIdsOf(itemId: string): Promise<string[]> {
@@ -3324,16 +2317,11 @@ describe("createGenericOperationGateway (issue #220)", () => {
 
     it("holds an agent call for approval, and the approved replay restores the page as one user update", async () => {
       const page = await pageWithFirstBlock();
-      const docStore = createDocStore(pool);
-      await docStore.putBlock(page.itemId, { id: "b2", flavour: "paragraph", fields: { content: "second" } }, "user");
-      const actor = await makeAgentActor();
-      const input = { itemId: page.itemId, at: page.at.toISOString() };
-
-      const requestId = await approveDestructive("page.restoreVersion", actor, input);
+      await addSecondBlock(page.itemId);
+      const requestId = await approveAgentRequest("page.restoreVersion", page.actor, page.input);
       // Approval alone changes nothing: the restore runs when the approved request is replayed.
       expect(await blockIdsOf(page.itemId)).toEqual(["b1", "b2"]);
-      const request = await getApprovalRequest(pool, requestId);
-      expect(request).toMatchObject({
+      expect(await getApprovalRequest(pool, requestId)).toMatchObject({
         toolName: "page.restoreVersion",
         riskClass: "destructive",
         description: {
@@ -3341,70 +2329,45 @@ describe("createGenericOperationGateway (issue #220)", () => {
           params: { itemName: "Chapter one", databaseKey: null, databaseName: "Pages" },
         },
       });
-
-      const { outcome, finished } = await replayRequest(requestId);
-
-      expect(outcome.error).toBe(false);
-      expect(finished!.executionStatus).toBe("succeeded");
+      expect((await replayById(requestId)).error).toBe(false);
+      expect(await statusOf(requestId)).toBe("succeeded");
       expect(await blockIdsOf(page.itemId)).toEqual(["b1"]);
       const { rows } = await pool.query<{ created_by: string }>(
-        `SELECT created_by FROM doc_updates WHERE doc_id = $1 ORDER BY id DESC LIMIT 1`,
+        "SELECT created_by FROM doc_updates WHERE doc_id = $1 ORDER BY id DESC LIMIT 1",
         [page.docId],
       );
       expect(rows[0]!.created_by).toBe("user");
     });
 
-    it("ends the replay as a conflict, restoring nothing, when the page was edited after the request", async () => {
+    it.each([
+      { edit: "a later edit", keepStamp: false },
+      { edit: "a same-author edit with the same timestamp", keepStamp: true },
+    ])("ends the replay as a conflict, restoring nothing, after $edit", async ({ keepStamp }) => {
       const page = await pageWithFirstBlock();
-      const actor = await makeAgentActor();
-      const requestId = await approveDestructive("page.restoreVersion", actor, {
-        itemId: page.itemId,
-        at: page.at.toISOString(),
-      });
-      await createDocStore(pool).putBlock(
-        page.itemId,
-        { id: "b2", flavour: "paragraph", fields: { content: "second" } },
-        "user",
-      );
-
-      const { finished } = await replayRequest(requestId);
-
-      expect(finished!.executionStatus).toBe("conflict");
-      expect(await blockIdsOf(page.itemId)).toEqual(["b1", "b2"]);
-    });
-
-    it("rejects an approved restore after a same-author edit with the same timestamp", async () => {
-      const page = await pageWithFirstBlock();
-      const actor = await makeAgentActor();
-      const before = await pool.query<{ last_edited_at: Date; last_edited_by: string }>(
-        "SELECT last_edited_at, last_edited_by FROM docs WHERE id = $1",
-        [page.docId],
-      );
-      const previous = before.rows[0];
+      const previous = (
+        await pool.query<{ last_edited_at: Date; last_edited_by: string }>(
+          "SELECT last_edited_at, last_edited_by FROM docs WHERE id = $1",
+          [page.docId],
+        )
+      ).rows[0];
       if (!previous) throw new Error("missing page fixture");
-      const requestId = await approveDestructive("page.restoreVersion", actor, {
-        itemId: page.itemId,
-        at: page.at.toISOString(),
-      });
-      await createDocStore(pool).putBlock(
-        page.itemId,
-        { id: "b2", flavour: "paragraph", fields: { content: "second" } },
-        "user",
-      );
-      // Reproduce a timestamp collision independently of wall-clock scheduling.
-      await pool.query("UPDATE docs SET last_edited_at = $2, last_edited_by = $3 WHERE id = $1", [
-        page.docId,
-        previous.last_edited_at,
-        previous.last_edited_by,
-      ]);
-      const { finished } = await replayRequest(requestId);
-      expect(finished?.executionStatus).toBe("conflict");
+      const requestId = await approveAgentRequest("page.restoreVersion", page.actor, page.input);
+      await addSecondBlock(page.itemId);
+      if (keepStamp) {
+        // Reproduce a timestamp collision independently of wall-clock scheduling.
+        await pool.query("UPDATE docs SET last_edited_at = $2, last_edited_by = $3 WHERE id = $1", [
+          page.docId,
+          previous.last_edited_at,
+          previous.last_edited_by,
+        ]);
+      }
+      await replayById(requestId);
+      expect(await statusOf(requestId)).toBe("conflict");
       expect(await blockIdsOf(page.itemId)).toEqual(["b1", "b2"]);
     });
 
     it("keeps approval identity through real compaction and retention, then detects a later edit", async () => {
       const page = await pageWithFirstBlock();
-      const actor = await makeAgentActor();
       const oldBaseline = new Date(page.at.getTime() - 48 * 60 * 60 * 1000);
       await pool.query("UPDATE docs SET history_available_from = $2 WHERE id = $1", [page.docId, oldBaseline]);
       await pool.query(
@@ -3420,59 +2383,44 @@ describe("createGenericOperationGateway (issue #220)", () => {
       const updateId = ids.rows[0]?.update_id;
       if (!updateId || updateId === "0") throw new Error("missing nonzero history update");
       await pool.query("UPDATE doc_updates SET created_at = $2 WHERE doc_id = $1", [page.docId, oldUpdate]);
-      const input = { itemId: page.itemId, at: page.at.toISOString() };
-      const requestId = await approveDestructive("page.restoreVersion", actor, input);
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
-      try {
-        await runInTenant(getTenantZeroId(), () => loadYDoc(runtime, page.docId, 1, 1));
-        const pending = await pool.query<{ count: string }>(
-          "SELECT count(*)::text AS count FROM doc_updates WHERE doc_id = $1",
-          [page.docId],
-        );
-        expect(pending.rows[0]?.count).toBe("0");
-        expect(await runInTenant(getTenantZeroId(), () => rebaselineDocHistory(runtime, page.docId, 1))).toBe(true);
-        const history = await pool.query<{ count: string }>(
-          "SELECT count(*)::text AS count FROM doc_history_updates WHERE doc_id = $1 AND update_id = $2::bigint",
-          [page.docId, updateId],
-        );
-        expect(history.rows[0]?.count).toBe("0");
+      const requestId = await approveAgentRequest("page.restoreVersion", page.actor, page.input);
+      await withRuntimePool(async (runtime) => {
+        await inTenantZero(() => loadYDoc(runtime, page.docId, 1, 1));
+        expect(await countOf("SELECT count(*)::int AS count FROM doc_updates WHERE doc_id = $1", [page.docId])).toBe(0);
+        expect(await inTenantZero(() => rebaselineDocHistory(runtime, page.docId, 1))).toBe(true);
+        expect(
+          await countOf(
+            "SELECT count(*)::int AS count FROM doc_history_updates WHERE doc_id = $1 AND update_id = $2::bigint",
+            [page.docId, updateId],
+          ),
+        ).toBe(0);
         const baseline = await pool.query<{ through_update_id: string }>(
           "SELECT through_update_id::text FROM doc_snapshot_history WHERE doc_id = $1 AND expires_at IS NULL",
           [page.docId],
         );
         expect(baseline.rows).toEqual([{ through_update_id: updateId }]);
-        const firstRequest = await getApprovalRequest(pool, requestId);
-        if (!firstRequest || !isGenericOperationApprovalRequestPayload(firstRequest.payload))
-          throw new Error("missing generic approval");
-        const firstReplay = { ...firstRequest, payload: firstRequest.payload };
-        await runInTenant(getTenantZeroId(), () => replayApprovedGenericOperation(runtime, firstReplay));
-        expect((await getApprovalRequest(pool, requestId))?.executionStatus).toBe("succeeded");
+        const firstReplay = await loadGeneric(requestId);
+        await inTenantZero(() => replayApprovedGenericOperation(runtime, firstReplay));
+        expect(await statusOf(requestId)).toBe("succeeded");
         expect(await blockIdsOf(page.itemId)).toEqual(["b1"]);
-        const secondRequest = await approveDestructive("page.restoreVersion", actor, input);
+        const secondRequest = await approveAgentRequest("page.restoreVersion", page.actor, page.input);
         await createDocStore(pool).putBlock(
           page.itemId,
           { id: "b2", flavour: "paragraph", fields: { content: "later" } },
           "user",
         );
-        const secondApproval = await getApprovalRequest(pool, secondRequest);
-        if (!secondApproval || !isGenericOperationApprovalRequestPayload(secondApproval.payload))
-          throw new Error("missing generic approval");
-        const secondReplay = { ...secondApproval, payload: secondApproval.payload };
-        await runInTenant(getTenantZeroId(), () => replayApprovedGenericOperation(runtime, secondReplay));
-        expect((await getApprovalRequest(pool, secondRequest))?.executionStatus).toBe("conflict");
+        const secondReplay = await loadGeneric(secondRequest);
+        await inTenantZero(() => replayApprovedGenericOperation(runtime, secondReplay));
+        expect(await statusOf(secondRequest)).toBe("conflict");
         expect(await blockIdsOf(page.itemId)).toEqual(["b1", "b2"]);
-      } finally {
-        await runtime.end();
-      }
+      });
     });
 
     it("rejects an approval whose snapshot was created before update identity was added", async () => {
       const page = await pageWithFirstBlock();
-      const actor = await makeAgentActor();
-      const input = { itemId: page.itemId, at: page.at.toISOString() };
-      const requestId = await approveDestructive("page.restoreVersion", actor, input);
+      const requestId = await approveAgentRequest("page.restoreVersion", page.actor, page.input);
       const projection = await withTransaction(pool, (client) =>
-        computePageRestoreProjection(client, { operation: "page.restoreVersion", input }),
+        computePageRestoreProjection(client, { operation: "page.restoreVersion", input: page.input }),
       );
       const current = projection.currentResource;
       if (typeof current !== "object" || current === null || !("updateVersion" in current)) {
@@ -3486,84 +2434,61 @@ describe("createGenericOperationGateway (issue #220)", () => {
         [requestId, sha256],
       );
       expect(changed.rowCount).toBe(1);
-      const { finished } = await replayRequest(requestId);
-      expect(finished?.executionStatus).toBe("conflict");
+      await replayById(requestId);
+      expect(await statusOf(requestId)).toBe("conflict");
       expect(await blockIdsOf(page.itemId)).toEqual(["b1"]);
     });
 
     it("rejects replay after an edit from an earlier-started transaction", async () => {
       const page = await pageWithFirstBlock();
-      const actor = await makeAgentActor();
       const runtime = await createRuntimeRolePool(pool, "semprec_data");
-      let release!: () => void;
-      let signal!: (at: Date) => void;
-      const hold = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      const started = new Promise<Date>((resolve) => {
-        signal = resolve;
-      });
-      const originals = new Map<PoolClient, PoolClient["query"]>();
-      const instrument = (client: PoolClient) => {
-        if (originals.has(client)) return;
-        // The proxy forwards the original receiver and the method is restored before the pool closes.
-        /* eslint-disable @typescript-eslint/unbound-method */
-        originals.set(client, client.query);
-        client.query = new Proxy(client.query, {
-          apply(target, receiver, args: unknown[]) {
-            const result: unknown = Reflect.apply(target, receiver, args);
-            if (args[0] !== "BEGIN") return result;
-            return Promise.resolve(result).then(async (value: unknown) => {
-              const at = (await client.query<{ at: Date }>("SELECT transaction_timestamp() AS at")).rows[0]?.at;
-              if (!at) throw new Error("missing transaction timestamp");
-              signal(at);
-              await hold;
-              return value;
-            });
-          },
-        });
-        /* eslint-enable @typescript-eslint/unbound-method */
-      };
-      runtime.on("acquire", instrument);
-      const writer = runInTenant(getTenantZeroId(), () =>
+      const hold = signal();
+      const started = signal<Date>();
+      const restore = afterMatchingQuery(
+        runtime,
+        (text) => text === "BEGIN",
+        async (client) => {
+          const at = (await client.query<{ at: Date }>("SELECT transaction_timestamp() AS at")).rows[0]?.at;
+          if (!at) throw new Error("missing transaction timestamp");
+          started.resolve(at);
+          await hold.promise;
+        },
+      );
+      const writer = inTenantZero(() =>
         mutateYDoc(runtime, page.docId, "user", (doc) => {
           doc.getMap("approval-test").set("edit", "later");
         }),
       );
       const settled = Promise.allSettled([writer]);
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         const at = await Promise.race([
-          started,
+          started.promise,
           writer.then(() => {
             throw new Error("writer ended before barrier");
           }),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("barrier timed out")), 5000)),
+          new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error("barrier timed out")), 5000))),
         ]);
         // Force the existing timestamp and author to collide with the transaction's real timestamp.
         await pool.query("UPDATE docs SET last_edited_at = $2, last_edited_by = 'user' WHERE id = $1", [
           page.docId,
           at,
         ]);
-        const requestId = await approveDestructive("page.restoreVersion", actor, {
-          itemId: page.itemId,
-          at: page.at.toISOString(),
-        });
-        release();
+        const requestId = await approveAgentRequest("page.restoreVersion", page.actor, page.input);
+        hold.resolve();
         await writer;
-        const after = (
-          await pool.query<{ at: Date; author: string }>(
-            "SELECT last_edited_at AS at, last_edited_by AS author FROM docs WHERE id = $1",
-            [page.docId],
-          )
-        ).rows[0];
-        expect(after).toEqual({ at, author: "user" });
-        const { finished } = await replayRequest(requestId);
-        expect(finished?.executionStatus).toBe("conflict");
+        const after = await pool.query<{ at: Date; author: string }>(
+          "SELECT last_edited_at AS at, last_edited_by AS author FROM docs WHERE id = $1",
+          [page.docId],
+        );
+        expect(after.rows).toEqual([{ at, author: "user" }]);
+        await replayById(requestId);
+        expect(await statusOf(requestId)).toBe("conflict");
       } finally {
-        release();
+        hold.resolve();
+        clearTimeout(timer);
         await settled;
-        runtime.off("acquire", instrument);
-        for (const [client, original] of originals) client.query = original;
+        restore();
         await runtime.end();
       }
     }, 15000);
@@ -3572,127 +2497,79 @@ describe("createGenericOperationGateway (issue #220)", () => {
       "coordinates actual approved replay and deletion with %s",
       async (order) => {
         const page = await pageWithFirstBlock();
-        const actor = await makeAgentActor();
-        const requestId = await approveDestructive("page.restoreVersion", actor, {
-          itemId: page.itemId,
-          at: page.at.toISOString(),
-        });
-        const request = (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
-          payload: GenericOperationApprovalRequestPayload;
-        };
+        const requestId = await approveAgentRequest("page.restoreVersion", page.actor, page.input);
+        const request = await loadGeneric(requestId);
         const databaseId = (
           await pool.query<{ database_id: string }>("SELECT database_id FROM items WHERE id = $1", [page.itemId])
         ).rows[0]?.database_id;
         if (!databaseId) throw new Error("missing page database");
         const replayPool = await createRuntimeRolePool(pool, "semprec_data");
         const deletePool = await createRuntimeRolePool(pool, "semprec_data");
-        let release!: () => void;
-        let signal!: (pid: number) => void;
-        const hold = new Promise<void>((resolve) => {
-          release = resolve;
-        });
-        const ready = new Promise<number>((resolve) => {
-          signal = resolve;
-        });
-        const originals = new Map<PoolClient, PoolClient["query"]>();
-        const instrument = (client: PoolClient) => {
-          if (originals.has(client)) return;
-          // The proxy forwards the receiver and is removed before the pool closes.
-          /* eslint-disable @typescript-eslint/unbound-method */
-          originals.set(client, client.query);
-          client.query = new Proxy(client.query, {
-            apply(target, receiver, args: unknown[]) {
-              const result: unknown = Reflect.apply(target, receiver, args);
-              if (
-                typeof args[0] !== "string" ||
-                !args[0].startsWith("UPDATE items SET deleted_at = COALESCE($3::timestamptz, now())")
-              )
-                return result;
-              return Promise.resolve(result).then(async (value: unknown) => {
-                const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-                if (pid === undefined) throw new Error("missing deletion pid");
-                signal(pid);
-                await hold;
-                return value;
-              });
-            },
-          });
-          /* eslint-enable @typescript-eslint/unbound-method */
+        const hold = signal();
+        const ready = signal<number>();
+        const holdAt = async (client: PoolClient) => {
+          ready.resolve(await backendPid(client));
+          await hold.promise;
         };
-        let holder: Promise<unknown> | undefined;
+        const pending: Promise<unknown>[] = [];
+        const track = (work: Promise<unknown>) => {
+          void work.catch(() => {});
+          pending.push(work);
+        };
+        let restore = () => {};
         if (order === "replay-first") {
-          holder = withTransaction(pool, async (client) => {
-            const pid = (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
-            if (pid === undefined) throw new Error("missing document holder pid");
-            await client.query("SELECT doc_id FROM doc_snapshots WHERE doc_id = $1 FOR UPDATE", [page.docId]);
-            signal(pid);
-            await hold;
-          });
-        } else deletePool.on("acquire", instrument);
-        const settledHolder = holder ? Promise.allSettled([holder]) : undefined;
-        const doReplay = () =>
-          runInTenant(getTenantZeroId(), () => replayApprovedGenericOperation(replayPool, request));
-        const doDelete = () =>
-          runInTenant(getTenantZeroId(), () => createChokePoint(deletePool).softDeleteItem(databaseId, page.itemId));
-        let replay: ReturnType<typeof doReplay> | undefined;
-        let deletion: ReturnType<typeof doDelete> | undefined;
-        let replaySettled: Promise<PromiseSettledResult<Awaited<ReturnType<typeof doReplay>>>[]> | undefined;
-        let deleteSettled: Promise<PromiseSettledResult<Awaited<ReturnType<typeof doDelete>>>[]> | undefined;
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        try {
-          if (order === "delete-first") {
-            deletion = doDelete();
-            deleteSettled = Promise.allSettled([deletion]);
-          }
-          const ownerPid = await Promise.race([
-            ready,
-            new Promise<never>((_, reject) => {
-              timer = setTimeout(() => reject(new Error("barrier timed out")), 5000);
+          track(
+            withTransaction(pool, async (client) => {
+              await client.query("SELECT doc_id FROM doc_snapshots WHERE doc_id = $1 FOR UPDATE", [page.docId]);
+              await holdAt(client);
             }),
-          ]);
-          replay = doReplay();
-          replaySettled = Promise.allSettled([replay]);
-          let waitingPid: number | undefined;
-          for (let i = 0; i < 100 && waitingPid === undefined; i++) {
-            waitingPid = (
+          );
+        } else {
+          restore = afterMatchingQuery(
+            deletePool,
+            (text) =>
+              typeof text === "string" &&
+              text.startsWith("UPDATE items SET deleted_at = COALESCE($3::timestamptz, now())"),
+            holdAt,
+          );
+        }
+        const doDelete = () => inTenantZero(() => createChokePoint(deletePool).softDeleteItem(databaseId, page.itemId));
+        /** The backend `pid` is waiting on, polled for up to two seconds. */
+        const waiterOn = async (pid: number) => {
+          for (let i = 0; i < 100; i++) {
+            const waiting = (
               await pool.query<{ pid: number }>(
                 "SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
-                [ownerPid],
+                [pid],
               )
             ).rows[0]?.pid;
-            if (waitingPid === undefined) await new Promise((resolve) => setTimeout(resolve, 20));
+            if (waiting !== undefined) return waiting;
+            await new Promise((resolve) => setTimeout(resolve, 20));
           }
-          expect(waitingPid).toBeDefined();
+          return undefined;
+        };
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          if (order === "delete-first") track(doDelete());
+          const ownerPid = await Promise.race([
+            ready.promise,
+            new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error("barrier timed out")), 5000))),
+          ]);
+          track(inTenantZero(() => replayApprovedGenericOperation(replayPool, request)));
+          const replayPid = await waiterOn(ownerPid);
+          expect(replayPid).toBeDefined();
           if (order === "replay-first") {
-            deletion = doDelete();
-            deleteSettled = Promise.allSettled([deletion]);
-            let blocked = false;
-            for (let i = 0; i < 100 && !blocked; i++) {
-              blocked =
-                (
-                  await pool.query<{ blocked: boolean }>(
-                    "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))) AS blocked",
-                    [waitingPid],
-                  )
-                ).rows[0]?.blocked === true;
-              if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
-            }
-            expect(blocked).toBe(true);
+            track(doDelete());
+            expect(await waiterOn(replayPid!)).toBeDefined();
           }
-          release();
-          await replay;
-          await deletion;
-          expect((await getApprovalRequest(pool, requestId))?.executionStatus).toBe(
-            order === "replay-first" ? "succeeded" : "conflict",
-          );
+          hold.resolve();
+          await Promise.all(pending);
+          expect(await statusOf(requestId)).toBe(order === "replay-first" ? "succeeded" : "conflict");
         } finally {
-          release();
-          if (timer) clearTimeout(timer);
-          if (settledHolder !== undefined) await settledHolder;
-          if (replaySettled !== undefined) await replaySettled;
-          if (deleteSettled !== undefined) await deleteSettled;
-          deletePool.off("acquire", instrument);
-          for (const [client, original] of originals) client.query = original;
+          hold.resolve();
+          clearTimeout(timer);
+          await Promise.allSettled(pending);
+          restore();
           await Promise.all([replayPool.end(), deletePool.end()]);
         }
       },
@@ -3700,100 +2577,32 @@ describe("createGenericOperationGateway (issue #220)", () => {
     );
 
     it("refuses a request for an unknown page without queuing an approval", async () => {
-      const actor = await makeAgentActor();
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-
+      const { actor } = await agentActor({ realProject: true });
       await expect(
-        gateway.invoke("page.restoreVersion", actor, ALL_CAPABILITIES, {
+        gatewayFor().invoke("page.restoreVersion", actor, ALL_CAPABILITIES, {
           itemId: randomUUID(),
           at: new Date().toISOString(),
         }),
       ).rejects.toBeInstanceOf(NotFoundError);
-      const { rows } = await pool.query<{ count: string }>(
-        `SELECT count(*) AS count FROM approval_requests WHERE tool_name = 'page.restoreVersion'`,
-      );
-      expect(rows[0]!.count).toBe("0");
+      expect(await countOf(COUNT_REQUESTS)).toBe(0);
     });
   });
 
-  describe("handleApprovalRequestExecuteTask (worker path, issue #220)", () => {
-    // Only the trailing `genericOperationApprovalReplay` parameter of `createCoreTaskList` matters here.
-    function taskListWithReplay(genericOperationApprovalReplay: typeof replayApprovedGenericOperation | undefined) {
-      return createCoreTaskList(
-        pool,
-        new Map(),
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        genericOperationApprovalReplay,
-      );
-    }
-
-    async function createPendingDeleteAndApprove(): Promise<{ requestId: string; itemId: string }> {
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-      const database = await chokePoint.createDatabase({ name: "Worker path DB" });
-      const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
-      const projectItemId = randomUUID();
-      const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "delete it" });
-      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
-
-      let requestId: string;
-      try {
-        await gateway.invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: item.id });
-        expect.unreachable("expected ApprovalRequiredError");
-        return { requestId: "", itemId: item.id };
-      } catch (err) {
-        requestId = (err as ApprovalRequiredError).details.approvalRequestId;
-      }
-
-      const decided = await inTenantZero(() =>
-        withTransaction(pool, (client) =>
-          decideAndEnqueueApprovalRequest(client, {
-            approvalRequestId: requestId,
-            decision: "approved",
-            decidedByUserId: run.actorUserId,
-          }),
-        ),
-      );
-      expect(decided!.request.status).toBe("approved");
-
-      return { requestId, itemId: item.id };
-    }
-
-    it("routes an approved generic-operation request through the queue to the injected replay handler, executing the real operation", async () => {
-      const { requestId, itemId } = await createPendingDeleteAndApprove();
-
-      await runOnce({ pgPool: pool, taskList: taskListWithReplay(replayApprovedGenericOperation) });
-
-      expect(await chokePoint.findItem(itemId)).toBeNull();
-      const finished = await getApprovalRequest(pool, requestId);
-      expect(finished!.executedAt).not.toBeNull();
-      expect(finished!.executionStatus).toBe("succeeded");
-      expect((finished!.executionResult as { result: { id: string } }).result).toMatchObject({ id: itemId });
-    });
-
-    it("without a configured replay handler, records a failed outcome instead of silently doing nothing", async () => {
-      const { requestId, itemId } = await createPendingDeleteAndApprove();
-
-      await runOnce({ pgPool: pool, taskList: taskListWithReplay(undefined) });
-
-      expect(await chokePoint.findItem(itemId)).not.toBeNull();
-      const finished = await getApprovalRequest(pool, requestId);
-      expect(finished!.executedAt).not.toBeNull();
-      expect(finished!.executionError).toBe(true);
-      expect(finished!.executionStatus).toBe("conflict");
-      expect(finished!.executionResult).toContain("No generic-operation approval replay handler is configured");
-    });
+  it("routes an approved generic-operation request through the queue to the injected replay handler", async () => {
+    const database = await chokePoint.createDatabase({ name: "Worker path DB" });
+    const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
+    const { actor } = await agentActor();
+    const requestId = await approveAgentRequest("item.delete", actor, { itemId: item.id });
+    await runOnce({ pgPool: pool, taskList: coreTaskList(replayApprovedGenericOperation) });
+    expect(await chokePoint.findItem(item.id)).toBeNull();
+    const finished = await getApprovalRequest(pool, requestId);
+    expect(finished?.executedAt).not.toBeNull();
+    expect(finished?.executionStatus).toBe("succeeded");
+    expect(finished?.executionResult).toMatchObject({ result: { id: item.id } });
   });
 
-  describe("approval request announcements (issue #1789)", () => {
-    interface ApprovalAnnouncement {
-      approvalRequestId: string;
-      userId: string | undefined;
-    }
-    let approvalAnnouncements: ApprovalAnnouncement[];
+  describe("approval request announcements", () => {
+    let approvalAnnouncements: Array<{ approvalRequestId: string; userId: string | undefined }>;
     let threadAnnouncements: Array<{ tenantId: string; threadId: string }>;
 
     beforeEach(() => {
@@ -3807,160 +2616,110 @@ describe("createGenericOperationGateway (issue #220)", () => {
     });
 
     afterEach(() => {
-      setInvalidationHook(() => {});
       setSempThreadInvalidationHook(() => {});
     });
 
     async function deleteSetUp(withThread: boolean) {
       const database = await chokePoint.createDatabase({ name: "Announcement DB" });
       const item = await chokePoint.createItem({ databaseId: database.id, properties: {} });
-      const projectItemId = randomUUID();
-      // No public writer creates a chat thread.
-      const threadId = withThread ? await withTransaction(pool, (client) => createSempChatThread(client)) : null;
-      const run = await createAgentRun(pool, {
-        projectItemId,
-        triggeredBy: "user",
-        task: "delete it",
-        ...(threadId ? { threadId } : {}),
-      });
-      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
-      return { item, run, actor, threadId };
-    }
-
-    async function raise(actor: AuthenticatedActor, itemId: string, toolCallId?: string): Promise<string> {
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-      const err: unknown = await gateway
-        .invoke("item.delete", actor, ALL_CAPABILITIES, { itemId }, toolCallId ? { toolCallId } : undefined)
-        .then(
-          () => null,
-          (thrown: unknown) => thrown,
-        );
-      if (!(err instanceof ApprovalRequiredError)) throw new Error("expected ApprovalRequiredError");
-      return err.details.approvalRequestId;
-    }
-
-    async function approve(requestId: string, ownerUserId: string) {
-      await inTenantZero(() =>
-        withTransaction(pool, (client) =>
-          decideAndEnqueueApprovalRequest(client, {
-            approvalRequestId: requestId,
-            decision: "approved",
-            decidedByUserId: ownerUserId,
-          }),
-        ),
-      );
-    }
-
-    async function loadGeneric(requestId: string) {
-      return (await getApprovalRequest(pool, requestId)) as ApprovalRequest & {
-        payload: GenericOperationApprovalRequestPayload;
+      const threadId = withThread ? await chatThread() : null;
+      const { run, actor } = await agentActor(threadId ? { threadId } : {});
+      const raise = (toolCallId?: string) =>
+        requestApproval("item.delete", actor, { itemId: item.id }, toolCallId ? { toolCallId } : {});
+      /** Raises and approves a request, then forgets what that announced. */
+      const raiseApproved = async () => {
+        const requestId = await raise();
+        await decide(requestId, run.actorUserId);
+        approvalAnnouncements.length = 0;
+        threadAnnouncements.length = 0;
+        return requestId;
       };
+      return { item, run, actor, threadId, raise, raiseApproved };
     }
 
-    it("announces a created request to its owner and pairs the thread of its run", async () => {
-      const { item, run, actor, threadId } = await deleteSetUp(true);
+    it.each([true, false])(
+      "announces a created request to its owner, pairing its run's thread: %s",
+      async (withThread) => {
+        const { run, threadId, raise } = await deleteSetUp(withThread);
+        const requestId = await raise();
+        expect(approvalAnnouncements).toEqual([{ approvalRequestId: requestId, userId: run.actorUserId }]);
+        expect(threadAnnouncements).toEqual(withThread ? [{ tenantId: getTenantZeroId(), threadId }] : []);
+      },
+    );
 
-      const requestId = await raise(actor, item.id);
-
-      expect(approvalAnnouncements).toEqual([{ approvalRequestId: requestId, userId: run.actorUserId }]);
-      expect(threadAnnouncements).toEqual([{ tenantId: getTenantZeroId(), threadId }]);
-    });
-
-    it("announces only the request when the run has no thread", async () => {
-      const { item, run, actor } = await deleteSetUp(false);
-
-      const requestId = await raise(actor, item.id);
-
-      expect(approvalAnnouncements).toEqual([{ approvalRequestId: requestId, userId: run.actorUserId }]);
-      expect(threadAnnouncements).toEqual([]);
-    });
-
-    it("announces nothing when the preflight refuses the call and creates no request", async () => {
+    it("announces nothing, and writes no request or notification, when the preflight refuses the call", async () => {
       const { actor } = await deleteSetUp(true);
-      const gateway = createGenericOperationGateway(pool, testMetadataResolver);
-
-      await expect(gateway.invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: randomUUID() })).rejects.toThrow(
-        NotFoundError,
-      );
-
+      await expect(
+        gatewayFor().invoke("item.delete", actor, ALL_CAPABILITIES, { itemId: randomUUID() }),
+      ).rejects.toThrow(NotFoundError);
       expect(approvalAnnouncements).toEqual([]);
       expect(threadAnnouncements).toEqual([]);
+      await expectNoApprovalOrNotification();
     });
 
     it("announces a repeated tool call once, because the repeat writes nothing", async () => {
-      const { item, actor } = await deleteSetUp(true);
-
-      const first = await raise(actor, item.id, "call_announce");
-      const second = await raise(actor, item.id, "call_announce");
-
-      expect(second).toBe(first);
+      const { raise } = await deleteSetUp(true);
+      const first = await raise("call_announce");
+      expect(await raise("call_announce")).toBe(first);
       expect(approvalAnnouncements).toHaveLength(1);
       expect(threadAnnouncements).toHaveLength(1);
     });
 
-    it("announces a successful replay once and a redelivered replay not at all", async () => {
-      const { item, run, actor, threadId } = await deleteSetUp(true);
-      const requestId = await raise(actor, item.id);
-      await approve(requestId, run.actorUserId);
-      approvalAnnouncements.length = 0;
-      threadAnnouncements.length = 0;
-
-      const first = await replayApprovedGenericOperation(pool, await loadGeneric(requestId));
+    it("executes and announces a successful replay once; a redelivered replay returns the stored result silently", async () => {
+      const { item, run, threadId, raiseApproved } = await deleteSetUp(true);
+      const requestId = await raiseApproved();
+      const first = await replayById(requestId);
       expect(first.error).toBe(false);
+      expect((JSON.parse(first.result) as { result: unknown }).result).toMatchObject({ id: item.id });
+      expect(await chokePoint.findItem(item.id)).toBeNull();
       expect(approvalAnnouncements).toEqual([{ approvalRequestId: requestId, userId: run.actorUserId }]);
       expect(threadAnnouncements).toEqual([{ tenantId: getTenantZeroId(), threadId }]);
-
-      await replayApprovedGenericOperation(pool, await loadGeneric(requestId));
+      const second = await replayById(requestId);
+      // The stored result round-tripped through jsonb, which may reorder keys, so compare parsed content.
+      expect(second.error).toBe(false);
+      expect(JSON.parse(second.result)).toEqual(JSON.parse(first.result));
       expect(approvalAnnouncements).toHaveLength(1);
       expect(threadAnnouncements).toHaveLength(1);
     });
 
     it("announces a replay that ends in a conflict once, and a run without a thread only as the request", async () => {
-      const { item, run, actor } = await deleteSetUp(false);
-      const requestId = await raise(actor, item.id);
-      await approve(requestId, run.actorUserId);
-      approvalAnnouncements.length = 0;
+      const { item, run, raiseApproved } = await deleteSetUp(false);
+      const requestId = await raiseApproved();
       // The resource changed after approval, so the snapshot hash no longer matches.
-      await pool.query(`UPDATE items SET updated_at = now() WHERE id = $1`, [item.id]);
-
-      const first = await replayApprovedGenericOperation(pool, await loadGeneric(requestId));
-      expect(first.error).toBe(true);
+      await pool.query("UPDATE items SET updated_at = now() WHERE id = $1", [item.id]);
+      expect((await replayById(requestId)).error).toBe(true);
       expect(approvalAnnouncements).toEqual([{ approvalRequestId: requestId, userId: run.actorUserId }]);
       expect(threadAnnouncements).toEqual([]);
-
-      await replayApprovedGenericOperation(pool, await loadGeneric(requestId));
+      await replayById(requestId);
       expect(approvalAnnouncements).toHaveLength(1);
     });
 
-    it("announces the failed outcome of a worker without a replay handler once", async () => {
-      const { item, run, actor, threadId } = await deleteSetUp(true);
-      const requestId = await raise(actor, item.id);
-      await approve(requestId, run.actorUserId);
-      approvalAnnouncements.length = 0;
-      threadAnnouncements.length = 0;
-
-      await runOnce({
-        pgPool: pool,
-        taskList: createCoreTaskList(pool, new Map(), undefined, undefined, undefined, undefined, undefined, undefined),
-      });
-
+    it("records and announces once the failed outcome of a worker without a replay handler", async () => {
+      const { item, run, threadId, raiseApproved } = await deleteSetUp(true);
+      const requestId = await raiseApproved();
+      await runOnce({ pgPool: pool, taskList: coreTaskList(undefined) });
+      expect(await chokePoint.findItem(item.id)).not.toBeNull();
+      const finished = await getApprovalRequest(pool, requestId);
+      expect(finished).toMatchObject({ executionError: true, executionStatus: "conflict" });
+      expect(finished?.executedAt).not.toBeNull();
+      expect(finished?.executionResult).toContain("No generic-operation approval replay handler is configured");
       expect(approvalAnnouncements).toEqual([{ approvalRequestId: requestId, userId: run.actorUserId }]);
       expect(threadAnnouncements).toEqual([{ tenantId: getTenantZeroId(), threadId }]);
     });
   });
 });
 
-describe("approval_pending recipient in a tenant (issue #1018)", () => {
+describe("approval_pending recipient in a tenant", () => {
   let runtimePool: Pool;
 
   // The first describe's `afterAll` ended the shared pool, so this block opens and closes its own.
   beforeAll(async () => {
     pool = getTestPool();
-    runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(pool, "semprec_data"));
+    runtimePool = await inTenantZero(() => createRuntimeRolePool(pool, "semprec_data"));
   });
 
   beforeEach(async () => {
-    await runInTenant(getTenantZeroId(), () => resetDatabase(pool));
+    await inTenantZero(() => resetDatabase(pool));
   });
 
   afterAll(async () => {
@@ -3968,44 +2727,31 @@ describe("approval_pending recipient in a tenant (issue #1018)", () => {
     await pool?.end();
   });
 
+  function addUser(tenantId: string, email: string) {
+    return runInTenant(tenantId, () => createBoundUser(pool, { email, passwordHash: "x", tenantId }));
+  }
+
+  async function agentIn(tenantId: string): Promise<AuthenticatedActor> {
+    const run = await runInTenant(tenantId, () =>
+      createAgentRun(runtimePool, { projectItemId: randomUUID(), triggeredBy: "user", task: "agent task" }),
+    );
+    if (!run.projectItemId) throw new Error("Missing project id");
+    return { userId: run.actorUserId, runId: run.id, agentProjectItemId: run.projectItemId };
+  }
+
   it("notifies the user of the tenant the request is created in, with a link that names the request and no user", async () => {
-    const tenantB = await runInTenant(getTenantZeroId(), () => createTestTenant(pool));
-    const userA = await runInTenant(getTenantZeroId(), () =>
-      createBoundUser(pool, {
-        email: "a@example.test",
-        passwordHash: "x",
-        tenantId: getTenantZeroId(),
-      }),
-    );
-    const userB = await runInTenant(tenantB, () =>
-      createBoundUser(pool, { email: "b@example.test", passwordHash: "x", tenantId: tenantB }),
-    );
-
+    const tenantB = await inTenantZero(() => createTestTenant(pool));
+    const userA = await addUser(getTenantZeroId(), "a@example.test");
+    const userB = await addUser(tenantB, "b@example.test");
+    const actor = await agentIn(tenantB);
     const approvalRequestId = await runInTenant(tenantB, async () => {
-      const chokePointB = createChokePoint(runtimePool);
-      const database = await chokePointB.createDatabase({ name: "Tenant B DB" });
-      const item = await chokePointB.createItem({ databaseId: database.id, properties: {} });
-      const projectItemId = randomUUID();
-      const run = await createAgentRun(runtimePool, { projectItemId, triggeredBy: "user", task: "delete it" });
-      const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: projectItemId };
-      try {
-        await createGenericOperationGateway(runtimePool, testMetadataResolver).invoke(
-          "item.delete",
-          actor,
-          ALL_CAPABILITIES,
-          {
-            itemId: item.id,
-          },
-        );
-      } catch (err) {
-        if (err instanceof ApprovalRequiredError) return err.details.approvalRequestId;
-        throw err;
-      }
-      throw new Error("expected ApprovalRequiredError");
+      const cp = createChokePoint(runtimePool);
+      const database = await cp.createDatabase({ name: "Tenant B DB" });
+      const item = await cp.createItem({ databaseId: database.id, properties: {} });
+      return requestApproval("item.delete", actor, { itemId: item.id }, { db: runtimePool });
     });
-
     const { rows } = await pool.query<{ user_id: string; kind: string; link_href: string | null; tenant_id: string }>(
-      `SELECT user_id, kind, link_href, tenant_id FROM notifications WHERE source_id = $1`,
+      "SELECT user_id, kind, link_href, tenant_id FROM notifications WHERE source_id = $1",
       [approvalRequestId],
     );
     expect(rows).toEqual([
@@ -4023,26 +2769,15 @@ describe("approval_pending recipient in a tenant (issue #1018)", () => {
 
   it("refuses a foreign destructive target like a missing target without approval side effects", async () => {
     const tenantA = getTenantZeroId();
-    const tenantB = await runInTenant(tenantA, () => createTestTenant(pool));
-    await runInTenant(tenantA, () =>
-      createBoundUser(pool, { email: "foreign-a@example.test", passwordHash: "x", tenantId: tenantA }),
-    );
-    await runInTenant(tenantB, () =>
-      createBoundUser(pool, { email: "foreign-b@example.test", passwordHash: "x", tenantId: tenantB }),
-    );
+    const tenantB = await inTenantZero(() => createTestTenant(pool));
+    await addUser(tenantA, "foreign-a@example.test");
+    await addUser(tenantB, "foreign-b@example.test");
     const foreign = await runInTenant(tenantA, async () => {
       const cp = createChokePoint(runtimePool);
       const db = await cp.createDatabase({ name: "Foreign" });
       return cp.createItem({ databaseId: db.id, properties: {} });
     });
-    const run = await runInTenant(tenantB, () =>
-      createAgentRun(runtimePool, { projectItemId: randomUUID(), triggeredBy: "user", task: "delete" }),
-    );
-    const actor: AuthenticatedActor = {
-      userId: run.actorUserId,
-      runId: run.id,
-      agentProjectItemId: run.projectItemId!,
-    };
+    const actor = await agentIn(tenantB);
     const snapshot = async () =>
       (
         await pool.query<{ requests: string; notifications: string; item: unknown }>(
@@ -4052,37 +2787,27 @@ describe("approval_pending recipient in a tenant (issue #1018)", () => {
       ).rows[0];
     const before = await snapshot();
     expect(before?.item).toBeTruthy();
-    const invoke = (itemId: string) =>
-      runInTenant(tenantB, () =>
-        createGenericOperationGateway(runtimePool, testMetadataResolver)
+    const refusalFor = async (itemId: string) => {
+      const error = await runInTenant(tenantB, () =>
+        gatewayFor(runtimePool)
           .invoke("item.delete", actor, ALL_CAPABILITIES, { itemId })
           .then(
-            () => {
-              throw new Error("unexpected approval");
-            },
-            (error: unknown) => error,
+            () => undefined,
+            (thrown: unknown) => thrown,
           ),
       );
-    const foreignError = await invoke(foreign.id);
-    const missingId = randomUUID();
-    const missingError = await invoke(missingId);
-    expect(foreignError).toBeInstanceOf(Error);
-    expect(missingError).toBeInstanceOf(Error);
-    if (!(foreignError instanceof Error) || !(missingError instanceof Error)) throw new Error("Expected refusal");
-    expect(foreignError.name).toBe(missingError.name);
-    expect(foreignError.message.replace(foreign.id, "<id>")).toBe(missingError.message.replace(missingId, "<id>"));
+      if (!(error instanceof Error)) throw new Error("Expected refusal");
+      return { name: error.name, message: error.message.replace(itemId, "<id>") };
+    };
+    expect(await refusalFor(foreign.id)).toEqual(await refusalFor(randomUUID()));
     expect(await snapshot()).toEqual(before);
   });
 
   it("defers an owned patch but refuses foreign and random targets identically under the runtime role", async () => {
     const tenantA = getTenantZeroId();
     const tenantB = await createTestTenant(pool);
-    await runInTenant(tenantA, () =>
-      createBoundUser(pool, { email: "patch-a@example.test", passwordHash: "x", tenantId: tenantA }),
-    );
-    await runInTenant(tenantB, () =>
-      createBoundUser(pool, { email: "patch-b@example.test", passwordHash: "x", tenantId: tenantB }),
-    );
+    await addUser(tenantA, "patch-a@example.test");
+    await addUser(tenantB, "patch-b@example.test");
     const makeItem = (tenantId: string) =>
       runInTenant(tenantId, async () => {
         const cp = createChokePoint(runtimePool);
@@ -4092,52 +2817,36 @@ describe("approval_pending recipient in a tenant (issue #1018)", () => {
       });
     const foreign = await makeItem(tenantA);
     const own = await makeItem(tenantB);
-    const run = await runInTenant(tenantB, () =>
-      createAgentRun(runtimePool, { projectItemId: randomUUID(), triggeredBy: "user", task: "patch" }),
-    );
-    if (!run.projectItemId) throw new Error("Missing project id");
-    const actor: AuthenticatedActor = { userId: run.actorUserId, runId: run.id, agentProjectItemId: run.projectItemId };
-    const gateway = createGenericOperationGateway(runtimePool, testMetadataResolver);
-    let active = true;
-    registerItemUpdateHook(async ({ client, item, writer }) => {
-      if (active && item.id === own.id) requireApprovalForWrite(client, writer, [{ kind: "testReason" }]);
-    });
-    try {
-      const invoke = (itemId: string) =>
-        runInTenant(tenantB, () =>
-          gateway.invoke("item.patch", actor, ALL_CAPABILITIES, {
-            itemId,
-            properties: { note: "after" },
-            ifVersion: own.version,
-          }),
-        );
-      const missing = randomUUID();
-      const errors: Error[] = [];
-      for (const id of [foreign.id, missing]) {
-        try {
-          await invoke(id);
-          throw new Error("Expected refusal");
-        } catch (err) {
-          if (!(err instanceof NotFoundError)) throw err;
-          errors.push(err);
-        }
-      }
-      expect(errors[0]?.message.replace(foreign.id, "<id>")).toBe(errors[1]?.message.replace(missing, "<id>"));
-      const count = () =>
-        runInTenant(tenantB, () =>
-          runtimePool.query<{ count: string }>("SELECT count(*)::text AS count FROM approval_requests"),
-        );
-      expect((await count()).rows[0]?.count).toBe("0");
-      await expect(invoke(own.id)).rejects.toBeInstanceOf(ApprovalRequiredError);
-      expect((await count()).rows[0]?.count).toBe("1");
-      expect(
-        (await runInTenant(tenantA, () => createChokePoint(runtimePool).findItem(foreign.id)))?.properties.note,
-      ).toBe("before");
-      expect((await runInTenant(tenantB, () => createChokePoint(runtimePool).findItem(own.id)))?.properties.note).toBe(
-        "before",
+    const actor = await agentIn(tenantB);
+    gateItemUpdates(own.id);
+    const invoke = (itemId: string) =>
+      runInTenant(tenantB, () =>
+        gatewayFor(runtimePool).invoke("item.patch", actor, ALL_CAPABILITIES, {
+          itemId,
+          properties: { note: "after" },
+          ifVersion: own.version,
+        }),
       );
-    } finally {
-      active = false;
+    const refusalFor = async (itemId: string) => {
+      const error = await invoke(itemId).then(
+        () => undefined,
+        (thrown: unknown) => thrown,
+      );
+      if (!(error instanceof NotFoundError)) throw new Error("Expected not found");
+      return error.message.replace(itemId, "<id>");
+    };
+    expect(await refusalFor(foreign.id)).toBe(await refusalFor(randomUUID()));
+    const requests = () => runInTenant(tenantB, () => countOf(COUNT_REQUESTS, [], runtimePool));
+    expect(await requests()).toBe(0);
+    await expect(invoke(own.id)).rejects.toBeInstanceOf(ApprovalRequiredError);
+    expect(await requests()).toBe(1);
+    for (const [tenantId, item] of [
+      [tenantA, foreign],
+      [tenantB, own],
+    ] as const) {
+      expect(
+        (await runInTenant(tenantId, () => createChokePoint(runtimePool).findItem(item.id)))?.properties.note,
+      ).toBe("before");
     }
   });
 });

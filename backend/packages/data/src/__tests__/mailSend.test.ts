@@ -11,7 +11,7 @@ import { FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { withTransaction } from "../db/pool.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { generatePermissionManifest } from "../manifest/permissionManifest.js";
-import { createEmailDraft } from "../mail/draft.js";
+import { createEmailDraft, type CreateEmailDraftInput } from "../mail/draft.js";
 import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
 import { ensureFolderItem } from "../mail/folderDiscovery.js";
@@ -21,7 +21,13 @@ import {
   getMailMessageMetaByMailboxAndMessageId,
   resolveMergedThreadId,
 } from "../mail/mailMessageMetaStore.js";
-import { sendDraftEmail, noopMailSendAdapterFactory, type SendEmailModuleIds } from "../mail/send.js";
+import {
+  sendDraftEmail,
+  noopMailSendAdapterFactory,
+  type MailSendAdapterFactory,
+  type SendEmailModuleIds,
+  type UserSendEmailInput,
+} from "../mail/send.js";
 import { createSentCopySaver, createSmtpMailTransport, type MailTransport } from "../mail/mailTransport.js";
 import { ImapFlowMailClient } from "../mail/imapFlowClient.js";
 import { upsertMailServerSettings } from "../mail/mailServerSettingsStore.js";
@@ -40,6 +46,24 @@ const tenantIt = (name: string, fn: () => unknown, timeout?: number) =>
     timeout,
   );
 
+/** One `tenantIt` per case. */
+function tenantEach<T>(cases: readonly T[], name: (testCase: T) => string, fn: (testCase: T) => unknown): void {
+  for (const testCase of cases) tenantIt(name(testCase), () => fn(testCase));
+}
+
+/** Attachment storage for ingests that carry no attachments. */
+const unusedStorage = {
+  async writeStream(): Promise<never> {
+    throw new Error("Unexpected attachment write");
+  },
+  async delete(): Promise<never> {
+    throw new Error("Unexpected attachment delete");
+  },
+  readStream(): never {
+    throw new Error("Unexpected attachment read");
+  },
+};
+
 let pool: Pool;
 let chokePoint: ChokePoint;
 
@@ -49,7 +73,7 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   return rows[0].id;
 }
 
-describe("drafts and authorized SMTP sending (issue #95)", () => {
+describe("drafts and authorized SMTP sending", () => {
   let emailsId: string;
   let foldersId: string;
   let mailboxesId: string;
@@ -59,6 +83,20 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
   let projectsId: string;
   let emailProjectId: string;
   let moduleIds: SendEmailModuleIds;
+
+  async function createFolderOf(client: PoolClient, mailboxItemId: string, name: string, specialPurpose: string) {
+    const folder = await createItemWithClient(
+      client,
+      { databaseId: foldersId, properties: { name, behavior: "folder", specialPurpose } },
+      { allowedSystemKeys: ["name", "behavior", "specialPurpose"] },
+    );
+    await createRelationWithClient(
+      client,
+      { relationPropertyId: mailboxFolderRelationPropertyId, callerItemId: folder.id, targetItemId: mailboxItemId },
+      { ownerProcess: FOLDERS_MODULE_ID },
+    );
+    return folder.id;
+  }
 
   beforeEach(async () => {
     pool ??= getTestPool();
@@ -92,31 +130,9 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
         mailboxItemId: mailbox.id,
         address: "me@example.com",
       });
+      await createFolderOf(client, mailbox.id, "Drafts", "drafts");
+      await createFolderOf(client, mailbox.id, "Sent", "sent");
       return mailbox.id;
-    });
-
-    await withTransaction(pool, async (client) => {
-      const drafts = await createItemWithClient(
-        client,
-        { databaseId: foldersId, properties: { name: "Drafts", behavior: "folder", specialPurpose: "drafts" } },
-        { allowedSystemKeys: ["name", "behavior", "specialPurpose"] },
-      );
-      await createRelationWithClient(
-        client,
-        { relationPropertyId: mailboxFolderRelationPropertyId, callerItemId: drafts.id, targetItemId: mailboxId },
-        { ownerProcess: FOLDERS_MODULE_ID },
-      );
-
-      const sent = await createItemWithClient(
-        client,
-        { databaseId: foldersId, properties: { name: "Sent", behavior: "folder", specialPurpose: "sent" } },
-        { allowedSystemKeys: ["name", "behavior", "specialPurpose"] },
-      );
-      await createRelationWithClient(
-        client,
-        { relationPropertyId: mailboxFolderRelationPropertyId, callerItemId: sent.id, targetItemId: mailboxId },
-        { ownerProcess: FOLDERS_MODULE_ID },
-      );
     });
 
     moduleIds = {
@@ -136,39 +152,69 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
     await pool?.end();
   });
 
-  async function draftsFolderId(): Promise<string> {
+  async function specialFolderId(purpose: "drafts" | "sent"): Promise<string> {
     const { rows } = await pool.query<{ id: string }>(
-      `SELECT id FROM items WHERE database_id = $1 AND properties ->> 'specialPurpose' = 'drafts'`,
-      [foldersId],
+      `SELECT id FROM items WHERE database_id = $1 AND properties ->> 'specialPurpose' = $2`,
+      [foldersId, purpose],
     );
     return rows[0]!.id;
+  }
+  const draftsFolderId = () => specialFolderId("drafts");
+  const sentFolderId = () => specialFolderId("sent");
+
+  /** The fields a draft and its send share unless a test overrides them. */
+  const MESSAGE = {
+    subject: "Hello",
+    from: { address: "me@example.com" },
+    to: [{ address: "bob@example.com" }],
+    bodyText: "hi bob",
+  };
+
+  async function createDraft(overrides: Partial<CreateEmailDraftInput> = {}) {
+    const draftsFolderItemId = await draftsFolderId();
+    return withTransaction(pool, (client) =>
+      createEmailDraft(client, {
+        emailsDatabaseId: emailsId,
+        folderRelationPropertyId,
+        draftsFolderItemId,
+        ...MESSAGE,
+        ...overrides,
+      }),
+    );
+  }
+
+  /** A user send of the draft; the pool is read at call time because some tests swap it for a runtime-role pool. */
+  function sendAsUser(
+    draftItemId: string,
+    adapters: MailSendAdapterFactory,
+    overrides: Partial<UserSendEmailInput> = {},
+    operationPool: Pool = pool,
+  ) {
+    return sendDraftEmail(
+      operationPool,
+      { mailboxItemId: mailboxId, draftItemId, actor: { type: "user" }, ...MESSAGE, ...overrides },
+      moduleIds,
+      adapters,
+    );
+  }
+
+  async function folderLinkCount(itemId: string, folderId: string): Promise<number> {
+    const { rows } = await pool.query(
+      `SELECT 1 FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1) AND (item_a = $2 OR item_b = $2) AND (item_a = $3 OR item_b = $3)`,
+      [folderRelationPropertyId, itemId, folderId],
+    );
+    return rows.length;
   }
 
   tenantIt(
     "email.draft.create writes through the generic item-create path with no authorization check, linked into Drafts",
     async () => {
-      const draftsId = await draftsFolderId();
-      const draft = await withTransaction(pool, (client) =>
-        createEmailDraft(client, {
-          emailsDatabaseId: emailsId,
-          folderRelationPropertyId,
-          draftsFolderItemId: draftsId,
-          subject: "Hello",
-          from: { address: "me@example.com" },
-          to: [{ address: "bob@example.com" }],
-          bodyText: "hi bob",
-        }),
-      );
+      const draft = await createDraft();
 
       expect(draft.properties.name).toBe("Hello");
       expect(draft.properties.recipients).toBe("bob@example.com");
       expect(await getMailMessageMetaByItemId(pool, draft.id)).toBeNull();
-
-      const { rows } = await pool.query(
-        `SELECT 1 FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1) AND (item_a = $2 OR item_b = $2) AND (item_a = $3 OR item_b = $3)`,
-        [folderRelationPropertyId, draft.id, draftsId],
-      );
-      expect(rows).toHaveLength(1);
+      expect(await folderLinkCount(draft.id, await draftsFolderId())).toBe(1);
     },
   );
 
@@ -199,34 +245,9 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
   tenantIt(
     "a user send submits exactly once over SMTP, moves the draft from Drafts to Sent, and stores a generated Message-ID",
     async () => {
-      const draftsId = await draftsFolderId();
-      const draft = await withTransaction(pool, (client) =>
-        createEmailDraft(client, {
-          emailsDatabaseId: emailsId,
-          folderRelationPropertyId,
-          draftsFolderItemId: draftsId,
-          subject: "Hello",
-          from: { address: "me@example.com" },
-          to: [{ address: "bob@example.com" }],
-          bodyText: "hi bob",
-        }),
-      );
-
+      const draft = await createDraft();
       const smtp = recordingTransport();
-      const result = await sendDraftEmail(
-        pool,
-        {
-          mailboxItemId: mailboxId,
-          draftItemId: draft.id,
-          actor: { type: "user" },
-          from: { address: "me@example.com" },
-          to: [{ address: "bob@example.com" }],
-          subject: "Hello",
-          bodyText: "hi bob",
-        },
-        moduleIds,
-        sendAdapters(transportFor(smtp)),
-      );
+      const result = await sendAsUser(draft.id, sendAdapters(transportFor(smtp)));
 
       expect(smtp.sent).toHaveLength(1);
       expect(smtp.sent[0]!.raw.toString("utf8")).toContain(`Message-ID: ${result.messageId}\r\n`);
@@ -240,88 +261,31 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       // A plain Emails draft has no `mail_drafts` row, and sending it does not write one.
       const { rows: draftRows } = await pool.query("SELECT 1 FROM mail_drafts WHERE email_item_id = $1", [draft.id]);
       expect(draftRows).toHaveLength(0);
-
-      const sentId = (
-        await pool.query<{ id: string }>(
-          `SELECT id FROM items WHERE database_id = $1 AND properties ->> 'specialPurpose' = 'sent'`,
-          [foldersId],
-        )
-      ).rows[0]!.id;
-      const { rows: sentRelation } = await pool.query(
-        `SELECT 1 FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1) AND (item_a = $2 OR item_b = $2) AND (item_a = $3 OR item_b = $3)`,
-        [folderRelationPropertyId, draft.id, sentId],
-      );
-      expect(sentRelation).toHaveLength(1);
-
-      const { rows: draftRelation } = await pool.query(
-        `SELECT 1 FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1) AND (item_a = $2 OR item_b = $2) AND (item_a = $3 OR item_b = $3)`,
-        [folderRelationPropertyId, draft.id, draftsId],
-      );
-      expect(draftRelation).toHaveLength(0);
+      expect(await folderLinkCount(draft.id, await sentFolderId())).toBe(1);
+      expect(await folderLinkCount(draft.id, await draftsFolderId())).toBe(0);
 
       // A retried or duplicated call for an already-sent draft must not submit the message again.
       const secondSmtp = recordingTransport();
-      await expect(
-        sendDraftEmail(
-          pool,
-          {
-            mailboxItemId: mailboxId,
-            draftItemId: draft.id,
-            actor: { type: "user" },
-            from: { address: "me@example.com" },
-            to: [{ address: "bob@example.com" }],
-            subject: "Hello",
-            bodyText: "hi bob",
-          },
-          moduleIds,
-          sendAdapters(transportFor(secondSmtp)),
-        ),
-      ).rejects.toMatchObject({ name: "MailSendClaimLostError", code: "version_conflict" });
+      await expect(sendAsUser(draft.id, sendAdapters(transportFor(secondSmtp)))).rejects.toMatchObject({
+        name: "MailSendClaimLostError",
+        code: "version_conflict",
+      });
       expect(secondSmtp.sent).toHaveLength(0);
     },
   );
 
   tenantIt("two genuinely concurrent sends of the same draft submit over SMTP exactly once between them", async () => {
-    const draftsId = await draftsFolderId();
-    const draft = await withTransaction(pool, (client) =>
-      createEmailDraft(client, {
-        emailsDatabaseId: emailsId,
-        folderRelationPropertyId,
-        draftsFolderItemId: draftsId,
-        subject: "Hello",
-        from: { address: "me@example.com" },
-        to: [{ address: "bob@example.com" }],
-        bodyText: "hi bob",
-      }),
-    );
-
+    const draft = await createDraft();
     const smtpA = recordingTransport();
     const smtpB = recordingTransport();
     const send = (smtp: ReturnType<typeof recordingTransport>) =>
-      sendDraftEmail(
-        pool,
-        {
-          mailboxItemId: mailboxId,
-          draftItemId: draft.id,
-          actor: { type: "user" },
-          from: { address: "me@example.com" },
-          to: [{ address: "bob@example.com" }],
-          subject: "Hello",
-          bodyText: "hi bob",
-        },
-        moduleIds,
-        sendAdapters(transportFor(smtp)),
-      );
+      sendAsUser(draft.id, sendAdapters(transportFor(smtp)));
 
-    const [a, b] = await Promise.allSettled([send(smtpA), send(smtpB)]);
-    const outcomes = [a, b];
+    const outcomes = await Promise.allSettled([send(smtpA), send(smtpB)]);
     expect(outcomes.filter((o) => o.status === "fulfilled")).toHaveLength(1);
-    expect(outcomes.filter((o) => o.status === "rejected")).toHaveLength(1);
-    const rejected = outcomes.find((o) => o.status === "rejected");
-    expect((rejected as PromiseRejectedResult).reason).toMatchObject({
-      name: "MailSendClaimLostError",
-      code: "version_conflict",
-    });
+    const rejected = outcomes.filter((o): o is PromiseRejectedResult => o.status === "rejected");
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]!.reason).toMatchObject({ name: "MailSendClaimLostError", code: "version_conflict" });
 
     // The claim (mail_message_meta insert) arbitrates the race before either call reaches SMTP, so at most
     // one client sends.
@@ -329,271 +293,89 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
   });
 
   tenantIt("undoes the send claim when SMTP itself fails, so a genuine retry can still send", async () => {
-    const draftsId = await draftsFolderId();
-    const draft = await withTransaction(pool, (client) =>
-      createEmailDraft(client, {
-        emailsDatabaseId: emailsId,
-        folderRelationPropertyId,
-        draftsFolderItemId: draftsId,
-        subject: "Hello",
-        from: { address: "me@example.com" },
-        to: [{ address: "bob@example.com" }],
-        bodyText: "hi bob",
-      }),
-    );
-
+    const draft = await createDraft();
     const failingSmtp = recordingTransport({
       async send() {
         throw new Error("SMTP server rejected the message");
       },
     });
 
-    await expect(
-      sendDraftEmail(
-        pool,
-        {
-          mailboxItemId: mailboxId,
-          draftItemId: draft.id,
-          actor: { type: "user" },
-          from: { address: "me@example.com" },
-          to: [{ address: "bob@example.com" }],
-          subject: "Hello",
-          bodyText: "hi bob",
-        },
-        moduleIds,
-        sendAdapters(transportFor(failingSmtp)),
-      ),
-    ).rejects.toThrow(/SMTP server rejected/);
+    await expect(sendAsUser(draft.id, sendAdapters(transportFor(failingSmtp)))).rejects.toThrow(/SMTP server rejected/);
 
     // The failed attempt's claim must not persist: the draft is neither "sent" nor stuck.
     expect(await getMailMessageMetaByItemId(pool, draft.id)).toBeNull();
-    const { rows: draftRelation } = await pool.query(
-      `SELECT 1 FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1) AND (item_a = $2 OR item_b = $2) AND (item_a = $3 OR item_b = $3)`,
-      [folderRelationPropertyId, draft.id, draftsId],
-    );
-    expect(draftRelation).toHaveLength(1);
+    expect(await folderLinkCount(draft.id, await draftsFolderId())).toBe(1);
 
     const workingSmtp = recordingTransport();
-    const result = await sendDraftEmail(
-      pool,
-      {
-        mailboxItemId: mailboxId,
-        draftItemId: draft.id,
-        actor: { type: "user" },
-        from: { address: "me@example.com" },
-        to: [{ address: "bob@example.com" }],
-        subject: "Hello",
-        bodyText: "hi bob",
-      },
-      moduleIds,
-      sendAdapters(transportFor(workingSmtp)),
-    );
+    const result = await sendAsUser(draft.id, sendAdapters(transportFor(workingSmtp)));
     expect(workingSmtp.sent).toHaveLength(1);
     expect(result.itemId).toBe(draft.id);
   });
 
-  tenantIt("throws when no SMTP adapter is configured for the composition root, without side effects", async () => {
-    const draftsId = await draftsFolderId();
-    const draft = await withTransaction(pool, (client) =>
-      createEmailDraft(client, {
-        emailsDatabaseId: emailsId,
-        folderRelationPropertyId,
-        draftsFolderItemId: draftsId,
-        subject: "Hello",
-        from: { address: "me@example.com" },
-        to: [{ address: "bob@example.com" }],
-      }),
-    );
-
-    await expect(
-      sendDraftEmail(
-        pool,
-        {
-          mailboxItemId: mailboxId,
-          draftItemId: draft.id,
-          actor: { type: "user" },
-          from: { address: "me@example.com" },
-          to: [{ address: "bob@example.com" }],
-          subject: "Hello",
-        },
-        moduleIds,
-        noopMailSendAdapterFactory,
-      ),
-    ).rejects.toThrow(/No SMTP adapter configured/);
-  });
-
-  tenantIt("throws when the transports are configured but no attachment storage is, without side effects", async () => {
-    const draftsId = await draftsFolderId();
-    const draft = await withTransaction(pool, (client) =>
-      createEmailDraft(client, {
-        emailsDatabaseId: emailsId,
-        folderRelationPropertyId,
-        draftsFolderItemId: draftsId,
-        subject: "Hello",
-        from: { address: "me@example.com" },
-        to: [{ address: "bob@example.com" }],
-      }),
-    );
-
-    const smtp = recordingTransport();
-    await expect(
-      sendDraftEmail(
-        pool,
-        {
-          mailboxItemId: mailboxId,
-          draftItemId: draft.id,
-          actor: { type: "user" },
-          from: { address: "me@example.com" },
-          to: [{ address: "bob@example.com" }],
-          subject: "Hello",
-        },
-        moduleIds,
-        { transports: transportFor(smtp) },
-      ),
-    ).rejects.toThrow(/No SMTP adapter configured/);
-
-    expect(smtp.sent).toHaveLength(0);
-    expect(await getMailMessageMetaByItemId(pool, draft.id)).toBeNull();
-  });
-
-  tenantIt(
-    "rejects a From address that isn't one of the mailbox's registered addresses, before any claim or SMTP call",
-    async () => {
-      const draftsId = await draftsFolderId();
-      const draft = await withTransaction(pool, (client) =>
-        createEmailDraft(client, {
-          emailsDatabaseId: emailsId,
-          folderRelationPropertyId,
-          draftsFolderItemId: draftsId,
-          subject: "Hello",
-          from: { address: "me@example.com" },
-          to: [{ address: "bob@example.com" }],
-        }),
-      );
-
+  tenantEach(
+    [
+      ["no SMTP adapter is configured for the composition root", () => noopMailSendAdapterFactory],
+      [
+        "the transports are configured but no attachment storage is",
+        (smtp: MailTransport) => ({ transports: transportFor(smtp) }),
+      ],
+    ] as const,
+    ([label]) => `throws when ${label}, without side effects`,
+    async ([, adapters]) => {
+      const draft = await createDraft();
       const smtp = recordingTransport();
-      await expect(
-        sendDraftEmail(
-          pool,
-          {
-            mailboxItemId: mailboxId,
-            draftItemId: draft.id,
-            actor: { type: "user" },
-            from: { address: "spoofed@somewhere-else.com" },
-            to: [{ address: "bob@example.com" }],
-            subject: "Hello",
-          },
-          moduleIds,
-          sendAdapters(transportFor(smtp)),
-        ),
-      ).rejects.toMatchObject({ name: "ForbiddenError" });
+      await expect(sendAsUser(draft.id, adapters(smtp))).rejects.toThrow(/No SMTP adapter configured/);
 
       expect(smtp.sent).toHaveLength(0);
       expect(await getMailMessageMetaByItemId(pool, draft.id)).toBeNull();
     },
   );
 
-  tenantIt("rejects an unknown mailboxItemId with NotFoundError, before the from-address check", async () => {
-    const draftsId = await draftsFolderId();
-    const draft = await withTransaction(pool, (client) =>
-      createEmailDraft(client, {
-        emailsDatabaseId: emailsId,
-        folderRelationPropertyId,
-        draftsFolderItemId: draftsId,
-        subject: "Hello",
-        from: { address: "me@example.com" },
-        to: [{ address: "bob@example.com" }],
-      }),
-    );
-
-    const smtp = recordingTransport();
-    const unknownMailboxId = "00000000-0000-0000-0000-000000000000";
-    await expect(
-      sendDraftEmail(
-        pool,
-        {
-          mailboxItemId: unknownMailboxId,
-          draftItemId: draft.id,
-          actor: { type: "user" },
+  tenantEach(
+    [
+      [
+        "a From address that isn't one of the mailbox's registered addresses with ForbiddenError, before any claim or SMTP call",
+        "ForbiddenError",
+        async () => ({ from: { address: "spoofed@somewhere-else.com" } }),
+      ],
+      [
+        "an unknown mailboxItemId with NotFoundError, before the from-address check",
+        "NotFoundError",
+        async () => ({
+          mailboxItemId: "00000000-0000-0000-0000-000000000000",
           from: { address: "spoofed@somewhere-else.com" },
-          to: [{ address: "bob@example.com" }],
-          subject: "Hello",
+        }),
+      ],
+      [
+        "sending over a soft-deleted mailbox with NotFoundError, not ForbiddenError",
+        "NotFoundError",
+        async () => {
+          await chokePoint.softDeleteItem(mailboxesId, mailboxId);
+          return {};
         },
-        moduleIds,
-        sendAdapters(transportFor(smtp)),
-      ),
-    ).rejects.toMatchObject({ name: "NotFoundError" });
+      ],
+    ] as const,
+    ([label]) => `rejects ${label}`,
+    async ([, name, arrange]) => {
+      const draft = await createDraft();
+      const overrides = await arrange();
+      const smtp = recordingTransport();
+      await expect(sendAsUser(draft.id, sendAdapters(transportFor(smtp)), overrides)).rejects.toMatchObject({ name });
 
-    expect(smtp.sent).toHaveLength(0);
-    expect(await getMailMessageMetaByItemId(pool, draft.id)).toBeNull();
-  });
-
-  tenantIt("rejects sending over a soft-deleted mailbox with NotFoundError, not ForbiddenError", async () => {
-    const draftsId = await draftsFolderId();
-    const draft = await withTransaction(pool, (client) =>
-      createEmailDraft(client, {
-        emailsDatabaseId: emailsId,
-        folderRelationPropertyId,
-        draftsFolderItemId: draftsId,
-        subject: "Hello",
-        from: { address: "me@example.com" },
-        to: [{ address: "bob@example.com" }],
-      }),
-    );
-
-    await chokePoint.softDeleteItem(mailboxesId, mailboxId);
-
-    const smtp = recordingTransport();
-    await expect(
-      sendDraftEmail(
-        pool,
-        {
-          mailboxItemId: mailboxId,
-          draftItemId: draft.id,
-          actor: { type: "user" },
-          from: { address: "me@example.com" },
-          to: [{ address: "bob@example.com" }],
-          subject: "Hello",
-        },
-        moduleIds,
-        sendAdapters(transportFor(smtp)),
-      ),
-    ).rejects.toMatchObject({ name: "NotFoundError" });
-
-    expect(smtp.sent).toHaveLength(0);
-    expect(await getMailMessageMetaByItemId(pool, draft.id)).toBeNull();
-  });
+      expect(smtp.sent).toHaveLength(0);
+      expect(await getMailMessageMetaByItemId(pool, draft.id)).toBeNull();
+    },
+  );
 
   tenantIt(
     "a later IMAP-style reconcile pass observing the same generated Message-ID in Sent converges onto the same item instead of duplicating it",
     async () => {
-      const draftsId = await draftsFolderId();
-      const draft = await withTransaction(pool, (client) =>
-        createEmailDraft(client, {
-          emailsDatabaseId: emailsId,
-          folderRelationPropertyId,
-          draftsFolderItemId: draftsId,
-          subject: "Hello",
-          from: { address: "me@example.com" },
-          to: [{ address: "bob@example.com" }],
-          bodyText: "hi bob",
-        }),
-      );
-
-      const sentId = (
-        await pool.query<{ id: string }>(
-          `SELECT id FROM items WHERE database_id = $1 AND properties ->> 'specialPurpose' = 'sent'`,
-          [foldersId],
-        )
-      ).rows[0]!.id;
+      const draft = await createDraft();
+      const sentId = await sentFolderId();
       await withTransaction(pool, (client) =>
         updateItemWithClient(
           client,
-          {
-            databaseId: foldersId,
-            itemId: sentId,
-            propertiesPatch: { providerId: "Sent" },
-          },
+          { databaseId: foldersId, itemId: sentId, propertiesPatch: { providerId: "Sent" } },
           { allowedSystemKeys: ["providerId"] },
         ),
       );
@@ -627,20 +409,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
         }),
         createSentCopySaver(pool, mailboxId, { password: "fixture" }, async () => new ImapFlowMailClient(imap)),
       );
-      const result = await sendDraftEmail(
-        pool,
-        {
-          mailboxItemId: mailboxId,
-          draftItemId: draft.id,
-          actor: { type: "user" },
-          from: { address: "me@example.com" },
-          to: [{ address: "bob@example.com" }],
-          subject: "Hello",
-          bodyText: "hi bob",
-        },
-        moduleIds,
-        sendAdapters(transportFor(smtp)),
-      );
+      const result = await sendAsUser(draft.id, sendAdapters(transportFor(smtp)));
 
       expect(copied).toBeDefined();
       expect(copied).toEqual(accepted);
@@ -648,12 +417,11 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       const parsed = await simpleParser(copied);
       expect(parsed.messageId).toBe(result.messageId);
       const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
-      const filesId = await databaseIdFor("files");
 
-      const reconciled = await withTransaction(pool, (client) =>
+      const reconciled = await withTransaction(pool, async (client) =>
         ingestEmailMessage(client, {
           emailsDatabaseId: emailsId,
-          filesDatabaseId: filesId,
+          filesDatabaseId: await databaseIdFor("files"),
           folderRelationPropertyId,
           attachmentsRelationPropertyId: attachmentsProperty.id,
           folderItemId: sentId,
@@ -663,15 +431,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
           envelope: { from: { address: "me@example.com" }, to: [{ address: "bob@example.com" }] },
           bodyText: "hi bob",
           attachments: [],
-          storage: {
-            async writeStream() {
-              return { byteSize: 0, contentHash: "" };
-            },
-            async delete() {},
-            readStream() {
-              throw new Error("readStream is not used by this test");
-            },
-          },
+          storage: unusedStorage,
           storageKeyPrefix: "test",
         }),
       );
@@ -691,35 +451,10 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
   );
 
   tenantIt("a send with an HTML body carries the HTML part beside the text part in the raw message", async () => {
-    const draftsId = await draftsFolderId();
-    const draft = await withTransaction(pool, (client) =>
-      createEmailDraft(client, {
-        emailsDatabaseId: emailsId,
-        folderRelationPropertyId,
-        draftsFolderItemId: draftsId,
-        subject: "Hello",
-        from: { address: "me@example.com" },
-        to: [{ address: "bob@example.com" }],
-        bodyText: "hi bob",
-      }),
-    );
-
     const smtp = recordingTransport();
-    await sendDraftEmail(
-      pool,
-      {
-        mailboxItemId: mailboxId,
-        draftItemId: draft.id,
-        actor: { type: "user" },
-        from: { address: "me@example.com" },
-        to: [{ address: "bob@example.com" }],
-        subject: "Hello",
-        bodyText: "hi bob",
-        bodyHtml: "<p>hi <b>bob</b></p>",
-      },
-      moduleIds,
-      sendAdapters(transportFor(smtp)),
-    );
+    await sendAsUser((await createDraft()).id, sendAdapters(transportFor(smtp)), {
+      bodyHtml: "<p>hi <b>bob</b></p>",
+    });
 
     const raw = smtp.sent[0]!.raw.toString("utf8");
     expect(raw).toContain("Content-Type: text/plain");
@@ -728,35 +463,10 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
   });
 
   tenantIt("bcc recipients reach the SMTP envelope and no header of the raw message", async () => {
-    const draftsId = await draftsFolderId();
-    const draft = await withTransaction(pool, (client) =>
-      createEmailDraft(client, {
-        emailsDatabaseId: emailsId,
-        folderRelationPropertyId,
-        draftsFolderItemId: draftsId,
-        subject: "Hello",
-        from: { address: "me@example.com" },
-        to: [{ address: "bob@example.com" }],
-        bodyText: "hi bob",
-      }),
-    );
-
     const smtp = recordingTransport();
-    await sendDraftEmail(
-      pool,
-      {
-        mailboxItemId: mailboxId,
-        draftItemId: draft.id,
-        actor: { type: "user" },
-        from: { address: "me@example.com" },
-        to: [{ address: "bob@example.com" }],
-        bcc: [{ address: "hidden@example.com" }],
-        subject: "Hello",
-        bodyText: "hi bob",
-      },
-      moduleIds,
-      sendAdapters(transportFor(smtp)),
-    );
+    await sendAsUser((await createDraft()).id, sendAdapters(transportFor(smtp)), {
+      bcc: [{ address: "hidden@example.com" }],
+    });
 
     expect(smtp.sent[0]!.envelope).toEqual({
       from: "me@example.com",
@@ -766,80 +476,23 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
   });
 
   tenantIt("a transport that cannot be built leaves the draft unclaimed, in Drafts, and sends nothing", async () => {
-    const draftsId = await draftsFolderId();
-    const draft = await withTransaction(pool, (client) =>
-      createEmailDraft(client, {
-        emailsDatabaseId: emailsId,
-        folderRelationPropertyId,
-        draftsFolderItemId: draftsId,
-        subject: "Hello",
-        from: { address: "me@example.com" },
-        to: [{ address: "bob@example.com" }],
-        bodyText: "hi bob",
-      }),
-    );
-
+    const draft = await createDraft();
     const forMailbox = vi.fn(async () => {
       throw new Error("Mailbox has no SMTP server settings");
     });
-    await expect(
-      sendDraftEmail(
-        pool,
-        {
-          mailboxItemId: mailboxId,
-          draftItemId: draft.id,
-          actor: { type: "user" },
-          from: { address: "me@example.com" },
-          to: [{ address: "bob@example.com" }],
-          subject: "Hello",
-          bodyText: "hi bob",
-        },
-        moduleIds,
-        sendAdapters({ forMailbox }),
-      ),
-    ).rejects.toThrow(/no SMTP server settings/);
+    await expect(sendAsUser(draft.id, sendAdapters({ forMailbox }))).rejects.toThrow(/no SMTP server settings/);
 
     expect(forMailbox).toHaveBeenCalledTimes(1);
     expect(await getMailMessageMetaByItemId(pool, draft.id)).toBeNull();
-    const { rows: draftRelation } = await pool.query(
-      `SELECT 1 FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1) AND (item_a = $2 OR item_b = $2) AND (item_a = $3 OR item_b = $3)`,
-      [folderRelationPropertyId, draft.id, draftsId],
-    );
-    expect(draftRelation).toHaveLength(1);
+    expect(await folderLinkCount(draft.id, await draftsFolderId())).toBe(1);
   });
 
   describe("transport choice by sync mode", () => {
-    async function draftId(): Promise<string> {
-      const draftsId = await draftsFolderId();
-      const draft = await withTransaction(pool, (client) =>
-        createEmailDraft(client, {
-          emailsDatabaseId: emailsId,
-          folderRelationPropertyId,
-          draftsFolderItemId: draftsId,
-          subject: "Hello",
-          from: { address: "me@example.com" },
-          to: [{ address: "bob@example.com" }],
-          bodyText: "hi bob",
-        }),
-      );
-      return draft.id;
-    }
-
     async function sendAndRecordMode(): Promise<string[]> {
       const requested: string[] = [];
       const smtp = recordingTransport();
-      await sendDraftEmail(
-        pool,
-        {
-          mailboxItemId: mailboxId,
-          draftItemId: await draftId(),
-          actor: { type: "user" },
-          from: { address: "me@example.com" },
-          to: [{ address: "bob@example.com" }],
-          subject: "Hello",
-          bodyText: "hi bob",
-        },
-        moduleIds,
+      await sendAsUser(
+        (await createDraft()).id,
         sendAdapters({
           forMailbox: async (_mailboxItemId, syncMode) => {
             requested.push(syncMode);
@@ -872,25 +525,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
     });
   });
 
-  describe("threading of sent messages (issue #1474)", () => {
-    const storage = {
-      async writeStream() {
-        return { byteSize: 0, contentHash: "" };
-      },
-      async delete() {},
-      readStream(): never {
-        throw new Error("readStream is not used by this test");
-      },
-    };
-
-    async function sentFolderId(): Promise<string> {
-      const { rows } = await pool.query<{ id: string }>(
-        `SELECT id FROM items WHERE database_id = $1 AND properties ->> 'specialPurpose' = 'sent'`,
-        [foldersId],
-      );
-      return rows[0]!.id;
-    }
-
+  describe("threading of sent messages", () => {
     async function ingestSynced(
       messageId: string,
       mailbox = mailboxId,
@@ -915,26 +550,14 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
           envelope: { from: { address: "bob@example.com" }, to: [{ address: "me@example.com" }] },
           bodyText: "question",
           attachments: [],
-          storage,
+          storage: unusedStorage,
           storageKeyPrefix: "test",
         });
       });
     }
 
-    async function newDraft(): Promise<string> {
-      const draft = await withTransaction(pool, async (client) =>
-        createEmailDraft(client, {
-          emailsDatabaseId: emailsId,
-          folderRelationPropertyId,
-          draftsFolderItemId: await draftsFolderId(),
-          subject: "Re: Original",
-          from: { address: "me@example.com" },
-          to: [{ address: "bob@example.com" }],
-          bodyText: "answer",
-        }),
-      );
-      return draft.id;
-    }
+    const REPLY = { subject: "Re: Original", bodyText: "answer" };
+    const newDraft = async () => (await createDraft(REPLY)).id;
 
     function send(
       draftItemId: string,
@@ -942,21 +565,15 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       threadHeaders: { inReplyTo?: string } = {},
       operationPool: Pool = pool,
     ) {
-      return sendDraftEmail(
-        operationPool,
+      return sendAsUser(
+        draftItemId,
+        sendAdapters(transportFor(smtp)),
         {
-          mailboxItemId: mailboxId,
-          draftItemId,
-          actor: { type: "user" },
-          from: { address: "me@example.com" },
-          to: [{ address: "bob@example.com" }],
-          subject: "Re: Original",
-          bodyText: "answer",
+          ...REPLY,
           inReplyTo: threadHeaders.inReplyTo,
           references: threadHeaders.inReplyTo ? [threadHeaders.inReplyTo] : undefined,
         },
-        moduleIds,
-        sendAdapters(transportFor(smtp)),
+        operationPool,
       );
     }
 
@@ -1354,7 +971,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
     });
   });
 
-  describe("people linking of sent mail (issue #1480)", () => {
+  describe("people linking of sent mail", () => {
     let ownerPool: Pool;
 
     beforeEach(async () => {
@@ -1375,50 +992,24 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
     });
 
     async function personOwning(name: string, addresses: string[]): Promise<string> {
-      const peopleId = await databaseIdFor("people");
       const person = await chokePoint.createItem({
-        databaseId: peopleId,
+        databaseId: await databaseIdFor("people"),
         properties: { name, emails: addresses.join("\n") },
       });
       await withTransaction(pool, (client) => reindexPersonEmails(client, person.id, addresses));
       return person.id;
     }
 
-    async function newDraftWithSubject(subject: string): Promise<string> {
-      const draftsId = await draftsFolderId();
-      const draft = await withTransaction(pool, (client) =>
-        createEmailDraft(client, {
-          emailsDatabaseId: emailsId,
-          folderRelationPropertyId,
-          draftsFolderItemId: draftsId,
-          subject,
-          from: { address: "me@example.com" },
-          to: [{ address: "bob@example.com" }],
-          bodyText: "hi",
-        }),
-      );
-      return draft.id;
-    }
-
     async function sendMail(options: { to: string[]; cc?: string[]; subject?: string }): Promise<string> {
       const subject = options.subject ?? "Hello";
-      const draftId = await newDraftWithSubject(subject);
-      await sendDraftEmail(
-        pool,
-        {
-          mailboxItemId: mailboxId,
-          draftItemId: draftId,
-          actor: { type: "user" },
-          from: { address: "me@example.com" },
-          to: options.to.map((address) => ({ address })),
-          cc: options.cc?.map((address) => ({ address })),
-          subject,
-          bodyText: "hi",
-        },
-        moduleIds,
-        sendAdapters(transportFor(recordingTransport())),
-      );
-      return draftId;
+      const draft = await createDraft({ subject, bodyText: "hi" });
+      await sendAsUser(draft.id, sendAdapters(transportFor(recordingTransport())), {
+        to: options.to.map((address) => ({ address })),
+        cc: options.cc?.map((address) => ({ address })),
+        subject,
+        bodyText: "hi",
+      });
+      return draft.id;
     }
 
     async function linkedPersonIds(
@@ -1474,17 +1065,7 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
           envelope: {},
           bodyText: "hello",
           attachments: [],
-          storage: {
-            async writeStream() {
-              throw new Error("Unexpected attachment write");
-            },
-            async delete() {
-              throw new Error("Unexpected attachment delete");
-            },
-            readStream() {
-              throw new Error("Unexpected attachment read");
-            },
-          },
+          storage: unusedStorage,
           storageKeyPrefix: "test",
         });
         // Drafts are indexed by the normal search indexer; establish the sent item as a positive searchable row.
@@ -1506,44 +1087,50 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       expect(searchable.map((row) => row.itemId)).toContain(sentId);
     });
 
-    tenantIt("a sent message to an address a person owns gets a recipientsPeople edge to that person", async () => {
-      const bob = await personOwning("Bob", ["bob@example.com"]);
-      const mailId = await sendMail({ to: ["bob@example.com"] });
+    tenantEach(
+      [
+        [
+          "a recipient address a person owns gets a recipientsPeople edge",
+          "Bob",
+          "bob@example.com",
+          "recipientsPeople",
+        ],
+        ["a mailbox address a person owns gets a senderPeople edge", "Me", "nobody@example.com", "senderPeople"],
+        ["an address no person owns leaves both people relations empty", "Bob", "stranger@example.com", null],
+      ] as const,
+      ([label]) => label,
+      async ([, owner, to, linkedAs]) => {
+        const person = await personOwning(owner, [owner === "Me" ? "me@example.com" : "bob@example.com"]);
+        const mailId = await sendMail({ to: [to] });
 
-      expect(await linkedPersonIds(mailId, "recipientsPeople")).toEqual([bob]);
-      expect(await linkedPersonIds(mailId, "senderPeople")).toEqual([]);
-    });
-
-    tenantIt(
-      "a sent message from a mailbox address a person owns gets a senderPeople edge to that person",
-      async () => {
-        const me = await personOwning("Me", ["me@example.com"]);
-        const mailId = await sendMail({ to: ["nobody@example.com"] });
-
-        expect(await linkedPersonIds(mailId, "senderPeople")).toEqual([me]);
-        expect(await linkedPersonIds(mailId, "recipientsPeople")).toEqual([]);
+        for (const key of ["recipientsPeople", "senderPeople"] as const)
+          expect(await linkedPersonIds(mailId, key)).toEqual(key === linkedAs ? [person] : []);
       },
     );
 
-    tenantIt("an address no person owns leaves both people relations empty", async () => {
-      await personOwning("Bob", ["bob@example.com"]);
-      const mailId = await sendMail({ to: ["stranger@example.com"] });
+    tenantIt(
+      "two sent emails to the same person both link, and relinking an already linked email adds no duplicate edge and raises no error",
+      async () => {
+        const bob = await personOwning("Bob", ["bob@example.com"]);
+        const me = await personOwning("Me", ["me@example.com"]);
+        const first = await sendMail({ to: ["bob@example.com"], subject: "First" });
+        const second = await sendMail({ to: ["bob@example.com"], subject: "Second" });
+        await withTransaction(pool, (client) =>
+          linkEmailEnvelopeToPeople(client, {
+            itemId: first,
+            envelope: { from: { address: "me@example.com" }, to: [{ address: "bob@example.com" }] },
+            emailsDatabaseId: emailsId,
+            senderPeopleKey: "senderPeople",
+            recipientsPeopleKey: "recipientsPeople",
+          }),
+        );
 
-      expect(await linkedPersonIds(mailId, "recipientsPeople")).toEqual([]);
-      expect(await linkedPersonIds(mailId, "senderPeople")).toEqual([]);
-    });
-
-    tenantIt("two sent emails to the same person both link, and neither send fails", async () => {
-      const bob = await personOwning("Bob", ["bob@example.com"]);
-      const me = await personOwning("Me", ["me@example.com"]);
-      const first = await sendMail({ to: ["bob@example.com"], subject: "First" });
-      const second = await sendMail({ to: ["bob@example.com"], subject: "Second" });
-
-      expect(await linkedPersonIds(first, "recipientsPeople")).toEqual([bob]);
-      expect(await linkedPersonIds(second, "recipientsPeople")).toEqual([bob]);
-      expect(await linkedPersonIds(first, "senderPeople")).toEqual([me]);
-      expect(await linkedPersonIds(second, "senderPeople")).toEqual([me]);
-    });
+        for (const mailId of [first, second]) {
+          expect(await linkedPersonIds(mailId, "recipientsPeople")).toEqual([bob]);
+          expect(await linkedPersonIds(mailId, "senderPeople")).toEqual([me]);
+        }
+      },
+    );
 
     tenantIt("a person listed in both To and Cc gets a single recipientsPeople edge", async () => {
       const bob = await personOwning("Bob", ["bob@example.com"]);
@@ -1552,64 +1139,29 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       expect(await linkedPersonIds(mailId, "recipientsPeople")).toEqual([bob]);
     });
 
-    tenantIt("linking an email that is already linked adds no duplicate edge and raises no error", async () => {
-      const bob = await personOwning("Bob", ["bob@example.com"]);
-      const me = await personOwning("Me", ["me@example.com"]);
-      const mailId = await sendMail({ to: ["bob@example.com"] });
-      const envelope = { from: { address: "me@example.com" }, to: [{ address: "bob@example.com" }] };
-
-      await withTransaction(pool, (client) =>
-        linkEmailEnvelopeToPeople(client, {
-          itemId: mailId,
-          envelope,
-          emailsDatabaseId: emailsId,
-          senderPeopleKey: "senderPeople",
-          recipientsPeopleKey: "recipientsPeople",
-        }),
-      );
-
-      expect(await linkedPersonIds(mailId, "recipientsPeople")).toEqual([bob]);
-      expect(await linkedPersonIds(mailId, "senderPeople")).toEqual([me]);
-    });
-
     tenantIt(
       "a people link that fails rolls back the whole finalization: the draft keeps its subject and stays in Drafts",
       async () => {
-        const peopleId = await databaseIdFor("people");
         const bob = await personOwning("Bob", ["bob@example.com"]);
         // The address index still maps bob@example.com to Bob after his soft delete, so the link is attempted
         // against a deleted endpoint and refused by the choke point.
-        await chokePoint.softDeleteItem(peopleId, bob);
-        const draftId = await newDraftWithSubject("Draft subject");
+        await chokePoint.softDeleteItem(await databaseIdFor("people"), bob);
+        const draft = await createDraft({ subject: "Draft subject", bodyText: "hi" });
 
         await expect(
-          sendDraftEmail(
-            pool,
-            {
-              mailboxItemId: mailboxId,
-              draftItemId: draftId,
-              actor: { type: "user" },
-              from: { address: "me@example.com" },
-              to: [{ address: "bob@example.com" }],
-              subject: "Final subject",
-              bodyText: "hi",
-            },
-            moduleIds,
-            sendAdapters(transportFor(recordingTransport())),
-          ),
+          sendAsUser(draft.id, sendAdapters(transportFor(recordingTransport())), {
+            subject: "Final subject",
+            bodyText: "hi",
+          }),
         ).rejects.toMatchObject({ name: "ValidationError" });
 
         const { rows: names } = await pool.query<{ name: string }>(
           `SELECT properties ->> 'name' AS name FROM items WHERE id = $1`,
-          [draftId],
+          [draft.id],
         );
         expect(names[0]!.name).toBe("Draft subject");
-        expect(await linkedPersonIds(draftId, "recipientsPeople")).toEqual([]);
-        const { rows: drafts } = await pool.query(
-          `SELECT 1 FROM item_relations WHERE relation_definition_id = (SELECT id FROM relation_definitions WHERE property_id_a = $1 OR property_id_b = $1) AND (item_a = $2 OR item_b = $2) AND (item_a = $3 OR item_b = $3)`,
-          [folderRelationPropertyId, draftId, await draftsFolderId()],
-        );
-        expect(drafts).toHaveLength(1);
+        expect(await linkedPersonIds(draft.id, "recipientsPeople")).toEqual([]);
+        expect(await folderLinkCount(draft.id, await draftsFolderId())).toBe(1);
       },
     );
   });
