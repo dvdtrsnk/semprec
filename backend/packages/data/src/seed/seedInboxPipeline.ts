@@ -1,6 +1,5 @@
 import type { PoolClient } from "pg";
 import * as databasesStore from "../chokePoint/databasesStore.js";
-import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import {
   createRelationPropertyWithClient,
@@ -9,7 +8,7 @@ import {
 import type { SystemRelationWriteContext } from "../chokePoint/relationEdgeContext.js";
 import type { ComputedKeyRegistry } from "../chokePoint/computedKeyRegistry.js";
 import type { ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
-import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
+import type { DatabaseRow } from "../types.js";
 import { INBOX_ITEM_TYPES_MODULE_ID, INBOX_MODULE_ID, PROCESSING_PROPOSALS_MODULE_ID } from "./inboxPipelineKeys.js";
 import { THREADS_MODULE_ID } from "./emailModuleKeys.js";
 import { TEN_DATABASE_MODULE_IDS } from "./tenDatabaseKeys.js";
@@ -21,20 +20,7 @@ import { JOURNAL_INBOX_COMPUTED_KEY } from "../inbox/journalInboxCompute.js";
 import { registerJournalInboxViewType } from "../views/journalInboxViewType.js";
 import { INBOX_TRANSCRIBED_TEXT_KEY } from "../inbox/inboxVoiceNote.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.js";
-
-// Every catalog option `s` becomes `{ key: s }`; see the copy in seedTenDatabases.ts.
-function selectConfig(options: string[]): Record<string, unknown> {
-  return { options: options.map((key) => ({ key })) };
-}
-
-interface PropSpec {
-  key: string;
-  name: string;
-  type: PropertyType;
-  owner?: PropertyOwner;
-  ownerProcess?: string;
-  config?: Record<string, unknown>;
-}
+import { createProps, selectConfig } from "./propSpecs.js";
 
 async function createDb(
   client: PoolClient,
@@ -43,20 +29,6 @@ async function createDb(
   ownerProjectItemId: string,
 ): Promise<DatabaseRow> {
   return databasesStore.createDatabase(client, { name, system: true, ownerModuleId, ownerProjectItemId });
-}
-
-async function createProps(client: PoolClient, databaseId: string, specs: PropSpec[]): Promise<void> {
-  for (const spec of specs) {
-    await propertiesStore.createProperty(client, {
-      databaseId,
-      key: spec.key,
-      name: spec.name,
-      type: spec.type,
-      owner: spec.owner,
-      ownerProcess: spec.ownerProcess,
-      config: spec.config,
-    });
-  }
 }
 
 export interface InboxPipelineDatabases {

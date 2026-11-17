@@ -1,18 +1,12 @@
 import type { PoolClient } from "pg";
 import * as databasesStore from "../chokePoint/databasesStore.js";
-import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { CALENDAR_MODULE_ID } from "../calendar/calendarModuleId.js";
 import { requireAffectedRows, requireSingleRow } from "../db/pool.js";
-import type { DatabaseRow, PropertyType } from "../types.js";
+import type { DatabaseRow } from "../types.js";
 import { SUBSCRIBED_EVENTS_MODULE_ID } from "./calendarsKeys.js";
+import { createProps, type PropSpec } from "./propSpecs.js";
 
 export const SUBSCRIBED_EVENT_RECURRENCE_KEYS = ["recurrenceRule", "exceptionDates", "recurrenceId"] as const;
-
-interface PropSpec {
-  key: string;
-  type: PropertyType;
-  config?: Record<string, unknown>;
-}
 
 /**
  * All system-owned by the calendar module. `startsAt`/`endsAt` include a time; `timeZone` is the feed's
@@ -96,17 +90,11 @@ export async function seedSubscribedEventsInTransaction(
     ownerModuleId: SUBSCRIBED_EVENTS_MODULE_ID,
     ownerProjectItemId: calendars.ownerProjectItemId ?? undefined,
   });
-  for (const spec of SUBSCRIBED_EVENT_PROPERTIES) {
-    await propertiesStore.createProperty(client, {
-      databaseId: database.id,
-      key: spec.key,
-      name: null,
-      type: spec.type,
-      owner: "system",
-      ownerProcess: CALENDAR_MODULE_ID,
-      config: spec.config,
-    });
-  }
+  await createProps(
+    client,
+    database.id,
+    SUBSCRIBED_EVENT_PROPERTIES.map((spec) => ({ ...spec, owner: "system", ownerProcess: CALENDAR_MODULE_ID })),
+  );
   await createSubscribedEventsRelation(client, calendars.id, database.id);
   requireAffectedRows(
     await client.query("UPDATE databases SET schema_locked = true WHERE id = $1", [database.id]),

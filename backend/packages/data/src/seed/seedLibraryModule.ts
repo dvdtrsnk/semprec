@@ -1,6 +1,5 @@
 import type { PoolClient } from "pg";
 import * as databasesStore from "../chokePoint/databasesStore.js";
-import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import {
@@ -24,14 +23,10 @@ import {
   MOVIES_LIBRARY_CONTRACT,
   type LibraryModuleContract,
 } from "../library/libraryModuleContract.js";
-import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
+import type { DatabaseRow } from "../types.js";
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "./libraryModuleKeys.js";
 import { SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS } from "./systemProjectAgentGuidance.js";
-
-// Every catalog option `s` becomes `{ key: s }`; see the copy in seedTenDatabases.ts.
-function selectConfig(options: string[], colors: Record<string, string> = {}): Record<string, unknown> {
-  return { options: options.map((key) => ({ key, ...(colors[key] ? { color: colors[key] } : {}) })) };
-}
+import { createProps, selectConfig, type PropSpec } from "./propSpecs.js";
 
 /** Rating presets of Books and Movies: "5 stars", "4 and up", "3 and up", "No rating" (empty or 0). */
 export function ratingFilterPresetsConfig(databaseKey: typeof BOOKS_MODULE_ID | typeof MOVIES_MODULE_ID): {
@@ -66,14 +61,6 @@ function coverOverrideSpecs(): PropSpec[] {
   ];
 }
 
-interface PropSpec {
-  key: string;
-  name: string | null;
-  type: PropertyType;
-  owner?: PropertyOwner;
-  config?: Record<string, unknown>;
-}
-
 async function createDb(client: PoolClient, ownerModuleId: string, ownerProjectItemId: string): Promise<DatabaseRow> {
   return databasesStore.createDatabase(client, {
     name: null,
@@ -82,19 +69,6 @@ async function createDb(client: PoolClient, ownerModuleId: string, ownerProjectI
     ownerModuleId,
     ownerProjectItemId,
   });
-}
-
-async function createProps(client: PoolClient, databaseId: string, specs: PropSpec[]): Promise<void> {
-  for (const spec of specs) {
-    await propertiesStore.createProperty(client, {
-      databaseId,
-      key: spec.key,
-      name: spec.name,
-      type: spec.type,
-      owner: spec.owner,
-      config: spec.config,
-    });
-  }
 }
 
 /** Shared by both library-metadata heartbeats of a database; see libraryMetadataActions.ts's schema. */

@@ -1,21 +1,13 @@
 import type { PoolClient } from "pg";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
-import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import type { ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { requireAffectedRows } from "../db/pool.js";
 import { RECIPES_DATABASE_DESCRIPTOR } from "../recipes/recipesModuleManifest.js";
-import type { PropertyOwner, PropertyType } from "../types.js";
 import { RECIPES_MODULE_ID, RECIPE_SOURCE_URL_KEY } from "./recipesModuleKeys.js";
 import { SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS } from "./systemProjectAgentGuidance.js";
-
-interface PropSpec {
-  key: string;
-  type: PropertyType;
-  owner: PropertyOwner;
-  config?: Record<string, unknown>;
-}
+import { createProps, type PropSpec } from "./propSpecs.js";
 
 /**
  * Labels of properties, options and presets are in `recipes/i18n`. `sourceUrl` values are checked by
@@ -85,17 +77,7 @@ export async function seedRecipesModuleInTransaction(
     ownerModuleId: RECIPES_MODULE_ID,
     ownerProjectItemId: project.id,
   });
-  for (const spec of RECIPE_PROPERTIES) {
-    // `name` stays null: labels come from the module catalog.
-    await propertiesStore.createProperty(client, {
-      databaseId: recipes.id,
-      key: spec.key,
-      name: null,
-      type: spec.type,
-      owner: spec.owner,
-      config: spec.config,
-    });
-  }
+  await createProps(client, recipes.id, RECIPE_PROPERTIES);
   await viewsStore.createView(
     client,
     {

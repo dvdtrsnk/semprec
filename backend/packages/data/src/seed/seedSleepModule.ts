@@ -3,28 +3,15 @@ import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registr
 import { getTenantUserLocale } from "../auth/usersStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
-import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { createRelationPropertyWithClient } from "../chokePoint/relationPropertyWrites.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import type { ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { requireAffectedRows } from "../db/pool.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { SLEEP_DATABASE_DESCRIPTORS } from "../sleep/sleepModuleManifest.js";
-import type { PropertyOwner, PropertyType } from "../types.js";
 import { SENSITIVE_DATABASE_KEYS } from "./sensitiveDatabaseKeys.js";
 import { SLEEP_SETTINGS_AREA_KEY } from "./sleepModuleKeys.js";
-
-interface PropSpec {
-  key: string;
-  type: PropertyType;
-  owner: PropertyOwner;
-  locked?: true;
-  config?: Record<string, unknown>;
-}
-
-function selectConfig(options: readonly string[]): Record<string, unknown> {
-  return { options: options.map((key) => ({ key })) };
-}
+import { createProps, selectConfig, type PropSpec } from "./propSpecs.js";
 
 const SETTINGS_PROPERTIES: readonly PropSpec[] = [
   { key: "name", type: "title", owner: "user" },
@@ -95,18 +82,7 @@ async function createSleepDatabase(
     ownerProjectItemId,
     sensitive: SENSITIVE_DATABASE_KEYS.includes(descriptor.key),
   });
-  for (const spec of properties) {
-    // `name` stays null: labels come from the module catalog.
-    await propertiesStore.createProperty(client, {
-      databaseId: database.id,
-      key: spec.key,
-      name: null,
-      type: spec.type,
-      owner: spec.owner,
-      locked: spec.locked,
-      config: spec.config,
-    });
-  }
+  await createProps(client, database.id, properties);
   await viewsStore.createView(
     client,
     { databaseId: database.id, type: "table", name: descriptor.name, isDefault: true, createdBy: "system" },

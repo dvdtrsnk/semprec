@@ -1,6 +1,5 @@
 import type { PoolClient } from "pg";
 import * as databasesStore from "../chokePoint/databasesStore.js";
-import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { createRelationPropertyWithClient } from "../chokePoint/relationPropertyOps.js";
 import type { SystemRelationWriteContext } from "../chokePoint/relationEdgeContext.js";
 import { CALENDAR_MODULE_ID } from "../calendar/calendarModuleId.js";
@@ -8,26 +7,17 @@ import { invitationIngestHeartbeat } from "../calendar/invitationIngestAction.js
 import { invitationReplyHeartbeat } from "../calendar/invitationReplyAction.js";
 import { requireAffectedRows } from "../db/pool.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
-import type { DatabaseRow, PropertyType } from "../types.js";
+import type { DatabaseRow } from "../types.js";
 import { EMAILS_MODULE_ID, MAILBOXES_MODULE_ID } from "./emailModuleKeys.js";
 import { INVITATIONS_MODULE_ID } from "./invitationsKeys.js";
 import { CALENDARS_MODULE_ID } from "./calendarsKeys.js";
 import { EVENTS_MODULE_ID, PEOPLE_MODULE_ID } from "./tenDatabaseKeys.js";
+import { createProps, selectConfig, type PropSpec } from "./propSpecs.js";
 
 /** The `status` options of an invitation; `cancelled` means the organizer cancelled the meeting. */
 const INVITATION_STATUSES = ["pending", "accepted", "tentative", "declined", "acknowledged", "cancelled"] as const;
 
 const INVITATION_KINDS = ["invite", "sharedCalendarNotice"] as const;
-
-interface PropSpec {
-  key: string;
-  type: PropertyType;
-  config?: Record<string, unknown>;
-}
-
-const selectConfig = (options: readonly string[]): Record<string, unknown> => ({
-  options: options.map((key) => ({ key })),
-});
 
 /** Every property is system-owned by the calendar module (`seedInvitationsDatabaseInTransaction`). */
 const INVITATION_PROPERTIES: readonly PropSpec[] = [
@@ -77,18 +67,11 @@ export async function seedInvitationsDatabaseInTransaction(
     ownerModuleId: INVITATIONS_MODULE_ID,
     ownerProjectItemId: calendarsDatabase.ownerProjectItemId,
   });
-  for (const spec of INVITATION_PROPERTIES) {
-    // `name` is null like every built-in property of a system database; labels come from the calendar catalog.
-    await propertiesStore.createProperty(client, {
-      databaseId: database.id,
-      key: spec.key,
-      name: null,
-      type: spec.type,
-      owner: "system",
-      ownerProcess: CALENDAR_MODULE_ID,
-      config: spec.config,
-    });
-  }
+  await createProps(
+    client,
+    database.id,
+    INVITATION_PROPERTIES.map((spec) => ({ ...spec, owner: "system", ownerProcess: CALENDAR_MODULE_ID })),
+  );
   for (const [key, targetModuleId] of INVITATION_RELATIONS) {
     const target = await databasesStore.getDatabaseByModuleId(client, targetModuleId);
     if (!target) throw new Error(`The ${targetModuleId} database has not been seeded`);

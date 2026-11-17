@@ -1,7 +1,6 @@
 import type { PoolClient } from "pg";
 import type { ModuleRegistry } from "@semprec/module-registry";
 import * as databasesStore from "../chokePoint/databasesStore.js";
-import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import {
   createRelationPropertyWithClient,
@@ -13,7 +12,7 @@ import type { ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { registerTemporalSwitcherViewType } from "../views/temporalSwitcherViewType.js";
 import { JOURNAL_PERIOD_TYPES } from "../journal/journalStore.js";
 import { JOURNAL_EVENT_LINKS_OWNER_PROCESS } from "../journal/journalOwnerProcesses.js";
-import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
+import type { DatabaseRow } from "../types.js";
 import {
   AREAS_MODULE_ID,
   COMPANIES_MODULE_ID,
@@ -34,24 +33,21 @@ import { TRANSCRIPTION_OWNER_PROCESS } from "../transcription/transcriptionJob.j
 import { createTasksTodayView } from "../tasks/todayView.js";
 import { CALENDAR_MODULE_ID } from "../calendar/calendarModuleId.js";
 import { EVENT_OCCURRENCE_DATE_PROPERTY_KEY, EVENT_SERIES_ID_PROPERTY_KEY } from "../calendar/eventOccurrenceId.js";
+import { createProps, selectConfig, type PropSpec } from "./propSpecs.js";
 
 export type TenDatabases = Record<TenDatabaseModuleId, DatabaseRow>;
 
-// Every shipped catalog option `s` becomes `{ key: s }` with no `label`: a shipped option's display
-// text is not an override (see SelectOption).
-function selectConfig(options: string[], colors: Record<string, string> = {}): Record<string, unknown> {
-  return { options: options.map((key) => ({ key, ...(colors[key] ? { color: colors[key] } : {}) })) };
-}
-
-interface PropSpec {
-  key: string;
-  /** The canonical label as documentation only; `createProps` stores a null `name` for built-in properties. */
-  name: string | null;
-  type: PropertyType;
-  owner?: PropertyOwner;
-  ownerProcess?: string;
-  locked?: boolean;
-  config?: Record<string, unknown>;
+/** `name` is the canonical label as documentation only: every property here is stored with a null name. */
+function createBuiltInProps(
+  client: PoolClient,
+  databaseId: string,
+  specs: readonly (PropSpec & { name: string | null })[],
+): Promise<void> {
+  return createProps(
+    client,
+    databaseId,
+    specs.map((spec) => ({ ...spec, name: null })),
+  );
 }
 
 /** `key` is both `databases.key` and `owner_module_id`; the `name` of a system database is null (labels come from the catalog). */
@@ -63,22 +59,6 @@ async function createDb(client: PoolClient, key: TenDatabaseModuleId): Promise<D
     ownerModuleId: key,
     sensitive: SENSITIVE_DATABASE_KEYS.includes(key),
   });
-}
-
-async function createProps(client: PoolClient, databaseId: string, specs: PropSpec[]): Promise<void> {
-  for (const spec of specs) {
-    await propertiesStore.createProperty(client, {
-      databaseId,
-      key: spec.key,
-      // Null, not spec.name; see PropSpec.name.
-      name: null,
-      type: spec.type,
-      owner: spec.owner,
-      ownerProcess: spec.ownerProcess,
-      locked: spec.locked,
-      config: spec.config,
-    });
-  }
 }
 
 /**
@@ -106,7 +86,7 @@ export async function seedTenDatabasesInTransaction(
 
   // ---- phase 1: each database and its own (non-relation) properties ----
   const areas = await createDb(client, AREAS_MODULE_ID);
-  await createProps(client, areas.id, [
+  await createBuiltInProps(client, areas.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     { key: "active", name: "Active", type: "checkbox", owner: "user", config: { default: true } },
     { key: "systemActive", name: null, type: "checkbox", owner: "user", locked: true },
@@ -119,7 +99,7 @@ export async function seedTenDatabasesInTransaction(
   await ensureUnplannedArea(client, areas.id);
 
   const projects = await createDb(client, PROJECTS_MODULE_ID);
-  await createProps(client, projects.id, [
+  await createBuiltInProps(client, projects.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     { key: "pinned", name: "Pinned", type: "checkbox", owner: "user" },
     { key: "pinnedOrder", name: null, type: "number", owner: "user" },
@@ -156,7 +136,7 @@ export async function seedTenDatabasesInTransaction(
   ]);
 
   const tasks = await createDb(client, TASKS_MODULE_ID);
-  await createProps(client, tasks.id, [
+  await createBuiltInProps(client, tasks.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     {
       key: "status",
@@ -199,7 +179,7 @@ export async function seedTenDatabasesInTransaction(
   ]);
 
   const people = await createDb(client, PEOPLE_MODULE_ID);
-  await createProps(client, people.id, [
+  await createBuiltInProps(client, people.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     // A closed but extensible list, not free text.
     {
@@ -234,7 +214,7 @@ export async function seedTenDatabasesInTransaction(
   ]);
 
   const files = await createDb(client, FILES_MODULE_ID);
-  await createProps(client, files.id, [
+  await createBuiltInProps(client, files.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     {
       key: "type",
@@ -254,7 +234,7 @@ export async function seedTenDatabasesInTransaction(
   ]);
 
   const events = await createDb(client, EVENTS_MODULE_ID);
-  await createProps(client, events.id, [
+  await createBuiltInProps(client, events.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     {
       key: "type",
@@ -304,7 +284,7 @@ export async function seedTenDatabasesInTransaction(
   ]);
 
   const healthRecords = await createDb(client, HEALTH_RECORDS_MODULE_ID);
-  await createProps(client, healthRecords.id, [
+  await createBuiltInProps(client, healthRecords.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     { key: "date", name: "Date", type: "date", owner: "user" },
     {
@@ -338,7 +318,7 @@ export async function seedTenDatabasesInTransaction(
   ]);
 
   const companies = await createDb(client, COMPANIES_MODULE_ID);
-  await createProps(client, companies.id, [
+  await createBuiltInProps(client, companies.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     // Deliberate exception to English keys: the Czech IČO company id has no honest English name.
     { key: "ico", name: "ICO", type: "text", owner: "user" },
@@ -346,7 +326,7 @@ export async function seedTenDatabasesInTransaction(
   ]);
 
   const transcripts = await createDb(client, TRANSCRIPTS_MODULE_ID);
-  await createProps(client, transcripts.id, [
+  await createBuiltInProps(client, transcripts.id, [
     { key: "name", name: "Name", type: "title", owner: "user" },
     // A pipeline status written only by the transcription process; not user-editable.
     {
@@ -372,7 +352,7 @@ export async function seedTenDatabasesInTransaction(
   ]);
 
   const journal = await createDb(client, JOURNAL_MODULE_ID);
-  await createProps(client, journal.id, [
+  await createBuiltInProps(client, journal.id, [
     { key: "name", name: "Name", type: "title", owner: "system" },
     { key: "type", name: "Type", type: "select", owner: "system", config: selectConfig([...JOURNAL_PERIOD_TYPES]) },
     { key: "period", name: "Period", type: "text", owner: "system" },

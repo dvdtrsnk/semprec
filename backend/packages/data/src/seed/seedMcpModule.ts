@@ -1,36 +1,10 @@
 import type { PoolClient } from "pg";
 import * as databasesStore from "../chokePoint/databasesStore.js";
-import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
-import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
+import type { DatabaseRow } from "../types.js";
 import { MCP_SERVERS_MODULE_ID } from "./mcpModuleKeys.js";
 import { SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS } from "./systemProjectAgentGuidance.js";
-
-// Every catalog option `s` becomes `{ key: s }`; see the copy in seedTenDatabases.ts.
-function selectConfig(options: string[]): Record<string, unknown> {
-  return { options: options.map((key) => ({ key })) };
-}
-
-interface PropSpec {
-  key: string;
-  name: string;
-  type: PropertyType;
-  owner?: PropertyOwner;
-  config?: Record<string, unknown>;
-}
-
-async function createProps(client: PoolClient, databaseId: string, specs: PropSpec[]): Promise<void> {
-  for (const spec of specs) {
-    await propertiesStore.createProperty(client, {
-      databaseId,
-      key: spec.key,
-      name: spec.name,
-      type: spec.type,
-      owner: spec.owner,
-      config: spec.config,
-    });
-  }
-}
+import { createProps, selectConfig } from "./propSpecs.js";
 
 export interface McpModuleResult {
   mcpServers: DatabaseRow;

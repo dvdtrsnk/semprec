@@ -3,7 +3,6 @@ import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registr
 import { getTenantUserLocale } from "../auth/usersStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
-import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { CALENDAR_MODULE_ID } from "../calendar/calendarModuleId.js";
 import {
   NEXT_OCCURRENCE_REFRESH_ACTION_ID,
@@ -12,9 +11,10 @@ import {
 import { requireAffectedRows, requireSingleRow } from "../db/pool.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
-import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
+import type { DatabaseRow } from "../types.js";
 import { CALENDARS_MODULE_ID } from "./calendarsKeys.js";
 import { seedSubscribedEventsInTransaction } from "./seedSubscribedEvents.js";
+import { createProps, type PropSpec } from "./propSpecs.js";
 
 /** The `kind` options of a calendar; a row without a `kind` is `own`. */
 const CALENDAR_KINDS = ["own", "system", "subscription"] as const;
@@ -40,14 +40,6 @@ const CALENDAR_ROWS: readonly CalendarRow[] = [
   { catalogKey: "sleep", color: "#5856D6", notify: false, systemKey: "sleep" },
   { catalogKey: "holidaysCz", color: "#34C759", notify: false, systemKey: "holidaysCz" },
 ];
-
-interface PropSpec {
-  key: string;
-  type: PropertyType;
-  owner: PropertyOwner;
-  ownerProcess?: string;
-  config?: Record<string, unknown>;
-}
 
 const CALENDAR_PROPERTIES: readonly PropSpec[] = [
   { key: "name", type: "title", owner: "user" },
@@ -144,18 +136,7 @@ export async function seedCalendarsInTransaction(
     ownerModuleId: CALENDARS_MODULE_ID,
     ownerProjectItemId: project.id,
   });
-  for (const spec of CALENDAR_PROPERTIES) {
-    // `name` is null like every built-in property of a system database; labels come from the catalog.
-    await propertiesStore.createProperty(client, {
-      databaseId: calendars.id,
-      key: spec.key,
-      name: null,
-      type: spec.type,
-      owner: spec.owner,
-      ownerProcess: spec.ownerProcess,
-      config: spec.config,
-    });
-  }
+  await createProps(client, calendars.id, CALENDAR_PROPERTIES);
   const relationDefinitionId = await createCalendarEventsRelation(client, calendars.id, eventsDatabaseId);
   requireAffectedRows(
     await client.query("UPDATE databases SET schema_locked = true WHERE id = $1", [calendars.id]),

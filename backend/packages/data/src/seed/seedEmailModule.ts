@@ -1,6 +1,5 @@
 import type { PoolClient } from "pg";
 import * as databasesStore from "../chokePoint/databasesStore.js";
-import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import {
   createRelationPropertyWithClient,
@@ -17,23 +16,11 @@ import {
   MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID,
   MAIL_REINDEX_PERSON_EMAILS_ACTION_ID,
 } from "../mail/personLinkingActions.js";
-import type { DatabaseRow, PropertyOwner, PropertyType } from "../types.js";
+import type { DatabaseRow } from "../types.js";
 import { EMAILS_MODULE_ID, FOLDERS_MODULE_ID, MAILBOXES_MODULE_ID, THREADS_MODULE_ID } from "./emailModuleKeys.js";
 import { COMPANIES_MODULE_ID, FILES_MODULE_ID, TASKS_MODULE_ID } from "./tenDatabaseKeys.js";
 import { SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS } from "./systemProjectAgentGuidance.js";
-
-// Every catalog option `s` becomes `{ key: s }`; see the copy in seedTenDatabases.ts.
-function selectConfig(options: string[]): Record<string, unknown> {
-  return { options: options.map((key) => ({ key })) };
-}
-
-interface PropSpec {
-  key: string;
-  name: string;
-  type: PropertyType;
-  owner?: PropertyOwner;
-  config?: Record<string, unknown>;
-}
+import { createProps, selectConfig } from "./propSpecs.js";
 
 async function createDb(
   client: PoolClient,
@@ -48,19 +35,6 @@ async function createDb(
     ownerModuleId,
     ownerProjectItemId,
   });
-}
-
-async function createProps(client: PoolClient, databaseId: string, specs: PropSpec[]): Promise<void> {
-  for (const spec of specs) {
-    await propertiesStore.createProperty(client, {
-      databaseId,
-      key: spec.key,
-      name: spec.name,
-      type: spec.type,
-      owner: spec.owner,
-      config: spec.config,
-    });
-  }
 }
 
 export async function createThreadsDatabase(
