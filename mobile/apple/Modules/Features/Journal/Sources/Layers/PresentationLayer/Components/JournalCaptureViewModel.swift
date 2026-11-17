@@ -1,0 +1,61 @@
+import Combine
+import CoreKit
+import Foundation
+
+/// Thin adapter between the capture row of the diary's Inbox and its shared screen model: republishes the state and
+/// forwards intents. A capture that went through bumps `captured`, so the row clears its text and the diary shows the
+/// day again.
+@MainActor
+final class JournalCaptureViewModel: ObservableObject {
+
+    // MARK: - Dependencies
+    private let model: any InboxCaptureScreenModel
+
+    // MARK: - Published Properties
+    @Published private(set) var state: InboxCaptureState
+    /// How many captures went through; the row and the diary react to each change.
+    @Published private(set) var captured = 0
+
+    // MARK: - Init
+    init(model: any InboxCaptureScreenModel) {
+        self.model = model
+        state = model.state
+    }
+
+    // MARK: - Methods
+    /// Applies shared state and effects until the screen's task is cancelled.
+    func observe() async {
+        await model.observe(
+            onState: { [weak self] in self?.state = $0 },
+            onEffect: { [weak self] effect in
+                switch effect {
+                case .captured: self?.captured += 1
+                }
+            }
+        )
+    }
+
+    func loadTypes() {
+        model.send(.loadTypes)
+    }
+
+    func pickType(_ typeId: String?) {
+        model.send(.pickType(typeId))
+    }
+
+    func attach(_ file: CaptureFile, source: InboxCaptureSource) {
+        model.send(.attach(filename: file.filename, mimeType: file.mimeType, base64: file.base64, source: source))
+    }
+
+    func removeAttachment() {
+        model.send(.removeAttachment)
+    }
+
+    func submit(text: String, day: String, time: String) {
+        model.send(.submit(text: text, day: day, time: time))
+    }
+
+    func dismissFailure() {
+        model.send(.dismissFailure)
+    }
+}

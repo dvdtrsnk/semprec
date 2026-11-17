@@ -1,3 +1,4 @@
+import CoreKit
 import SwiftUI
 import XCTest
 
@@ -17,7 +18,7 @@ final class SceneLifetimeTests: XCTestCase {
         weak var models: AnyObject?
         let window = try SceneWindow()
         do {
-            let scene = AppComposition()
+            let scene = AppComposition(models: SignedInModels())
             composition = scene
             models = scene.models
             try await window.show(AppScene(composition: scene))

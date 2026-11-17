@@ -798,6 +798,10 @@ function checkViewModelBridges(ctx) {
   const rule = "VM-BRIDGE";
   const found = [];
   const { module, baseClass, leaseType } = ctx.policy.viewModels;
+  // ViewModels whose screen the iOS app ships before an Android screen exists (the Apple-first ADR).
+  const appleOnlyViewModels = new Set(ctx.policy.viewModels.appleOnly ?? []);
+  // ViewModels the Android app still hosts and the Apple app has no screen for: they need no CoreKit bridge.
+  const androidOnlyViewModels = new Set(ctx.policy.viewModels.androidOnly ?? []);
 
   // A screen ViewModel extends the base class directly or through classes of the same module (an abstract
   // `ListViewModel : ScreenViewModel` and a concrete `ProfileViewModel : ListViewModel`); the concrete ones are hosted.
@@ -834,12 +838,16 @@ function checkViewModelBridges(ctx) {
       found.push(violation(rule, ...where, `${viewModel.name} has no ${viewModel.name}Test.kt in ${moduleDirectory(module)}/src/commonTest`));
     }
     const bridges = bridgeClasses.filter((declared) => storedType(declared.body, viewModel.name));
-    if (bridges.length !== 1) {
+    if (androidOnlyViewModels.has(viewModel.name)) {
+      for (const bridge of bridges) {
+        found.push(violation(rule, bridge.file, bridge.line, `${viewModel.name} is listed in viewModels.androidOnly but ${bridge.name} bridges it; remove the name from the list`));
+      }
+    } else if (bridges.length !== 1) {
       const names = bridges.map((bridge) => `${bridge.name} (${bridge.file}:${bridge.line})`);
       found.push(violation(rule, ...where, `${viewModel.name} has ${bridges.length} ${owner} bridges, exactly one must store it${names.length ? `: ${names.join(", ")}` : ""}`));
     }
     const typed = new RegExp(`:\\s*(?:[\\w.]+\\.)?${viewModel.name}\\b`);
-    if (!screens.some((screen) => typed.test(screen.parameters))) {
+    if (!appleOnlyViewModels.has(viewModel.name) && !screens.some((screen) => typed.test(screen.parameters))) {
       found.push(violation(rule, ...where, `no Android *Screen composable takes ${viewModel.name} as a parameter`));
     }
   }
@@ -1058,6 +1066,47 @@ function translated(localization) {
   return false;
 }
 
+/** The Android half of one `copy` entry: every listed key has an English and a Czech string, and no other string exists. */
+function checkAndroidCopy(ctx, entry, androidOnly, untranslatable) {
+  const rule = "COPY-PARITY";
+  const found = [];
+  const copyDirectories = androidResourceDirectories(ctx.tree, entry.android).filter((directory) => directory.everyBuild);
+  const primary = copyDirectories[0]?.res ?? `${moduleDirectory(entry.android)}/src/main/res`;
+  const res = copyDirectories.length > 1 ? copyDirectories.map((directory) => directory.res).join(" and ") : primary;
+  const values = mergedAndroidStrings(ctx.tree, copyDirectories, "values");
+  const czech = mergedAndroidStrings(ctx.tree, copyDirectories, "values-cs");
+  const expected = [...entry.keys, ...androidOnly].map((key) => key.replaceAll(".", "_"));
+  for (const name of expected) {
+    const english = values.get(name);
+    if (!english) {
+      found.push(violation(rule, `${primary}/values`, null, `${entry.android} lacks the string ${name}`));
+      continue;
+    }
+    if (english.blank) found.push(violation(rule, english.file, english.line, `${name} has an empty English value`));
+    const translation = czech.get(name);
+    if (!translation) found.push(violation(rule, english.file, english.line, `${name} has no Czech translation in values-cs of ${res}`));
+    else if (translation.blank) found.push(violation(rule, translation.file, translation.line, `${name} has an empty Czech translation`));
+  }
+  for (const name of untranslatable) {
+    const english = values.get(name);
+    if (!english) {
+      found.push(violation(rule, `${primary}/values`, null, `${entry.android} lacks the untranslatable string ${name}`));
+      continue;
+    }
+    if (english.translatable) found.push(violation(rule, english.file, english.line, `${name} is listed in androidUntranslatable but lacks translatable="false"`));
+    if (english.blank) found.push(violation(rule, english.file, english.line, `${name} has an empty value`));
+  }
+  for (const [name, string] of values) {
+    if (!expected.includes(name) && !untranslatable.includes(name)) {
+      found.push(violation(rule, string.file, string.line, `${name} is not a copy key of ${entry.android} in ${POLICY_FILE}`));
+    }
+  }
+  for (const [name, string] of czech) {
+    if (!values.has(name)) found.push(violation(rule, string.file, string.line, `${name} has no English value in values of ${res}`));
+  }
+  return found;
+}
+
 function checkCopy(ctx) {
   const rule = "COPY-PARITY";
   const found = [];
@@ -1065,43 +1114,17 @@ function checkCopy(ctx) {
   const appleResourceDirectories = [];
   for (const entry of ctx.policy.copy) {
     const androidOnly = entry.androidOnly ?? [];
+    const appleOnly = entry.appleOnly ?? [];
     const untranslatable = entry.androidUntranslatable ?? [];
-    androidModules.add(entry.android);
-    const copyDirectories = androidResourceDirectories(ctx.tree, entry.android).filter((directory) => directory.everyBuild);
-    const primary = copyDirectories[0]?.res ?? `${moduleDirectory(entry.android)}/src/main/res`;
-    const res = copyDirectories.length > 1 ? copyDirectories.map((directory) => directory.res).join(" and ") : primary;
-    const values = mergedAndroidStrings(ctx.tree, copyDirectories, "values");
-    const czech = mergedAndroidStrings(ctx.tree, copyDirectories, "values-cs");
-    const expected = [...entry.keys, ...androidOnly].map((key) => key.replaceAll(".", "_"));
-    for (const name of expected) {
-      const english = values.get(name);
-      if (!english) {
-        found.push(violation(rule, `${primary}/values`, null, `${entry.android} lacks the string ${name}`));
-        continue;
-      }
-      if (english.blank) found.push(violation(rule, english.file, english.line, `${name} has an empty English value`));
-      const translation = czech.get(name);
-      if (!translation) found.push(violation(rule, english.file, english.line, `${name} has no Czech translation in values-cs of ${res}`));
-      else if (translation.blank) found.push(violation(rule, translation.file, translation.line, `${name} has an empty Czech translation`));
+    const applePolicyKeys = [...entry.keys, ...appleOnly];
+    // An entry whose android is null is Apple-only copy: a screen the iOS app ships before its Android counterpart
+    // exists (docs/adr/2026-11-15-apple-first-delivery-of-the-mobile-design.md).
+    if (entry.android !== null) {
+      androidModules.add(entry.android);
+      found.push(...checkAndroidCopy(ctx, entry, androidOnly, untranslatable));
     }
-    for (const name of untranslatable) {
-      const english = values.get(name);
-      if (!english) {
-        found.push(violation(rule, `${primary}/values`, null, `${entry.android} lacks the untranslatable string ${name}`));
-        continue;
-      }
-      if (english.translatable) found.push(violation(rule, english.file, english.line, `${name} is listed in androidUntranslatable but lacks translatable="false"`));
-      if (english.blank) found.push(violation(rule, english.file, english.line, `${name} has an empty value`));
-    }
-    for (const [name, string] of values) {
-      if (!expected.includes(name) && !untranslatable.includes(name)) {
-        found.push(violation(rule, string.file, string.line, `${name} is not a copy key of ${entry.android} in ${POLICY_FILE}`));
-      }
-    }
-    for (const [name, string] of czech) {
-      if (!values.has(name)) found.push(violation(rule, string.file, string.line, `${name} has no English value in values of ${res}`));
-    }
-
+    // An entry whose apple is null is Android-only copy: a module whose screens the Apple app does not have.
+    if (entry.apple === null) continue;
     const spec = ctx.appleTargets.get(entry.apple);
     if (!spec) {
       found.push(violation(rule, POLICY_FILE, null, `copy names the Apple target ${entry.apple}, which apple.targets does not list`));
@@ -1126,7 +1149,7 @@ function checkCopy(ctx) {
       }
       for (const [key, value] of Object.entries(parsed?.strings ?? {})) appleKeys.set(key, { catalog, value });
     }
-    for (const key of entry.keys) {
+    for (const key of applePolicyKeys) {
       const string = appleKeys.get(key);
       if (!string) {
         found.push(violation(rule, catalogs[0] ?? resources, null, `${entry.apple} lacks the key ${key}`));
@@ -1136,7 +1159,7 @@ function checkCopy(ctx) {
       if (!translated(string.value?.localizations?.cs)) found.push(violation(rule, string.catalog, null, `${key} has no translated, non-empty Czech (cs) value`));
     }
     for (const [key, string] of appleKeys) {
-      if (!entry.keys.includes(key)) {
+      if (!applePolicyKeys.includes(key)) {
         const why = androidOnly.includes(key) ? "it is Android-only (androidOnly)" : `it is not a copy key of ${entry.apple} in ${POLICY_FILE}`;
         found.push(violation(rule, string.catalog, null, `has the key ${key}, but ${why}`));
       }

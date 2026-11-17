@@ -9,5 +9,8 @@
     <string name="detail_back">Back</string>
     <string name="failure_unavailable">The content is not available right now.</string>
     <string name="failure_invalidData">The content could not be read.</string>
+    <string name="failure_unauthorized">You are not signed in or not allowed to see this.</string>
+    <string name="failure_notFound">This could not be found.</string>
+    <string name="failure_rejected">The request was refused.</string>
     <string name="failure_unexpected">Something went wrong.</string>
 </resources>

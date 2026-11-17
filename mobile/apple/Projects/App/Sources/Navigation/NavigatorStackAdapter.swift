@@ -41,6 +41,10 @@ extension NavigatorStackAdapter: StackNavigating {
     func presentSheet(_ destination: AppDestination) {
         navigator.navigate(to: destination, method: .sheet)
     }
+
+    func dismissPresented() {
+        navigator.dismissPresentedViews()
+    }
 }
 
 // MARK: - Registration
