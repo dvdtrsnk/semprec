@@ -109,7 +109,8 @@ extension SharedMailAccountScreenModel {
             failingSince: account.failingSince,
             connectionLimit: Int(account.connectionLimit),
             connectionLimitApplies: account.connectionLimitApplies,
-            autonomousSendProjectCount: Int(account.autonomousSendProjectCount)
+            autonomousSendProjectCount: Int(account.autonomousSendProjectCount),
+            syncedMessageCount: account.syncedMessageCount?.intValue
         )
     }
 }

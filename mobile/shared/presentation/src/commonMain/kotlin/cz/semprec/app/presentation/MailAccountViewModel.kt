@@ -6,6 +6,7 @@ import cz.semprec.app.domain.MailRemovalImpact
 import cz.semprec.app.domain.MailboxRepository
 import cz.semprec.app.domain.RepositoryResult
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 
@@ -15,13 +16,15 @@ private const val MAX_CONNECTIONS = 15
 /**
  * One mailbox: its name and connection limit, which the person may change, and its removal. A removal first reads what
  * it would hide and waits for the person's answer; nothing is removed before that. A change that the server refuses
- * puts the old value back and raises [MailAccountState.actionFailed].
+ * puts the old value back and raises [MailAccountState.actionFailed]. While the server syncs the mailbox its status is
+ * read again, and only the status fields change, so a name being edited stays as it is.
  */
 class MailAccountViewModel internal constructor(
     private val mailboxId: String,
     private val mailboxes: MailboxRepository,
 ) : ScreenViewModel<MailAccountState, MailAccountAction, MailAccountEffect>(MailAccountState()) {
     private var loadJob: Job? = null
+    private var statusJob: Job? = null
 
     init {
         load()
@@ -45,6 +48,7 @@ class MailAccountViewModel internal constructor(
 
     private fun load() {
         loadJob?.cancel()
+        statusJob?.cancel()
         update { MailAccountState() }
         loadJob = viewModelScope.launch {
             val result = mailAttempt { mailboxes.mailbox(mailboxId) }
@@ -55,6 +59,26 @@ class MailAccountViewModel internal constructor(
                         it.copy(phase = MailAccountPhase.CONTENT, account = result.value.toDetail())
                     is RepositoryResult.Failure -> it.copy(phase = MailAccountPhase.ERROR, failure = result.kind)
                     null -> it.copy(phase = MailAccountPhase.ERROR, failure = null)
+                }
+            }
+            followSyncStatus()
+        }
+    }
+
+    /** A failed read changes nothing; the next one tries again. */
+    private fun followSyncStatus() {
+        statusJob?.cancel()
+        if (state.value.account?.status != MailAccountStatus.SYNCING) return
+        statusJob = viewModelScope.launch {
+            var syncing = true
+            while (syncing) {
+                delay(MAIL_SYNC_POLL_MILLIS)
+                val read = mailAttempt { mailboxes.mailbox(mailboxId) }
+                val fresh = (read as? RepositoryResult.Content)?.value?.toDetail()
+                ensureActive()
+                if (fresh != null) {
+                    update { it.copy(account = it.account?.withStatusOf(fresh)) }
+                    syncing = fresh.status == MailAccountStatus.SYNCING
                 }
             }
         }
@@ -124,6 +148,13 @@ class MailAccountViewModel internal constructor(
     }
 }
 
+private fun MailAccountDetail.withStatusOf(fresh: MailAccountDetail) = copy(
+    status = fresh.status,
+    lastSuccessfulSyncAt = fresh.lastSuccessfulSyncAt,
+    failingSince = fresh.failingSince,
+    syncedMessageCount = fresh.syncedMessageCount,
+)
+
 /** Puts back the fields of [previous] that [next] changed, and leaves what changed since alone. */
 private fun MailAccountDetail.restore(next: MailAccountDetail, previous: MailAccountDetail) = copy(
     name = if (name == next.name) previous.name else name,
@@ -142,6 +173,7 @@ private fun MailAccount.toDetail() = MailAccountDetail(
     connectionLimit = connectionLimit,
     connectionLimitApplies = connectionLimitApplies,
     autonomousSendProjectCount = autonomousSendProjectCount,
+    syncedMessageCount = syncedMessageCount,
 )
 
 private fun MailRemovalImpact.toItem() = MailRemovalImpactItem(messages, drafts, threads, attachmentsKept)

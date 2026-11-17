@@ -203,7 +203,7 @@ final class MailComposeAccountMappingTests: XCTestCase {
                 id: "m1", name: "Gmail", address: "me@gmail.com", provider: "gmail", syncMode: "imap",
                 status: .needsReauthorization, lastSuccessfulSyncAt: "2026-10-19T08:12:00Z",
                 failingSince: "2026-10-19T09:12:00Z", connectionLimit: 3, connectionLimitApplies: true,
-                autonomousSendProjectCount: 1
+                autonomousSendProjectCount: 1, syncedMessageCount: 42
             )
         )
         XCTAssertEqual(state.removal, .confirming)

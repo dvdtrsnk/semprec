@@ -163,7 +163,8 @@ extension XCTestCase {
                 failingSince: "2026-10-19T09:12:00Z",
                 connectionLimit: 3,
                 connectionLimitApplies: true,
-                autonomousSendProjectCount: 1
+                autonomousSendProjectCount: 1,
+                syncedMessageCount: 42
             ),
             removal: removal,
             impact: SharedSDK.MailRemovalImpactItem(messages: 120, drafts: 2, threads: 50, attachmentsKept: 7),

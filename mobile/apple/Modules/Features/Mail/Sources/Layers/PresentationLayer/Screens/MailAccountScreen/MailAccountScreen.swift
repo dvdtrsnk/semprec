@@ -81,6 +81,9 @@ private extension MailAccountScreen {
                     .accessibilityIdentifier(MailIdentifiers.accountName)
                 row("mail.account.sync", Text(verbatim: syncModeText(account.syncMode)))
                 row("mail.account.last", Text(verbatim: lastActivity(account)))
+                if let downloaded = account.syncedMessageCount {
+                    row("mail.account.downloaded", Text(downloaded, format: .number))
+                }
                 if account.connectionLimitApplies { connections(account) }
             }
             Section {

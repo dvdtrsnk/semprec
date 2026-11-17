@@ -39,6 +39,8 @@ public struct MailAccountDetail: Equatable, Sendable {
     public let connectionLimit: Int
     public let connectionLimitApplies: Bool
     public let autonomousSendProjectCount: Int
+    /// The messages downloaded so far while the first sync runs.
+    public let syncedMessageCount: Int?
 
     public init(
         id: String,
@@ -51,7 +53,8 @@ public struct MailAccountDetail: Equatable, Sendable {
         failingSince: String?,
         connectionLimit: Int,
         connectionLimitApplies: Bool,
-        autonomousSendProjectCount: Int
+        autonomousSendProjectCount: Int,
+        syncedMessageCount: Int? = nil
     ) {
         self.id = id
         self.name = name
@@ -64,6 +67,7 @@ public struct MailAccountDetail: Equatable, Sendable {
         self.connectionLimit = connectionLimit
         self.connectionLimitApplies = connectionLimitApplies
         self.autonomousSendProjectCount = autonomousSendProjectCount
+        self.syncedMessageCount = syncedMessageCount
     }
 }
 

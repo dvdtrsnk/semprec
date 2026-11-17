@@ -107,6 +107,7 @@ internal fun MailMailboxDto.toDomain() = MailAccount(
     connectionLimit = connectionLimit.value,
     connectionLimitApplies = connectionLimit.applies,
     autonomousSendProjectCount = autonomousSendProjectCount,
+    syncedMessageCount = syncedMessageCount,
 )
 
 internal fun MailFolderDto.toDomain() = MailFolder(id, name, specialPurpose, unreadCount, totalCount)
