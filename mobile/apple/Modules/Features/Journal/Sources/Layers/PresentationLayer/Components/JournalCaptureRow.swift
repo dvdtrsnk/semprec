@@ -77,7 +77,7 @@ private extension JournalCaptureRow {
 
     var typeMenu: some View {
         Menu {
-            Picker(selection: Binding(get: { viewModel.state.typeId }, set: viewModel.pickType)) {
+            Picker(selection: Binding(get: { viewModel.state.typeId }, set: { viewModel.pickType($0) })) {
                 Text("journal.capture.noType", bundle: .module).tag(String?.none)
                 ForEach(viewModel.state.types) { type in
                     Text(verbatim: "\(type.emoji) \(type.label)").tag(String?.some(type.id))
