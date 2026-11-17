@@ -1,11 +1,26 @@
+import { availableParallelism } from "node:os";
 import { fileURLToPath } from "node:url";
 import { configDefaults, defineConfig } from "vitest/config";
 
 /**
  * Integration tier: runs against one real ephemeral Postgres provisioned by `globalSetup`
  * (`packages/data/src/testSupport/globalSetup.ts`). Unit and e2e test files are excluded so no
- * file runs in more than one tier.
+ * file runs in more than one tier. Files run in parallel workers, each on its own database cloned from the
+ * migrated template (`workerDatabase.ts`).
  */
+
+/** `SEMPREC_TEST_WORKERS` pins the count; by default half the cores, at most 6, since Postgres needs the rest. */
+function integrationWorkers(): number {
+  const configured = process.env.SEMPREC_TEST_WORKERS;
+  if (configured !== undefined) {
+    const workers = Number(configured);
+    if (!Number.isInteger(workers) || workers < 1 || workers > 64) {
+      throw new Error(`SEMPREC_TEST_WORKERS is not a worker count between 1 and 64: ${configured}`);
+    }
+    return workers;
+  }
+  return Math.max(1, Math.min(6, Math.floor(availableParallelism() / 2)));
+}
 export default defineConfig({
   resolve: {
     alias: [
@@ -67,8 +82,12 @@ export default defineConfig({
     include: ["packages/*/src/**/*.test.ts", "services/*/src/**/*.test.ts"],
     exclude: [...configDefaults.exclude, "**/*.unit.test.ts", "**/*.e2e.test.ts"],
     globalSetup: ["./packages/data/src/testSupport/globalSetup.ts"],
-    // Sets SEMPREC_TENANT_SCOPE for each test file: `warn` for the files on the shrink-only list, `strict` otherwise.
-    setupFiles: ["./packages/data/src/testSupport/tenantScopeMode.ts"],
+    setupFiles: [
+      // Gives the file its worker's database and holds the cluster lock (shared, or exclusive for role changers).
+      "./packages/data/src/testSupport/workerDatabase.ts",
+      // Sets SEMPREC_TENANT_SCOPE for each test file: `warn` for the files on the shrink-only list, `strict` otherwise.
+      "./packages/data/src/testSupport/tenantScopeMode.ts",
+    ],
     // The value this vitest process was started with, read here before `globalSetup` runs, so that
     // `tenantScopeModeDefault.test.ts` can tell a developer override from a default that some setup step applied.
     provide: { explicitTenantScopeMode: process.env.SEMPREC_TENANT_SCOPE ?? null },
@@ -79,6 +98,7 @@ export default defineConfig({
     // Embedded Postgres cold starts and the heaviest fan-out cases take 10 to 20 s locally and more on hosted runners.
     testTimeout: 60_000,
     hookTimeout: 60_000,
-    fileParallelism: false,
+    fileParallelism: true,
+    maxWorkers: integrationWorkers(),
   },
 });

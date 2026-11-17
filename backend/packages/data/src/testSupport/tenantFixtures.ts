@@ -18,8 +18,17 @@ import { createPool, withTransaction } from "../db/pool.js";
 type TenantStatus = "provisioning" | "active" | "suspended" | "deleting";
 type RuntimeRole = "semprec_data" | "semprec_side";
 
-// Re-applied on every `createRuntimeRolePool` call because other test files set their own password on the roles.
-const RUNTIME_ROLE_PASSWORD = randomUUID();
+/**
+ * Roles are cluster-wide, so every worker of a run must apply the same password: globalSetup exports one per run.
+ * Re-applied on every `createRuntimeRolePool` call because a cluster-exclusive file may have set its own.
+ */
+function runtimeRolePassword(): string {
+  const password = process.env.TEST_RUNTIME_ROLE_PASSWORD;
+  if (!password) {
+    throw new Error("TEST_RUNTIME_ROLE_PASSWORD is not set — is vitest's globalSetup wired up?");
+  }
+  return password;
+}
 
 /** Exported by globalSetup. */
 export function getTenantZeroId(): string {
@@ -98,10 +107,11 @@ export async function createRuntimeRolePool(adminPool: Pool, role: RuntimeRole):
     throw new Error("TEST_DATABASE_URL is not set — is vitest.config.ts's globalSetup wired up?");
   }
   // `role` is a closed union and the password a UUID; ALTER ROLE accepts no bind parameters.
-  await adminPool.query(`ALTER ROLE ${role} WITH PASSWORD '${RUNTIME_ROLE_PASSWORD}'`);
+  const password = runtimeRolePassword();
+  await adminPool.query(`ALTER ROLE ${role} WITH PASSWORD '${password}'`);
   const url = new URL(baseUrl);
   url.username = role;
-  url.password = RUNTIME_ROLE_PASSWORD;
+  url.password = password;
   return createPool(url.toString());
 }
 

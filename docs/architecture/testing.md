@@ -18,7 +18,7 @@ implements. Mobile and web specifics live in their own skills and review rules.
   `it.each` / `describe.each` table, not copies of a test body. Repeated setup moves into a
   fixture in `testSupport/` rather than being re-written per file.
 - **Both sides of every permission check.** A check that refuses something is tested on the
-  refused path *and* on the allowed path, through the real entry point. A refusal-only test
+  refused path _and_ on the allowed path, through the real entry point. A refusal-only test
   still passes when the wiring that grants the allowed case is removed.
 - **Multi-tenant isolation is tested**, for every read and write path that crosses tenant data,
   through the one shared harness (see [Tenant isolation harness](#tenant-isolation-harness)).
@@ -36,11 +36,11 @@ Three tiers, selected by filename; a file belongs to exactly one. Configs are at
 `backend/vitest.e2e.config.ts`; `pnpm run test:unit|test:integration|test:e2e` in `backend/`
 runs them, and `pnpm run verify` runs all three plus lint, build and the static checks.
 
-| Tier        | Files            | Database                       | Tenant scope mode           |
-| ----------- | ---------------- | ------------------------------ | --------------------------- |
-| unit        | `*.unit.test.ts` | none; must not import any      | pinned `warn` in the config |
-| integration | `*.test.ts`      | one embedded Postgres per run  | per file, `strict` default  |
-| e2e         | `*.e2e.test.ts`  | same `globalSetup` as above    | pinned `warn` in the config |
+| Tier        | Files            | Database                                             | Tenant scope mode           |
+| ----------- | ---------------- | ---------------------------------------------------- | --------------------------- |
+| unit        | `*.unit.test.ts` | none; must not import any                            | pinned `warn` in the config |
+| integration | `*.test.ts`      | one embedded Postgres per run, a database per worker | per file, `strict` default  |
+| e2e         | `*.e2e.test.ts`  | same `globalSetup` as above                          | pinned `warn` in the config |
 
 - Unit files must not import anything that reaches Postgres, directly or through
   `testSupport/testDb.ts`.
@@ -48,8 +48,8 @@ runs them, and `pnpm run verify` runs all three plus lint, build and the static 
   real queue and database as a composition root does; they assert cross-module behaviour no
   single package's suite exercises.
 - All tiers resolve workspace packages to their TypeScript source through the config aliases.
-- Integration and e2e run with `fileParallelism: false` and `LOG_LEVEL=error` unless the
-  developer overrides it.
+- Integration runs files in parallel workers (see _Parallel integration workers_); e2e runs
+  with `fileParallelism: false`. Both use `LOG_LEVEL=error` unless the developer overrides it.
 
 ### Global setup
 
@@ -57,9 +57,13 @@ runs them, and `pnpm run verify` runs all three plus lint, build and the static 
 integration and e2e tiers:
 
 - starts one `embedded-postgres` instance on a free port (`SEMPREC_TEST_PG_PORT` pins one),
-  UTF8 encoding, `max_locks_per_transaction=1024`, and sweeps stale `semprec-pg-*` directories;
-- creates `semprec_test`, exports `TEST_DATABASE_URL` and a deterministic test-only
-  `CREDENTIALS_MASTER_KEY`;
+  UTF8 encoding, `max_locks_per_transaction=1024`, `max_connections=500`, durability off
+  (`fsync`, `synchronous_commit`, `full_page_writes`: the cluster is discarded after the run),
+  and sweeps stale `semprec-pg-*` directories;
+- creates and migrates `semprec_test`, exports `TEST_DATABASE_URL` (used directly by e2e),
+  `TEST_TEMPLATE_DATABASE`, `TEST_ADMIN_DATABASE_URL`, one runtime-role password for the run
+  (`TEST_RUNTIME_ROLE_PASSWORD`, applied by `createRuntimeRolePool`) and a deterministic
+  test-only `CREDENTIALS_MASTER_KEY`;
 - runs the same schema steps, in the same order, as `backend/packages/data/src/db/runMigrationsCli.ts`
   (migrations, host-asset activation, queue schema and grants, tenant-scoped steps on a
   `semprec_data` pool). A step added to the CLI is added here too;
@@ -69,6 +73,22 @@ integration and e2e tiers:
 
 `resetDatabase(pool)` (`testSupport/testDb.ts`) truncates the schema and removes every tenant
 except tenant zero, which keeps its id for the whole run.
+
+### Parallel integration workers
+
+`testSupport/workerDatabase.ts` is the first integration `setupFiles` entry:
+
+- each worker (`VITEST_POOL_ID`) clones `semprec_test_w<id>` from the migrated template once
+  and points `TEST_DATABASE_URL` at it, so files in different workers never share tables;
+  files within one worker still share its database and call `resetDatabase` as before;
+- every file holds a cluster-wide advisory lock for its whole run: shared normally, exclusive
+  for the files in `testSupport/clusterExclusiveFiles.json`, which change roles or role
+  passwords every worker sees. `workerDatabaseConfig.unit.test.ts` keeps that list equal to the
+  integration files that contain such a statement;
+- `SEMPREC_TEST_WORKERS` pins the worker count; the default is half the cores, at most 6.
+
+A file that changes other cluster-wide state (a role, `ALTER SYSTEM`) belongs on the exclusive
+list; scratch databases with unique names and terminating one's own backends do not.
 
 ### Tenant scope mode per file
 
@@ -91,7 +111,7 @@ Production runs `SEMPREC_TENANT_SCOPE=strict`: a data call outside a tenant scop
 ## What a test asserts
 
 - **Failure paths assert what did not happen.** On a refusal or failure, assert the error
-  *and* the absence of side effects: no row written, no job enqueued, no notification, no
+  _and_ the absence of side effects: no row written, no job enqueued, no notification, no
   realtime event.
 - **Success paths assert exact results**: exact counts and exact values routed, not a delta of
   a running total, and not "at least one".

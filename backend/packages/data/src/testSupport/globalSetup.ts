@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -41,6 +42,9 @@ async function choosePort(): Promise<number> {
   });
 }
 
+/** Migrated once per run; integration workers clone it, so nothing may stay connected to it after setup. */
+const TEMPLATE_DATABASE = "semprec_test";
+
 /** vitest globalSetup: one embedded Postgres for the whole run. */
 export default async function setup(): Promise<() => Promise<void>> {
   preserveFailingExitCode();
@@ -78,9 +82,22 @@ export default async function setup(): Promise<() => Promise<void>> {
     persistent: false,
     // ICU collations need UTF8; initdb picks SQL_ASCII on a C-locale host.
     initdbFlags: ["--encoding=UTF8"],
-    // `resetDatabase` truncates every table and drops `items_p_*` partitions in one transaction; the default 64
-    // lock slots run out under concurrent test files.
-    postgresFlags: ["-c", "max_locks_per_transaction=1024"],
+    postgresFlags: [
+      // `resetDatabase` truncates every table and drops `items_p_*` partitions in one transaction; the default 64
+      // lock slots run out under concurrent test files.
+      "-c",
+      "max_locks_per_transaction=1024",
+      // Every worker has its own database and pools; the default 100 connections run out with several workers.
+      "-c",
+      "max_connections=500",
+      // The cluster is thrown away after the run, so durability buys nothing and costs a flush per commit.
+      "-c",
+      "fsync=off",
+      "-c",
+      "synchronous_commit=off",
+      "-c",
+      "full_page_writes=off",
+    ],
   });
 
   async function removeDatabaseDir(): Promise<void> {
@@ -117,7 +134,7 @@ export default async function setup(): Promise<() => Promise<void>> {
     let bootstrapFailure: { error: unknown } | undefined;
     try {
       await bootstrap.connect();
-      await bootstrap.query('CREATE DATABASE "semprec_test"');
+      await bootstrap.query(`CREATE DATABASE "${TEMPLATE_DATABASE}"`);
     } catch (error) {
       bootstrapFailure = { error };
     }
@@ -133,8 +150,13 @@ export default async function setup(): Promise<() => Promise<void>> {
     }
     if (bootstrapFailure) throw bootstrapFailure.error;
 
-    const connectionString = `postgresql://postgres:postgres@127.0.0.1:${port}/semprec_test`;
+    const connectionString = `postgresql://postgres:postgres@127.0.0.1:${port}/${TEMPLATE_DATABASE}`;
+    // The e2e tier uses this database directly; integration workers clone it (`workerDatabase.ts`).
     process.env.TEST_DATABASE_URL = connectionString;
+    process.env.TEST_TEMPLATE_DATABASE = TEMPLATE_DATABASE;
+    process.env.TEST_ADMIN_DATABASE_URL = `postgresql://postgres:postgres@127.0.0.1:${port}/postgres`;
+    // Roles are cluster-wide, so all workers share one runtime-role password (`createRuntimeRolePool`).
+    process.env.TEST_RUNTIME_ROLE_PASSWORD = randomUUID();
     // SEMPREC_TENANT_SCOPE is chosen per test file by `tenantScopeMode.ts`; the e2e config pins `warn`.
     // Deterministic test-only credentials key.
     process.env.CREDENTIALS_MASTER_KEY ??= Buffer.alloc(32, 7).toString("base64");
