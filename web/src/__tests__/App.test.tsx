@@ -8,6 +8,7 @@ import type { AdminOperations } from "../api/adminOperations.js";
 import type { AccountOperations } from "../api/accountOperations.js";
 import type { InvitationOperations } from "../api/invitationOperations.js";
 import { createFakeOperations } from "../test/fakeOperations.js";
+import { createViewRegistry } from "../views/viewRegistry.js";
 import { App } from "../App.js";
 
 const USER: SessionUser = {
@@ -67,6 +68,7 @@ function renderApp({
     <App
       viewId="view-1"
       operations={operations}
+      registry={createViewRegistry()}
       auth={auth}
       sessionEvents={sessionEvents}
       setup={setup}

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type RefObject } from "react";
 import { EmptyState, ErrorState, LoadingState } from "../../components/StateViews.js";
 import { useTranslate } from "../../i18n/index.js";
-import type { GenericOperations, Item } from "../../api/genericOperations.js";
+import { toOperationError, type GenericOperations, type Item } from "../../api/genericOperations.js";
+import type { MailDraftOperations } from "../../api/mailDraftOperations.js";
 import type { ViewRendererProps } from "../viewRegistry.js";
 import {
   ARCHIVE_FOLDER_PURPOSE,
@@ -16,19 +17,20 @@ import {
 } from "./config.js";
 import { loadFolderMailboxes, loadMailboxes } from "./accounts.js";
 import { ComposeWindow, InlineCompose } from "./ComposeWindow.js";
-import { formatAddress } from "./addresses.js";
 import {
   aliasOptions,
+  closeCompose,
   defaultFromAddress,
+  findAlias,
   newCompose,
-  replyCompose,
   saveComposeDraft,
   sendCompose,
+  startReplyCompose,
+  switchReplyMode,
   type AliasOption,
   type ComposeMode,
   type ComposeState,
 } from "./compose.js";
-import { loadMessageEnvelope, type MessageEnvelope } from "./mailOperations.js";
 import { resolveShortcut } from "./keyboard.js";
 import { moveMessages, movedCursor, nextCursorAfterRemoval, setMessageFlag, type TriageResult } from "./triage.js";
 import { useAsyncResource } from "./useAsyncResource.js";
@@ -272,7 +274,9 @@ interface ReadingPaneProps {
   messageId: string | null;
   aliases: readonly AliasOption[];
   reply: ComposeState | null;
-  onStartReply: (mode: Exclude<ComposeMode, "new">, message: Item, envelope: MessageEnvelope) => void;
+  /** A reply being started on this message, or the reason starting one failed. */
+  replyStart: ReplyStart | null;
+  onStartReply: (mode: Exclude<ComposeMode, "new">, message: Item) => void;
   composeHandlers: {
     onChange: (patch: Partial<ComposeState>) => void;
     onSave: () => void;
@@ -281,11 +285,11 @@ interface ReadingPaneProps {
   };
 }
 
+type ReplyStart = { status: "starting" } | { status: "failed"; message: string };
+
 /**
- * The message being read, with its reply beneath it. The envelope is loaded alongside the
- * message, since that — not the derived `sender`/`recipients` text — is what a reply-all is
- * built from; a message the mail module has no envelope row for still replies, from what its
- * display fields say (see mailOperations.ts).
+ * The message being read, with its reply beneath it. From and To are the message's own display
+ * properties; a reply's recipients are the backend's to compute when it creates the reply draft.
  */
 function ReadingPane({
   operations,
@@ -293,24 +297,24 @@ function ReadingPane({
   messageId,
   aliases,
   reply,
+  replyStart,
   onStartReply,
   composeHandlers,
 }: ReadingPaneProps) {
   const t = useTranslate();
   const { resource, reload } = useAsyncResource(async () => {
     if (!messageId) return null;
-    const message = await operations.getItem(databaseId, messageId);
-    if (!message) return null;
-    return { message, envelope: await loadMessageEnvelope(operations, databaseId, message) };
+    return operations.getItem(databaseId, messageId);
   }, [databaseId, messageId]);
 
   if (!messageId) return <EmptyState message={t("mailbox.message.none")} />;
   if (resource.status === "loading") return <LoadingState />;
   if (resource.status === "failed") return <ErrorState error={resource.error} onRetry={reload} />;
 
-  const loaded = resource.value;
-  if (!loaded) return <EmptyState message={t("mailbox.message.none")} />;
-  const { message, envelope } = loaded;
+  const message = resource.value;
+  if (!message) return <EmptyState message={t("mailbox.message.none")} />;
+  // Frozen while a reply is being started or switched, so a second click cannot race the first.
+  const replyBusy = replyStart?.status === "starting" || (reply !== null && reply.status !== "editing");
 
   return (
     <article className="reading-pane">
@@ -327,14 +331,24 @@ function ReadingPane({
         <p className="reading-pane__no-aliases">{t("mailbox.compose.noAliases")}</p>
       ) : (
         <div className="reading-pane__actions">
-          <button type="button" className="button" onClick={() => onStartReply("reply", message, envelope)}>
+          <button type="button" className="button" disabled={replyBusy} onClick={() => onStartReply("reply", message)}>
             {t("mailbox.compose.reply")}
           </button>
-          <button type="button" className="button" onClick={() => onStartReply("replyAll", message, envelope)}>
+          <button
+            type="button"
+            className="button"
+            disabled={replyBusy}
+            onClick={() => onStartReply("replyAll", message)}
+          >
             {t("mailbox.compose.replyAll")}
           </button>
         </div>
       )}
+      {replyStart?.status === "failed" ? (
+        <p className="compose__error" role="alert">
+          {t("mailbox.compose.error.failed", { message: replyStart.message })}
+        </p>
+      ) : null}
       {reply ? <InlineCompose state={reply} aliases={aliases} {...composeHandlers} /> : null}
     </article>
   );
@@ -423,10 +437,12 @@ function MessagesPane({
 function MailboxPanes({
   config,
   operations,
+  mailDrafts,
   databaseId,
 }: {
   config: MailboxConfig;
   operations: GenericOperations;
+  mailDrafts: MailDraftOperations;
   databaseId: string;
 }) {
   const t = useTranslate();
@@ -442,6 +458,7 @@ function MailboxPanes({
   // kept per message, so returning to a thread returns to the reply half-written in it.
   const [compose, setCompose] = useState<ComposeState | null>(null);
   const [replies, setReplies] = useState<Record<string, ComposeState>>({});
+  const [replyStarts, setReplyStarts] = useState<Record<string, ReplyStart>>({});
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
 
   const { resource, reload } = useAsyncResource<MailboxData>(async () => {
@@ -690,11 +707,23 @@ function MailboxPanes({
       apply({ ...state, status: action === "save" ? "saving" : "sending", error: null });
       const next =
         action === "save"
-          ? await saveComposeDraft(operations, state, aliases)
-          : await sendCompose(operations, state, aliases);
+          ? await saveComposeDraft(mailDrafts, state, aliases)
+          : await sendCompose(mailDrafts, state, aliases);
       apply(next);
     },
-    [operations, aliases],
+    [mailDrafts, aliases],
+  );
+
+  // Closing may discard the draft a started reply was created as; a refused discard keeps the
+  // surface open with the refusal, rather than leaving a draft behind unannounced.
+  const runClose = useCallback(
+    async (state: ComposeState, apply: (next: ComposeState) => void, remove: () => void) => {
+      if (state.draft && !state.kept) apply({ ...state, status: "discarding", error: null });
+      const next = await closeCompose(mailDrafts, state);
+      if (next) apply(next);
+      else remove();
+    },
+    [mailDrafts],
   );
 
   const applyCompose = useCallback(
@@ -733,28 +762,42 @@ function MailboxPanes({
   }, [aliases, contextMailboxItemId]);
 
   const startReply = useCallback(
-    (mode: Exclude<ComposeMode, "new">, message: Item, envelope: MessageEnvelope) => {
-      const sender = envelope.envelope.from ? formatAddress(envelope.envelope.from) : (text(message, "sender") ?? "");
-      setReplies((current) => {
-        const derived = replyCompose({
-          mode,
-          message,
-          envelope,
-          aliases,
-          contextMailboxItemId,
-          attribution: t("mailbox.compose.attribution", { sender }),
+    async (mode: Exclude<ComposeMode, "new">, message: Item) => {
+      const input = {
+        mode,
+        message,
+        aliases,
+        contextMailboxItemId,
+        attribution: t("mailbox.compose.attribution", { sender: text(message, "sender") ?? "" }),
+      };
+      const existing = replies[message.id];
+      // Switching between Reply and Reply to all on a message already being answered is a
+      // change of who it goes to, and nothing else: the body, the subject and the chosen alias
+      // stay exactly as they are.
+      if (existing) {
+        if (existing.mode === mode) return;
+        const apply = applyReply(message.id);
+        apply({ ...existing, status: "saving", error: null });
+        apply(await switchReplyMode(mailDrafts, existing, input));
+        return;
+      }
+
+      const mailboxItemId = findAlias(aliases, defaultFromAddress({ aliases, contextMailboxItemId }))?.mailboxItemId;
+      if (!mailboxItemId) return;
+      setReplyStarts((current) => ({ ...current, [message.id]: { status: "starting" } }));
+      try {
+        const started = await startReplyCompose(mailDrafts, { ...input, mailboxItemId });
+        setReplies((current) => ({ ...current, [message.id]: started }));
+        setReplyStarts((current) => {
+          const { [message.id]: _started, ...rest } = current;
+          return rest;
         });
-        const existing = current[message.id];
-        // Switching between Reply and Reply to all on a message already being answered is a
-        // change of who it goes to, and nothing else: the body, the subject, the chosen alias
-        // and the draft the content may already be saved as all stay exactly as they are.
-        const next = existing
-          ? { ...existing, mode, to: derived.to, cc: derived.cc, showCopies: existing.showCopies || derived.showCopies }
-          : derived;
-        return { ...current, [message.id]: next };
-      });
+      } catch (error) {
+        const failure: ReplyStart = { status: "failed", message: toOperationError(error).message };
+        setReplyStarts((current) => ({ ...current, [message.id]: failure }));
+      }
     },
-    [aliases, contextMailboxItemId, t],
+    [aliases, contextMailboxItemId, t, replies, applyReply, mailDrafts],
   );
 
   const reply = messageId ? (replies[messageId] ?? null) : null;
@@ -766,12 +809,14 @@ function MailboxPanes({
       onSave: () => void runCompose(reply, "save", apply),
       onSend: () => void runCompose(reply, "send", apply),
       onClose: () =>
-        setReplies((current) => {
-          const { [messageId]: _closed, ...rest } = current;
-          return rest;
-        }),
+        void runClose(reply, apply, () =>
+          setReplies((current) => {
+            const { [messageId]: _closed, ...rest } = current;
+            return rest;
+          }),
+        ),
     };
-  }, [messageId, reply, applyReply, runCompose]);
+  }, [messageId, reply, applyReply, runCompose, runClose]);
 
   return (
     <div className="mailbox" data-layout={isNarrow ? "single-pane" : "three-pane"} data-pane={pane}>
@@ -840,7 +885,8 @@ function MailboxPanes({
             messageId={messageId}
             aliases={aliases}
             reply={reply}
-            onStartReply={startReply}
+            replyStart={messageId ? (replyStarts[messageId] ?? null) : null}
+            onStartReply={(mode, message) => void startReply(mode, message)}
             composeHandlers={
               replyHandlers ?? { onChange: () => {}, onSave: () => {}, onSend: () => {}, onClose: () => {} }
             }
@@ -855,7 +901,7 @@ function MailboxPanes({
           onChange={(patch) => setCompose({ ...compose, ...patch })}
           onSave={() => void runCompose(compose, "save", applyCompose)}
           onSend={() => void runCompose(compose, "send", applyCompose)}
-          onClose={() => setCompose(null)}
+          onClose={() => void runClose(compose, applyCompose, () => setCompose(null))}
         />
       ) : null}
     </div>
@@ -877,11 +923,16 @@ function MailboxPanes({
  * Compose (issue #98) adds two independent surfaces — a floating, minimizable window and the
  * reply inside the thread being read — both holding their content here rather than in the form,
  * so minimizing, reading another message or a rejected send never costs the user what they
- * typed. Recipients and the From default come from the stored envelope and the registered
- * aliases (compose.ts); saving and sending are the mail module's named operations
- * (mailOperations.ts), the only two calls in this view that are not generic reads or writes.
+ * typed. A reply is created by the mail module's draft routes from the message it answers, the
+ * From dropdown offers the registered aliases (compose.ts), and saving, sending and discarding
+ * go through the same draft routes (`MailDraftOperations`) — the only calls in this view that
+ * are not generic reads or writes.
  */
-export function MailboxClient({ view, operations }: ViewRendererProps) {
+export function MailboxClient({
+  view,
+  operations,
+  mailDrafts,
+}: ViewRendererProps & { mailDrafts: MailDraftOperations }) {
   const t = useTranslate();
   const config = useMemo(() => parseMailboxConfig(view.config), [view.config]);
 
@@ -892,7 +943,7 @@ export function MailboxClient({ view, operations }: ViewRendererProps) {
       </div>
     );
   }
-  return <MailboxPanes config={config} operations={operations} databaseId={view.databaseId} />;
+  return <MailboxPanes config={config} operations={operations} mailDrafts={mailDrafts} databaseId={view.databaseId} />;
 }
 
 export const MAILBOX_CLIENT_COMPONENT = "mailboxClient";

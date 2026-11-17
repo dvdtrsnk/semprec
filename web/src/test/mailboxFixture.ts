@@ -30,9 +30,10 @@ export const mailboxView: View = {
 
 /**
  * One mailbox with an Inbox (three messages, two unread) and empty Archive, Trash, Drafts and
- * Sent folders. The mailbox registers two sending aliases, and the first message carries a
- * stored envelope (a Cc, and delivery to the second alias); the others carry none, which is
- * what a message ingested before the mail metadata existed looks like.
+ * Sent folders. The mailbox registers two sending aliases. The first message has mail metadata, so
+ * the backend can prefill a reply to it (delivered to the second alias, with a Cc on the original);
+ * the others have none, which is what a message ingested before the mail metadata existed looks
+ * like — the backend refuses to start a reply to those.
  */
 export function createMailboxBackend(): FakeBackend {
   return {
@@ -112,23 +113,25 @@ export function createMailboxBackend(): FakeBackend {
       emailsDatabaseId: EMAILS_DATABASE_ID,
       foldersDatabaseId: FOLDERS_DATABASE_ID,
       folderRelationKey: "folder",
-      envelopes: {
+      replySources: {
         "email-1": {
-          envelope: {
-            from: { name: "Billing", address: "billing@example.com" },
-            to: [{ address: ALIAS_ADDRESS }, { name: "Ada", address: "ada@example.com" }],
-            cc: [{ address: "books@example.com" }],
-            bcc: [],
-          },
-          deliveredToAddress: ALIAS_ADDRESS,
-          messageId: "<invoice-1@example.com>",
-          inReplyTo: null,
-          references: ["<thread-root@example.com>"],
+          from: ALIAS_ADDRESS,
+          replyTo: [{ name: "Billing", address: "billing@example.com" }],
+          replyAllTo: [
+            { name: "Billing", address: "billing@example.com" },
+            { name: "Ada", address: "ada@example.com" },
+            { name: "", address: "books@example.com" },
+          ],
+          subject: "Re: Invoice for March",
+          quote: "On 2 March 2026, Billing wrote:\n> Attached.",
+          threadId: "thread-invoice",
         },
       },
       rejectSend: null,
-      sent: [],
       drafts: [],
+      discarded: [],
+      sent: [],
+      calls: [],
     },
   };
 }

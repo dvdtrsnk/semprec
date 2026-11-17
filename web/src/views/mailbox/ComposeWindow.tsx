@@ -41,17 +41,17 @@ function ComposeFields({ state, aliases, onChange, onSave, onSend, onClose }: Co
   const t = useTranslate();
   const ids = useId();
   const field = (name: string) => `${ids}-${name}`;
-  // The fields are frozen while a save or send is in flight: the state that comes back is the
-  // one that was submitted, so accepting edits meanwhile would quietly discard them.
-  const busy = state.status === "saving" || state.status === "sending";
+  // The fields are frozen while a save, send, discard or reply switch is in flight: the state that
+  // comes back is the one that was submitted, so accepting edits meanwhile would quietly discard them.
+  const busy = state.status !== "editing";
 
   return (
     <div className="compose__body">
       <div className="compose__field">
         <label htmlFor={field("from")}>{t("mailbox.compose.from")}</label>
-        {/* A plain dropdown over the registered aliases — the same list the backend's send
-            path validates the From address against, so an address it would reject is not
-            offerable here in the first place. */}
+        {/* A plain dropdown over the registered aliases — the same list the backend validates a
+            draft's From address against, so an address it would reject is not offerable here
+            in the first place. */}
         <select
           id={field("from")}
           value={state.fromAddress}
@@ -139,12 +139,11 @@ function ComposeFields({ state, aliases, onChange, onSave, onSend, onClose }: Co
         <button type="button" className="button" onClick={onSend} disabled={busy}>
           {state.status === "sending" ? t("mailbox.compose.sending") : t("mailbox.compose.send")}
         </button>
-        {/* `email.draft.create` is create-only, so a session saves one draft; what is typed
-            after that stays here and is written onto that draft by the send itself. */}
-        <button type="button" className="button" onClick={onSave} disabled={busy || state.draftItemId !== null}>
+        {/* The first save creates the draft; every later one updates it with what changed. */}
+        <button type="button" className="button" onClick={onSave} disabled={busy}>
           {state.status === "saving" ? t("mailbox.compose.saving") : t("mailbox.compose.save")}
         </button>
-        {state.draftItemId ? (
+        {state.kept && state.draft ? (
           <span className="compose__saved" role="status">
             {t("mailbox.compose.saved")}
           </span>

@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createFakeOperations, type FakeBackend } from "../../../test/fakeOperations.js";
-import { ALIAS_ADDRESS, PRIMARY_ADDRESS, createMailboxBackend } from "../../../test/mailboxFixture.js";
+import { createFakeMailDrafts } from "../../../test/fakeMailDrafts.js";
+import { ALIAS_ADDRESS, MAILBOX_ITEM_ID, PRIMARY_ADDRESS, createMailboxBackend } from "../../../test/mailboxFixture.js";
 import { renderMailbox, setViewport } from "../../../test/renderMailbox.js";
 
 function composeWindow(): HTMLElement {
@@ -17,7 +18,7 @@ async function openMessage(subject: string): Promise<void> {
 async function startReply(mode: "Reply" | "Reply to all"): Promise<HTMLElement> {
   const message = await screen.findByRole("region", { name: "Message" });
   await userEvent.click(await within(message).findByRole("button", { name: mode }));
-  return screen.getByRole("region", { name: mode });
+  return screen.findByRole("region", { name: mode });
 }
 
 function field(container: HTMLElement, label: string): HTMLInputElement {
@@ -26,12 +27,12 @@ function field(container: HTMLElement, label: string): HTMLInputElement {
 
 async function renderReady(backend: FakeBackend) {
   const operations = createFakeOperations(backend);
-  renderMailbox(operations);
+  renderMailbox(operations, { mailDrafts: createFakeMailDrafts(backend) });
   await screen.findByRole("button", { name: /Inbox/ });
   return operations;
 }
 
-describe("mailbox compose (issue #98)", () => {
+describe("mailbox compose", () => {
   beforeEach(() => setViewport(false));
 
   afterEach(() => {
@@ -79,8 +80,9 @@ describe("mailbox compose (issue #98)", () => {
   });
 
   describe("reply", () => {
-    it("addresses the sender and defaults From to the alias the message was delivered to", async () => {
-      await renderReady(createMailboxBackend());
+    it("opens on the draft the backend created, from the alias it was delivered to", async () => {
+      const backend = createMailboxBackend();
+      await renderReady(backend);
 
       await openMessage("Invoice for March");
       const reply = await startReply("Reply");
@@ -88,30 +90,51 @@ describe("mailbox compose (issue #98)", () => {
       expect(field(reply, "To").value).toBe("Billing <billing@example.com>");
       expect(field(reply, "Subject").value).toBe("Re: Invoice for March");
       expect(field(reply, "Message").value).toContain("> Attached.");
-      // The stored envelope says this one was delivered to the second alias, not the primary.
       expect(field(reply, "From").value).toBe(ALIAS_ADDRESS);
+      expect(backend.mail?.calls).toEqual([
+        { kind: "create", request: { mailboxId: MAILBOX_ITEM_ID, mode: "reply", sourceEmailId: "email-1", body: "" } },
+      ]);
     });
 
-    it("derives reply-all from the structured envelope, not from the displayed recipients", async () => {
+    it("addresses everyone the backend computes for a reply-all", async () => {
       await renderReady(createMailboxBackend());
 
       await openMessage("Invoice for March");
       const reply = await startReply("Reply to all");
 
-      // The row only displays `me@example.com`; To and Cc come from the envelope, minus the
-      // user's own alias.
-      expect(field(reply, "To").value).toBe("Billing <billing@example.com>, Ada <ada@example.com>");
-      expect(field(reply, "Cc").value).toBe("books@example.com");
+      expect(field(reply, "To").value).toBe("Billing <billing@example.com>, Ada <ada@example.com>, books@example.com");
     });
 
-    it("still replies to a message the mail module has no envelope for", async () => {
-      await renderReady(createMailboxBackend());
+    it("still replies to a message the backend has no metadata for, from its display text", async () => {
+      const backend = createMailboxBackend();
+      await renderReady(backend);
 
       await openMessage("Lunch?");
       const reply = await startReply("Reply");
 
       expect(field(reply, "To").value).toBe("friend@example.com");
       expect(field(reply, "From").value).toBe(PRIMARY_ADDRESS);
+      expect(field(reply, "Message").value).toContain("> Thursday?");
+      expect(backend.mail?.drafts).toEqual([]);
+    });
+
+    it("shows the backend's refusal when a reply cannot be started", async () => {
+      const backend = createMailboxBackend();
+      const operations = createFakeOperations(backend);
+      const drafts = createFakeMailDrafts(backend);
+      renderMailbox(operations, {
+        mailDrafts: {
+          ...drafts,
+          create: async () => Promise.reject(new Error("The mailbox has no address to send from")),
+        },
+      });
+
+      await openMessage("Invoice for March");
+      const message = await screen.findByRole("region", { name: "Message" });
+      await userEvent.click(within(message).getByRole("button", { name: "Reply" }));
+
+      expect(await within(message).findByRole("alert")).toHaveTextContent("The mailbox has no address to send from");
+      expect(screen.queryByRole("region", { name: "Reply" })).toBeNull();
     });
 
     it("lets the user override the default sender", async () => {
@@ -125,16 +148,19 @@ describe("mailbox compose (issue #98)", () => {
     });
 
     it("widens a half-written reply to everyone without discarding what was typed", async () => {
-      await renderReady(createMailboxBackend());
+      const backend = createMailboxBackend();
+      await renderReady(backend);
 
       await openMessage("Invoice for March");
       const reply = await startReply("Reply");
       await userEvent.type(field(reply, "Message"), "On it. ");
 
       const widened = await startReply("Reply to all");
-      expect(field(widened, "To").value).toBe("Billing <billing@example.com>, Ada <ada@example.com>");
-      expect(field(widened, "Cc").value).toBe("books@example.com");
+      expect(field(widened, "To").value).toBe(
+        "Billing <billing@example.com>, Ada <ada@example.com>, books@example.com",
+      );
       expect(field(widened, "Message").value).toContain("On it. ");
+      expect(backend.mail?.discarded).toEqual(["draft-1"]);
     });
 
     it("keeps a half-written reply while another message is read", async () => {
@@ -152,10 +178,22 @@ describe("mailbox compose (issue #98)", () => {
       const restored = await screen.findByRole("region", { name: "Reply" });
       expect(field(restored, "Message").value).toContain("Thanks, ");
     });
+
+    it("discards the started reply's draft when it is closed unsaved", async () => {
+      const backend = createMailboxBackend();
+      await renderReady(backend);
+
+      await openMessage("Invoice for March");
+      const reply = await startReply("Reply");
+      await userEvent.click(within(reply).getByRole("button", { name: "Close" }));
+
+      await waitFor(() => expect(screen.queryByRole("region", { name: "Reply" })).toBeNull());
+      expect(backend.mail?.discarded).toEqual(["draft-1"]);
+    });
   });
 
   describe("saving and sending", () => {
-    it("saves through email.draft.create, into the Drafts folder", async () => {
+    it("creates the draft on the first save, into the Drafts folder", async () => {
       const backend = createMailboxBackend();
       await renderReady(backend);
 
@@ -163,45 +201,51 @@ describe("mailbox compose (issue #98)", () => {
       await userEvent.type(field(composeWindow(), "Subject"), "Later");
       await userEvent.click(within(composeWindow()).getByRole("button", { name: "Save draft" }));
 
-      await waitFor(() => expect(backend.mail?.drafts).toEqual(["draft-1"]));
+      expect(await within(composeWindow()).findByRole("status")).toHaveTextContent("Saved as a draft");
+      expect(backend.mail?.drafts.map((draft) => [draft.id, draft.subject])).toEqual([["draft-1", "Later"]]);
       expect(backend.relations).toContainEqual({
         property: "folder",
         itemId: "draft-1",
         targetItemId: "folder-drafts",
       });
-      // Create-only draft surface: the window says the draft exists rather than saving a second one.
-      expect(within(composeWindow()).getByRole("button", { name: "Save draft" })).toBeDisabled();
     });
 
-    it("sends the reply through email.send with the envelope-derived recipients and the chosen alias", async () => {
+    it("updates that same draft on a later save", async () => {
+      const backend = createMailboxBackend();
+      await renderReady(backend);
+
+      await userEvent.click(await screen.findByRole("button", { name: "New message" }));
+      await userEvent.type(field(composeWindow(), "Subject"), "Later");
+      await userEvent.click(within(composeWindow()).getByRole("button", { name: "Save draft" }));
+      await within(composeWindow()).findByRole("status");
+      await userEvent.type(field(composeWindow(), "Subject"), " on");
+      await userEvent.click(within(composeWindow()).getByRole("button", { name: "Save draft" }));
+
+      await waitFor(() =>
+        expect(backend.mail?.drafts.map((draft) => [draft.id, draft.subject])).toEqual([["draft-1", "Later on"]]),
+      );
+      expect(backend.mail?.calls.map((call) => call.kind)).toEqual(["create", "update"]);
+    });
+
+    it("sends the reply with the edits made to it, and leaves it in Sent", async () => {
       const backend = createMailboxBackend();
       await renderReady(backend);
 
       await openMessage("Invoice for March");
-      const reply = await startReply("Reply to all");
+      const reply = await startReply("Reply");
+      await userEvent.type(field(reply, "Message"), "Paid.");
       await userEvent.click(within(reply).getByRole("button", { name: "Send" }));
 
       await waitFor(() => expect(backend.mail?.sent).toHaveLength(1));
+      expect(backend.mail?.calls.map((call) => call.kind)).toEqual(["create", "update", "send"]);
       const sent = backend.mail?.sent[0];
-      expect(sent?.payload.from).toEqual({ address: ALIAS_ADDRESS });
-      expect(sent?.payload.to).toEqual([
-        { name: "Billing", address: "billing@example.com" },
-        { name: "Ada", address: "ada@example.com" },
-      ]);
-      expect(sent?.payload.cc).toEqual([{ address: "books@example.com" }]);
-      // Threading is carried over from the message being answered.
-      expect(sent?.payload.inReplyTo).toBe("<invoice-1@example.com>");
-      expect(sent?.payload.references).toEqual(["<thread-root@example.com>", "<invoice-1@example.com>"]);
-      // The draft it was sent from now lives in Sent, and the reply form is gone.
-      expect(backend.relations).toContainEqual({
-        property: "folder",
-        itemId: sent?.draftItemId,
-        targetItemId: "folder-sent",
-      });
-      await waitFor(() => expect(screen.queryByRole("region", { name: "Reply to all" })).toBeNull());
+      expect(sent).toMatchObject({ id: "draft-1", from: ALIAS_ADDRESS, sourceEmailId: "email-1" });
+      expect(sent?.body.endsWith("> Attached.Paid.")).toBe(true);
+      expect(backend.relations).toContainEqual({ property: "folder", itemId: "draft-1", targetItemId: "folder-sent" });
+      await waitFor(() => expect(screen.queryByRole("region", { name: "Reply" })).toBeNull());
     });
 
-    it("leaves an editable draft and a visible error when the send is rejected", async () => {
+    it("leaves an editable, kept draft and the backend's message when the send is rejected", async () => {
       const backend = createMailboxBackend();
       if (backend.mail) backend.mail.rejectSend = "SMTP host refused the message";
       await renderReady(backend);
@@ -212,12 +256,37 @@ describe("mailbox compose (issue #98)", () => {
       await userEvent.click(within(composeWindow()).getByRole("button", { name: "Send" }));
 
       expect(await within(composeWindow()).findByRole("alert")).toHaveTextContent("SMTP host refused the message");
-      // The draft the send was attempted from survives, and the window is still editable.
-      expect(backend.mail?.drafts).toEqual(["draft-1"]);
+      expect(backend.mail?.drafts.map((draft) => draft.id)).toEqual(["draft-1"]);
       expect(backend.mail?.sent).toHaveLength(0);
       expect(field(composeWindow(), "Subject").value).toBe("Please deliver");
       await userEvent.type(field(composeWindow(), "Subject"), " today");
       expect(field(composeWindow(), "Subject").value).toBe("Please deliver today");
+
+      // Closing keeps the draft the refused send was attempted from.
+      await userEvent.click(within(composeWindow()).getByRole("button", { name: "Close" }));
+      expect(screen.queryByRole("dialog", { name: "New message" })).toBeNull();
+      expect(backend.mail?.discarded).toEqual([]);
+    });
+
+    it("shows the refusal of a stale draft version and keeps the window", async () => {
+      const backend = createMailboxBackend();
+      await renderReady(backend);
+
+      await userEvent.click(await screen.findByRole("button", { name: "New message" }));
+      await userEvent.type(field(composeWindow(), "Subject"), "Later");
+      await userEvent.click(within(composeWindow()).getByRole("button", { name: "Save draft" }));
+      await within(composeWindow()).findByRole("status");
+      const mail = backend.mail;
+      if (!mail) throw new Error("the fixture installs the mail module");
+      mail.drafts = mail.drafts.map((draft) => ({ ...draft, version: "edited-elsewhere" }));
+
+      await userEvent.type(field(composeWindow(), "Message"), "Mine");
+      await userEvent.click(within(composeWindow()).getByRole("button", { name: "Save draft" }));
+
+      expect(await within(composeWindow()).findByRole("alert")).toHaveTextContent(
+        "Draft was modified since ifVersion was read",
+      );
+      expect(field(composeWindow(), "Message").value).toBe("Mine");
     });
 
     it("refuses to send with no recipient, without calling the backend", async () => {
@@ -228,7 +297,7 @@ describe("mailbox compose (issue #98)", () => {
       await userEvent.click(within(composeWindow()).getByRole("button", { name: "Send" }));
 
       expect(await within(composeWindow()).findByRole("alert")).toHaveTextContent("Add at least one recipient");
-      expect(backend.mail?.drafts).toEqual([]);
+      expect(backend.mail?.calls).toEqual([]);
     });
   });
 });

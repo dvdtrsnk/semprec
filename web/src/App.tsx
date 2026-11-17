@@ -8,7 +8,7 @@ import type { McpAgentPageOperations } from "./api/mcpAgentPageOperations.js";
 import type { ApprovalQueueOperations } from "./api/approvalQueueOperations.js";
 import type { AgentRunOperations } from "./api/agentRunOperations.js";
 import { ViewHost } from "./views/ViewHost.js";
-import { createDefaultViewRegistry } from "./views/registerViews.js";
+import type { ViewRegistry } from "./views/viewRegistry.js";
 import { UtilizationPage } from "./views/aiUsage/UtilizationPage.js";
 import { SystemStatusPanel } from "./views/systemStatus/SystemStatusPanel.js";
 import { AgentPage } from "./views/agentPage/AgentPage.js";
@@ -27,8 +27,6 @@ import type { InvitationOperations } from "./api/invitationOperations.js";
 import { InvitationAcceptPage } from "./views/invite/InvitationAcceptPage.js";
 import "./styles/tokens.css";
 import "./styles/app.css";
-
-const registry = createDefaultViewRegistry();
 
 export interface AgentPageRoute {
   projectItemId: string;
@@ -81,6 +79,7 @@ type SessionState =
 export function App({
   viewId,
   operations,
+  registry,
   aiUsageOperations,
   systemHealthOperations,
   agentPage,
@@ -98,6 +97,8 @@ export function App({
 }: {
   viewId: string;
   operations: GenericOperations;
+  /** The view renderers `?view=` resolves through, built by the composition root. */
+  registry: ViewRegistry;
   /** Present only when the composition root routed to the System page's Utilization graph (issue #121) rather than an item/view id. */
   aiUsageOperations?: AiUsageOperations;
   /** Present alongside `aiUsageOperations` on the System page (issue #170's System status block). */
@@ -146,6 +147,7 @@ export function App({
           <RoutedContent
             viewId={viewId}
             operations={operations}
+            registry={registry}
             aiUsageOperations={aiUsageOperations}
             systemHealthOperations={systemHealthOperations}
             agentPage={agentPage}
@@ -291,6 +293,7 @@ function SessionGate({
 function RoutedContent({
   viewId,
   operations,
+  registry,
   aiUsageOperations,
   systemHealthOperations,
   agentPage,
@@ -303,6 +306,7 @@ function RoutedContent({
 }: {
   viewId: string;
   operations: GenericOperations;
+  registry: ViewRegistry;
   aiUsageOperations?: AiUsageOperations;
   systemHealthOperations?: SystemHealthOperations;
   agentPage?: AgentPageRoute;
