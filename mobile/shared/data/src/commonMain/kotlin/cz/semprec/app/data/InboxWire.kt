@@ -122,7 +122,7 @@ internal fun InboxCard.after(item: InboxItemDto): InboxCard {
     val overrides = item.properties["userOverrides"] as? JsonObject
     return copy(
         status = status,
-        version = item.updatedAt.ifEmpty { version },
+        version = item.version.ifEmpty { version },
         envelope = item.properties["proposal"].toEnvelope() ?: envelope,
         invalid = if (status == InboxCardStatus.INVALID) invalid else null,
         userValues = overrides.toUserValues(),

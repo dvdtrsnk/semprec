@@ -36,23 +36,23 @@ private const val SERVER = "https://s.example"
 private const val SCHEMA =
     """{"databases":[{"databaseId":"db-cal","key":"calendars"},{"databaseId":"db-inv","key":"invitations"}]}"""
 private const val CALENDARS =
-    """{"items":[{"id":"c1","updatedAt":"v1","properties":{"name":"Work","color":"#007AFF","notify":true,""" +
+    """{"items":[{"id":"c1","version":"1","properties":{"name":"Work","color":"#007AFF","notify":true,""" +
         """"hidden":false}},""" +
-        """{"id":"c2","updatedAt":"v2","properties":{"name":"Tasks","color":"#007AFF","systemKey":"tasks",""" +
+        """{"id":"c2","version":"2","properties":{"name":"Tasks","color":"#007AFF","systemKey":"tasks",""" +
         """"isDefault":false}},""" +
-        """{"id":"c3","updatedAt":"v3","properties":{"name":"Personal","color":"#5856D6","isDefault":true,""" +
+        """{"id":"c3","version":"3","properties":{"name":"Personal","color":"#5856D6","isDefault":true,""" +
         """"notify":true}}]}"""
 private const val INVITATIONS =
-    """{"items":[{"id":"i2","updatedAt":"v","properties":{"title":"Dinner","status":"accepted",""" +
+    """{"items":[{"id":"i2","version":"7","properties":{"title":"Dinner","status":"accepted",""" +
         """"startsAt":"2026-10-23T17:00:00.000Z",""" +
         """"endsAt":"2026-10-23T20:00:00.000Z","timeZone":"Europe/Prague","allDay":false,"place":"Vinohrady",""" +
         """"organizerName":"Tomas","organizerEmail":"t@example.com","kind":"invite"}},""" +
-        """{"id":"i1","updatedAt":"v","properties":{"title":"Review","status":"pending",""" +
+        """{"id":"i1","version":"7","properties":{"title":"Review","status":"pending",""" +
         """"startsAt":"2026-10-22T11:00:00.000Z",""" +
-        """"kind":"invite"}},{"id":"i3","updatedAt":"v","properties":{"title":"Notice","status":"pending",""" +
+        """"kind":"invite"}},{"id":"i3","version":"7","properties":{"title":"Notice","status":"pending",""" +
         """"kind":"sharedCalendarNotice"}},""" +
-        """{"id":"i4","updatedAt":"v","properties":{"title":"Odd","status":"strange"}},{"id":"i5",""" +
-        """"updatedAt":"v","properties":{"status":"pending"}}]}"""
+        """{"id":"i4","version":"7","properties":{"title":"Odd","status":"strange"}},{"id":"i5",""" +
+        """"version":"7","properties":{"status":"pending"}}]}"""
 
 class HttpCalendarCatalogRepositoryTest {
     private val requests = mutableListOf<HttpRequestData>()
@@ -80,13 +80,13 @@ class HttpCalendarCatalogRepositoryTest {
             "/api/databases/db-inv/query" -> json(INVITATIONS)
             "/api/calendar/calendars/c1/cancellation-impact" ->
                 json("""{"eventCount":4,"recipientCount":2,"cancellationCount":1}""")
-            else -> json("""{"id":"c9","updatedAt":"v9","properties":{}}""")
+            else -> json("""{"id":"c9","version":"9","properties":{}}""")
         }
 
     private fun sent(index: Int): JsonObject = Json.parseToJsonElement(bodies[index]).jsonObject
 
     private fun info(kind: CalendarKind = CalendarKind.OWN) =
-        CalendarInfo("c1", "Work", "#007AFF", true, false, false, kind, null, "v1")
+        CalendarInfo("c1", "Work", "#007AFF", true, false, false, kind, null, "1")
 
     @Test fun `the calendars are read with their kinds and flags`() = runTest {
         val result = HttpCalendarCatalogRepository(api(), changes).calendars()
@@ -98,6 +98,27 @@ class HttpCalendarCatalogRepositoryTest {
         assertEquals(true, calendars[0].notify)
     }
 
+    @Test fun `the version a calendar is listed with is what its edit sends and not its updatedAt`() = runTest {
+        handler = { request ->
+            if (request.url.encodedPath == "/api/databases/db-cal/query") {
+                json(
+                    """{"items":[{"id":"c1","updatedAt":"2026-10-16T08:00:00.000Z","version":"42",""" +
+                        """"properties":{"name":"Work","color":"#007AFF"}}]}""",
+                )
+            } else {
+                reads(request)
+            }
+        }
+        val repo = HttpCalendarCatalogRepository(api(), changes)
+        val listed = assertIs<RepositoryResult.Content<List<CalendarInfo>>>(repo.calendars()).value.single()
+        assertEquals("42", listed.version)
+
+        repo.edit(listed, CalendarEdit(notify = false))
+
+        assertEquals(HttpMethod.Patch, requests.last().method)
+        assertEquals("42", sent(bodies.lastIndex)["ifVersion"]?.jsonPrimitive?.content)
+    }
+
     @Test fun `an edit patches only the named fields against the listed version`() = runTest {
         val repo = HttpCalendarCatalogRepository(api(), changes)
         val result = repo.edit(info(), CalendarEdit(name = "Job", hidden = true))
@@ -105,7 +126,7 @@ class HttpCalendarCatalogRepositoryTest {
         assertEquals(HttpMethod.Patch, requests.single().method)
         assertEquals("/api/items/c1", requests.single().url.encodedPath)
         val body = sent(0)
-        assertEquals("v1", body["ifVersion"]?.jsonPrimitive?.content)
+        assertEquals("1", body["ifVersion"]?.jsonPrimitive?.content)
         val properties = body["properties"]!!.jsonObject
         assertEquals(setOf("name", "hidden"), properties.keys)
         assertEquals("Job", properties["name"]?.jsonPrimitive?.content)

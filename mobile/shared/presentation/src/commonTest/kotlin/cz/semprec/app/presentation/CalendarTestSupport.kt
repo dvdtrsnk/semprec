@@ -51,7 +51,7 @@ fun entry(
     status = status,
     place = null,
     readOnly = readOnly,
-    updatedAt = "v-$id",
+    version = "v-$id",
     seriesId = seriesId,
     occurrenceDate = schedule.date.takeIf { seriesId != null },
 )
@@ -70,7 +70,7 @@ fun sleepEntry(night: CalendarDay, bed: String = "23:00", wake: String = "06:45"
     status = null,
     place = null,
     readOnly = false,
-    updatedAt = null,
+    version = null,
     sleep = SleepNightEntry(
         night,
         ClockTime.parse(bed)!!,

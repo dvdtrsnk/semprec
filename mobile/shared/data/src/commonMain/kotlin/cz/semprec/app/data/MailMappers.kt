@@ -85,7 +85,7 @@ internal fun MailDraftDto.toDomain() = MailDraft(
     },
     sourceEmailId = sourceEmailId,
     createdByAgent = createdBy == MailActorDto.AGENT,
-    version = updatedAt,
+    version = version,
 )
 
 internal fun MailMailboxDto.toDomain() = MailAccount(

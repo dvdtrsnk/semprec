@@ -24,10 +24,10 @@ import kotlin.test.assertNull
 private const val AGENDA_PAGE =
     """{"items":[""" +
         """{"kind":"task","id":"t1","title":"Invoice","date":"2026-11-16","timeFrom":null,"timeTo":null,""" +
-        """"effectiveTo":null,"allDay":true,"calendarId":"c","status":"done","readOnly":false,"updatedAt":"v"},""" +
+        """"effectiveTo":null,"allDay":true,"calendarId":"c","status":"done","readOnly":false,"version":"1"},""" +
         """{"kind":"event","id":"e1","title":"Meeting","date":"2026-11-17","endDate":null,"timeFrom":"14:00",""" +
         """"timeTo":"15:00","effectiveTo":"15:00","allDay":false,"calendarId":"c","status":null,"place":"Praha",""" +
-        """"readOnly":false,"updatedAt":"v"},""" +
+        """"readOnly":false,"version":"1"},""" +
         """{"kind":"event","id":"bad","title":"Bad","date":"nonsense"}],"nextCursor":"MjAyNi0xMS0xOHw"}"""
 
 class HttpCalendarAgendaRepositoryTest {

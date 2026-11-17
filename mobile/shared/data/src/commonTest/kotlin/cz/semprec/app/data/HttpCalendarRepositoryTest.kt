@@ -48,16 +48,17 @@ private const val TIMELINE =
         """"calendarId":"cal-h"},""" +
         """{"kind":"event","id":"ev1","title":"Meeting","date":"2026-10-16","endDate":null,"timeFrom":"10:00",""" +
         """"timeTo":"11:30","effectiveTo":"11:30","hasEnd":true,"allDay":false,"calendarId":"cal-w","status":null,""" +
-        """"place":"Office","readOnly":false,"updatedAt":"v-ev1","attendance":"tentative",""" +
+        """"place":"Office","readOnly":false,"updatedAt":"2026-10-16T08:00:00.000Z","version":"11",""" +
+        """"attendance":"tentative",""" +
         """"tasks":[{"taskId":"t9","title":"Agenda","state":{"kind":"doneElsewhere","eventName":"Review"}},""" +
         """{"taskId":"t8","title":"Slides","state":{"kind":"open"}}],"counts":{"open":1,"total":2}},""" +
         """{"kind":"event","id":"series1@2026-10-16","title":"Standup","date":"2026-10-16","endDate":null,""" +
         """"timeFrom":"09:00","timeTo":"09:30","effectiveTo":"09:30","allDay":false,"calendarId":"cal-w",""" +
-        """"readOnly":true,"updatedAt":"v-s","seriesId":"series1","occurrenceDate":"2026-10-16",""" +
+        """"readOnly":true,"version":"12","seriesId":"series1","occurrenceDate":"2026-10-16",""" +
         """"overridden":false},""" +
         """{"kind":"task","id":"t1","title":"Invoice","date":"2026-10-16","timeFrom":"14:00","timeTo":null,""" +
         """"effectiveTo":"14:00","allDay":false,"calendarId":"cal-t","status":"notDone","readOnly":false,""" +
-        """"updatedAt":"v-t1","carriedFrom":"2026-10-14","hostEvent":{"id":"ev1","title":"Meeting"}},""" +
+        """"version":"13","carriedFrom":"2026-10-14","hostEvent":{"id":"ev1","title":"Meeting"}},""" +
         """{"kind":"trace","id":"trace:t1:2026-10-14","taskId":"t1","day":"2026-10-14","firstDay":"2026-10-14",""" +
         """"sinceTime":{"from":"15:00","to":null},"outcome":{"kind":"movedToEvent","id":"ev1",""" +
         """"title":"Meeting"},"readOnly":true},""" +
@@ -68,10 +69,10 @@ private const val TIMELINE =
         """"calendarId":null},""" +
         """{"kind":"mystery","id":"m1"},{"kind":"event","id":"bad","title":"Bad","date":"nonsense"}]}"""
 private const val CALENDARS =
-    """{"items":[{"id":"cal-w","updatedAt":"v1","properties":{"name":"Work","color":"#007AFF","notify":true,""" +
-        """"hidden":false,"isDefault":false,"kind":"own"}},{"id":"cal-h","updatedAt":"v2",""" +
+    """{"items":[{"id":"cal-w","version":"1","properties":{"name":"Work","color":"#007AFF","notify":true,""" +
+        """"hidden":false,"isDefault":false,"kind":"own"}},{"id":"cal-h","version":"2",""" +
         """"properties":{"name":"Holidays",""" +
-        """"color":"#34C759","hidden":true,"kind":"subscription"}},{"id":"cal-x","updatedAt":"v3",""" +
+        """"color":"#34C759","hidden":true,"kind":"subscription"}},{"id":"cal-x","version":"3",""" +
         """"properties":{"color":"#000000"}}]}"""
 
 class HttpCalendarRepositoryTest {
@@ -101,7 +102,7 @@ class HttpCalendarRepositoryTest {
         "/api/calendar/timeline" -> json(TIMELINE)
         "/api/databases/db-cal/query" -> json(CALENDARS)
         "/api/badge-counts" -> json("""{"pendingApprovals":0,"pendingInvites":3,"openInboxItems":0}""")
-        else -> json("""{"id":"new1","updatedAt":"v-new","properties":{}}""")
+        else -> json("""{"id":"new1","updatedAt":"2026-10-16T08:00:00.000Z","version":"5","properties":{}}""")
     }
 
     private fun sent(index: Int): JsonObject = Json.parseToJsonElement(bodies[index]).jsonObject
@@ -116,7 +117,7 @@ class HttpCalendarRepositoryTest {
         readOnly: Boolean = false,
     ) = CalendarEntry(
         id, kind, "T", null, DAY, null, ClockTime(600), ClockTime(660), ClockTime(660), false, null, null, readOnly,
-        "v-old", seriesId = seriesId, occurrenceDate = DAY,
+        "4", seriesId = seriesId, occurrenceDate = DAY,
     )
 
     @Test fun `the window asks for the range and carries the calendars and the badge`() = runTest {
@@ -206,13 +207,28 @@ class HttpCalendarRepositoryTest {
         assertEquals(HttpMethod.Patch, patch.method)
         assertEquals("/api/items/ev1", patch.path())
         val body = sent(0)
-        assertEquals("v-old", body["ifVersion"]?.jsonPrimitive?.content)
+        assertEquals("4", body["ifVersion"]?.jsonPrimitive?.content)
         val properties = body["properties"]!!.jsonObject
         assertEquals("2026-10-17", properties["date"]?.jsonPrimitive?.content)
         assertEquals("14:00", properties["timeFrom"]?.jsonPrimitive?.content)
         assertEquals("15:00", properties["timeTo"]?.jsonPrimitive?.content)
         assertEquals(JsonNull, properties["endDate"])
         assertEquals(1, changes.revision.value)
+    }
+
+    @Test fun `the version a timeline entry carries is what its next write sends`() = runTest {
+        val repo = repository { reads(it) }
+        val entries = repo.loaded().timeline.entries
+        val event = entries.single { it.id == "ev1" }
+        assertEquals("11", event.version)
+        val task = entries.single { it.id == "t1" && it.kind == CalendarEntryKind.TASK }
+
+        repo.reschedule(event, event.schedule)
+        repo.setTaskDone(task, true)
+
+        val patches = requests.indices.filter { requests[it].method == HttpMethod.Patch }
+        assertEquals(listOf("/api/items/ev1", "/api/items/t1"), patches.map { requests[it].path() })
+        assertEquals(listOf("11", "13"), patches.map { sent(it)["ifVersion"]?.jsonPrimitive?.content })
     }
 
     @Test fun `a task patch never carries an end date and an all day move clears the times`() = runTest {
@@ -225,7 +241,7 @@ class HttpCalendarRepositoryTest {
     }
 
     @Test fun `an entry without a version is patched without the check`() = runTest {
-        val listed = entryOf(id = "t1", kind = CalendarEntryKind.TASK).copy(updatedAt = null)
+        val listed = entryOf(id = "t1", kind = CalendarEntryKind.TASK).copy(version = null)
         repository { reads(it) }.setTaskDone(listed, true)
         assertTrue("ifVersion" !in sent(0))
         assertEquals("done", sent(0)["properties"]!!.jsonObject["status"]?.jsonPrimitive?.content)
@@ -238,7 +254,7 @@ class HttpCalendarRepositoryTest {
         assertEquals("/api/events/series/series1/occurrences/2026-10-16", requests[0].path())
         assertEquals(HttpMethod.Post, requests[0].method)
         assertEquals("/api/items/new1", requests[1].path())
-        assertEquals("v-new", sent(1)["ifVersion"]?.jsonPrimitive?.content)
+        assertEquals("5", sent(1)["ifVersion"]?.jsonPrimitive?.content)
     }
 
     @Test fun `a task occurrence is stored through the tasks family`() = runTest {

@@ -36,7 +36,7 @@ class HttpCalendarCatalogRepository(
             change.notify?.let { put("notify", JsonPrimitive(it)) }
             change.hidden?.let { put("hidden", JsonPrimitive(it)) }
         }
-        val body = ApiJson.encodeToString(CalendarPatchRequest(properties, calendar.updatedAt))
+        val body = ApiJson.encodeToString(CalendarPatchRequest(properties, calendar.version))
         return api.send(HttpMethod.Patch, "/api/items/${calendar.id}", body = body).ignoreBody().alsoChanged()
     }
 

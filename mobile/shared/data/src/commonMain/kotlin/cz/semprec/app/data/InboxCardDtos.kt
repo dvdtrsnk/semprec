@@ -116,13 +116,13 @@ internal data class InboxOptionDto(
 
 /**
  * The card item every write answers: the item envelope with the card's properties (its status, effective proposal and
- * the person's own values), and what a confirmation did.
+ * the person's own values), its [version] (the `ifVersion` of the next decision), and what a confirmation did.
  */
 @Serializable
 internal data class InboxItemDto(
     val id: String = "",
     val properties: JsonObject = JsonObject(emptyMap()),
-    val updatedAt: String = "",
+    val version: String = "",
     val results: List<InboxResultDto> = emptyList(),
 )
 

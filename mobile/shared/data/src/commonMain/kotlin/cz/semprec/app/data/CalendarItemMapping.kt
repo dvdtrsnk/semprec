@@ -34,7 +34,7 @@ internal fun CalendarStoredItem.toCalendar(): CalendarInfo? {
         isDefault = properties.calendarFlag("isDefault"),
         kind = kind,
         systemKey = system,
-        updatedAt = updatedAt,
+        version = version,
     )
 }
 

@@ -160,7 +160,8 @@ class ItemsApiTest {
     fun getAsksForLinksAndTheNamedRelations() = runTest {
         val api = items {
             json(
-                """{"id":"$ITEM_ID","databaseId":"$TASKS_ID","updatedAt":"2026-10-16T10:00:00Z","properties":{},
+                """{"id":"$ITEM_ID","databaseId":"$TASKS_ID","updatedAt":"2026-10-16T10:00:00Z","version":"8",
+                "properties":{},
                 "relations":{"project":[{"id":"p1","title":"Semprec iOS","color":"#007AFF"},{"id":"p2","hidden":true}]},
                 "links":{"project":{"valueKind":"inherited",
                 "sources":[{"kind":"item","itemId":"e1","title":"Standup"}]}}}""",
@@ -179,6 +180,7 @@ class ItemsApiTest {
         assertTrue(item.relations.getValue("project")[1].hidden)
         assertEquals("inherited", item.links.getValue("project").valueKind)
         assertEquals("Standup", item.links.getValue("project").sources.single().title)
+        assertEquals("8", item.version)
     }
 
     @Test

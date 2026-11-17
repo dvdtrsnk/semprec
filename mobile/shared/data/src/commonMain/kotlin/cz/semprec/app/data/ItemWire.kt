@@ -13,7 +13,7 @@ import kotlinx.serialization.json.doubleOrNull
 /**
  * One item of the generic item API (`GET /api/items/:id`, `POST /api/databases/:id/query`). [properties] is the
  * open-ended map of the item's own values; [relations] and [links] are present only when the request asked for them.
- * [updatedAt] doubles as the `ifVersion` of the next write.
+ * [version] is the item's optimistic-concurrency token, a decimal integer string the next write sends as `ifVersion`.
  */
 @Serializable
 internal data class ItemDto(
@@ -22,7 +22,7 @@ internal data class ItemDto(
     val properties: JsonObject = JsonObject(emptyMap()),
     val relations: Map<String, List<RelationTargetDto>> = emptyMap(),
     val links: Map<String, ValueLinkDto> = emptyMap(),
-    val updatedAt: String = "",
+    val version: String = "",
 )
 
 /** The item at the other end of a relation. A [hidden] target is one the reader may not see: its id only. */

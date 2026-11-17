@@ -172,7 +172,7 @@ internal data class MailDraftDto(
     val mode: MailDraftModeDto = MailDraftModeDto.NEW,
     val sourceEmailId: String? = null,
     val createdBy: MailActorDto = MailActorDto.USER,
-    val updatedAt: String,
+    val version: String,
 )
 
 @Serializable

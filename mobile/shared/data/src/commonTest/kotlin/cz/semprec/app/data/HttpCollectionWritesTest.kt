@@ -69,6 +69,19 @@ class HttpCollectionWritesTest {
     }
 
     @Test
+    fun theVersionAnUpdateAnswersIsWhatTheNextUpdateSendsNotTheUpdatedAt() = runTest {
+        val f = fixture { json(PROJECT_JSON) }
+        val projects = projects(f)
+        val first = f.writes.update(projects, PROJECT_ITEM, "2", mapOf("name" to FieldValue.Text("A"))).content()
+        assertEquals("3", first.version)
+
+        f.writes.update(projects, PROJECT_ITEM, first.version, mapOf("name" to FieldValue.Text("B")))
+
+        val body = f.recorder.bodyJson(f.recorder.bodies.lastIndex)
+        assertEquals("3", body.getValue("ifVersion").jsonPrimitive.content)
+    }
+
+    @Test
     fun aClearedSelectIsNullAndAConflictingVersionIsRejected() = runTest {
         val f = fixture { respond("", HttpStatusCode.Conflict) }
         val result = f.writes.update(
@@ -175,7 +188,7 @@ class HttpCollectionWritesTest {
     @Test
     fun anUploadSendsTheRawBytesWithTheirTypeTheNameAndTheAttachment() = runTest {
         val file = """{"id":"$PROJECT_ITEM","databaseId":"$FILES_ID","properties":{"name":"a.pdf"},
-            |"createdAt":"c","updatedAt":"u"}
+            |"createdAt":"c","updatedAt":"u","version":"1"}
         """.trimMargin()
         val f = fixture { json(file, HttpStatusCode.Created) }
         val item = f.writes.upload(

@@ -34,7 +34,7 @@ private fun agendaEntry(id: String, kind: CalendarEntryKind, day: CalendarDay, f
     status = if (id == "done") CalendarEntry.STATUS_DONE else null,
     place = null,
     readOnly = false,
-    updatedAt = "v",
+    version = "1",
 )
 
 private val AGENDA_MONDAY = CalendarDay(2026, 11, 16)

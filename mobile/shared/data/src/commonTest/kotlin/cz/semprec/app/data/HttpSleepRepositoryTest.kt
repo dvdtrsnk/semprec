@@ -38,14 +38,15 @@ private const val SCHEMA =
     """{"databases":[{"databaseId":"db-set","key":"sleepSettings"},{"databaseId":"db-plan","key":"sleepPlans"},""" +
         """{"databaseId":"db-night","key":"sleepNights"},{"databaseId":"db-x","key":null}]}"""
 private const val SETTINGS_ITEM =
-    """{"id":"set1","updatedAt":"v1","properties":{"enabled":true,"showInCalendar":true,"muteSemp":false,""" +
+    """{"id":"set1","updatedAt":"2026-10-16T08:00:00.000Z","version":"1",""" +
+        """"properties":{"enabled":true,"showInCalendar":true,"muteSemp":false,""" +
         """"alarmSound":"piano","alarmSnooze":true,"goalMinutes":480,"prepReminder":true,"prepReminderMinutes":30,""" +
         """"systemActive":true}}"""
 private const val WEEKDAY_PLAN =
-    """{"id":"p1","updatedAt":"v2","properties":{"name":"Weekdays","wakeDays":["mon","tue","wed","thu","fri"],""" +
+    """{"id":"p1","version":"2","properties":{"name":"Weekdays","wakeDays":["mon","tue","wed","thu","fri"],""" +
         """"bedTime":"23:00","wakeTime":"06:45","alarm":true,"position":0}}"""
 private const val WEEKEND_PLAN =
-    """{"id":"p2","updatedAt":"v3","properties":{"name":"Weekend","wakeDays":["sat","sun"],"bedTime":"00:00",""" +
+    """{"id":"p2","version":"3","properties":{"name":"Weekend","wakeDays":["sat","sun"],"bedTime":"00:00",""" +
         """"wakeTime":"08:30"}}"""
 private const val NIGHT =
     """{"night":"2026-10-16","planId":"p1","planName":"Weekdays","bedTime":"23:00","wakeTime":"06:45",""" +
@@ -134,7 +135,7 @@ class HttpSleepRepositoryTest {
         val down = repository { json("{}", HttpStatusCode.ServiceUnavailable) }
         assertEquals(FailureKind.UNAVAILABLE, assertIs<RepositoryResult.Failure>(down.overview(null)).kind)
 
-        val badPlan = """{"id":"p3","updatedAt":"v","properties":{"name":"X","bedTime":"late","wakeTime":"07:00"}}"""
+        val badPlan = """{"id":"p3","version":"4","properties":{"name":"X","bedTime":"late","wakeTime":"07:00"}}"""
         val invalid = repository {
             when (it.path()) {
                 "/api/databases/db-plan/query" -> json("""{"items":[$badPlan]}""")
@@ -170,7 +171,7 @@ class HttpSleepRepositoryTest {
         assertEquals(RepositoryResult.Content(Unit), result)
         assertEquals(listOf(HttpMethod.Get, HttpMethod.Patch), requests.map { it.method })
         val body = sent(1)
-        assertEquals("v1", body.getValue("ifVersion").jsonPrimitive.content)
+        assertEquals("1", body.getValue("ifVersion").jsonPrimitive.content)
         val properties = body.getValue("properties").jsonObject
         assertEquals(setOf("goalMinutes", "alarmSound"), properties.keys)
         assertEquals("450", properties.getValue("goalMinutes").jsonPrimitive.content)

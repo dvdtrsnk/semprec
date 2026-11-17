@@ -18,7 +18,10 @@ class CalendarChanges {
     }
 }
 
-/** A calendar of the tenant: the container of events, or one Semprec fills itself (tasks, birthdays, sleep). */
+/**
+ * A calendar of the tenant: the container of events, or one Semprec fills itself (tasks, birthdays, sleep). [version]
+ * is the token an edit sends as `ifVersion`.
+ */
 data class CalendarInfo(
     val id: String,
     val name: String,
@@ -28,7 +31,7 @@ data class CalendarInfo(
     val isDefault: Boolean,
     val kind: CalendarKind,
     val systemKey: String?,
-    val updatedAt: String,
+    val version: String,
 )
 
 /** Where a calendar comes from: made by the person, filled by Semprec, or a subscription to a feed. */

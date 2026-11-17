@@ -79,7 +79,7 @@ sealed interface InboxContext {
 }
 
 /**
- * One card of the stack. [version] is the card's `updatedAt` (the `ifVersion` of every decision on it). [schema] is
+ * One card of the stack. [version] is the card's `version` (the `ifVersion` of every decision on it). [schema] is
  * the editor of its kind; [properties] says what the target database knows of each property the editor names.
  * [userValues] and [editedKeys] are what the person changed in this session: the server's answer to an edit, which
  * the card list does not carry.

@@ -52,9 +52,12 @@ class HttpMailboxRepositoryTest {
             ok("""{"id":"$BOX"}""")
         request.url.encodedPath == "/api/mail/mailboxes/$BOX" -> ok(MAILBOX)
         request.url.encodedPath == "/api/items/$BOX" && request.method == HttpMethod.Get ->
-            ok("""{"id":"$BOX","databaseId":"d","properties":{"name":"Gmail"},"updatedAt":"v7"}""")
+            ok(
+                """{"id":"$BOX","databaseId":"d","properties":{"name":"Gmail"},""" +
+                    """"updatedAt":"2026-10-16T08:00:00.000Z","version":"7"}""",
+            )
         request.url.encodedPath == "/api/items/$BOX" ->
-            ok("""{"id":"$BOX","databaseId":"d","properties":{},"updatedAt":"v8"}""")
+            ok("""{"id":"$BOX","databaseId":"d","properties":{},"version":"8"}""")
         else -> null
     }
 
@@ -155,7 +158,7 @@ class HttpMailboxRepositoryTest {
         val patches = server.requests.indices.filter { server.requests[it].method == HttpMethod.Patch }
         assertEquals(2, patches.size)
         val rename = Json.parseToJsonElement(server.bodies[patches[0]]).jsonObject
-        assertEquals("v7", rename.getValue("ifVersion").jsonPrimitive.content)
+        assertEquals("7", rename.getValue("ifVersion").jsonPrimitive.content)
         assertEquals("Osobní", rename.getValue("properties").jsonObject.getValue("name").jsonPrimitive.content)
         val limit = Json.parseToJsonElement(server.bodies[patches[1]]).jsonObject
         assertEquals("4", limit.getValue("properties").jsonObject.getValue("connectionLimit").jsonPrimitive.content)

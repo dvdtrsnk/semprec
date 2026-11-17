@@ -71,7 +71,7 @@ private fun TimelineEntryDto.toStored(entryKind: CalendarEntryKind): CalendarEnt
         status = status,
         place = place,
         readOnly = readOnly ?: false,
-        updatedAt = updatedAt,
+        version = version,
         seriesId = seriesId,
         occurrenceDate = parseDay(occurrenceDate),
         tentative = attendance == "tentative",
@@ -97,7 +97,7 @@ private fun TimelineEntryDto.toDerived(entryKind: CalendarEntryKind): CalendarEn
         status = null,
         place = null,
         readOnly = true,
-        updatedAt = null,
+        version = null,
     )
 }
 

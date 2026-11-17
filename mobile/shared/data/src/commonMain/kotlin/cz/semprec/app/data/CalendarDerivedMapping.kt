@@ -24,7 +24,7 @@ internal fun TimelineEntryDto.toSleep(): CalendarEntry? {
         status = null,
         place = null,
         readOnly = false,
-        updatedAt = null,
+        version = null,
         sleep = SleepNightEntry(evening, bed, wake, alarm ?: false, changed ?: false, prepReminderAt),
     )
 }
@@ -48,7 +48,7 @@ internal fun TimelineEntryDto.toTrace(taskTitles: Map<String, String>): Calendar
         status = null,
         place = null,
         readOnly = true,
-        updatedAt = null,
+        version = null,
         trace = result.first,
         traceNote = result.second,
         sourceTaskId = taskId,

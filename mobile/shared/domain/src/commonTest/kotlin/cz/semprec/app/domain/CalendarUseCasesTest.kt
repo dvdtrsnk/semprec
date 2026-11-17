@@ -31,7 +31,7 @@ internal fun entry(
     status = status,
     place = null,
     readOnly = readOnly,
-    updatedAt = "2026-10-16T08:00:00.000Z",
+    version = "4",
     seriesId = seriesId,
 )
 

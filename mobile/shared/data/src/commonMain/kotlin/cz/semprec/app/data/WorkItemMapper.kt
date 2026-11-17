@@ -39,7 +39,7 @@ internal fun ItemDto.toWorkItem(kind: ItemKind): WorkItem {
     return WorkItem(
         kind = kind,
         id = id,
-        version = updatedAt,
+        version = version,
         title = properties.text(WorkKeys.NAME).orEmpty(),
         schedule = Schedule(
             date = properties.text(WorkKeys.DATE),

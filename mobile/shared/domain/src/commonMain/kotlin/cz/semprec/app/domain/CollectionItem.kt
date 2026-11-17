@@ -34,7 +34,7 @@ data class ValueOrigin(val kind: ValueKind, val sources: List<OriginSource>, val
 
 /**
  * One item with every value decoded by the type of its property. [origins] holds an entry only for a property whose
- * value is not [ValueKind.OWN]. [version] is the token a later write passes back (`updatedAt`).
+ * value is not [ValueKind.OWN]. [version] is the token a later write passes back (`ifVersion`).
  */
 data class CollectionItem(
     val id: String,

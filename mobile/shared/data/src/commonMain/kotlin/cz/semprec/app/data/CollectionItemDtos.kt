@@ -18,7 +18,10 @@ import cz.semprec.app.domain.ValueOrigin
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 
-/** One item as the item routes answer it; the values are decoded by the properties of its database. */
+/**
+ * One item as the item routes answer it; the values are decoded by the properties of its database. [version] is the
+ * token the next write sends as `ifVersion`.
+ */
 @Serializable
 internal data class CollectionItemDto(
     val id: String,
@@ -29,7 +32,7 @@ internal data class CollectionItemDto(
     val derived: DerivedDto? = null,
     val blobs: Map<String, BlobDto> = emptyMap(),
     val createdAt: String = "",
-    val updatedAt: String = "",
+    val version: String = "",
 ) {
     fun toDomain(database: CollectionDatabase): CollectionItem {
         val values = LinkedHashMap<String, FieldValue>()
@@ -42,7 +45,7 @@ internal data class CollectionItemDto(
             if (value != null) values[property.key] = value
         }
         derived?.apply(values, database)
-        return CollectionItem(id, databaseId, values, originsOf(), createdAt, updatedAt)
+        return CollectionItem(id, databaseId, values, originsOf(), createdAt, version)
     }
 
     private fun targetsOf(targets: List<CollectionRelationTargetDto>): FieldValue =

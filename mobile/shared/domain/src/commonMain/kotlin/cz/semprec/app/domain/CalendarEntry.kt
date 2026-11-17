@@ -29,7 +29,7 @@ data class SleepNightEntry(
  * One entry of the calendar timeline. [date] is the first day, [endDate] the stored last day of an event.
  * [timeFrom] and [timeTo] are what is stored, [effectiveTo] the end the server decides by the time rules (the start
  * for a task without an end); all are `null` for an all-day entry. For a derived entry only the fields its kind
- * uses are set, and it has no [updatedAt].
+ * uses are set, and it has no [version], the token a write of the stored item sends as `ifVersion`.
  */
 data class CalendarEntry(
     val id: String,
@@ -45,7 +45,7 @@ data class CalendarEntry(
     val status: String?,
     val place: String?,
     val readOnly: Boolean,
-    val updatedAt: String?,
+    val version: String?,
     val seriesId: String? = null,
     val occurrenceDate: CalendarDay? = null,
     val tentative: Boolean = false,

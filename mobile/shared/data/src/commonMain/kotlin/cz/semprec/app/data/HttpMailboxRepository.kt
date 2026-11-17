@@ -74,7 +74,7 @@ class HttpMailboxRepository internal constructor(
         patch(mailboxId, buildJsonObject { put(CONNECTION_LIMIT_KEY, limit) })
 
     private suspend fun patch(mailboxId: String, properties: JsonObject) =
-        items.get(mailboxId).then { item -> writes.patch(mailboxId, properties, item.updatedAt) }.map { }
+        items.get(mailboxId).then { item -> writes.patch(mailboxId, properties, item.version) }.map { }
 }
 
 private fun mailboxPath(mailboxId: String) = "$MAILBOXES_PATH/${mailboxId.encodeURLPathPart()}"

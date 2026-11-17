@@ -29,7 +29,7 @@ private const val DRAFT = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 private const val DRAFT_JSON = """{"id":"$DRAFT","mailboxId":"m1","from":"me@x.cz",
     "to":[{"name":"Petr","address":"petr@novak.cz"}],"cc":[],"bcc":[],"subject":"Re: Nabídka","body":"Ahoj",
     "threadId":"t1","mode":"replyAll","sourceEmailId":"e1","attachments":[],"createdBy":"agent",
-    "lastEditedBy":"agent","updatedAt":"2026-10-20T12:00:00.000Z","sentAt":null}"""
+    "lastEditedBy":"agent","updatedAt":"2026-10-20T12:00:00.000Z","version":"6","sentAt":null}"""
 
 private const val SENT_JSON = """{"emailId":"$DRAFT","threadId":"t1","sentAt":"2026-10-20T12:05:00Z",
     "mailbox":{"id":"m1","name":"Gmail"}}"""
@@ -115,7 +115,7 @@ class HttpMailDraftRepositoryTest {
 
         assertTrue(draft.createdByAgent)
         assertEquals(MailDraftMode.REPLY_ALL, draft.mode)
-        assertEquals("2026-10-20T12:00:00.000Z", draft.version)
+        assertEquals("6", draft.version)
         assertEquals("t1", draft.threadId)
         assertEquals(MailAddress("Petr", "petr@novak.cz"), draft.to.single())
     }
@@ -128,6 +128,18 @@ class HttpMailDraftRepositoryTest {
 
         assertEquals(HttpMethod.Patch, server.requests.single().method)
         assertEquals("v1", sentBody(server).getValue("ifVersion").jsonPrimitive.content)
+    }
+
+    @Test
+    fun theVersionADraftIsReadWithIsWhatItsUpdateSends() = runTest {
+        val server = MailTestServer(::routes)
+        val drafts = server.drafts()
+        val draft = assertIs<RepositoryResult.Content<MailDraft>>(drafts.read(DRAFT)).value
+
+        drafts.update(draft.id, draft.version, FIELDS)
+
+        assertEquals(HttpMethod.Patch, server.requests.last().method)
+        assertEquals("6", sentBody(server).getValue("ifVersion").jsonPrimitive.content)
     }
 
     @Test

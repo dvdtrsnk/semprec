@@ -10,12 +10,15 @@ internal data class SleepSchemaResponse(val databases: List<SleepSchemaDatabase>
 @Serializable
 internal data class SleepSchemaDatabase(val databaseId: String, val key: String? = null)
 
-/** One stored item of the generic item API; [properties] are narrowed by the sleep property DTOs below. */
+/**
+ * One stored item of the generic item API; [properties] are narrowed by the sleep property DTOs below, and [version]
+ * is the token a patch sends as `ifVersion`.
+ */
 @Serializable
 internal data class SleepStoredItem(
     val id: String,
     val properties: JsonObject = JsonObject(emptyMap()),
-    val updatedAt: String,
+    val version: String,
 )
 
 @Serializable

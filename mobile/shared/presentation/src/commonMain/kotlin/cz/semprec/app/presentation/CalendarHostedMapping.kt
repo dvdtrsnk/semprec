@@ -30,6 +30,6 @@ private fun EventTaskEntry.toEntry(event: CalendarEntry): CalendarEntry {
         status = if (done) CalendarEntry.STATUS_DONE else CalendarEntry.STATUS_OPEN,
         place = null,
         readOnly = false,
-        updatedAt = null,
+        version = null,
     )
 }

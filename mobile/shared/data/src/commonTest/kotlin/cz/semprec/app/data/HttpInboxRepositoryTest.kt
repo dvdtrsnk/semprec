@@ -30,8 +30,9 @@ import kotlin.test.assertTrue
 
 private const val TASKS_DB = "cccccccc-0000-4000-8000-000000000001"
 private const val CARD = "dddddddd-0000-4000-8000-000000000001"
-private const val VERSION = "2026-10-16T08:00:00.000Z"
-private const val NEWER = "2026-10-16T08:05:00.000Z"
+private const val VERSION = "3"
+private const val NEWER = "4"
+private const val UPDATED_AT = "2026-10-16T08:05:00.000Z"
 
 private const val TASKS_SCHEMA = """{"tenant":{"timezone":"Europe/Prague","today":"2026-10-16"},"databases":[
   {"databaseId":"$TASKS_DB","key":"tasks","name":"Tasks","defaultSort":{"system":"createdAt","direction":"desc"},
@@ -65,7 +66,8 @@ private const val INVALID_REASON = """"invalidReason":{"code":"archived","field"
 
 private fun cards(vararg card: String) = """{"cards":[${card.joinToString(",")}],"total":${card.size}}"""
 
-private fun card(item: String) = """{"id":"$CARD","databaseId":"x","updatedAt":"$NEWER","properties":$item}"""
+private fun card(item: String) =
+    """{"id":"$CARD","databaseId":"x","updatedAt":"$UPDATED_AT","version":"$NEWER","properties":$item}"""
 
 class HttpInboxRepositoryTest {
     private fun fixture(handler: Handler): Pair<HttpInboxRepository, Recorder> {
@@ -239,6 +241,24 @@ class HttpInboxRepositoryTest {
     }
 
     @Test
+    fun theVersionAnEditAnswersIsWhatTheNextDecisionSendsNotTheUpdatedAt() = runTest {
+        val (repository, recorder, card) = loaded { request ->
+            when (request.method) {
+                HttpMethod.Patch -> json(card("""{"status":"proposed"}"""))
+                HttpMethod.Get -> json(cards(TASK_CARD))
+                else -> json("{}")
+            }
+        }
+
+        val updated = (repository.edit(card, InboxEdit(steps = mapOf("follow" to true))) as RepositoryResult.Content)
+            .value
+        repository.reject(updated)
+
+        assertEquals("/api/proposals/$CARD/reject", recorder.requests.last().url.encodedPath)
+        assertEquals(NEWER, recorder.bodyJson(recorder.bodies.lastIndex).getValue("ifVersion").jsonPrimitive.content)
+    }
+
+    @Test
     fun aValidEditLeavesAnInvalidCardProposedAndWithoutItsReason() = runTest {
         val invalid = TASK_CARD.replace("\"status\":\"proposed\"", "\"status\":\"invalid\"")
             .replace("\"editorSchema\"", "$INVALID_REASON,\"editorSchema\"")
@@ -283,7 +303,7 @@ class HttpInboxRepositoryTest {
 
     @Test
     fun aConfirmationSendsTheVersionAndTheCredentialAndNamesWhatItWrote() = runTest {
-        val results = """{"id":"$CARD","properties":{},"updatedAt":"$NEWER","results":[
+        val results = """{"id":"$CARD","properties":{},"updatedAt":"$UPDATED_AT","version":"$NEWER","results":[
             {"itemId":"x","databaseKey":"files","label":"Side","role":"secondary"},
             {"itemId":"t9","databaseKey":"tasks","label":"Send the invoice","role":"primary"}]}"""
         val (repository, recorder, card) = loaded { request ->

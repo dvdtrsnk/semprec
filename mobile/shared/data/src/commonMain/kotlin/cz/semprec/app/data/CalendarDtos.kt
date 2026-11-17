@@ -10,12 +10,12 @@ internal data class CalendarSchemaResponse(val databases: List<CalendarSchemaDat
 @Serializable
 internal data class CalendarSchemaDatabase(val databaseId: String, val key: String? = null)
 
-/** One stored item of the generic item API. */
+/** One stored item of the generic item API; [version] is the token a later patch sends as `ifVersion`. */
 @Serializable
 internal data class CalendarStoredItem(
     val id: String,
     val properties: JsonObject = JsonObject(emptyMap()),
-    val updatedAt: String,
+    val version: String,
 )
 
 @Serializable
@@ -37,7 +37,7 @@ internal data class TimelineNow(val date: String, val time: String)
 
 /**
  * The fields of every kind of timeline entry. A stored event or task fills the schedule fields, a derived entry
- * the ones of its kind; the rest stays `null`.
+ * the ones of its kind; the rest stays `null`. [version] is the stored item's `ifVersion` token.
  */
 @Serializable
 internal data class TimelineEntryDto(
@@ -54,7 +54,7 @@ internal data class TimelineEntryDto(
     val status: String? = null,
     val place: String? = null,
     val readOnly: Boolean? = null,
-    val updatedAt: String? = null,
+    val version: String? = null,
     val seriesId: String? = null,
     val occurrenceDate: String? = null,
     val attendance: String? = null,

@@ -44,7 +44,8 @@ private const val DATABASES = """{"databases":[
     {"id":"$TASKS_ID","key":"tasks"},{"id":"db-events","key":"events"},{"id":"db-areas","key":"areas"},
     {"id":"db-projects","key":"projects"},{"id":"db-people","key":"people"}]}"""
 private const val BARE_TASK = """{"id":"$TASK_ID","databaseId":"$TASKS_ID"}"""
-private const val TASK_JSON = """{"id":"$TASK_ID","databaseId":"$TASKS_ID","updatedAt":"v1","properties":{
+private const val TASK_JSON = """{"id":"$TASK_ID","databaseId":"$TASKS_ID",
+    "updatedAt":"2026-10-16T08:00:00.000Z","version":"1","properties":{
     "name":"Odeslat fakturu","status":"notDone","date":"2026-10-13","effectiveDate":"2026-10-16",
     "timeFrom":"14:00","timeTo":"15:30","flagged":true,"description":"Za zari",
     "recurrence":{"preset":"daily","mode":"fixed"}},
@@ -144,7 +145,7 @@ class WorkRepositoriesTest {
         val task = loaded(data)
 
         assertEquals("Odeslat fakturu", task.title)
-        assertEquals("v1", task.version)
+        assertEquals("1", task.version)
         assertEquals(Schedule("2026-10-13", "14:00", "15:30", null), task.schedule)
         assertEquals("2026-10-16", task.effectiveDate)
         assertEquals(TaskStatus.NOT_DONE, task.status)
@@ -185,7 +186,7 @@ class WorkRepositoriesTest {
 
     @Test
     fun anEventIsMappedWithItsPlaceCompanyAndAllDayShape() = runTest {
-        val event = """{"id":"e","databaseId":"d","updatedAt":"v","properties":{"name":"Zubar","date":"2026-10-15",
+        val event = """{"id":"e","databaseId":"d","version":"2","properties":{"name":"Zubar","date":"2026-10-15",
             "endDate":"2026-10-16","place":"Praha"},"relations":{"company":[{"id":"c","title":"Firma"}]}}"""
         val data = work { json(event) }
 
@@ -272,7 +273,7 @@ class WorkRepositoriesTest {
         val patches = requests.indices.filter {
             requests[it].method.value == "PATCH"
         }.map { Json.parseToJsonElement(bodies[it]).jsonObject }
-        assertTrue(patches.all { it.getValue("ifVersion").jsonPrimitive.content == "v1" })
+        assertTrue(patches.all { it.getValue("ifVersion").jsonPrimitive.content == "1" })
         fun JsonObject.props() = getValue("properties").jsonObject
         assertEquals("Nove", patches[0].props().getValue("name").jsonPrimitive.content)
         assertEquals("done", patches[1].props().getValue("status").jsonPrimitive.content)

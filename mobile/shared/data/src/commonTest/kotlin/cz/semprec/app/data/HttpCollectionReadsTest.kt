@@ -195,7 +195,7 @@ class HttpCollectionReadsTest {
         assertEquals(FieldValue.Choices(listOf("a", "b")), item.values["tags"])
         assertEquals(FieldValue.Number(180000.0), item.values["budget"])
         assertNull(item.values["recurrence"])
-        assertEquals("2026-10-16T10:00:00Z", item.version)
+        assertEquals("3", item.version)
     }
 
     @Test
@@ -357,7 +357,7 @@ class HttpCollectionReadsTest {
                 json(SCHEMA_JSON)
             } else {
                 json(
-                    """{"id":"i","databaseId":"$PROJECTS_ID","createdAt":"c","updatedAt":"u",
+                    """{"id":"i","databaseId":"$PROJECTS_ID","createdAt":"c","updatedAt":"u","version":"1",
                         "properties":{"budget":"lots","status":5,"pinned":"yes","tags":"a","date":null,"name":"N"}}""",
                 )
             }

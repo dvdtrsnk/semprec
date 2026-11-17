@@ -24,7 +24,7 @@ import kotlin.test.assertIs
 
 private const val MEETING_TASKS_DB = "db-tasks"
 
-private const val CREATED = """{"id":"new","databaseId":"db-tasks","properties":{},"updatedAt":"v1"}"""
+private const val CREATED = """{"id":"new","databaseId":"db-tasks","properties":{},"version":"1"}"""
 
 private const val MEETING_TASKS = """{"eventId":"e1","tasks":[
  {"taskId":"t1","title":"Open","state":{"kind":"open"}},

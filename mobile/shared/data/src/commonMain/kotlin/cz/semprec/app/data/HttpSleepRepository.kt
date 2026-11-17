@@ -130,7 +130,7 @@ class HttpSleepRepository(private val api: AuthenticatedApi) : SleepRepository {
         when (val current = api.send(HttpMethod.Get, "/api/items/$itemId").decode<SleepStoredItem>()) {
             is RepositoryResult.Failure -> current
             is RepositoryResult.Content -> {
-                val body = ApiJson.encodeToString(SleepPatchRequest(properties, current.value.updatedAt))
+                val body = ApiJson.encodeToString(SleepPatchRequest(properties, current.value.version))
                 api.send(HttpMethod.Patch, "/api/items/$itemId", body = body).ignoreBody()
             }
         }

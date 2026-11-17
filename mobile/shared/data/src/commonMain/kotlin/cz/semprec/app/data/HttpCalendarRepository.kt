@@ -137,7 +137,7 @@ class HttpCalendarRepository(
         when (val item = stored(entry)) {
             is RepositoryResult.Failure -> item
             is RepositoryResult.Content -> {
-                val version = item.value.updatedAt.takeIf { it.isNotEmpty() }
+                val version = item.value.version.takeIf { it.isNotEmpty() }
                 val body = ApiJson.encodeToString(CalendarPatchRequest(properties, version))
                 api.send(HttpMethod.Patch, "/api/items/${item.value.id}", body = body).ignoreBody().alsoChanged()
             }
@@ -148,13 +148,13 @@ class HttpCalendarRepository(
         val series = entry.seriesId
         val occurrence = entry.occurrenceDate
         if (!entry.isVirtualOccurrence || series == null || occurrence == null) {
-            return RepositoryResult.Content(StoredRef(entry.id, entry.updatedAt.orEmpty()))
+            return RepositoryResult.Content(StoredRef(entry.id, entry.version.orEmpty()))
         }
         val family = if (entry.kind == CalendarEntryKind.EVENT) "events" else "tasks"
         val response = api.send(HttpMethod.Post, "/api/$family/series/$series/occurrences/$occurrence")
         return when (val item = response.decode<CalendarStoredItem>()) {
             is RepositoryResult.Failure -> item
-            is RepositoryResult.Content -> RepositoryResult.Content(StoredRef(item.value.id, item.value.updatedAt))
+            is RepositoryResult.Content -> RepositoryResult.Content(StoredRef(item.value.id, item.value.version))
         }
     }
 
@@ -163,7 +163,7 @@ class HttpCalendarRepository(
         return this
     }
 
-    private data class StoredRef(val id: String, val updatedAt: String)
+    private data class StoredRef(val id: String, val version: String)
 }
 
 private fun RepositoryResult<TimelineResponse>.toTimeline(): RepositoryResult<CalendarTimeline> = when (this) {

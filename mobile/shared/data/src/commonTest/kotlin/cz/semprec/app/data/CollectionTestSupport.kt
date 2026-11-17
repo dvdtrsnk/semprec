@@ -83,6 +83,7 @@ const val PROJECT_JSON = """{
   "properties": {"name": "Semprec iOS", "status": "inProgress", "date": "2027-01-31", "pinned": true,
                  "tags": ["a", "b"], "budget": 180000, "recurrence": {"x": 1}},
   "computed": {}, "createdAt": "2026-10-01T10:00:00Z", "updatedAt": "2026-10-16T10:00:00Z", "deletedAt": null,
+  "version": "3",
   "relations": {"area": [{"id": "$AREA_ITEM", "databaseKey": "areas", "databaseId": "$AREAS_ID", "title": "Práce",
                           "color": "#5856D6", "metadata": {}}, {"id": "hidden-1", "hidden": true}]},
   "links": {
