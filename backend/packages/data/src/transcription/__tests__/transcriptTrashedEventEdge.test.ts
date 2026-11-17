@@ -1036,13 +1036,18 @@ describe("a transcript whose Event is in the Trash (issue #1743)", () => {
       // so no stored state has the edge without the row. A match reads exactly this when that purge commits between
       // its two reads.
       const raw = await admin.connect();
+      let failed = false;
       try {
         await raw.query("BEGIN");
         await raw.query("SET LOCAL session_replication_role = replica");
         await raw.query("DELETE FROM items WHERE database_id = $1 AND id = $2", [world.schema.db.events, world.event]);
         await raw.query("COMMIT");
+      } catch (error) {
+        failed = true;
+        throw error;
       } finally {
-        raw.release();
+        // A failed statement leaves the transaction open: destroy the connection instead of pooling it.
+        raw.release(failed);
       }
       expect(await eventIds(world)).toEqual([]);
       expect(await storedEventEdges(world)).toEqual([world.event]);

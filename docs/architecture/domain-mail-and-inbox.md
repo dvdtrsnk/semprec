@@ -306,10 +306,11 @@ described elsewhere and only referenced here:
 - Restore: `mailboxItemRestoreHook` (`mail/mailboxRestoreHook.ts`) seeds a default sync state if none
   (unlocked read + `ON CONFLICT DO NOTHING`, never waits on an existing row), and restores the Folders and Emails
   of the exact trash epoch in the same transaction. It takes no sync guard and does not write `syncStatus`.
-- Purge: `mailItemPurgeHook` (`mail/mailPurgeHook.ts`) acts on system Emails/Mailboxes items. Emails: meta row
-  (and an emptied thread: soft-delete its Threads item, delete the row), attachments, flag sync state; blobs and
-  Files stay. Mailboxes: credential, sync state, server settings, and folder sync states of folders without a
-  `Folders.mailbox` edge. The hook takes the thread guard after the purge's own locks (fixed by the registry).
+- Purge: `mailItemPurgeHook` (`mail/mailPurgeHook.ts`) acts on system Emails/Mailboxes items. Emails: the meta
+  row (and an emptied thread: soft-delete its Threads item, delete the row); blobs and Files stay. Mailboxes:
+  folder sync states of folders without a `Folders.mailbox` edge. The hook takes the thread guard after the
+  purge's own locks (fixed by the registry). Attachments, flag sync state, credential, sync state and server
+  settings go with the item through their foreign keys (data-model-and-writes.md, *Storage*).
 
 ## Provider failure privacy
 

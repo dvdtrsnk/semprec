@@ -187,7 +187,8 @@ The project set on a mail thread never takes part in a send decision.
 - `agent_database_grants` (tenant, project item, database, access `none|read|write`) decides an agent project's access
   (`backend/packages/data/src/agentGrants/`). Defaults: a non-sensitive system database is always `write` (rows
   ignored); a sensitive database without a row is `none`; a user-created database without a row is `write`. Only
-  `agentDatabaseGrantsAdminStore.ts` writes rows (user routes), plus item purge cleanup in `deleteItemDependents`.
+  `agentDatabaseGrantsAdminStore.ts` writes rows (user routes); a purged project's rows go through their foreign key
+  (data-model-and-writes.md, *Storage*).
 - `assertAgentDatabaseAccess` runs in the transaction of the guarded read or write, locking the decision row
   `FOR SHARE`, so a revoke of an existing row waits for passed checks. Never pre-check in the gateway.
 - Guarded paths: item get/list/query/view query, relation list, item create/patch/delete/restore (cascade databases

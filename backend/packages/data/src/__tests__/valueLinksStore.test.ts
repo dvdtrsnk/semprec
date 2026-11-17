@@ -262,6 +262,13 @@ describe("value links store (issue #1403)", () => {
       expect(
         await withTenantTransaction(runtimePool, tenantA, (client) => moveValueLinkItemSources(client, from, to)),
       ).toBe(0);
+      // Tenant B's source is invisible to tenant A, so moving it from tenant A touches nothing.
+      expect(
+        await withTenantTransaction(runtimePool, tenantA, (client) =>
+          moveValueLinkItemSources(client, foreignFrom, to),
+        ),
+      ).toBe(0);
+      expect(await sourcesOf(tenantB, foreign.link.id)).toEqual([`${foreignFrom} project`]);
     } finally {
       await runtimePool.end();
     }
@@ -368,6 +375,19 @@ describe("value links store (issue #1403)", () => {
       expect(
         await withTenantTransaction(runtimePool, tenantA, (client) => listValueLinksBySourceItem(client, randomUUID())),
       ).toEqual([]);
+      // Tenant B's link to its own source exists, but tenant A sees it as no link at all.
+      expect(
+        await withTenantTransaction(runtimePool, tenantA, (client) =>
+          listValueLinksBySourceItem(client, foreignSource),
+        ),
+      ).toEqual([]);
+      expect(
+        (
+          await withTenantTransaction(runtimePool, tenantB, (client) =>
+            listValueLinksBySourceItem(client, foreignSource),
+          )
+        ).map((link) => link.itemId),
+      ).toEqual([foreignHolder]);
     } finally {
       await runtimePool.end();
     }

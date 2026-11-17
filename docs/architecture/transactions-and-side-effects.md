@@ -207,7 +207,10 @@ A change to any of these paths must keep the order:
 - **Relation property vs. target database delete:** `createRelationPropertyWithClient` reads the
   target `databases` row `FOR KEY SHARE` and holds it to commit; a purge deleting that database
   (`deleteDatabaseWithItems`) either waits for the relation's commit or, having deleted the row first,
-  makes the read wait and then miss it (`validation_failed`).
+  makes the read wait and then miss it (`validation_failed`). This orders the two; it does not remove
+  the relation: when the creation commits first, the purge has already listed (or, for an inline
+  database of a purged item, never lists) the dependent schema, so the new relation property keeps
+  naming the deleted database. That was already so with partitions.
 
 ### Advisory locks
 
