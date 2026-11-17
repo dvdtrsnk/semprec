@@ -20,10 +20,10 @@ and host provisioning (#244, #176):
 - `docker-compose.yml` — PostgreSQL only, bound to `127.0.0.1`. Its container receives exactly
   `POSTGRES_USER`, `POSTGRES_PASSWORD` and `POSTGRES_DB`, interpolated from
   `/opt/semprec/shared/env/postgres.env` by `docker compose --env-file
-  /opt/semprec/shared/env/postgres.env -f deploy/docker-compose.yml up -d` — no other variable in that file reaches the container. A host
+/opt/semprec/shared/env/postgres.env -f deploy/docker-compose.yml up -d` — no other variable in that file reaches the container. A host
   provisioned before this file dropped MinIO can remove its now-unused volume by hand (check its
   name with `docker volume ls`, typically `<project>_minio_data`) with `docker volume rm
-  <volume-name>` — optional, not scripted.
+<volume-name>` — optional, not scripted.
 - `shared/env/<group>.env.example` — twelve values-free templates, one per secret group
   (`postgres`, `migrate`, `data-role`, `side-role`, `master-key`, `gateway-token`, `ai-gateway`,
   `api`, `agents`, `settings`, `backup`, `monitor`), for `/opt/semprec/shared/env/<group>.env`. Each
@@ -46,16 +46,16 @@ own `server.listen(port, "127.0.0.1", ...)` call, so that binding lives in
 `EnvironmentFile=` lines are its allowlist of secret groups; nothing service-specific is ever
 shipped inside a release directory, so a release contains no secret of any kind:
 
-| unit | groups (in `/opt/semprec/shared/env/`) |
-|---|---|
-| `semprec-api` | `data-role`, `master-key`, `gateway-token`, `api`, `settings` |
-| `semprec-agents` | `data-role`, `master-key`, `gateway-token`, `agents`, `settings` |
-| `semprec-transcribe` | `data-role`, `gateway-token`, `settings` |
-| `semprec-ai-gateway` | `side-role`, `gateway-token`, `ai-gateway` |
-| `semprec-backup` | `postgres`, `settings`, `backup` |
-| `semprec-restore-test` | `side-role`, `settings`, `backup` |
-| `semprec-dead-man`, `semprec-failping@` | `monitor` |
-| `semprec-trash-purge` | none |
+| unit                                    | groups (in `/opt/semprec/shared/env/`)                           |
+| --------------------------------------- | ---------------------------------------------------------------- |
+| `semprec-api`                           | `data-role`, `master-key`, `gateway-token`, `api`, `settings`    |
+| `semprec-agents`                        | `data-role`, `master-key`, `gateway-token`, `agents`, `settings` |
+| `semprec-transcribe`                    | `data-role`, `gateway-token`, `settings`                         |
+| `semprec-ai-gateway`                    | `side-role`, `gateway-token`, `ai-gateway`                       |
+| `semprec-backup`                        | `postgres`, `settings`, `backup`                                 |
+| `semprec-restore-test`                  | `side-role`, `settings`, `backup`                                |
+| `semprec-dead-man`, `semprec-failping@` | `monitor`                                                        |
+| `semprec-trash-purge`                   | none                                                             |
 
 The four long-running units load `current/release.env` last. `migrate` is loaded by no unit: only
 `deploy.sh` hands it to its transient migration and seed units.
@@ -194,7 +194,7 @@ cluster. The block restores the selected main snapshot and then the newest indep
 snapshot:
 
 - It creates `semprec_side`, `semprec_data` (a member of `semprec_side`) and `semprec_router` when
-  they are missing, with the attributes of migrations 0040 and 0069, before `pg_restore`, because the
+  they are missing, with the attributes the baseline migration gives them, before `pg_restore`, because the
   dump's row-level security policies and grants name them. It sets the passwords of `semprec_data`
   and `semprec_side` from `SEMPREC_DATA_DB_PASSWORD` and `SEMPREC_SIDE_DB_PASSWORD` through
   psql's `\getenv` (psql 15 or newer), so no password is placed in a command-line argument.
@@ -206,7 +206,7 @@ snapshot:
   candidates with `restic snapshots --path /var/backups/semprec/postgres.dump`) and the two blob
   storage directories from that same snapshot, under their original absolute paths.
 - It selects the newest key snapshot with `restic dump --path /var/backups/semprec/tenant-keys.dump
-  latest`. Never choose an older key dump: it can hold the key of a tenant whose deletion erased it
+latest`. Never choose an older key dump: it can hold the key of a tenant whose deletion erased it
   since, and key snapshots expire after 7 days. The import below also refuses the key of a tenant
   that is `deleting` or tombstoned in `tenant_deletions`.
 
@@ -219,6 +219,7 @@ Bash script; do not source it. The key import target role must already have `SEL
 and `tenant_deletions` and `SELECT, INSERT` on `tenant_keys`; it must be subject to the target's RLS.
 
 <!-- restore-database-command:start -->
+
 ```bash
 set -euo pipefail
 umask 077
@@ -275,6 +276,7 @@ restic dump --path /var/backups/semprec/tenant-keys.dump latest \
   /var/backups/semprec/tenant-keys.dump > "$SEMPREC_RESTORE_KEY_DUMP"
 node /opt/semprec/current/backend/packages/data/dist/tenancy/restoreTenantKeysCli.js "$SEMPREC_RESTORE_KEY_DUMP"
 ```
+
 <!-- restore-database-command:end -->
 
 The "Re-applying account deletions after a restore" block follows this one. The key import checks
@@ -347,6 +349,7 @@ It fetches the newest path-selected replay ledger, checks that it covers the res
 snapshot's tombstones, and starts application services only after actual replay succeeds.
 
 <!-- restore-activation-command:start -->
+
 ```bash
 set -euo pipefail
 umask 077
@@ -362,6 +365,7 @@ DATABASE_URL="$SEMPREC_API_DATABASE_URL" node \
   "$SEMPREC_RESTORE_LEDGER"
 systemctl start semprec-api.service semprec-agents.service semprec-transcribe.service semprec-ai-gateway.service
 ```
+
 <!-- restore-activation-command:end -->
 
 Any nonzero step before `systemctl start` leaves the services offline. Replay refuses a tenant with `lastAdmin` or
@@ -423,14 +427,11 @@ crypto-shredded according to the separate key backup's retention and availabilit
 
 `provision.sh` copies the `hunspell-cs` dictionary and affix files into the PostgreSQL container's
 `tsearch_data` directory as `cs_cz.dict` and `cs_cz.affix` (PostgreSQL rejects uppercase
-dictionary basenames). Backend migration `0046_czech_hunspell_search.sql` then switches the
-`czech` text search configuration to lemmatize words through that dictionary ahead of the
-`unaccent`/`simple` fallback. Without the files, the migration still succeeds and search keeps the
-fallback.
-
-The switch is re-attempted by the migrations CLI on every deploy and is a no-op once active, so a
-database migrated before the files were installed is upgraded by the first deploy after
-provisioning. Messages indexed before that keep their fallback lexemes until they are reindexed.
+dictionary basenames). The backend baseline migration then switches the `czech` text search
+configuration to lemmatize words through that dictionary ahead of the `unaccent`/`simple` fallback
+(`activate_czech_hunspell_search()`). Without the files, the migration still succeeds and search keeps
+the fallback. `deploy.sh` refuses to run before `provision.sh`, so the first migration of a host finds
+the files in place.
 
 The files live in the container's filesystem, not in a volume. Once the dictionary is active,
 PostgreSQL needs them to index or search any message, so rerun `provision.sh` whenever the

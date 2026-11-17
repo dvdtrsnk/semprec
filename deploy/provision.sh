@@ -16,7 +16,7 @@ readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly APT_KEYRING_DIR=/etc/apt/keyrings
 readonly APT_SOURCES_DIR=/etc/apt/sources.list.d
 # PostgreSQL rejects dictionary file basenames with uppercase letters, so the assets are
-# installed lowercase; backend migration 0046 references them as cs_cz.
+# installed lowercase; the backend baseline migration references them as cs_cz.
 readonly HUNSPELL_BASENAME=cs_cz
 readonly HUNSPELL_DICT_SOURCE=/usr/share/hunspell/cs_CZ.dic
 readonly HUNSPELL_AFFIX_SOURCE=/usr/share/hunspell/cs_CZ.aff

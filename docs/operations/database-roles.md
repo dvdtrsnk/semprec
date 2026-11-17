@@ -1,6 +1,6 @@
 # Runtime Postgres roles and least-privilege service connections
 
-Issue #243. Two roles, created by migration `0040_least_privilege_roles.sql`
+Issue #243. Two roles, created by the baseline migration `0001_baseline.sql`
 (`backend/packages/data/src/db/migrations/`):
 
 - **`semprec_data`** — full `SELECT`/`INSERT`/`UPDATE`/`DELETE` on the tables the generic
@@ -87,9 +87,8 @@ row into an actor the API accepts or into a delivery endpoint: `agent_runs`,
 The reason is containment: a compromised side-role process (`semprec-ai-gateway`,
 `semprec-restore-test`) must not be able to mint a session or an MCP run credential, rebind a user to
 another tenant, promote a user to `admin`, change a tenant's status or register a push endpoint for
-another user. Migration `0057_identity_tables_api_role_only.sql` applies the split to the identity
-plane; `0177_side_role_cannot_mint_actors.sql` extends it to the four actor and endpoint tables and
-takes the read of the credentials and tokens away (decision record:
+another user. The baseline applies the split to the identity plane and to the four actor and endpoint
+tables, and gives the side role no read of the credentials and tokens (decision record:
 `docs/adr/2026-11-15-the-side-role-cannot-create-an-actor-or-read-credentials.md`).
 
 ## DDL the API role needs
@@ -97,7 +96,7 @@ takes the read of the credentials and tokens away (decision record:
 `semprec_data` owns no table and has no `CREATE` on schema `public`, so it cannot run DDL itself.
 The one DDL statement the choke-point needs at runtime — creating a new database's `items`
 partition inside `createDatabase`'s transaction — goes through `create_items_partition(uuid)`,
-created by migration `0048_create_items_partition_function.sql`:
+created by the baseline:
 
 - It is `SECURITY DEFINER` with `search_path = pg_catalog, public, pg_temp`, owned by the migrating
   role (the owner of `items`), and runs
@@ -105,8 +104,7 @@ created by migration `0048_create_items_partition_function.sql`:
   partition name the application built before the function existed.
 - `EXECUTE` is revoked from `PUBLIC` and granted to `semprec_data` only; `semprec_side` cannot
   call it, because a side-table-only process must never create a partition.
-- Since migration `0072_attach_items_partitions.sql` it creates the partition as a standalone table
-  and attaches it, so it holds `SHARE UPDATE EXCLUSIVE` on `items` (item reads and writes proceed)
+- It creates the partition as a standalone table and attaches it, so it holds `SHARE UPDATE EXCLUSIVE` on `items` (item reads and writes proceed)
   and `ACCESS EXCLUSIVE` only on the new table, until the caller commits. Concurrent creations
   still serialize on that lock.
 
@@ -118,8 +116,8 @@ role that needs it — never through a schema-level `CREATE` grant or a change o
 **Rule:** the `search_path` of a `SECURITY DEFINER` function ends with `pg_temp` and lists no schema
 a runtime role can create objects in. Without `pg_temp` PostgreSQL searches the session's temporary
 schema first for relation and type names, so a runtime role could shadow a type the function body
-names (finding R2-DB-1 of gh-1086; migration `0176_definer_search_path_ends_with_pg_temp.sql`
-applies it to `create_items_partition(uuid)` and `drop_items_partition(uuid)`). The deploy-time
+names (finding R2-DB-1 of gh-1086; it applies to `create_items_partition(uuid)` and
+`drop_items_partition(uuid)`). The deploy-time
 verifier (`db/tenancyInvariants.ts`) refuses any other shape in every schema (decision record:
 `docs/adr/2026-11-15-security-definer-search-path-ends-with-pg-temp.md`).
 
@@ -137,9 +135,9 @@ and the function returns only ids or numbers, never content. The caller then ent
 `runInTenant(<returned tenant>)` and re-reads everything else under RLS. No runtime role ever gets
 `BYPASSRLS` (decision record: `docs/adr/2026-10-07-cross-tenant-router-functions.md`).
 
-| Function                         | Executing role | Returned value                                                                  | Columns read                                                                        |
-| -------------------------------- | -------------- | ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| `route_graph_subscription(text)` | `semprec_data` | a tenant id, or `NULL`                                                          | `mail_account_sync_state(graph_subscription_id, tenant_id)`                         |
-| `route_gmail_address(text)`      | `semprec_data` | `(tenant_id, mailbox_item_id)` rows, one per Gmail mailbox watching the address | `mail_account_sync_state(item_id, tenant_id, sync_mode, gmail_watch_email_address)` |
+| Function                         | Executing role | Returned value                                                                                       | Columns read                                                                                       |
+| -------------------------------- | -------------- | ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `route_graph_subscription(text)` | `semprec_data` | a tenant id, or `NULL`                                                                               | `mail_account_sync_state(graph_subscription_id, tenant_id)`                                        |
+| `route_gmail_address(text)`      | `semprec_data` | `(tenant_id, mailbox_item_id)` rows, one per Gmail mailbox watching the address                      | `mail_account_sync_state(item_id, tenant_id, sync_mode, gmail_watch_email_address)`                |
 | `ops_health_counts()`            | `semprec_data` | one row of three counts: agent-run errors (7 days), `item_automation` errors, alerting tenant checks | `agent_runs(status, started_at)`, `item_automation(status)`, `tenant_observability_checks(status)` |
-| `ai_tenant_spend()`              | `semprec_data` | one row per tenant with calls: its id, spend today and spend this month (UTC windows) | `ai_gateway_calls(tenant_id, at, cost_usd)` |
+| `ai_tenant_spend()`              | `semprec_data` | one row per tenant with calls: its id, spend today and spend this month (UTC windows)                | `ai_gateway_calls(tenant_id, at, cost_usd)`                                                        |

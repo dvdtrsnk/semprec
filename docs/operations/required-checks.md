@@ -50,10 +50,10 @@ The release command checks those per-commit results before it tags a `main` comm
 
 ## Mobile checks (reported, not required)
 
-| Context | Runs when `mobile/` changes | Required on |
-| --- | --- | --- |
-| `mobile-android` | `mobile/scripts/verify architecture android` on Ubuntu | neither branch |
-| `mobile-apple` | `mobile/scripts/verify shared apple` on an Apple-silicon macOS runner | neither branch |
+| Context          | Runs when `mobile/` changes                                           | Required on    |
+| ---------------- | --------------------------------------------------------------------- | -------------- |
+| `mobile-android` | `mobile/scripts/verify architecture android` on Ubuntu                | neither branch |
+| `mobile-apple`   | `mobile/scripts/verify shared apple` on an Apple-silicon macOS runner | neither branch |
 
 Both jobs omit device flags: the shared iOS simulator tests, Android instrumented tests,
 Swift simulator tests and XCUITest execution report NOT RUN. Apple UI tests still compile.

@@ -3,6 +3,45 @@
 Issue #191. Why: [expand/contract](../adr/2026-09-10-expand-contract-forward-only-migrations.md)
 and [rollback one release back](../adr/2026-09-24-rollback-one-release-back-with-checked-migrations.md).
 
+## What a deploy runs
+
+`backend/packages/data/dist/db/runMigrationsCli.js` (source `src/db/runMigrationsCli.ts`) does two
+things, as the migrating role:
+
+1. `runMigrations` (`src/db/migrate.ts`) applies every file of
+   `backend/packages/data/src/db/migrations/` that `schema_migrations` does not list yet, in file
+   name order, each in its own transaction together with its `schema_migrations` row.
+2. `ensureQueueSchema` and `grantQueueSchemaPrivileges` (`@semprec/queue`) install graphile-worker's
+   own schema and give the runtime roles their grants on it; that schema does not exist before
+   graphile-worker creates it, so its grants cannot live in a SQL file.
+
+Nothing else runs at deploy time: there are no application-code upgrade steps. The seed CLI runs
+next ([seeding](seeding.md)). Integration tests build their database the same way
+(`src/testSupport/globalSetup.ts`).
+
+## The baseline
+
+`0001_baseline.sql` is the whole schema of a fresh database: roles, extensions, functions, text
+search configurations, tables with their keys, indexes, triggers and grants, foreign keys,
+row-level security policies, default privileges, and tenant zero with its default AI budget. It
+replaced the 177 development-era migrations before the first production release, when no database
+with data existed; it was generated from a `pg_dump` of a database those migrations built and
+proven to produce the same schema. Edit it only to regroup or comment it; a schema change is a new
+file.
+
+Every object belongs to the migrating role, except the cross-tenant router functions, which belong
+to `semprec_router` ([database roles](database-roles.md)). The `semprec:tenancy=` table comments are
+read by the deploy-time tenancy verifier (`src/db/tenancyInvariants.ts`).
+
+## Adding a migration
+
+Add the next numbered file, `NNNN_short_name.sql`. `pnpm --filter @semprec/data run
+check-migration-numbering` fails when two files share an ordinal. A module that owns the new file
+lists it in its manifest's `migrations` field; the baseline is listed by `schemaCore`.
+
+A migration contains DDL and, at most, a data change plain SQL can express. A change that needs
+application code to rewrite stored data is a queue job, not part of the deploy.
+
 ## The rule: the previous release must keep working
 
 `deploy.sh` runs a release's migrations while the previous release is still serving, and

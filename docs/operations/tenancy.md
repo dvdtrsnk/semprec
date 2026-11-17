@@ -153,9 +153,9 @@ No tests, services, production checks or additional reviewers ran as part of tha
 
 ### Activation boundary and continuation
 
-The recovered local code already contains migration `0123_drop_single_tenant_guard.sql` and
-invitation acceptance. A fully migrated local database therefore must not be described as
-physically protected by that removed index. The migration's operational go-live precondition
+The recovered local code has no single-tenant guard index in its schema (the baseline migration
+does not create it) and has invitation acceptance. A fully migrated local database therefore must
+not be described as physically protected by that removed index. The migration's operational go-live precondition
 remains in force: this documentation is not a runtime switch or permission to expose a second
 account. No deployment, real invitation, production restore or production security approval has
 been performed by this gate.

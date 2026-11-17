@@ -6,15 +6,17 @@ other part of Semprec assumes exist:
 
 - the "System settings" singleton database and its settings row;
 - the Projects database with the Semprec project row;
-- the ten hardcoded databases, the Email, Library, Inbox and MCP module databases, and their
-  heartbeats;
-- then the data migrations declared by every active module.
+- the ten hardcoded databases, the Email, Library, Inbox, MCP, Calendar, Recipes and Sleep module
+  databases, their views and their heartbeats;
+- then the default Inbox item types.
+
+The seed writes every database in its final shape: there are no per-tenant upgrade steps.
 
 ## Per tenant
 
 The seed visits every tenant whose status is `provisioning`, `active` or `suspended`, one after
 another, each inside that tenant's scope (`provisionTenant`). `deleting` tenants are skipped. A
-`provisioning` tenant becomes `active` once its seed and data migrations succeed; `active` and
+`provisioning` tenant becomes `active` once its seed succeeds; `active` and
 `suspended` tenants keep their status. A failing tenant does not stop the others: the CLI provisions
 the rest, then fails with an error naming the failed tenant ids.
 
@@ -37,8 +39,9 @@ See [the ADR](../adr/2026-10-08-deploy-time-tenant-work-runs-as-the-runtime-role
 The seed is a no-op for a tenant once its system settings database exists. The check runs inside
 the seed's own transaction after `pg_advisory_xact_lock(2331, hashtext(<tenant id>))`, so two
 concurrent runs for one tenant cannot both seed: the second waits for the first to commit, then
-finds its rows and returns. Different tenants do not wait on each other. Module data migrations run
-after that transaction and are idempotent on their own.
+finds its rows and returns. Different tenants do not wait on each other. The default Inbox item
+types are created in a later transaction, only those the tenant's System settings marker does not
+list yet, so a repeated run adds none.
 
 ## When it runs
 
