@@ -14,9 +14,12 @@ struct OverviewScreen: View {
     @StateObject private var viewModel: OverviewViewModel
     private let makeSearch: @MainActor () -> any SearchScreenModel
     private let router: any OverviewRouting
+    @Environment(\.scenePhase)
+    private var scenePhase
 
     // MARK: - State
     @State private var isSearching = false
+    @State private var hasAppeared = false
 
     // MARK: - Init
     init(
@@ -44,6 +47,14 @@ struct OverviewScreen: View {
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(OverviewIdentifiers.screen)
             .task { await viewModel.observe() }
+            // The server changes problems and counts on its own; coming back to the screen reads them again.
+            .onAppear {
+                if hasAppeared { viewModel.reload() }
+                hasAppeared = true
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { viewModel.reload() }
+            }
     }
 }
 
