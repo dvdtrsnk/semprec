@@ -458,12 +458,13 @@ describe("the mail draft routes (issue gh-1867)", () => {
       expect(sent.sentAt).not.toBeNull();
       recordThreadAnnouncements();
 
+      const staleVersion = String(BigInt(sent.version) - 1n);
       for (const attempt of [
-        updateDraft(created.id, { ifVersion: sent.version, subject: "Po odeslání" }),
-        updateDraft(created.id, { ifVersion: "2020-01-01T00:00:00.000Z", subject: "Po odeslání" }),
-        discardDraft(created.id),
+        () => updateDraft(created.id, { ifVersion: sent.version, subject: "Po odeslání" }),
+        () => updateDraft(created.id, { ifVersion: staleVersion, subject: "Po odeslání" }),
+        () => discardDraft(created.id),
       ]) {
-        const refusal = await attempt.catch((error: unknown) => error);
+        const refusal = await attempt().catch((error: unknown) => error);
         if (!(refusal instanceof MailDraftAlreadySentError)) throw new Error("Expected a MailDraftAlreadySentError");
         expect({ status: refusal.status, code: refusal.code }).toEqual({
           status: 409,
