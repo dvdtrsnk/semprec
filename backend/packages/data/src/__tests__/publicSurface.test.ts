@@ -508,6 +508,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "findDependenciesByRelationDefinition",
   "findDependenciesBySource",
   "findDependenciesBySourceDatabase",
+  "findDependenciesBySources",
   "findExhaustedWindow",
   "findFileItemByBlobId",
   "findIdempotentReplay",

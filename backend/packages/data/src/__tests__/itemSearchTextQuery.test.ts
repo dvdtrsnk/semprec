@@ -294,7 +294,7 @@ describe("q on database.query, view.query and item.count (issue #1857)", () => {
         };
         expect(withoutQ.some((sql) => sql.includes("item_search_index"))).toBe(false);
         expect(listSql(withoutQ).replace(/\s+/g, " ")).toBe(
-          "SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at FROM items WHERE database_id = $1 AND deleted_at IS NULL AND properties ->> $2 = $3 ORDER BY id ASC LIMIT $4",
+          "SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at, version FROM items WHERE database_id = $1 AND deleted_at IS NULL AND properties ->> $2 = $3 ORDER BY id ASC LIMIT $4",
         );
         expect(countSql(withoutQ)).toBe(
           "SELECT count(*)::text AS count FROM items WHERE database_id = $1 AND deleted_at IS NULL AND properties ->> $2 = $3",

@@ -479,6 +479,7 @@ describe("Event occurrences in the calendar timeline (issue gh-1877)", () => {
         counts: { open: 0, total: 0 },
         attendance: null,
         updatedAt: expect.any(String),
+        version: expect.any(String),
         readOnly: true,
         seriesId: series,
         occurrenceDate: "2026-10-13",

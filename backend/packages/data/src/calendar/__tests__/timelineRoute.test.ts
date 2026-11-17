@@ -61,6 +61,7 @@ const fullBodySchema = z
           counts: z.object({ open: z.number(), total: z.number() }).strict().nullable(),
           carriedFrom: z.string().nullable(),
           updatedAt: z.string(),
+          version: z.string(),
           readOnly: z.boolean(),
         })
         .strict(),
@@ -84,6 +85,7 @@ const compactBodySchema = fullBodySchema.extend({
         counts: z.object({ open: z.number(), total: z.number() }).strict().nullable(),
         attendance: z.literal("tentative").nullable(),
         updatedAt: z.string(),
+        version: z.string(),
         readOnly: z.boolean(),
       })
       .strict(),

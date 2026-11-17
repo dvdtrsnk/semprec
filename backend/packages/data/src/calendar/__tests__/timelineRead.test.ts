@@ -64,6 +64,7 @@ const fullItemSchema = z
     counts: z.object({ open: z.number(), total: z.number() }).strict().nullable(),
     carriedFrom: z.string().nullable(),
     updatedAt: z.string(),
+    version: z.string(),
     readOnly: z.boolean(),
   })
   .strict();
@@ -183,6 +184,13 @@ function world(tenantId: string) {
     return item.updatedAt;
   }
 
+  async function version(moduleId: string, itemId: string): Promise<string> {
+    const id = await databaseId(moduleId);
+    const item = await inTenant(() => chokePoint.getItem(id, itemId));
+    if (!item) throw new Error("Item missing");
+    return item.version;
+  }
+
   async function calendars(): Promise<{ defaultId: string; tasksId: string; workId: string }> {
     const id = await databaseId(CALENDARS_MODULE_ID);
     const rows = z.array(calendarSchema).parse((await inTenant(() => chokePoint.listItems(id, { limit: 50 }))).items);
@@ -231,6 +239,7 @@ function world(tenantId: string) {
     setCalendar,
     storeRaw,
     updatedAt,
+    version,
     calendars,
     edgeCounts,
     setZone,
@@ -340,6 +349,7 @@ describe("calendar timeline read (issue #1717)", () => {
       counts: null,
       carriedFrom: null,
       updatedAt: await w.updatedAt("tasks", rent),
+      version: await w.version("tasks", rent),
       readOnly: false,
     });
     expect(items[1]).toEqual({
@@ -367,6 +377,7 @@ describe("calendar timeline read (issue #1717)", () => {
       counts: { open: 0, total: 0 },
       carriedFrom: null,
       updatedAt: await w.updatedAt("events", standup),
+      version: await w.version("events", standup),
       readOnly: false,
     });
     const meetingItem = items[2];
@@ -398,6 +409,7 @@ describe("calendar timeline read (issue #1717)", () => {
       counts: { open: 0, total: 0 },
       carriedFrom: null,
       updatedAt: await w.updatedAt("events", meeting),
+      version: await w.version("events", meeting),
       readOnly: false,
     });
     expect(items[3]).toEqual({
@@ -426,6 +438,7 @@ describe("calendar timeline read (issue #1717)", () => {
       counts: null,
       carriedFrom: null,
       updatedAt: await w.updatedAt("tasks", invoice),
+      version: await w.version("tasks", invoice),
       readOnly: false,
     });
   });
@@ -898,6 +911,7 @@ describe("calendar timeline read (issue #1717)", () => {
         counts: null,
         attendance: null,
         updatedAt: await w.updatedAt("tasks", task),
+        version: await w.version("tasks", task),
         readOnly: false,
       },
       {
@@ -913,6 +927,7 @@ describe("calendar timeline read (issue #1717)", () => {
         counts: { open: 0, total: 0 },
         attendance: null,
         updatedAt: await w.updatedAt("events", event),
+        version: await w.version("events", event),
         readOnly: false,
       },
     ]);

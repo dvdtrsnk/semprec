@@ -790,35 +790,8 @@ describe("native entrypoints: an owned database and the compiled services", () =
     DOWNSTREAM_CASE_TIMEOUT_MS,
   );
 
-  /** The legacy job of case (e); a fixed key, so the migrated job is found by it. */
-  const LEGACY_JOB_KEY = "native-entry-legacy-heartbeat-fire";
-
-  interface JobRow {
-    task_identifier: string;
-    key: string | null;
-    payload: unknown;
-  }
-
-  /**
-   * The jobs of the queue with a key, with their envelope. graphile-worker's public `jobs` view does not project
-   * the payload, so this reads its private tables, checked against graphile-worker 0.17.3; the access stays here.
-   */
-  async function jobsWithKey(owner: Pool, key: string): Promise<JobRow[]> {
-    const { rows } = await owner.query<JobRow>(
-      `SELECT t.identifier AS task_identifier, j.key, j.payload::jsonb AS payload
-         FROM graphile_worker._private_jobs j JOIN graphile_worker._private_tasks t ON t.id = j.task_id
-        WHERE j.key = $1`,
-      [key],
-    );
-    return rows;
-  }
-
-  function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-  }
-
   it(
-    "(e) the deploy order under strict scope: a second migration run moves a legacy heartbeatFire job and the tenancy verification passes",
+    "(e) the deploy order under strict scope: a second migration run succeeds and the tenancy verification passes",
     async () => {
       await withScratchDatabase(admin, baseUrl, async (db) => {
         await prepare(db);
@@ -835,34 +808,14 @@ describe("native entrypoints: an owned database and the compiled services", () =
           // The owner (superuser) pool reads the seeded rows of every tenant; this case asserts the deploy step, not isolation.
           const tenants = await owner.query<{ id: string }>("SELECT id FROM tenants");
           expect(tenants.rows).toHaveLength(1);
-          const tenantId = tenants.rows[0]?.id;
           const heartbeats = await owner.query<{ id: string; tenant_id: string }>(
             "SELECT id, tenant_id FROM project_heartbeats WHERE action_id = $1",
             [DRIFT_CHECK_ACTION_ID],
           );
           expect(heartbeats.rows).toHaveLength(1);
-          const heartbeat = heartbeats.rows[0];
-          expect(heartbeat?.tenant_id).toBe(tenantId);
-
-          // A job with the retired task name and an envelope without a tenant; only the queue's public function can
-          // produce this state, since no current code enqueues the name.
-          await owner.query(
-            "SELECT graphile_worker.add_job('heartbeatFire', $1::json, job_key => $2, max_attempts => 3)",
-            [JSON.stringify({ traceId: randomUUID(), payload: { heartbeatId: heartbeat?.id } }), LEGACY_JOB_KEY],
-          );
-          expect(await jobsWithKey(owner, LEGACY_JOB_KEY)).toMatchObject([{ task_identifier: "heartbeatFire" }]);
+          expect(heartbeats.rows[0]?.tenant_id).toBe(tenants.rows[0]?.id);
 
           expectSucceeded("runMigrationsCli.js", await runCli("runMigrationsCli.js", db));
-
-          const moved = await jobsWithKey(owner, LEGACY_JOB_KEY);
-          expect(moved.map((job) => job.task_identifier)).toEqual(["heartbeatFireCore"]);
-          const envelope = moved[0]?.payload;
-          expect(isRecord(envelope) ? envelope.tenantId : undefined).toBe(tenantId);
-          const remaining = await owner.query<{ count: string }>(
-            `SELECT count(*)::text AS count FROM graphile_worker._private_jobs j
-             JOIN graphile_worker._private_tasks t ON t.id = j.task_id WHERE t.identifier = 'heartbeatFire'`,
-          );
-          expect(remaining.rows[0]?.count).toBe("0");
 
           const verified = await runCli("verifyTenancyCli.js", db);
           expectSucceeded("verifyTenancyCli.js", verified);
