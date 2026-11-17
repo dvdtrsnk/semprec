@@ -9,16 +9,10 @@ description: "Build persisted-state writes through the generic choke point with 
 
 Triggers on: DELETE FROM, UPDATE ... SET, INSERT INTO, rowCount, requireAffectedRows, withTransaction, runAfterCommit, chokePoint., createItem, patchItem, addViewItem, removeViewItem, notifyInvalidation, pg_notify, NOTIFY, any *Store.ts file, a seed or backfill, an agent tool that writes, any handler whose verb is POST, PATCH, PUT or DELETE, registerItemUpdateHook, registerRelationEdgeWriteHook, domainWriteHooks, tenant_id, app.tenant_id, runInTenant, runAsSystem, SELECT ... FOR UPDATE, a guard read before a write, another module's table, SQL text built with a template literal, format('%I'), a DO block, CREATE TRIGGER or CREATE FUNCTION in a test, and a test fixture that writes rows. Skip only when nothing in the change can reach the database.
 
-Three laws govern every write to persisted state in the Semprec backend. They exist
-because the whole system's auditability, undo, realtime sync, and AI-safety story
-hangs on writes being observable in exactly one place.
-
-Recorded as ADRs: `docs/adr/2026-09-10-choke-point-api-for-state-writes.md`,
-`docs/adr/2026-09-10-single-writer-ownership-model.md`,
-`docs/adr/2026-09-10-agent-writes-are-proposals-not-direct-writes.md`,
-`docs/adr/2026-09-10-side-effects-follow-the-commit.md`,
-`docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md`,
-`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`.
+Auditability, undo, realtime sync and AI safety all depend on writes being
+observable in exactly one place. The rules: `docs/architecture/data-model-and-writes.md`,
+`docs/architecture/transactions-and-side-effects.md` and
+`docs/architecture/tenancy-and-security.md`. This skill is the checklist.
 
 ## 1. All writes go through the choke-point
 
@@ -27,11 +21,8 @@ Route every mutation of item/database state through the generic choke-point API
 layer's single write function that backs it. Never issue a direct `UPDATE`/`INSERT`
 against item tables from a service, worker, or script.
 
-Why: the choke-point is where idempotency keys, `ifVersion` conflict checks,
-`owner`/`locked` enforcement, event emission (WS invalidations, `onItemEvent`
-heartbeat triggers), and audit history all live. A write that bypasses it is
-invisible to all of them — clients don't refresh, heartbeats don't fire, and the
-edit history lies.
+Why: idempotency, `ifVersion` checks, `owner`/`locked` enforcement, event
+emission and audit history all live there; a bypassing write is invisible to them.
 
 The one exception: an issue whose explicit Task is to build or extend the
 choke-point itself.
@@ -49,9 +40,7 @@ the single composition point that wires every domain's hook into
 `createRelationWithClient`/`updateRelationWithClient`'s write and
 `assertRelationCreatableWithClient`'s pre-validation check (the assertion path
 does not commit — hooks registered here must be safe to run with no
-subsequent write). See
-`docs/adr/2026-09-30-choke-point-domain-hooks-through-a-per-process-registry.md`
-for the rationale and the boundary rule's exemptions.
+subsequent write).
 
 ## 2. One owner, one writer
 
@@ -83,9 +72,7 @@ row is written, in the same transaction as the write that changed its inputs —
 via a second writer reacting after the fact. This is distinct from the
 `allowedSystemKeys` escape hatch (which only relaxes the permission check for a
 caller that already computed the value); a derived field needs the value computed
-automatically regardless of caller. See
-`docs/adr/2026-10-29-item-pre-write-transforms-per-module-registry.md`, which
-supersedes `docs/adr/2026-09-19-derived-system-properties-computed-inline-at-choke-point.md`.
+automatically regardless of caller.
 
 ## 3. Agent code proposes, humans (or grants) confirm
 
@@ -97,7 +84,8 @@ it is what makes it safe to let agents run unattended.
 
 So when implementing an agent tool or heartbeat that "should update X": create a
 proposal card / approval request instead, and let `confirm` do the write inside its
-transaction.
+transaction. The closed list of direct agent writes is in
+`docs/architecture/agents-approvals-and-ai.md`.
 
 ## 4. Side effects follow the commit
 
@@ -157,14 +145,13 @@ Related checks worth doing in the same pass:
   option, so a plain `SELECT` inside it still lets a concurrent transaction
   change the row before your write commits. Raising the isolation level
   instead turns the race into serialization failures that every caller must
-  then retry, so prefer the row lock unless an ADR for that path says
-  otherwise. When a read decides whether a write happens, read with
+  then retry, so prefer the row lock unless the architecture document for that
+  path says otherwise. When a read decides whether a write happens, read with
   `SELECT … FOR UPDATE` (or `FOR SHARE` when you only need the row to stay as
   it is) in the same `withTransaction` as the write. Every path that reaches the
   write needs the same guard, including a cached or reused result. Never claim
-  in a comment or ADR that a check and a write are "serialized" unless a lock
-  makes them so. Without one, the honest claim is that a refused write rolls
-  back atomically.
+  in a comment or document that a check and a write are "serialized" unless a lock
+  makes them so.
 - **Writes that must hold together share one transaction.** Several statements
   on a plain client, or several auto-committed calls, leave a half-written state
   when the second one fails. Put the whole group in one `withTransaction`. This
@@ -177,40 +164,26 @@ Related checks worth doing in the same pass:
   only when the affected-row count, or a re-read, shows that this call
   performed the write. Build the payload from `RETURNING`, not from a snapshot
   read before the write.
-- **Take row locks across tables in the order the existing write path uses.**
-  A new path that locks the same tables in the opposite order deadlocks
-  against it under load.
+- **Take row locks across tables in the order the existing write path uses**
+  (the mandatory orders are in `transactions-and-side-effects.md`). A path that
+  locks them in the opposite order deadlocks under load.
 
 ## 5. Every write stays inside the caller's tenant
 
 Each user's data lives in that user's own tenant; a write must never reach
-another's. Why: `docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`.
+another's.
 
-- The tenant comes only from a trusted source. Today those are: the
-  authenticated session, a NOTIFY payload stamped by its publisher, an internal
-  caller whose identity was verified by reading a row (for example the agent's
-  Projects item) while the tenant scope was already set on the connection from
-  another trusted source, an MCP run credential, or a router function resolving
-  an external identifier to its tenant. Reading a row does not make the row's
-  tenant trusted: never derive the tenant for later writes from a row you
-  happened to read. The tenant never comes from a request body, query string,
-  path segment, caller-settable header or a model's output.
-- Until the enqueue-stamp mechanism exists, do not read the tenant from any
-  job payload field. Once it is implemented, a tenant stamped onto the job at
-  enqueue by the producing code (from the producer's scope, not filled in by
-  the job's originator) will also be a trusted source.
-- Run the write inside the tenant scope (`app.tenant_id`) established from one
-  of those sources. In code that is `runInTenant(tenantId, fn)` or, for work
-  that belongs to no tenant, `runAsSystem(reason, fn)`, both from
-  `backend/packages/shared/src/tenantScope.ts`
-  (`docs/adr/2026-10-05-tenant-scope-propagation.md`). Wrap the entry point
-  itself, not only the inner function. That includes every handler branch,
-  a `start()` that installs timers or listeners, the callbacks those install,
-  and a connection you open by hand.
-- Never rely on the transitional sole-tenant fallback. `app_tenant_default()`
-  falls back to `app_sole_tenant()`, which yields a tenant only while exactly
-  one exists, so unscoped code works today and fails closed — or worse —
-  the day a second tenant is created.
+- The tenant comes only from a trusted source (the list is in
+  `tenancy-and-security.md`, "Trusted tenant sources": the session, the job
+  envelope stamped by `enqueueJob`, a Postgres-computed NOTIFY tenant, a
+  verified internal caller, an MCP run credential, a router function). Never
+  from a request body, query string, path segment, caller-settable header, job
+  payload field or model output, and never derived from a row you happened to read.
+- Run the write inside `runInTenant(tenantId, fn)` or, for work that belongs to
+  no tenant, `runAsSystem(reason, fn)` (`backend/packages/shared/src/tenantScope.ts`).
+  Wrap the entry point itself: every handler branch, a `start()` that installs
+  timers or listeners, their callbacks, and a connection you open by hand.
+  Outside a scope a tenant table shows no row.
 - A helper that per-tenant code calls must not read a table without row-level
   security unless it filters by the tenant itself. Check each helper you reuse.
 - Let the `tenant_id` column default stamp the row; do not pass it. RLS
@@ -242,8 +215,7 @@ injection without the invariant written down.
 - [ ] No raw SQL mutation of item tables outside the data layer's write path.
 - [ ] Every field written is owned by the process this code runs in.
 - [ ] No agent/LLM-driven code path reaches a write without approval/`confirm`.
-- [ ] New write behavior has a test exercising the choke-point route, not the
-      internals.
+- [ ] New write behavior is tested through the choke point, not the internals.
 - [ ] Every notification, invalidation or enqueue fires after the commit, not
       inside the transaction.
 - [ ] Every targeted `UPDATE`/`DELETE` checks its affected-row count
@@ -251,10 +223,8 @@ injection without the invariant written down.
       legitimate outcome) rather than trusting a pre-fetch that ran before it.
 - [ ] Every guard the "add"/"create"/"lock" side of a pair enforces is enforced
       by its "remove"/"delete"/"unlock" counterpart too.
-- [ ] The tenant of every write comes from a trusted source, never from a
-      request body, query string, path segment, caller-settable header, model
-      output or any job payload field (until the enqueue-stamp mechanism
-      exists), and never derived from a row you happened to read.
+- [ ] The tenant of every write comes from a trusted source, never from caller
+      input, a job payload field, model output or a row you happened to read.
 - [ ] No write sets `tenant_id` explicitly; the column default stamps it.
 - [ ] Existence and uniqueness checks are per tenant, and another tenant's id
       gets the same outcome as a missing id.
@@ -268,6 +238,6 @@ injection without the invariant written down.
       come from `RETURNING`.
 - [ ] Another module's tables are written only through that module's store.
 - [ ] Every entry point, timer and callback of new code runs under
-      `runInTenant`/`runAsSystem`, never through the sole-tenant fallback.
+      `runInTenant`/`runAsSystem`.
 - [ ] No value is interpolated into SQL text, tests included; any unavoidable
       interpolation has its safety invariant in a comment.

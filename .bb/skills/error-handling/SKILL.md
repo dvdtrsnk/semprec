@@ -5,9 +5,8 @@ description: "How failure paths are written here - never swallow, never map an u
 
 # The failure path is a feature
 
-Findings cluster here more than anywhere else, and they are rarely about the
-happy path being wrong. They are about a failure being turned into silence, or
-into a lie about what went wrong.
+Findings here are about a failure turned into silence, or into a lie about
+what went wrong. Rules: `docs/architecture/edges-io-and-errors.md`.
 
 ## Never map an unknown exception onto a known one
 
@@ -89,13 +88,14 @@ failed, releasing the claim) comes first. Best-effort extras, such as a
 notification or a diagnostic row, come after it in their own `try`, so a
 failing extra cannot block the essential write.
 
-Apply a fix for one branch to its symmetric branch too: the error path of a
-handler whose success path you just hardened, the second call on the same file
-or row.
+Apply a fix for one branch to its symmetric branch too (the error path of a
+hardened handler, the second call on the same file or row).
 
-A refactor or extraction keeps the error contract of what it moves: the same
-error types, statuses and bodies. Changing them is a behaviour change, and it
-needs its own test and a line in the pull request description.
+A refactor keeps the error contract of what it moves (types, statuses,
+bodies); changing it is a behaviour change with a test and a PR line.
+
+Validate at the boundary, trust inside: no `catch`, throw or guard for a state
+the types or the database already exclude.
 
 ## Report the failure you had
 
@@ -105,6 +105,5 @@ plus a log line nobody reads.
 
 ## Escape hatch
 
-Where the issue's Task explicitly calls for a fallback ("on a parse failure,
-skip the message and continue"), implement exactly that — and log the skip, so
-the fallback is observable rather than merely assumed.
+Where the Task explicitly calls for a fallback ("skip the message and
+continue"), implement exactly that, and log the skip so it is observable.

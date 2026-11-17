@@ -1,6 +1,6 @@
 ---
 name: implement-issue
-description: "The execution contract for implementing one Semprec issue, or a chain of sources of the parallel backend delivery program, end to end - read the issue, check the ADRs, load the topic skills the Task touches, build exactly the Task, self-review the diff against the review-rules of every platform it touches (the three mobile platforms included), and verify locally before pushing, with mobile/scripts/verify for any change under mobile/. Load this FIRST in any issue-driven change in this repository, before reading the code, whether the issue was dispatched automatically by relay or started by hand. Triggers on: execution:batch-source, a chain of the parallel backend delivery program, an issue number, a Task section, Acceptance criteria, Out of scope, a relay dispatch prompt, or any instruction to implement, fix or extend something in this repository, in backend/, web/ or mobile/."
+description: "The execution contract for implementing one Semprec issue, or a chain of sources of the parallel backend delivery program, end to end - read the issue, check docs/architecture, load the topic skills the Task touches, build exactly the Task, self-review the diff against the review-rules of every platform it touches (the three mobile platforms included), and verify locally before pushing, with mobile/scripts/verify for any change under mobile/. Load this FIRST in any issue-driven change in this repository, before reading the code, whether the issue was dispatched automatically by relay or started by hand. Triggers on: execution:batch-source, a chain of the parallel backend delivery program, an issue number, a Task section, Acceptance criteria, Out of scope, a relay dispatch prompt, or any instruction to implement, fix or extend something in this repository, in backend/, web/ or mobile/."
 ---
 
 # Implementing one issue
@@ -9,8 +9,8 @@ description: "The execution contract for implementing one Semprec issue, or a ch
 
 When the issue has `execution:batch-source`, it belongs to the program in
 `issues/batches/backend/README.md` and you follow
-`issues/batches/backend/CONTROLLER.md` and
-`docs/adr/2026-11-10-parallel-backend-delivery-through-a-serialized-merge-queue.md`.
+`issues/batches/backend/CONTROLLER.md` (rules:
+`docs/architecture/delivery-and-operations.md`).
 You implement the sources of your chain in the given order, one contiguous
 commit segment per source, in your own worktree and branch. The base for your
 diff, for a rebase and for migration ordinals is the integration branch
@@ -30,7 +30,7 @@ each blocker's `issues/handovers/<id>.md`. Its file SHA and spec approval are
 part of the task identity. Never fall back to GitHub issue reads after cutover;
 missing local context blocks implementation. GitHub remains the PR/review/CI
 host. If authority is still `github`, the existing instructions below remain
-the active contract. See `issues/README.md` and the guarded-cutover ADR.
+the active contract. See `issues/README.md`.
 
 The issue body is your source of truth. Read its full Task, scope and acceptance
 criteria, and each local dependency handover. A Relay run freezes the canonical
@@ -62,13 +62,12 @@ reassess and start a new run. Do not invoke another model outside Relay.
 ## 1. Read before you write
 
 Read the whole issue — `## Context`, `## Task`, `## Scope`, `## Acceptance
-criteria` — before touching a file. Then, for anything that is not a straight
-application of an existing convention, check `docs/adr/` (`ls docs/adr/`, grep
-the `area` frontmatter). Contradicting a recorded decision by accident is
-expensive; finding it takes seconds.
+criteria` — before touching a file. Then read the `docs/architecture/`
+document for the area you change (mobile and web: their ADRs in `docs/adr/`).
+Contradicting a documented rule by accident is expensive; finding it takes
+seconds.
 
-For a large or unfamiliar area, map the relevant code before editing. A wrong
-first attempt costs more than the reading would have.
+For a large or unfamiliar area, map the relevant code before editing.
 
 Then write yourself a trace: every item of `## Task` and every Acceptance
 criterion, each mapped to the file that delivers it and the test that proves
@@ -94,7 +93,7 @@ means to "remember them as it goes" reliably does not.
 | `db-migrations` | a schema change, constraint, index, or backfill |
 | `canonical-keys` | a stored key, option value, view type, or any string a user will see |
 | `ai-gateway` | any model call, provider SDK, or provider credential |
-| `adr-conventions` | introducing a cross-cutting pattern that no rule and no ADR covers — or adding, editing, superseding or narrowing an ADR |
+| `adr-conventions` | changing a rule `docs/architecture/` states, or adding or superseding a mobile/web ADR |
 | `testing` | writing or changing any test, or claiming a change is covered |
 | `fix-review-findings` | addressing review-bot findings on a pull request |
 | `shared-viewmodel` | a shared screen ViewModel — its state, actions or effects — or how Android or Apple hosts one |
@@ -105,8 +104,7 @@ means to "remember them as it goes" reliably does not.
 | `mobile-feature-create` | a new mobile screen or feature, or moving or restructuring an existing screen |
 | `mobile-verify` | building, testing or linting anything under `mobile/`, or claiming it works |
 
-Most issues match more than one. Load all that apply — they are short, and the
-cost of reading one is far below the cost of the finding it prevents.
+Most issues match more than one. Load all that apply.
 
 ## 3. Build exactly the Task
 
@@ -118,8 +116,9 @@ early creates a conflict with that issue rather than saving it work.
 The same restraint applies to things nobody asked for: a config flag "for
 later", an exported helper with one caller, an interface field a future issue
 might use, a type alias anticipating a union that does not exist yet. Each of
-those is a finding, recorded as such in
-`docs/adr/2026-09-10-no-speculative-generality-beyond-issue-scope.md`.
+those is a finding. The same goes for defensive code: validate at the
+boundary and trust inside; no "cannot happen" throw or guard for a state the
+types or the database already exclude.
 
 A bug, a flaky test or a cleanup you discover along the way does not go into
 this pull request either, even when it blocks your local verify. Describe it in
@@ -138,13 +137,13 @@ Why: a conflict named up front is decided once by the reviewer; a conflict
 resolved silently comes back as a review finding in either direction.
 
 The conventions are law, not suggestions: choke-point writes, single-writer
-ownership, expand/contract migrations, AI calls only through the gateway,
+ownership, tenant isolation through RLS, AI calls only through the gateway,
 English camelCase canonical keys, labels through i18n, typed boundaries. You
 loaded the skills covering them in step 2 — apply what they say rather than
 reconstructing a rule from memory.
 
-Commit as soon as the work reaches a self-consistent state, and again after
-each round of fixes. Uncommitted work does not survive a run that ends early.
+Commit at each self-consistent state; uncommitted work does not survive a run
+that ends early.
 
 ## 4. Self-review, then verify
 
@@ -160,21 +159,21 @@ comes last because anything committed after it can make it stale again:
    directory is the longest prefix of its path. Ask specifically: does
    anything cross a boundary untyped? does any `catch` swallow or re-label an error it did not
    cause? does any new route or outbound call lack auth, a timeout, or a size
-   cap? does any docstring claim something the code does not do? is there a
-   branch the Acceptance criteria promises and no test covers?
-2. **Audit every claim you wrote.** Search the diff's comments, docstrings,
-   ADRs, log messages and the pull request description for absolute or
-   mechanism words, and check each against the code and configuration:
+   cap? does any comment claim something the code does not do? is there an
+   Acceptance criterion no test asserts?
+2. **Audit every claim you wrote.** Search the diff's comments, architecture
+   document edits, log messages and the pull request description for absolute
+   or mechanism words, and check each against the code and configuration:
    - absolute words: *only*, *never*, *all*, *every*, *cannot*, *guarantee*;
    - mechanism words: *atomic*, *serialized*, *same transaction*, *locked*;
    - concrete references: a file path, an env variable, a command;
    - the tense of what the text describes.
 
-   Describe a planned artifact in the future tense with its issue number,
-   never as if it exists. After changing behaviour, re-read the docstrings of
-   the function and its callers. Why: a claim the code does not make true is
-   this repository's third most common finding. Agents follow these documents
-   literally, so a false sentence is executed.
+   Comments describe current behaviour and non-obvious reasons only: no issue
+   numbers, no changelog narration, no ADR or architecture citations, no
+   docstring on a self-explanatory function, nothing about planned work.
+   After changing behaviour, re-read the comments of the function and its
+   callers. A false sentence is executed by the next agent that reads it.
 3. **Sweep for leftovers** — debug prints, commented-out code, files unrelated
    to this issue.
 4. **Run the pipeline**: `pnpm run verify` in `backend/`, then in `web/`. This
@@ -182,8 +181,7 @@ comes last because anything committed after it can make it stale again:
    `.bb/AGENTS.md` before you wait on, kill or log a process. In a Relay
    `implement-issue` run, run a partial check instead, because Relay reviews
    the draft pull request first and then runs the full verify itself, so a
-   full run here would be paid twice
-   (`docs/adr/2026-10-17-pre-review-draft-pull-requests-before-verify.md`). In
+   full run here would be paid twice. In
    each of `backend/` and `web/` that your diff changes, run `pnpm run lint`,
    `pnpm run format:check` and `pnpm run build`. Then run the test files that
    cover the code you changed, whether or not you edited a test file:
@@ -205,7 +203,8 @@ comes last because anything committed after it can make it stale again:
    leave that device-free run to Relay instead of duplicating it. Before a
    manual pull request, run the full pipeline with reserved devices as above.
    Report any device step you could not run as NOT RUN.
-5. **Take the migration ordinal last.** If the diff adds a migration, run
+5. **Take the migration ordinal last.** Before the first production release a
+   schema change edits the baseline (`db-migrations`). If the diff adds a migration, run
    `git fetch origin` and compare your number against
    `backend/packages/data/src/db/migrations/` on `origin/develop` after the
    pipeline and any fixes it led to, right before your final commit. Renumber

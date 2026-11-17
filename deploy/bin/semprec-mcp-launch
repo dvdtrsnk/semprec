@@ -3,7 +3,7 @@
 # semprec-mcp-launch.socket. stdin and stdout are that connection. The first line is a JSON header
 # {"command": string, "args": string[], "env": {NAME: string}}; every byte after it belongs to the
 # server. The header can hold a credential, so no message here ever includes it.
-# See docs/adr/2026-10-17-stdio-mcp-servers-run-in-a-socket-activated-sandbox.md.
+# See docs/architecture/delivery-and-operations.md.
 set -euo pipefail
 
 # Byte semantics for `read -n 1`, whatever locale systemd hands over.

@@ -5,7 +5,7 @@ description: "Naming and localization rules for every stored identifier and ever
 
 # Canonical keys are English. Labels are localized.
 
-Recorded as ADR: `docs/adr/2026-09-10-english-canonical-keys-with-i18n-labels.md`.
+Rules: `docs/architecture/data-model-and-writes.md` ("Canonical keys and reserved names").
 
 The spec and mock grew up in Czech, so Czech names will keep appearing in issues,
 mock references, and your instincts. The stored world is English anyway — one

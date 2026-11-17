@@ -1,6 +1,6 @@
 /**
  * The triage input file of the review follow-ups pipeline
- * (docs/adr/2026-09-26-merged-review-findings-become-proposed-follow-up-issues.md).
+ * (docs/architecture/delivery-and-operations.md).
  *
  * The triage workflow's `prepare` step writes this file into the run's worktree, so the
  * triage agent has everything it needs without touching GitHub; the `validate` and

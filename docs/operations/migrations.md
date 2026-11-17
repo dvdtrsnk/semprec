@@ -1,7 +1,9 @@
 # Migrations and rollback
 
-Issue #191. Why: [expand/contract](../adr/2026-09-10-expand-contract-forward-only-migrations.md)
-and [rollback one release back](../adr/2026-09-24-rollback-one-release-back-with-checked-migrations.md).
+Rules: [migrations and seeding](../architecture/migrations-and-seeding.md) and
+[rollback one release back](../architecture/delivery-and-operations.md#rollback). Before the
+first production release the schema is a baseline edited in place; the rule below applies
+from that release on.
 
 ## What a deploy runs
 

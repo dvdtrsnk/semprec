@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * The triage proposal of the review follow-ups pipeline
- * (docs/adr/2026-09-26-merged-review-findings-become-proposed-follow-up-issues.md), and
+ * (docs/architecture/delivery-and-operations.md), and
  * its validator. This header is the reference description of the proposal format.
  *
  * The triage agent reads the triage input file (input-file.mjs), verifies each finding,

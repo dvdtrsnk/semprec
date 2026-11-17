@@ -4,7 +4,7 @@
  * into a ledger.
  *
  * The pipeline keeps all of its state in GitHub (decision:
- * docs/adr/2026-09-26-merged-review-findings-become-proposed-follow-up-issues.md).
+ * docs/architecture/delivery-and-operations.md).
  * The harvest, the triage `prepare` step and the triage `publish` step all read that
  * state through `computeLedger`, and every writer renders its markers through the
  * functions below, so readers and writers cannot drift apart.

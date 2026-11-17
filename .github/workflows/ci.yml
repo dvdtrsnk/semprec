@@ -131,7 +131,7 @@ jobs:
 
   # `main` holds released versions only and is reached exclusively through a
   # `develop -> main` promotion pull request
-  # (docs/adr/2026-09-10-develop-main-branching-with-release-promotion.md). This job
+  # (docs/architecture/delivery-and-operations.md). This job
   # is a required check on `main` only; on every other pull request and on every
   # push it passes without checking anything. The head ref is read through `env`,
   # never interpolated into the script, because it is chosen by whoever opens the

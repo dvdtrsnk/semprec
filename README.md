@@ -87,15 +87,11 @@ promotion PR does not tag anything by itself (see
 checks a pull request must pass are listed in
 [`docs/operations/required-checks.md`](docs/operations/required-checks.md).
 
-## Architecture decisions
+## Architecture
 
-Why the architecture is shaped the way it is — the choke-point API, the
-ownership model, the AI gateway, migration discipline, and other
-cross-cutting calls — is recorded as Architecture Decision Records under
-[`docs/adr/`](docs/adr/README.md). Check there before introducing a new
-architectural pattern.
-
-Find accepted decisions for a platform with
-`node .github/scripts/adr.mjs --platform backend` (also `web`, `mobile`,
-`shared`, `android`, `apple`, `ios`, `macos`). The shared catalog includes
-cross-cutting and historical mobile candidates without moving ADR files.
+The current backend and cross-cutting rules — the choke-point API, the
+ownership model, tenancy, the AI gateway, migrations — are in
+[`docs/architecture/`](docs/architecture/README.md), updated in place when a
+rule changes. Mobile and web decisions are ADRs under
+[`docs/adr/`](docs/adr/README.md); list a platform's with
+`node .github/scripts/adr.mjs --platform <platform>`.

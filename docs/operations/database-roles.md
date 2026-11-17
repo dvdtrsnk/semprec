@@ -23,16 +23,16 @@ Issue #243. Two roles, created by the baseline migration `0001_baseline.sql`
 
 ## Which connection string each service gets
 
-| Service                | Role           | Why                                                                                                                                                                                     |
-| ---------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `semprec-api`          | `semprec_data` | Hosts the choke-point (every `*Handler.ts` route calls `createChokePoint(pool)`), the mail queue jobs and the mail live-sync root.                                                      |
-| `semprec-ai-gateway`   | `semprec_side` | Only ever writes `ai_gateway_calls`, a side table.                                                                                                                                      |
-| `semprec-agents`       | `semprec_data` | Hosts the generic-operation gateway its agent runs' tools write through (`createChokePoint` in-process); destructive operations still become approval requests.                         |
-| `semprec-transcribe`   | `semprec_data` | Hosts the narrow in-process choke-point writer for Transcriptions pipeline state and its Event-match result (`docs/adr/2026-09-23-transcription-worker-writes-event-match-results.md`). |
-| `semprec-restore-test` | `semprec_side` | Records the monthly restore test's result: `observability_checks` and `notifications` only (issue #178).                                                                                |
+| Service                | Role           | Why                                                                                                                                                                   |
+| ---------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `semprec-api`          | `semprec_data` | Hosts the choke-point (every `*Handler.ts` route calls `createChokePoint(pool)`), the mail queue jobs and the mail live-sync root.                                    |
+| `semprec-ai-gateway`   | `semprec_side` | Only ever writes `ai_gateway_calls`, a side table.                                                                                                                    |
+| `semprec-agents`       | `semprec_data` | Hosts the generic-operation gateway its agent runs' tools write through (`createChokePoint` in-process); destructive operations still become approval requests.       |
+| `semprec-transcribe`   | `semprec_data` | Hosts the narrow in-process choke-point writer for Transcriptions pipeline state and its Event-match result (`docs/architecture/domain-calendar-tasks-and-media.md`). |
+| `semprec-restore-test` | `semprec_side` | Records the monthly restore test's result: `observability_checks` and `notifications` only (issue #178).                                                              |
 
 Only `semprec-api`, `semprec-transcribe` and `semprec-agents` are configured with the
-`semprec_data` connection string (`docs/adr/2026-10-03-agents-worker-choke-point-access.md`). Each service's `.env.example` documents which role its `DATABASE_URL` must
+`semprec_data` connection string (`docs/architecture/agents-approvals-and-ai.md`). Each service's `.env.example` documents which role its `DATABASE_URL` must
 authenticate as, for local development. In production, the actual per-environment connection
 strings (with real passwords) live in the secret group files under `/opt/semprec/shared/env/`
 (templates in `deploy/shared/env/`) — never committed here. `SEMPREC_API_DATABASE_URL`
@@ -61,8 +61,8 @@ an actor is granted directly to `semprec_data` and nothing to `semprec_side`: no
 it, and a side-role compromise must not read or mint it. The side tables that already hold encrypted
 credentials, wrapped keys or grant rows (`external_credentials`, `tenant_keys`, `mail_oauth_states`,
 `agent_database_grants`, `project_mcp_grants`, `agent_run_read_allowances`) keep their grants; the
-decision record lists them as the accepted remainder
-(`docs/adr/2026-11-15-the-side-role-cannot-create-an-actor-or-read-credentials.md`).
+tenancy rules list them as the accepted remainder
+(`docs/architecture/tenancy-and-security.md`).
 
 ## Identity tables
 
@@ -88,8 +88,7 @@ The reason is containment: a compromised side-role process (`semprec-ai-gateway`
 `semprec-restore-test`) must not be able to mint a session or an MCP run credential, rebind a user to
 another tenant, promote a user to `admin`, change a tenant's status or register a push endpoint for
 another user. The baseline applies the split to the identity plane and to the four actor and endpoint
-tables, and gives the side role no read of the credentials and tokens (decision record:
-`docs/adr/2026-11-15-the-side-role-cannot-create-an-actor-or-read-credentials.md`).
+tables, and gives the side role no read of the credentials and tokens (rules: `docs/architecture/tenancy-and-security.md`).
 
 ## DDL the API role needs
 
@@ -111,15 +110,14 @@ created by the baseline:
 **Rule:** any further DDL the API role ever needs goes through a `SECURITY DEFINER` function of
 this shape — owned by the migrating role, `EXECUTE` revoked from `PUBLIC` and granted only to the
 role that needs it — never through a schema-level `CREATE` grant or a change of table ownership
-(decision record: `docs/adr/2026-09-27-runtime-ddl-through-security-definer-functions.md`).
+(rules: `docs/architecture/tenancy-and-security.md`).
 
 **Rule:** the `search_path` of a `SECURITY DEFINER` function ends with `pg_temp` and lists no schema
 a runtime role can create objects in. Without `pg_temp` PostgreSQL searches the session's temporary
 schema first for relation and type names, so a runtime role could shadow a type the function body
 names (finding R2-DB-1 of gh-1086; it applies to `create_items_partition(uuid)` and
 `drop_items_partition(uuid)`). The deploy-time
-verifier (`db/tenancyInvariants.ts`) refuses any other shape in every schema (decision record:
-`docs/adr/2026-11-15-security-definer-search-path-ends-with-pg-temp.md`).
+verifier (`db/tenancyInvariants.ts`) refuses any other shape in every schema (rules: `docs/architecture/tenancy-and-security.md`).
 
 ## Cross-tenant router functions (semprec_router)
 
@@ -133,7 +131,7 @@ in is listed.
 through such a function. `EXECUTE` is revoked from `PUBLIC` and granted to exactly one runtime role,
 and the function returns only ids or numbers, never content. The caller then enters
 `runInTenant(<returned tenant>)` and re-reads everything else under RLS. No runtime role ever gets
-`BYPASSRLS` (decision record: `docs/adr/2026-10-07-cross-tenant-router-functions.md`).
+`BYPASSRLS` (rules: `docs/architecture/tenancy-and-security.md`).
 
 | Function                         | Executing role | Returned value                                                                                       | Columns read                                                                                       |
 | -------------------------------- | -------------- | ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |

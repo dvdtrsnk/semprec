@@ -31,15 +31,14 @@ add one soon add the other.
   caller. Resolve the tenant from the authenticated session, or from a
   server-side lookup keyed by an external identifier the request carries (a
   webhook subscription id, a mailbox address) — never from a tenant id the
-  request supplies. Why: `docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`.
+  request supplies.
 - **A foreign resource id answers exactly like a random id.** Same status, body
   and headers. Resolve the resource inside the tenant before any conditional
   branch (ETag/304, cache headers, early returns), so no branch distinguishes
   "exists in another tenant" from "does not exist".
 - **A log line or error message, anywhere in the handler, carries ids and counts, never user content.**
   Item properties, mail subjects or addresses, file names, prompts and model
-  output stay out: logs are not tenant-scoped
-  (`docs/adr/2026-10-03-tenant-isolation-through-row-level-security.md`).
+  output stay out: logs are not tenant-scoped.
 - **Log a caught error by its name and code, never the raw object.** An
   error's message and properties can carry the user content that failed,
   such as a mail subject, a query parameter or a model output. Log

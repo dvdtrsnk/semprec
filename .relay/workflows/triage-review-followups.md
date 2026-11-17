@@ -86,7 +86,7 @@ on-blocked:
 ## What this workflow does
 
 Triages one harvest issue of the review follow-ups pipeline
-(`docs/adr/2026-09-26-merged-review-findings-become-proposed-follow-up-issues.md`):
+(`docs/architecture/delivery-and-operations.md`):
 an open issue labelled `followups:ready`, created by the daily harvest, whose
 findings become proposed follow-up issues (`followups:issue` + `spec:proposed`,
 under an epic when there are two or more) or reasoned rejections. The agent steps
