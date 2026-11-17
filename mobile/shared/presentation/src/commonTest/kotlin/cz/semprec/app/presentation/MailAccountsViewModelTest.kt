@@ -7,6 +7,7 @@ import cz.semprec.app.domain.MailPasswordProvider
 import cz.semprec.app.domain.MailSyncStatus
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -39,6 +40,33 @@ class MailAccountsViewModelTest : MainDispatcherTest() {
             ),
             vm.state.value.accounts,
         )
+        vm.close()
+    }
+
+    @Test fun `an account that syncs is read again until the server is done`() = runTest(dispatcher) {
+        val boxes = ScriptedMailboxRepository(
+            list = MailCall(
+                mailContent(listOf(mailAccount("a", MailSyncStatus.NEVER))),
+                mailContent(listOf(mailAccount("a", initial = true))),
+                mailContent(listOf(mailAccount("a"))),
+            ),
+        )
+        val vm = viewModel(boxes)
+        runCurrent()
+        assertEquals(MailAccountStatus.SYNCING, vm.state.value.accounts.single().status)
+
+        advanceTimeBy(10_001)
+        runCurrent()
+        assertEquals(2, boxes.list.count)
+        assertEquals(MailAccountStatus.SYNCING, vm.state.value.accounts.single().status)
+        advanceTimeBy(10_001)
+        runCurrent()
+        assertEquals(3, boxes.list.count)
+        assertEquals(MailAccountStatus.OK, vm.state.value.accounts.single().status)
+
+        advanceTimeBy(60_000)
+        runCurrent()
+        assertEquals(3, boxes.list.count)
         vm.close()
     }
 

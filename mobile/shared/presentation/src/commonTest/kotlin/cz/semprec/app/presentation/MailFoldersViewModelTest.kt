@@ -5,6 +5,7 @@ import cz.semprec.app.core.FailureKind
 import cz.semprec.app.domain.MailSyncStatus
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -58,6 +59,30 @@ class MailFoldersViewModelTest : MainDispatcherTest() {
         )
         vm.close()
     }
+
+    @Test fun `an account that syncs is read again with its folders until the server is done`() =
+        runTest(dispatcher) {
+            val mailboxes = ScriptedMailboxRepository(
+                list = MailCall(
+                    mailContent(listOf(mailAccount("a", initial = true))),
+                    mailContent(listOf(mailAccount("a"))),
+                ),
+            )
+            val vm = viewModel(mailboxes = mailboxes)
+            runCurrent()
+            assertEquals(MailAccountStatus.SYNCING, vm.state.value.accounts.single().status)
+
+            advanceTimeBy(10_001)
+            runCurrent()
+            assertEquals(2, mailboxes.list.count)
+            assertEquals(2, mailboxes.folders.count)
+            assertEquals(MailAccountStatus.OK, vm.state.value.accounts.single().status)
+
+            advanceTimeBy(60_000)
+            runCurrent()
+            assertEquals(2, mailboxes.list.count)
+            vm.close()
+        }
 
     @Test fun `an account whose folders fail stays listed without them`() = runTest(dispatcher) {
         val boxes = ScriptedMailboxRepository(folders = MailCall(mailFailure(FailureKind.UNAVAILABLE)))
