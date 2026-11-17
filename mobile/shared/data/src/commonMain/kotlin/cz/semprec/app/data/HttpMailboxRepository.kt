@@ -20,6 +20,12 @@ private const val NAME_KEY = "name"
 private const val CONNECTION_LIMIT_KEY = "connectionLimit"
 
 /**
+ * The server checks a new mailbox's IMAP and then its SMTP server before it answers, each on up to two ports that may
+ * each take 45 s to time out, so the request waits for that instead of reporting the Semprec server unreachable.
+ */
+private const val CONNECT_TIMEOUT_MILLIS = 200_000L
+
+/**
  * The mailboxes of `/api/mail/mailboxes*`: the list, one mailbox with its folders, the impact of a removal and the
  * removal itself, and a mailbox connected with a password. A name or a connection limit is an ordinary property of
  * the mailbox item, written through the item API with the version the item has. Gmail and Outlook mailboxes are
@@ -64,7 +70,12 @@ class HttpMailboxRepository internal constructor(
             account.imapHost?.let { put("imapHost", it) }
             account.smtpHost?.let { put("smtpHost", it) }
         }
-        return api.send(HttpMethod.Post, MAILBOXES_PATH, body = body.toString()).ignoreBody()
+        return api.send(
+            HttpMethod.Post,
+            MAILBOXES_PATH,
+            body = body.toString(),
+            requestTimeoutMillis = CONNECT_TIMEOUT_MILLIS,
+        ).ignoreBody()
     }
 
     override suspend fun rename(mailboxId: String, name: String): RepositoryResult<Unit> =

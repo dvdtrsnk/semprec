@@ -8,6 +8,7 @@ import cz.semprec.app.domain.MailPasswordProvider
 import cz.semprec.app.domain.MailRemovalImpact
 import cz.semprec.app.domain.MailSyncStatus
 import cz.semprec.app.domain.RepositoryResult
+import io.ktor.client.plugins.HttpTimeoutCapability
 import io.ktor.client.request.HttpRequestData
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
@@ -140,6 +141,21 @@ class HttpMailboxRepositoryTest {
     }
 
     @Test
+    fun connectingWaitsForTheServersChecksWhileOtherRequestsKeepTheDefaultBound() = runTest {
+        val server = MailTestServer(::routes)
+
+        server.mailboxes().connect(
+            MailPasswordAccount(MailPasswordProvider.GENERIC, "me@firma.cz", "pw", "imap.firma.cz", "smtp.firma.cz"),
+        )
+        server.mailboxes().mailboxes()
+
+        val (connect, list) = server.requests.map { it.getCapabilityOrNull(HttpTimeoutCapability)?.requestTimeoutMillis }
+        // Two protocols, each on up to two ports that may each take 45 s to time out on the server.
+        assertTrue(connect != null && connect >= 180_000L)
+        assertEquals(30_000L, list)
+    }
+
+        @Test
     fun aLoginTheServerRefusesIsARejection() = runTest {
         val server = MailTestServer { HttpStatusCode.BadRequest to """{"error":{"code":"mail_auth_failed"}}""" }
         val account = MailPasswordAccount(MailPasswordProvider.ICLOUD, "me@icloud.com", "bad", null, null)

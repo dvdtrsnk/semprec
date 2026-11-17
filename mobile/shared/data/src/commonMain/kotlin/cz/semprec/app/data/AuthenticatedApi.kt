@@ -31,10 +31,12 @@ class AuthenticatedApi(
         body: String? = null,
         extraHeaders: List<Pair<String, String>> = emptyList(),
         bodyContentType: ContentType = ContentType.Application.Json,
+        requestTimeoutMillis: Long? = null,
     ): ApiResponse {
         val session = storage.load() ?: return ApiResponse.Failure(FailureKind.UNAUTHORIZED, null)
         val response = client.send(
             session.serverUrl, method, path, session.token, query, body, extraHeaders, bodyContentType,
+            requestTimeoutMillis,
         )
         if (response is ApiResponse.Failure && response.status == UNAUTHORIZED_STATUS) onSessionRejected()
         if (response is ApiResponse.Success && announces(method, path)) changes.announce()

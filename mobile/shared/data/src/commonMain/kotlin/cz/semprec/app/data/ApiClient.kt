@@ -42,7 +42,8 @@ class ApiClient internal constructor(engine: HttpClientEngine?) {
     /**
      * Sends one request to [serverUrl] (`https://host`, no trailing slash). [body] is a JSON document, or `null`
      * for none, unless [bodyContentType] names another media type (the Markdown of a page); [query] values are
-     * encoded by Ktor and [extraHeaders] are added as they are (`If-Match`).
+     * encoded by Ktor and [extraHeaders] are added as they are (`If-Match`). [requestTimeoutMillis] replaces the
+     * default bound for a request the server answers only after slow work of its own.
      */
     suspend fun send(
         serverUrl: String,
@@ -53,10 +54,12 @@ class ApiClient internal constructor(engine: HttpClientEngine?) {
         body: String? = null,
         extraHeaders: List<Pair<String, String>> = emptyList(),
         bodyContentType: ContentType = ContentType.Application.Json,
+        requestTimeoutMillis: Long? = null,
     ): ApiResponse = try {
         val response = http.request {
             this.method = method
             url("$serverUrl$path")
+            if (requestTimeoutMillis != null) timeout { this.requestTimeoutMillis = requestTimeoutMillis }
             query.forEach { (name, value) -> url.parameters.append(name, value) }
             headers(token)
             extraHeaders.forEach { (name, value) -> header(name, value) }
