@@ -540,7 +540,6 @@ export {
   type TaskRecurrence,
   type TaskRecurrenceTemplate,
 } from "./tasks/taskRecurrenceStore.js";
-export { advanceTaskRecurrence, type AdvanceTaskRecurrenceInput } from "./tasks/advanceTaskRecurrence.js";
 export {
   projectTaskOccurrences,
   type ProjectTaskOccurrencesInput,

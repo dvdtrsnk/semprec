@@ -236,7 +236,6 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "ValidationError",
   "ValueLinkBusyError",
   "acceptInvitation",
-  "advanceTaskRecurrence",
   "agentGuidanceDriftFindingsStore",
   "agentRunErrorCodeOf",
   "agentRunErrorFields",
