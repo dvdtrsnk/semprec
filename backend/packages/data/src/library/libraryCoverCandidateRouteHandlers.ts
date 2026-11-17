@@ -150,6 +150,9 @@ export function createLibraryCoverCandidateSelectHandler(pool: Pool, options: Li
     let blobKept = false;
     try {
       const blobId = await withTransaction(pool, async (client) => {
+        // The request transaction may be retried after a deadlock, so each attempt starts from a clean state.
+        bodyFinished = false;
+        blobKept = false;
         runAfterCommit(client, () => {
           committed = true;
         });
