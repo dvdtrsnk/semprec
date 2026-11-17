@@ -527,7 +527,11 @@ describe("transcript action item states (issue #1754)", () => {
     it("lists a transcript's states by action item id with their task and owner", async () => {
       await runInTenant(tenant, async () => {
         const [transcript, other] = [await createTranscript(), await createTranscript()];
-        const [task, person] = [randomUUID(), randomUUID()];
+        const cp = createChokePoint(runtime);
+        const task = (await cp.createItem({ databaseId: await databaseId("tasks"), properties: { name: "Follow up" } }))
+          .id;
+        const person = (await cp.createItem({ databaseId: await databaseId("people"), properties: { name: "Jane" } }))
+          .id;
         const written = await withTransaction(runtime, async (client) => {
           await setActionItemState(client, noted(other, 0));
           await setActionItemState(client, noted(transcript, 1));

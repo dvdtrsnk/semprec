@@ -9,7 +9,7 @@ import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { withTransaction } from "../db/pool.js";
-import { deleteMailAttachmentsOfMessage, ingestAttachments, type ClassifiedAttachment } from "../mail/attachments.js";
+import { ingestAttachments, type ClassifiedAttachment } from "../mail/attachments.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { createEmailDraft } from "../mail/draft.js";
 import { ensureFolderItem } from "../mail/folderDiscovery.js";
@@ -19,7 +19,7 @@ import {
   deleteMailFolderSyncStatesOfFoldersWithoutMailbox,
   ensureMailFolderSyncState,
 } from "../mail/mailFolderSyncStateStore.js";
-import { deleteMailMessageFlagSyncStates, recordObservedMailMessageFlags } from "../mail/mailMessageFlagSyncStore.js";
+import { recordObservedMailMessageFlags } from "../mail/mailMessageFlagSyncStore.js";
 import { reassignThread, upsertMailMessageMeta } from "../mail/mailMessageMetaStore.js";
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
 import { upsertMailServerSettings } from "../mail/mailServerSettingsStore.js";
@@ -723,7 +723,7 @@ describe("mail purge hook (gh-1691)", () => {
   });
 
   describe("an item of another database", () => {
-    it("writes no mail table and does not wait for the mail-thread guard", async () => {
+    it("writes no mail row and does not wait for the mail-thread guard; only the item's own rows go with it", async () => {
       const ids = await idsOf();
       const mailbox = await inTenant(async (client) => {
         const mailbox = await createConnectedMailbox(client, ids, "Work");
@@ -745,17 +745,12 @@ describe("mail purge hook (gh-1691)", () => {
         await chokePoint.softDeleteItem(lookalike.id, impostor.id);
         return { plain: plain.id, impostor: impostor.id };
       });
-      // Mail rows that name the lookalike's item, which the Emails branch would delete.
+      // Mail rows that name the lookalike's item. They go with it through their keys; the Emails branch would also
+      // ask for the mail-thread guard.
       await inTenant(async (client) => {
         await recordObservedMailMessageFlags(client, impostor, { read: true, flagged: true });
-        await upsertMailMessageMeta(client, {
-          itemId: impostor,
-          mailboxItemId: mailbox.id,
-          messageId: "<impostor@x>",
-          envelope: {},
-        });
       });
-      // A Folders item is an item of another database too: its own sync state row stays.
+      // A Folders item is an item of another database too: its own sync state row goes with it.
       await trash(ids.folders, mailbox.archive);
       const before = await mailRowVersions();
       expect(before.mail_folder_sync_state).toHaveLength(2);
@@ -775,7 +770,15 @@ describe("mail purge hook (gh-1691)", () => {
         await Promise.allSettled(purges);
       }
 
-      expect(await mailRowVersions()).toEqual(before);
+      const after = await mailRowVersions();
+      for (const table of MAIL_TABLES) {
+        expect(
+          after[table]?.filter((version) => !before[table]?.includes(version)),
+          table,
+        ).toEqual([]);
+      }
+      expect(after.mail_message_flag_sync_state).toHaveLength(2);
+      expect(after.mail_folder_sync_state).toHaveLength(1);
     });
   });
 
@@ -981,7 +984,7 @@ describe("mail purge hook (gh-1691)", () => {
   });
 
   describe("the store deletes", () => {
-    it("report how many rows they deleted, and the folder delete leaves a folder that has a mailbox alone", async () => {
+    it("report how many rows the folder delete removed, leaving a folder that has a mailbox alone", async () => {
       const ids = await idsOf();
       const { mailbox, email, stray } = await inTenant(async (client) => {
         const mailbox = await createConnectedMailbox(client, ids, "Work");
@@ -998,10 +1001,6 @@ describe("mail purge hook (gh-1691)", () => {
       });
 
       const counts = await inTenant(async (client) => ({
-        attachments: await deleteMailAttachmentsOfMessage(client, email),
-        attachmentsAgain: await deleteMailAttachmentsOfMessage(client, email),
-        flags: await deleteMailMessageFlagSyncStates(client, email),
-        flagsAgain: await deleteMailMessageFlagSyncStates(client, email),
         // The Emails database has no `mailbox` relation, so nothing in it counts as a folder without a mailbox.
         notFolders: await deleteMailFolderSyncStatesOfFoldersWithoutMailbox(client, ids.emails),
         folders: await deleteMailFolderSyncStatesOfFoldersWithoutMailbox(client, ids.folders),
@@ -1009,10 +1008,6 @@ describe("mail purge hook (gh-1691)", () => {
       }));
 
       expect(counts).toEqual({
-        attachments: 2,
-        attachmentsAgain: 0,
-        flags: 2,
-        flagsAgain: 0,
         notFolders: 0,
         folders: 1,
         foldersAgain: 0,

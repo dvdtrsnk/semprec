@@ -36,7 +36,7 @@ function readSeriesId(properties: Record<string, unknown>): string | null {
 }
 
 /**
- * Locks every instance of the series `FOR UPDATE` in id order, then its `task_recurrence` row (items before
+ * Locks every instance of the series `FOR NO KEY UPDATE` in id order, then its `task_recurrence` row (items before
  * `task_recurrence`). Advancing and materializing store a new instance while holding the current instance or the
  * series row, so once both are held no instance can be added. A read that waited on a lock misses instances
  * committed meanwhile, so it re-reads until a pass returns the ids already locked.

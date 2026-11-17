@@ -46,8 +46,8 @@ export async function getDocById(client: Queryable, docId: string): Promise<DocR
 /**
  * Created lazily on the first content write; most items never have a doc.
  *
- * `docs.item_id` has no FK (partitioned `items` cannot be referenced), so creation requires a live item here. An
- * existing doc is returned whatever the item's state, so a trashed page stays restorable. `ON CONFLICT DO NOTHING`
+ * Creation requires a live item here (a trashed one fails like a missing one; the foreign key alone would accept
+ * it). An existing doc is returned whatever the item's state, so a trashed page stays restorable. `ON CONFLICT DO NOTHING`
  * without a target makes every unique index an arbiter, so concurrent first writes converge on the winner's row.
  */
 export async function getOrCreateDoc(client: Queryable, itemId: string, kind: DocKind): Promise<DocRow> {
@@ -99,11 +99,6 @@ export async function getOrCreateDoc(client: Queryable, itemId: string, kind: Do
     });
   }
   return created;
-}
-
-/** For the trash purge; dependent rows cascade by FK. Zero rows is valid. */
-export async function deleteDocByItemId(client: Queryable, itemId: string): Promise<void> {
-  await client.query(`DELETE FROM docs WHERE item_id = $1`, [itemId]);
 }
 
 export interface PageStateRead {

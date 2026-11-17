@@ -253,7 +253,7 @@ describe("Inbox type lock", () => {
           const calls: unknown[][] = spy.mock.calls;
           const observed: string[] = [];
           for (const [statement, parameters] of calls) {
-            if (typeof statement === "string" && statement.includes("FOR UPDATE NOWAIT")) {
+            if (typeof statement === "string" && statement.includes("UPDATE NOWAIT")) {
               if (!Array.isArray(parameters) || typeof parameters[1] !== "string")
                 throw new Error("Invalid lock arguments");
               observed.push(parameters[1]);
@@ -305,7 +305,7 @@ describe("Inbox type lock", () => {
           const query = client.query.bind(client);
           const spy = vi.spyOn(client, "query");
           const forward = async (sql: string, values?: unknown[]) => {
-            if (sql.includes("FOR UPDATE NOWAIT") && values?.[0] === proposals) throw primary;
+            if (sql.includes("UPDATE NOWAIT") && values?.[0] === proposals) throw primary;
             if (cleanupFails && sql.startsWith("ROLLBACK TO SAVEPOINT inbox_type_card")) throw cleanup;
             return query(sql, values);
           };
@@ -454,7 +454,10 @@ describe("Inbox type lock", () => {
             "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
           );
           if (!identity.rows[0]) throw new Error("Missing holder identity");
-          await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE", [proposals, cardId]);
+          await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR NO KEY UPDATE", [
+            proposals,
+            cardId,
+          ]);
           signalReady(identity.rows[0]);
           await gate;
         }).then(
@@ -582,7 +585,7 @@ describe("Inbox type lock", () => {
           "SELECT pg_backend_pid() AS pid, backend_start::text AS started FROM pg_stat_activity WHERE pid = pg_backend_pid()",
         );
         if (!identity.rows[0]) throw new Error("Missing holder identity");
-        await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE", [
+        await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR NO KEY UPDATE", [
           proposals,
           laterCard,
         ]);
@@ -712,7 +715,7 @@ describe("Inbox type lock", () => {
           );
           probeIdentity = identity.rows[0];
           if (!probeIdentity) throw new Error("Missing probe identity");
-          await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE NOWAIT", [
+          await client.query("SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR NO KEY UPDATE NOWAIT", [
             proposals,
             cardId,
           ]);

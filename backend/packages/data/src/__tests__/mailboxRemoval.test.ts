@@ -687,7 +687,8 @@ describe("mailbox removal (gh-1690)", () => {
       const after = await snapshot(mailbox);
       expect(after).toEqual(changed);
       expect(after.item).toEqual([]);
-      expect(after.accountState).toHaveLength(1);
+      // The sync state went with the item through its foreign key.
+      expect(after.accountState).toEqual([]);
     });
 
     it("refuses the sync guard outside a tenant scope", async () => {

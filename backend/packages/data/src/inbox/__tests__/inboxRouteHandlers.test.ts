@@ -19,7 +19,6 @@ import { createItemWithClient, updateItemWithClient } from "../../chokePoint/ite
 import { createBlob } from "../../blobs/blobsStore.js";
 import { createActionQueueAffinity } from "../../scheduler/actions.js";
 import { createDocStore } from "../../docs/docStore.js";
-import { deleteDocByItemId } from "../../docs/docsStore.js";
 import { deleteItemDependents, itemDeleteWithClient } from "../../chokePoint/itemTrash.js";
 import { createInboxItemWithClient } from "../inboxStore.js";
 import { insertInboxAttachments, listInboxAttachments } from "../inboxAttachmentsStore.js";
@@ -1600,7 +1599,8 @@ describe("inbox custom route handlers", () => {
         const hostId = await createIn(await databaseIdFor("projects"), { name: "Host" });
         const cardId = await createPageCard(hostId, "Alpha");
         await confirmCard(cardId);
-        await withTransaction(pool, (client) => deleteDocByItemId(client, hostId));
+        // A host without a doc: no production path removes a live item's doc.
+        await withTransaction(pool, (client) => client.query("DELETE FROM docs WHERE item_id = $1", [hostId]));
 
         const { item } = await reopenCard(cardId);
 

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
-import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { getTestPool, insertItemsWithIds, resetDatabase } from "../testSupport/testDb.js";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -35,9 +35,19 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   return rows[0].id;
 }
 
-function draftInput(overrides: Partial<InsertMailDraftInput> = {}): InsertMailDraftInput {
+/** A draft row's Email item must exist in the draft's tenant (mail_drafts.email_item_id has a key to items). */
+async function emailItemIn(tenantId: string): Promise<string> {
+  const id = randomUUID();
+  await withTenantTransaction(pool, tenantId, (client) => insertItemsWithIds(client, [id]));
+  return id;
+}
+
+async function draftInput(
+  overrides: Partial<InsertMailDraftInput> = {},
+  tenantId = getTenantZeroId(),
+): Promise<InsertMailDraftInput> {
   return {
-    emailItemId: randomUUID(),
+    emailItemId: await emailItemIn(tenantId),
     mailboxItemId: randomUUID(),
     threadId: randomUUID(),
     mode: "reply",
@@ -155,14 +165,14 @@ describe("mail drafts store (issue #1504)", () => {
 
   it("rejects a second unsent agent draft for the same thread with a distinct error", async () => {
     const threadId = randomUUID();
-    await insertMailDraft(pool, draftInput({ threadId }));
-    const error = await insertMailDraft(pool, draftInput({ threadId })).catch((e: unknown) => e);
+    await insertMailDraft(pool, await draftInput({ threadId }));
+    const error = await insertMailDraft(pool, await draftInput({ threadId })).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(MailDraftThreadConflictError);
     expect((error as MailDraftThreadConflictError).status).toBe(409);
   });
 
   it("preserves a different unique violation and arbitrary thrown values without classifying them as thread conflicts", async () => {
-    const input = draftInput({ createdBy: "user" });
+    const input = await draftInput({ createdBy: "user" });
     await insertMailDraft(pool, input);
     const duplicate = await insertMailDraft(pool, input).then(
       () => null,
@@ -183,9 +193,10 @@ describe("mail drafts store (issue #1504)", () => {
       },
     );
     for (const value of [original, undefined, "non-error", { code: "23505", constraint: "other_index" }]) {
+      const input = await draftInput();
       const query = vi.spyOn(pool, "query").mockRejectedValueOnce(value);
       try {
-        const failure = await insertMailDraft(pool, draftInput()).then(
+        const failure = await insertMailDraft(pool, input).then(
           () => null,
           (error: unknown) => ({ value: error }),
         );
@@ -199,32 +210,33 @@ describe("mail drafts store (issue #1504)", () => {
 
   it("does not limit user drafts or agent drafts without a thread", async () => {
     const threadId = randomUUID();
-    await insertMailDraft(pool, draftInput({ threadId, createdBy: "user" }));
-    await insertMailDraft(pool, draftInput({ threadId, createdBy: "user" }));
-    await insertMailDraft(pool, draftInput({ threadId, createdBy: "agent" }));
-    await insertMailDraft(pool, draftInput({ threadId: null }));
-    await insertMailDraft(pool, draftInput({ threadId: null }));
+    await insertMailDraft(pool, await draftInput({ threadId, createdBy: "user" }));
+    await insertMailDraft(pool, await draftInput({ threadId, createdBy: "user" }));
+    await insertMailDraft(pool, await draftInput({ threadId, createdBy: "agent" }));
+    await insertMailDraft(pool, await draftInput({ threadId: null }));
+    await insertMailDraft(pool, await draftInput({ threadId: null }));
   });
 
   it("allows the same thread id in another tenant", async () => {
     const threadId = randomUUID();
-    await insertMailDraft(pool, draftInput({ threadId }));
+    await insertMailDraft(pool, await draftInput({ threadId }));
     const other = await createTestTenant(pool);
-    await withTenantTransaction(pool, other, (client) => insertMailDraft(client, draftInput({ threadId })));
+    const otherInput = await draftInput({ threadId }, other);
+    await withTenantTransaction(pool, other, (client) => insertMailDraft(client, otherInput));
   });
 
   it("isolates draft reads and writes through the runtime role while allowing the same thread in each tenant", async () => {
     const other = await createTestTenant(pool);
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
     const threadId = randomUUID();
-    const first = draftInput({ threadId });
-    const second = draftInput({ threadId });
+    const first = await draftInput({ threadId });
+    const second = await draftInput({ threadId }, other);
     const run = <T>(tenant: string, fn: Parameters<typeof withTransaction<T>>[1]) =>
       runInTenant(tenant, () => withTransaction(runtime, fn));
     try {
       await run(getTenantZeroId(), (client) => insertMailDraft(client, first));
       await run(other, (client) => insertMailDraft(client, second));
-      const duplicate = draftInput({ threadId });
+      const duplicate = await draftInput({ threadId });
       await expect(run(getTenantZeroId(), (client) => insertMailDraft(client, duplicate))).rejects.toBeInstanceOf(
         MailDraftThreadConflictError,
       );
@@ -248,11 +260,11 @@ describe("mail drafts store (issue #1504)", () => {
 
   it("allows a new agent draft once the previous one is marked sent", async () => {
     const threadId = randomUUID();
-    const first = draftInput({ threadId });
+    const first = await draftInput({ threadId });
     await insertMailDraft(pool, first);
     const sent = await markMailDraftSent(pool, first.emailItemId);
     expect(sent.sentAt).toBeInstanceOf(Date);
-    await insertMailDraft(pool, draftInput({ threadId }));
+    await insertMailDraft(pool, await draftInput({ threadId }));
   });
 
   it("stores and reads recipients as name and address lists in the original order", async () => {
@@ -266,7 +278,7 @@ describe("mail drafts store (issue #1504)", () => {
       { name: "C1", address: "c1@example.com" },
     ];
     const bcc = [{ name: "B", address: "b@example.com" }];
-    const input = draftInput({ to, cc, bcc, references: ["<b@x>", "<a@x>"], inReplyTo: "<a@x>" });
+    const input = await draftInput({ to, cc, bcc, references: ["<b@x>", "<a@x>"], inReplyTo: "<a@x>" });
     await insertMailDraft(pool, input);
     expect(await getMailDraft(pool, input.emailItemId)).toMatchObject({
       to,
@@ -278,7 +290,7 @@ describe("mail drafts store (issue #1504)", () => {
   });
 
   it("updates only the given fields, records the editor, and refuses a missing or sent draft", async () => {
-    const input = draftInput({ to: [{ name: "Bob", address: "bob@example.com" }] });
+    const input = await draftInput({ to: [{ name: "Bob", address: "bob@example.com" }] });
     await insertMailDraft(pool, input);
     const updated = await updateMailDraft(pool, input.emailItemId, {
       lastEditedBy: "user",

@@ -12,6 +12,7 @@ import {
   getTenantZeroId,
   inTenantZero,
   getTestPool,
+  insertItemsWithIds,
   resetDatabase,
   withTenantTransaction,
 } from "../testSupport/testDb.js";
@@ -657,10 +658,14 @@ describe("conversation threading", () => {
   const resolve = (input: Parameters<typeof resolveThreadId>[1]) =>
     withTransaction(pool, (client) => resolveThreadId(client, input));
   const storeMeta = (messageId: string, threadId: string, inReplyTo: string | null = null) =>
-    pool.query(
-      "INSERT INTO mail_message_meta (item_id, message_id, in_reply_to, thread_id, envelope) VALUES (gen_random_uuid(), $1, $2, $3, '{}')",
-      [messageId, inReplyTo, threadId],
-    );
+    withTransaction(pool, async (client) => {
+      const itemId = randomUUID();
+      await insertItemsWithIds(client, [itemId]);
+      await client.query(
+        "INSERT INTO mail_message_meta (item_id, message_id, in_reply_to, thread_id, envelope) VALUES ($1, $2, $3, $4, '{}')",
+        [itemId, messageId, inReplyTo, threadId],
+      );
+    });
 
   tenantIt("gives an unrelated message its own thread, and threads a reply onto its parent's", async () => {
     const parentThreadId = await resolve({ messageId: "<parent@x>" });
@@ -1033,7 +1038,10 @@ describe("provider_message_id uniqueness convergence", () => {
   it("fills a null provider_message_id via the message_id upsert's ON CONFLICT DO UPDATE", async () => {
     const itemId = randomUUID();
     const meta = { itemId, mailboxItemId: TEST_MAILBOX_ITEM_ID, messageId: "<fill@x>", envelope: {} };
-    await withTransaction(pool, (client) => upsertMailMessageMeta(client, meta));
+    await withTransaction(pool, async (client) => {
+      await insertItemsWithIds(client, [itemId]);
+      await upsertMailMessageMeta(client, meta);
+    });
     await withTransaction(pool, (client) =>
       upsertMailMessageMeta(client, { ...meta, providerMessageId: "provider-fill-1" }),
     );
@@ -4038,13 +4046,14 @@ describe("queued sync status forward repair", () => {
   /** Sync state rows with an unclassified error, the shape the sweep repairs. */
   const insertUnclassified = (tenant: string, ids: string[]) =>
     runInTenant(tenant, () =>
-      withTransaction(runtime, (client) =>
-        client.query(
+      withTransaction(runtime, async (client) => {
+        await insertItemsWithIds(client, ids);
+        await client.query(
           `INSERT INTO mail_account_sync_state (item_id, sync_mode, last_error, next_expected_activity_at)
            SELECT id, 'imap', 'unclassified', '2099-01-01' FROM unnest($1::uuid[]) AS id`,
           [ids],
-        ),
-      ),
+        );
+      }),
     );
   /** Drops test-only database objects; each name is a fixed identifier. */
   const dropIfCreated = (created: () => boolean, ddl: string) => async () => {
@@ -4230,14 +4239,21 @@ describe("queued sync status forward repair", () => {
     for (const tenant of [tenantA, tenantB]) {
       await runInTenant(tenant, () =>
         withTransaction(runtime, async (client) => {
-          await client.query(`INSERT INTO mail_account_sync_state
-          (item_id, sync_mode, last_error, next_expected_activity_at)
-          SELECT gen_random_uuid(), 'imap', 'unclassified', '2099-01-01' FROM generate_series(1, 201)`);
-          await client.query(`INSERT INTO mail_account_sync_state
-          (item_id, sync_mode, last_error, last_activity_at, last_failure_kind, next_expected_activity_at)
-          VALUES (gen_random_uuid(), 'imap', 'known', NULL, 'reauthorization', '2099-01-01'),
-                 (gen_random_uuid(), 'imap', 'active', '2026-01-01', NULL, '2099-01-01'),
-                 (gen_random_uuid(), 'imap', NULL, NULL, NULL, '2099-01-01')`);
+          const ids = Array.from({ length: 204 }, () => randomUUID());
+          await insertItemsWithIds(client, ids);
+          await client.query(
+            `INSERT INTO mail_account_sync_state (item_id, sync_mode, last_error, next_expected_activity_at)
+             SELECT id, 'imap', 'unclassified', '2099-01-01' FROM unnest($1::uuid[]) AS id`,
+            [ids.slice(0, 201)],
+          );
+          await client.query(
+            `INSERT INTO mail_account_sync_state
+             (item_id, sync_mode, last_error, last_activity_at, last_failure_kind, next_expected_activity_at)
+             VALUES ($1, 'imap', 'known', NULL, 'reauthorization', '2099-01-01'),
+                    ($2, 'imap', 'active', '2026-01-01', NULL, '2099-01-01'),
+                    ($3, 'imap', NULL, NULL, NULL, '2099-01-01')`,
+            ids.slice(201),
+          );
         }),
       );
     }

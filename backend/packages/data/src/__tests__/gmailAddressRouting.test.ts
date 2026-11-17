@@ -7,6 +7,7 @@ import {
   ensureMailAccountSyncState,
   getTenantZeroId,
   getTestPool,
+  insertItemsWithIds,
   resetDatabase,
   withTenantTransaction,
 } from "../testSupport/testDb.js";
@@ -24,6 +25,7 @@ let dataPool: Pool | undefined;
 async function registerMailbox(tenantId: string, address: string | null, syncMode = "gmail_api"): Promise<string> {
   const itemId = randomUUID();
   await withTenantTransaction(pool, tenantId, async (client) => {
+    await insertItemsWithIds(client, [itemId]);
     await ensureMailAccountSyncState(client, { itemId, syncMode: syncMode as "gmail_api" | "imap" });
     await client.query("UPDATE mail_account_sync_state SET gmail_watch_email_address = $2 WHERE item_id = $1", [
       itemId,

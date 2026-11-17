@@ -402,7 +402,7 @@ describe("a wake day is in at most one sleep plan: concurrent writes (issue gh-1
     // Each move holds its own plan's row lock and writes only when the other holds its own, so they wait for each other.
     const move = (ownId: string, own: Deferred, otherSide: Deferred, wakeDays: string[]) =>
       inTenant(tenant.tenantId, async (client) => {
-        await client.query<{ id: string }>("SELECT id FROM items WHERE id = $1 FOR UPDATE", [ownId]);
+        await client.query<{ id: string }>("SELECT id FROM items WHERE id = $1 FOR NO KEY UPDATE", [ownId]);
         own.resolve();
         await otherSide.promise;
         await updateItemWithClient(
@@ -492,7 +492,7 @@ describe("a wake day is in at most one sleep plan: concurrent writes (issue gh-1
     const holder = deferred();
     const holderDone = deferred();
     const holding = inTenant(tenant.tenantId, async (client) => {
-      await client.query<{ id: string }>("SELECT id FROM items WHERE id = $1 FOR UPDATE", [weekend.id]);
+      await client.query<{ id: string }>("SELECT id FROM items WHERE id = $1 FOR NO KEY UPDATE", [weekend.id]);
       holder.resolve();
       await holderDone.promise;
     });

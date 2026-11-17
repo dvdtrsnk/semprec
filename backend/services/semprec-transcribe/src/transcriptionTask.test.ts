@@ -769,7 +769,7 @@ describe("transcription step 0: the upload's Event", () => {
     let held = false;
     const workerPool = interceptQueries(runtime, {
       after: async (sql, [, params], connection) => {
-        if (held || !sql.includes("FOR UPDATE") || !Array.isArray(params) || params[1] !== eventId) return;
+        if (held || !/FOR (NO KEY )?UPDATE/.test(sql) || !Array.isArray(params) || params[1] !== eventId) return;
         held = true;
         locked.resolve(await backendPid(connection));
         await gate.promise;
@@ -998,19 +998,21 @@ describe("transcription step 0: the upload's Event", () => {
   });
 
   it.each(["another tenant's Event", "an unknown id"] as const)(
-    "writes no edge for a request naming %s, and nothing in the other tenant",
+    "refuses to store a request naming %s, and writes no edge and nothing in the other tenant",
     async (requested) => {
       const foreignEventId = await createEvent(foreign);
       const foreignEdgesBefore = await countEdgesOf(foreign, foreignEventId);
       const fileItemId = await uploadRecording(tenant, null);
-      // recordRecordingIntake refuses an Event outside the tenant, so only a direct write can leave such an id in the request.
-      const planted = await runInTenant(tenant, () =>
-        runtime.query(
-          "UPDATE recording_requests SET event_item_id = $2 WHERE tenant_id = app_tenant_default() AND file_item_id = $1",
-          [fileItemId, requested === "another tenant's Event" ? foreignEventId : randomUUID()],
+      // recordRecordingIntake refuses an Event outside the tenant, and the request's foreign key refuses a direct write
+      // of one exactly like an unknown id, so no stored request names such an Event.
+      await expect(
+        runInTenant(tenant, () =>
+          runtime.query(
+            "UPDATE recording_requests SET event_item_id = $2 WHERE tenant_id = app_tenant_default() AND file_item_id = $1",
+            [fileItemId, requested === "another tenant's Event" ? foreignEventId : randomUUID()],
+          ),
         ),
-      );
-      expect(planted.rowCount).toBe(1);
+      ).rejects.toMatchObject({ code: "23503", constraint: "recording_requests_event_item_id_tenant_fkey" });
 
       await runCreateLane();
 
@@ -1326,7 +1328,7 @@ describe("transcription step 1 (prepare)", () => {
     const workerPool = interceptQueries(runtime, {
       after: async (sql, _args, connection) => {
         if (sql === "SHOW transaction_isolation") inPrepareWrite = true;
-        if (!inPrepareWrite || held || !sql.includes("FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE"))
+        if (!inPrepareWrite || held || !sql.includes("FROM items WHERE database_id = $1 AND id = $2 FOR NO KEY UPDATE"))
           return;
         held = true;
         locked.resolve(await backendPid(connection));
@@ -3206,7 +3208,8 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
         await expectNoAutomation(id);
       });
 
-      const isItemLock = (sql: string) => sql.includes("FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE");
+      const isItemLock = (sql: string) =>
+        sql.includes("FROM items WHERE database_id = $1 AND id = $2 FOR NO KEY UPDATE");
       const isAutomationLock = (sql: string) => sql.includes("FROM item_automation") && sql.includes("FOR UPDATE");
       const isStatement = (sql: string, statement: string) => sql.trim().toUpperCase() === statement;
       /** Bounds every statement of a barrier test's transactions, so a lock it misjudged fails instead of hanging. */

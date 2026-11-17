@@ -92,31 +92,18 @@ tables, and gives the side role no read of the credentials and tokens (rules: `d
 
 ## DDL the API role needs
 
-`semprec_data` owns no table and has no `CREATE` on schema `public`, so it cannot run DDL itself.
-The one DDL statement the choke-point needs at runtime — creating a new database's `items`
-partition inside `createDatabase`'s transaction — goes through `create_items_partition(uuid)`,
-created by the baseline:
+`semprec_data` owns no table and has no `CREATE` on schema `public`, so it cannot run DDL itself,
+and the choke point needs none at runtime: creating or deleting a database writes rows only.
 
-- It is `SECURITY DEFINER` with `search_path = pg_catalog, public, pg_temp`, owned by the migrating
-  role (the owner of `items`), and runs
-  `CREATE TABLE public.items_p_<hex> PARTITION OF public.items FOR VALUES IN ('<id>')` — the same
-  partition name the application built before the function existed.
-- `EXECUTE` is revoked from `PUBLIC` and granted to `semprec_data` only; `semprec_side` cannot
-  call it, because a side-table-only process must never create a partition.
-- It creates the partition as a standalone table and attaches it, so it holds `SHARE UPDATE EXCLUSIVE` on `items` (item reads and writes proceed)
-  and `ACCESS EXCLUSIVE` only on the new table, until the caller commits. Concurrent creations
-  still serialize on that lock.
-
-**Rule:** any further DDL the API role ever needs goes through a `SECURITY DEFINER` function of
-this shape — owned by the migrating role, `EXECUTE` revoked from `PUBLIC` and granted only to the
+**Rule:** any DDL the API role ever needs goes through a `SECURITY DEFINER` function owned
+by the migrating role, `EXECUTE` revoked from `PUBLIC` and granted only to the
 role that needs it — never through a schema-level `CREATE` grant or a change of table ownership
 (rules: `docs/architecture/tenancy-and-security.md`).
 
 **Rule:** the `search_path` of a `SECURITY DEFINER` function ends with `pg_temp` and lists no schema
 a runtime role can create objects in. Without `pg_temp` PostgreSQL searches the session's temporary
 schema first for relation and type names, so a runtime role could shadow a type the function body
-names (finding R2-DB-1 of gh-1086; it applies to `create_items_partition(uuid)` and
-`drop_items_partition(uuid)`). The deploy-time
+names (finding R2-DB-1 of gh-1086). The deploy-time
 verifier (`db/tenancyInvariants.ts`) refuses any other shape in every schema (rules: `docs/architecture/tenancy-and-security.md`).
 
 ## Cross-tenant router functions (semprec_router)

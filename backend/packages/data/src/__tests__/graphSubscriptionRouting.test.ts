@@ -8,6 +8,7 @@ import {
   ensureMailAccountSyncState,
   getTenantZeroId,
   getTestPool,
+  insertItemsWithIds,
   resetDatabase,
   withTenantTransaction,
 } from "../testSupport/testDb.js";
@@ -21,6 +22,7 @@ let dataPool: Pool | undefined;
 async function registerMailbox(tenantId: string, subscriptionId: string, clientState: string): Promise<string> {
   const itemId = randomUUID();
   await withTenantTransaction(pool, tenantId, async (client) => {
+    await insertItemsWithIds(client, [itemId]);
     await ensureMailAccountSyncState(client, { itemId, syncMode: "graph_api" });
     await client.query(
       `UPDATE mail_account_sync_state SET graph_subscription_id = $2, graph_client_state = $3 WHERE item_id = $1`,

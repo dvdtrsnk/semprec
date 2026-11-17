@@ -66,7 +66,7 @@ function instrumentReservations(client: PoolClient): void {
     if (
       barrier &&
       typeof text === "string" &&
-      text.includes("FOR UPDATE NOWAIT") &&
+      text.includes("UPDATE NOWAIT") &&
       Array.isArray(values) &&
       values[1] === barrier.itemId &&
       !args.some((arg) => typeof arg === "function")
@@ -595,7 +595,7 @@ afterAll(async () => {
 });
 
 const HOLD_ROW = {
-  items: "SELECT id FROM items WHERE id = $1 FOR UPDATE",
+  items: "SELECT id FROM items WHERE id = $1 FOR NO KEY UPDATE",
   blobs: "SELECT id FROM blobs WHERE id = $1 FOR UPDATE",
 } as const;
 

@@ -447,7 +447,7 @@ describe("PUT /api/sleep/nights/:night (issue gh-1835)", () => {
     async function rowIsFree(itemId: string): Promise<boolean> {
       try {
         await withTenantTransaction(adminPool, tenant.tenantId, async (client) => {
-          await client.query("SELECT id FROM items WHERE id = $1 FOR UPDATE NOWAIT", [itemId]);
+          await client.query("SELECT id FROM items WHERE id = $1 FOR NO KEY UPDATE NOWAIT", [itemId]);
         });
         return true;
       } catch (thrown) {

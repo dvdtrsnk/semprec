@@ -21,6 +21,7 @@ export {
   tenantZeroSessionOptions,
   withTenantTransaction,
 } from "./tenantFixtures.js";
+export { insertItemsWithIds } from "./itemFixtures.js";
 export { createTestModuleItem, createTestProjectItem } from "./projectFixtures.js";
 export { recordingTransport, sendAdapters, transportFor } from "./mailSendFakes.js";
 export { stubDnsLookup, type DnsLookupStub } from "./dnsLookupStub.js";
@@ -82,17 +83,6 @@ export async function resetDatabase(pool: Pool): Promise<void> {
   `);
   await pool.query("INSERT INTO tenants (id, status) VALUES ($1, 'active')", [getTenantZeroId()]);
   await pool.query(`TRUNCATE graphile_worker._private_jobs RESTART IDENTITY CASCADE`);
-  // TRUNCATE leaves the per-database `items_p_<id>` partitions in place; across a test run they bloat the catalog
-  // and lock table until Postgres runs out of shared memory, so drop them all.
-  await pool.query(`
-    DO $$
-    DECLARE partition RECORD;
-    BEGIN
-      FOR partition IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename LIKE 'items\\_p\\_%' LOOP
-        EXECUTE format('DROP TABLE IF EXISTS %I', partition.tablename);
-      END LOOP;
-    END $$;
-  `);
 }
 
 export { upsertMailMessageMeta } from "../mail/mailMessageMetaStore.js";

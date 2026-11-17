@@ -49,7 +49,7 @@ async function lockOtherDefaultCalendars(
     `SELECT id, properties->>'kind' AS kind FROM items
       WHERE database_id = $1 AND id <> $2 AND deleted_at IS NULL AND properties->'isDefault' = 'true'::jsonb
       ORDER BY id
-      FOR UPDATE`,
+      FOR NO KEY UPDATE`,
     [calendarsDatabaseId, calendarId],
   );
   return rows;

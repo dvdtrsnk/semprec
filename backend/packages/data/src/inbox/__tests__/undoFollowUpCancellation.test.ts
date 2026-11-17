@@ -336,7 +336,7 @@ describe("undoing a confirmed recording card (transcription follow-up)", () => {
     const gate = new Promise<void>((resolve) => (releaseProducer = resolve));
     // The producer holds the Files row the way `recordRecordingIntake` does, then upserts the job under its key.
     const producer = inTransaction(async (client) => {
-      await client.query("SELECT id FROM items WHERE id = $1 FOR UPDATE", [fileItemId]);
+      await client.query("SELECT id FROM items WHERE id = $1 FOR NO KEY UPDATE", [fileItemId]);
       fileLocked();
       await gate;
       await enqueueTranscriptionJob(client, { fileItemId });

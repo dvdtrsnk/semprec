@@ -35,7 +35,7 @@ export async function lockInboxSourceIfPresent(
   const query = () =>
     client.query<{ id: string }>(
       `SELECT i.id FROM items i JOIN databases d ON d.id = i.database_id AND d.tenant_id = i.tenant_id
-     WHERE i.id = $1 AND d.owner_module_id = 'inbox' AND ($2::boolean OR i.deleted_at IS NULL) FOR UPDATE OF i${lockMode === "nowait" ? " NOWAIT" : ""}`,
+     WHERE i.id = $1 AND d.owner_module_id = 'inbox' AND ($2::boolean OR i.deleted_at IS NULL) FOR NO KEY UPDATE OF i${lockMode === "nowait" ? " NOWAIT" : ""}`,
       [itemId, allowDeleted],
     );
   const result = lockMode === "nowait" ? await runValueLinkAdmissionLock(query) : await query();

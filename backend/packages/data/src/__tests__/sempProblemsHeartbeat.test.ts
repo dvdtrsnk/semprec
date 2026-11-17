@@ -639,9 +639,10 @@ describe("agents problems of heartbeat ticks and runs (issue #1911)", () => {
 
       expect(await runStatus(second.id)).toBe("error");
       const problems = await problemsOf(tenantA);
+      // The problem outlives the purged project; its reference is cleared (`ON DELETE SET NULL`).
       expect(
         problems.map((problem) => [problem.dedupe_key, problem.occurrence_count, problem.project_item_id]),
-      ).toEqual([[`agents:run:${first.id}`, 2, projectItemId]]);
+      ).toEqual([[`agents:run:${first.id}`, 2, null]]);
     });
 
     it("raises nothing for a failed chat turn", async () => {

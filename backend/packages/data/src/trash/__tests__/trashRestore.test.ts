@@ -366,7 +366,7 @@ describe("POST /api/trash/restore (issue gh-1904)", () => {
       await holder.query("BEGIN");
       const pid = (await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
       if (pid === undefined) throw new Error("No backend pid");
-      await holder.query("SELECT id FROM items WHERE id = $1 FOR UPDATE", [purged]);
+      await holder.query("SELECT id FROM items WHERE id = $1 FOR NO KEY UPDATE", [purged]);
       handler = restore({ itemIds: [purged, other] });
       const deadline = Date.now() + WAIT_MS;
       for (;;) {

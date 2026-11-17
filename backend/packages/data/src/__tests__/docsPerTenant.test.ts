@@ -4,7 +4,7 @@ import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { createDatabase } from "../chokePoint/databasesStore.js";
 import { insertItem } from "../chokePoint/itemsStore.js";
-import { deleteDocByItemId, getDocByItemId, getOrCreateDoc } from "../docs/docsStore.js";
+import { getDocByItemId, getOrCreateDoc } from "../docs/docsStore.js";
 import { ConflictError, NotFoundError } from "../errors.js";
 
 let pool: Pool;
@@ -303,25 +303,29 @@ describe("docs are per tenant", () => {
     });
   });
 
-  it("gives the same item id in two tenants a doc each", async () => {
+  it("gives an item in each of two tenants a doc each, read only in its own tenant", async () => {
     await resetDatabase(pool);
     await inRolledBackTransaction(async (client) => {
+      // Item ids are unique across tenants, so each tenant's doc belongs to an item of its own.
       const { tenantA, tenantB, dbA, dbB } = await twoTenants(client);
-      const itemId = "11111111-1111-4111-8111-111111111111";
+      const itemIdA = "11111111-1111-4111-8111-111111111111";
+      const itemIdB = "22222222-2222-4222-8222-222222222222";
       await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantA]);
-      await insertItemWithId(client, dbA.id, itemId);
+      await insertItemWithId(client, dbA.id, itemIdA);
       await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantB]);
-      await insertItemWithId(client, dbB.id, itemId);
+      await insertItemWithId(client, dbB.id, itemIdB);
 
       await scopeTo(client, tenantA);
-      const docA = await getOrCreateDoc(client, itemId, "page");
+      const docA = await getOrCreateDoc(client, itemIdA, "page");
       await scopeTo(client, tenantB);
-      const docB = await getOrCreateDoc(client, itemId, "canvas");
+      const docB = await getOrCreateDoc(client, itemIdB, "canvas");
       expect(docB.id).not.toBe(docA.id);
 
-      expect(await getDocByItemId(client, itemId)).toEqual(docB);
+      expect(await getDocByItemId(client, itemIdB)).toEqual(docB);
+      expect(await getDocByItemId(client, itemIdA)).toBeNull();
       await scopeTo(client, tenantA);
-      expect(await getDocByItemId(client, itemId)).toEqual(docA);
+      expect(await getDocByItemId(client, itemIdA)).toEqual(docA);
+      expect(await getDocByItemId(client, itemIdB)).toBeNull();
     });
   });
 
@@ -338,7 +342,7 @@ describe("docs are per tenant", () => {
       await scopeTo(client, tenantB);
       await expect(getOrCreateDoc(client, itemA.id, "page")).rejects.toBeInstanceOf(NotFoundError);
       expect(await getDocByItemId(client, itemA.id)).toBeNull();
-      await deleteDocByItemId(client, itemA.id);
+      await client.query("DELETE FROM docs WHERE item_id = $1", [itemA.id]);
 
       await client.query("RESET ROLE");
       expect(await countDocs(client, itemA.id)).toBe(1);

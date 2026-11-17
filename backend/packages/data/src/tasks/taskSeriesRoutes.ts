@@ -90,7 +90,7 @@ function assertTemplateTimes(template: TaskRecurrenceTemplate): void {
 
 /**
  * Open occurrences besides the current one: `notDone`, not trashed, dated on or after the current one, in id
- * order. `lock` locks them `FOR UPDATE`; omit it once the series row is held (items before `task_recurrence`).
+ * order. `lock` locks them `FOR NO KEY UPDATE`; omit it once the series row is held (items before `task_recurrence`).
  */
 async function openOccurrenceIds(
   client: PoolClient,
@@ -106,7 +106,7 @@ async function openOccurrenceIds(
     `SELECT id FROM items
      WHERE database_id = $1 AND deleted_at IS NULL AND id <> $2
        AND properties->>'seriesId' = $3 AND properties->>'status' = 'notDone' AND properties->>'date' >= $4
-     ORDER BY id${lock ? " FOR UPDATE" : ""}`,
+     ORDER BY id${lock ? " FOR NO KEY UPDATE" : ""}`,
     [databaseId, current.id, seriesId, date],
   );
   return rows.map((row) => row.id);

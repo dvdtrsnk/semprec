@@ -139,7 +139,7 @@ async function isRowLocked(itemId: string): Promise<boolean> {
   try {
     await client.query("BEGIN");
     try {
-      await client.query("SELECT id FROM items WHERE id = $1 FOR UPDATE NOWAIT", [itemId]);
+      await client.query("SELECT id FROM items WHERE id = $1 FOR NO KEY UPDATE NOWAIT", [itemId]);
       return false;
     } catch (thrown) {
       if (z.object({ code: z.literal("55P03") }).safeParse(thrown).success) return true;
@@ -452,8 +452,8 @@ describe("item purge hooks", () => {
       expect(sorted(purged.purgedItemIds)).toEqual(sorted([page.root.id, page.mid.id, page.sibling.id]));
       expect(calls.map((call) => call.item.id)).toEqual(purged.purgedItemIds);
       expect(await itemStates(page.ids)).toEqual([]);
-      // The purge deletes the built-in dependents of the rows it removed, not those of a row it did not.
-      expect(await reservedItemIds(page.ids)).toEqual([page.leaf.id]);
+      // A removed row's derived dependents go with it through their foreign keys, whoever removed it.
+      expect(await reservedItemIds(page.ids)).toEqual([]);
     });
   });
 

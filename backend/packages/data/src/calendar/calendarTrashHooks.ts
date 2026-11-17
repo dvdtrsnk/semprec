@@ -33,7 +33,7 @@ function writerOf(context: { writerKind: WriterKind; agentRunId?: string }): Wri
 }
 
 /**
- * Rows locked `FOR UPDATE` in id order in the same statement. With `deletedAtExact` the trashed Events of exactly
+ * Rows locked `FOR NO KEY UPDATE` in id order in the same statement. With `deletedAtExact` the trashed Events of exactly
  * that epoch (compared by Postgres); without it the live ones.
  */
 async function lockCalendarEvents(
@@ -52,7 +52,7 @@ async function lockCalendarEvents(
       WHERE r.relation_definition_id = $1 AND (r.item_a = $2 OR r.item_b = $2)
         AND (($3::timestamptz IS NULL AND i.deleted_at IS NULL) OR i.deleted_at = $3::timestamptz)
       ORDER BY i.id
-      FOR UPDATE OF i`,
+      FOR NO KEY UPDATE OF i`,
     [definition.id, calendarId, deletedAtExact],
   );
   return rows.map((row) => ({ id: row.id, databaseId: row.database_id }));

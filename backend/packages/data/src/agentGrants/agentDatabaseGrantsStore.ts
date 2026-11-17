@@ -35,9 +35,3 @@ export async function getAccess(
   );
   return rows[0] ? parseAgentDatabaseAccess(rows[0].access) : null;
 }
-
-/** Cleanup of a Projects item's permanent purge (`deleteItemDependents`). */
-export async function deleteAgentDatabaseGrantsForProject(client: Queryable, projectItemId: string): Promise<number> {
-  const result = await client.query("DELETE FROM agent_database_grants WHERE project_item_id = $1", [projectItemId]);
-  return result.rowCount ?? 0;
-}

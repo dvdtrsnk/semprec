@@ -233,11 +233,3 @@ export async function recordRecordingIntake(
     throw error;
   }
 }
-
-export async function deleteRecordingRequestForFile(client: PoolClient, fileItemId: string): Promise<void> {
-  const deleted = await client.query(
-    "DELETE FROM recording_requests WHERE tenant_id = app_tenant_default() AND file_item_id = $1",
-    [fileItemId],
-  );
-  if (deleted.rowCount === null || deleted.rowCount > 1) throw new Error("Unexpected recording request deletion count");
-}

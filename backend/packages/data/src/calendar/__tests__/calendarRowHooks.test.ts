@@ -71,7 +71,7 @@ async function seededTenant(): Promise<string> {
 }
 
 const DEFAULT_MARK_LOCK = "%pg_advisory_xact_lock(hashtextextended('calendars-default:'%";
-const OTHER_DEFAULTS_READ = "%AS kind FROM items%FOR UPDATE%";
+const OTHER_DEFAULTS_READ = "%AS kind FROM items%FOR NO KEY UPDATE%";
 
 async function waitForLockWaiter(statements: string[]): Promise<string | null> {
   for (let attempt = 0; attempt < 250; attempt += 1) {
@@ -672,7 +672,7 @@ describe("calendar row hooks (issue #1778)", () => {
         try {
           await client.query("BEGIN");
           try {
-            await client.query("SELECT id FROM items WHERE id = $1 FOR UPDATE NOWAIT", [calendarId]);
+            await client.query("SELECT id FROM items WHERE id = $1 FOR NO KEY UPDATE NOWAIT", [calendarId]);
             return true;
           } catch (thrown) {
             if (z.object({ code: z.literal("55P03") }).safeParse(thrown).success) return false;

@@ -459,7 +459,6 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "deleteOwnAccount",
   "deleteRelationWithClient",
   "deleteRollupDependenciesBySourceDatabase",
-  "deleteTaskRecurrence",
   "deriveDesiredWorkerInstances",
   "deriveReplyOutcome",
   "deriveRunDisplayStatus",

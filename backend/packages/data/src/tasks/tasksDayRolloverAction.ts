@@ -65,7 +65,7 @@ async function lockCandidates(
                 AND COALESCE(i.properties->>'timeTo', '') = '')
        AND ${completedClause}
        AND ($3::uuid IS NULL OR i.id > $3::uuid)
-     ORDER BY i.id LIMIT $4 FOR UPDATE${input.skipLocked ? " SKIP LOCKED" : ""}`,
+     ORDER BY i.id LIMIT $4 FOR NO KEY UPDATE${input.skipLocked ? " SKIP LOCKED" : ""}`,
     [
       input.tasksDatabaseId,
       input.today,
@@ -139,7 +139,7 @@ export function createTasksDayRolloverAction(pool: Pool, options: { recurringLim
                    AND i.properties->>'occurrenceDate' < $2 THEN (i.properties->>'occurrenceDate')::date END),
                  s.anchor_date, $2::date)
                AND ($3::uuid IS NULL OR i.id > $3::uuid)
-             ORDER BY i.id LIMIT 1 FOR UPDATE OF i${skipLocked ? " SKIP LOCKED" : ""}`,
+             ORDER BY i.id LIMIT 1 FOR NO KEY UPDATE OF i${skipLocked ? " SKIP LOCKED" : ""}`,
             [tasksDatabaseId, context.today, afterRecurringId],
           );
           const id = result.rows[0]?.id;

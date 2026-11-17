@@ -228,7 +228,7 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
     },
 
     /**
-     * Cross-partition lookup by id alone, for URLs that carry no `databaseId`; a single-row point lookup.
+     * Lookup by id alone, for URLs that carry no `databaseId`; a single-row point lookup.
      *
      * An agent needs `read` on the item's database or, with `agentRunId`, a per-turn read allowance for
      * this item. An external client needs a non-sensitive database; no allowance applies to it. An

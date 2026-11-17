@@ -722,7 +722,7 @@ describe("Inbox pipeline databases (issue #101)", () => {
     });
 
     // Every associated card is reserved, including all three open cards and the decided card.
-    expect(queries.filter((sql) => sql.includes("FOR UPDATE NOWAIT")).length).toBeGreaterThanOrEqual(4);
+    expect(queries.filter((sql) => sql.includes("UPDATE NOWAIT")).length).toBeGreaterThanOrEqual(4);
 
     // `enqueueRollupRecomputeForEdge` always calls `findDependenciesByRelationDefinition`, which issues a
     // SELECT even without rollup dependencies, so it proves the recompute step ran. The two unlocked items'

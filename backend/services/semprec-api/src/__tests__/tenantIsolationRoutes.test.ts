@@ -4900,8 +4900,8 @@ const ROUTE_CASES: Record<string, RouteCase> = {
       );
       const footprint = () =>
         runInTenant(b.tenantId, () =>
-          pool.query<{ databases: number; properties: number; partitions: number }>(
-            "SELECT (SELECT count(*)::int FROM databases) AS databases, (SELECT count(*)::int FROM properties) AS properties, (SELECT count(*)::int FROM pg_class WHERE relname LIKE 'items\\_p\\_%') AS partitions",
+          pool.query<{ databases: number; properties: number }>(
+            "SELECT (SELECT count(*)::int FROM databases) AS databases, (SELECT count(*)::int FROM properties) AS properties",
           ),
         );
       const before = (await footprint()).rows;

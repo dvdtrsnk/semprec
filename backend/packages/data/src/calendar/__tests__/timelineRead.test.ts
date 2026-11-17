@@ -584,7 +584,7 @@ describe("calendar timeline read (issue #1717)", () => {
     const eventsId = await w.databaseId("events");
     const projectsId = await w.databaseId("projects");
     // A tenant without a calendars database. It is locked and system-owned and no public path removes it, so this is
-    // raw SQL on the admin pool in the tenant's scope; the database and its partition go through the store's drop.
+    // raw SQL on the admin pool in the tenant's scope; the database goes through the store's delete.
     await withTenantTransaction(adminPool, tenantId, async (client) => {
       const calendarsDatabase = await databasesStore.getDatabase(client, calendarsId);
       if (!calendarsDatabase) throw new Error("Calendars database missing");
@@ -600,7 +600,7 @@ describe("calendar timeline read (issue #1717)", () => {
       await client.query("DELETE FROM items WHERE database_id = $1", [calendarsId]);
       await client.query("DELETE FROM properties WHERE database_id = $1", [calendarsId]);
       await client.query("DELETE FROM views WHERE database_id = $1", [calendarsId]);
-      await databasesStore.dropDatabaseWithPartition(client, calendarsId);
+      await databasesStore.deleteDatabaseWithItems(client, calendarsId);
       await client.query("DELETE FROM items WHERE database_id = $1 AND id = $2", [
         projectsId,
         calendarsDatabase.ownerProjectItemId,

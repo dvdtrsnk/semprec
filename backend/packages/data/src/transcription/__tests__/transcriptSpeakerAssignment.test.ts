@@ -1040,7 +1040,7 @@ describe("transcript speaker assignment (issue #1770)", () => {
           const original = client.query.bind(client);
           const guarded = async (...args: unknown[]): Promise<unknown> => {
             const text = typeof args[0] === "string" ? args[0] : "";
-            if (!text.includes("FOR UPDATE NOWAIT")) return Reflect.apply(original, client, args);
+            if (!text.includes("UPDATE NOWAIT")) return Reflect.apply(original, client, args);
             const card = await cardOf(world.transcript, "SPEAKER_00");
             let answer: unknown;
             await holdingRowLock("processingProposals", card.id, async () => {

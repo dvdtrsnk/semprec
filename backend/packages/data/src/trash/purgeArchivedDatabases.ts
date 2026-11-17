@@ -108,7 +108,7 @@ async function dropDatabase(run: PurgeRun, databaseId: string): Promise<boolean>
       throw new Error(`Database ${databaseId} still holds items when its purge reached the drop`);
     }
     const changedDatabaseIds = await removeDependentSchema(client, databaseId);
-    await databasesStore.dropDatabaseWithPartition(client, databaseId);
+    await databasesStore.deleteDatabaseWithItems(client, databaseId);
     runAfterCommit(client, () => {
       for (const id of [databaseId, ...changedDatabaseIds]) notifyInvalidation({ scope: "schema", databaseId: id });
     });
@@ -142,7 +142,7 @@ async function purgeDatabase(run: PurgeRun, databaseId: string, ancestors: Reado
 
 /**
  * Purges every archived user database of the current tenant whose `purge_at` has passed, with items, edges,
- * dependent schema, blobs and partition. Must run in a tenant scope (RLS limits every statement). A database
+ * dependent schema and blobs. Must run in a tenant scope (RLS limits every statement). A database
  * without a deadline first gets one `RETENTION_DAYS` 24-hour days from now. A failed database is logged and the
  * rest continue; failures are thrown together as one `AggregateError` (raw errors, must not be logged) so the task
  * retries. Returns how many root databases were fully purged.

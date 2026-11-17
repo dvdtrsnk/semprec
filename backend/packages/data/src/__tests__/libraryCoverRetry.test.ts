@@ -547,7 +547,7 @@ describe("library cover override and retry (issue gh-1793)", () => {
         let timer: NodeJS.Timeout | undefined;
         try {
           await purge.query("BEGIN");
-          await purge.query("SELECT id FROM items WHERE id = $1 FOR UPDATE", [trashed]);
+          await purge.query("SELECT id FROM items WHERE id = $1 FOR NO KEY UPDATE", [trashed]);
           const retried = call(trashed).catch((e: unknown) => e);
           const outcome = await Promise.race([
             retried,

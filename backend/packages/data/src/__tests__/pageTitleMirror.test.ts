@@ -641,7 +641,7 @@ describe("subpage title mirror (issue #1715)", () => {
         faults.sessions.push(jobOwned.session, trashOwned.session);
         run.hook = onStatements([
           {
-            match: (text, values) => /FOR UPDATE/.test(text) && values.includes(parent),
+            match: (text, values) => /FOR (NO KEY )?UPDATE/.test(text) && values.includes(parent),
             inject: async () => {
               const queued = startActor("trash", trashOwned.session, () => trashVia(trashOwned.pool, parent));
               trashActor = queued;
@@ -725,7 +725,8 @@ describe("subpage title mirror (issue #1715)", () => {
         };
         run.hook = onStatements(
           [hostA, hostB].map((reserved) => ({
-            match: (text: string, values: readonly unknown[]) => /FOR UPDATE/.test(text) && values.includes(reserved),
+            match: (text: string, values: readonly unknown[]) =>
+              /FOR (NO KEY )?UPDATE/.test(text) && values.includes(reserved),
             inject: arrive,
           })),
         );

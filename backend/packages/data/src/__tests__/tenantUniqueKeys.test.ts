@@ -5,6 +5,7 @@ import {
   createRuntimeRolePool,
   createTestTenant,
   getTestPool,
+  insertItemsWithIds,
   resetDatabase,
   withTenantTransaction,
 } from "../testSupport/testDb.js";
@@ -24,25 +25,36 @@ interface KeyCase {
   table: string;
   constraint: string;
   insert: (client: PoolClient, tenant: Tenant) => Promise<unknown>;
+  /** The key names an item, whose id exists in one tenant only, so two tenants never hold the same key. */
+  singleTenant?: true;
 }
 
 const SHARED_ITEM_ID = "11111111-1111-4111-8111-111111111111";
+
+/** An item of the client's tenant for a row whose item column has a key to items. */
+async function itemOf(client: PoolClient): Promise<string> {
+  const id = randomUUID();
+  await insertItemsWithIds(client, [id]);
+  return id;
+}
 
 const CASES: KeyCase[] = [
   {
     table: "idempotency_keys",
     constraint: "idempotency_keys_pkey",
-    insert: (client) =>
+    insert: async (client) =>
       client.query("INSERT INTO idempotency_keys (key, database_id, item_id) VALUES ('shared-key', $1, $2)", [
         randomUUID(),
-        randomUUID(),
+        await itemOf(client),
       ]),
   },
   {
     table: "person_email_index",
     constraint: "person_email_index_pkey",
-    insert: (client) =>
-      client.query("INSERT INTO person_email_index (email, item_id) VALUES ('shared@example.com', $1)", [randomUUID()]),
+    insert: async (client) =>
+      client.query("INSERT INTO person_email_index (email, item_id) VALUES ('shared@example.com', $1)", [
+        await itemOf(client),
+      ]),
   },
   {
     table: "blobs",
@@ -57,11 +69,11 @@ const CASES: KeyCase[] = [
   {
     table: "mail_message_meta",
     constraint: "mail_message_meta_tenant_provider_msg_uq",
-    insert: (client) =>
+    insert: async (client) =>
       client.query(
         `INSERT INTO mail_message_meta (item_id, message_id, envelope, mailbox_item_id, provider_message_id)
          VALUES ($1, $2, '{}'::jsonb, $3, 'shared-provider-id')`,
-        [randomUUID(), `<${randomUUID()}@example.com>`, randomUUID()],
+        [await itemOf(client), `<${randomUUID()}@example.com>`, randomUUID()],
       ),
   },
   {
@@ -86,6 +98,7 @@ const CASES: KeyCase[] = [
     table: "docs",
     constraint: "docs_tenant_item_id_uq",
     insert: (client) => client.query("INSERT INTO docs (item_id) VALUES ($1)", [SHARED_ITEM_ID]),
+    singleTenant: true,
   },
 ];
 
@@ -122,6 +135,8 @@ describe("formerly global unique keys hold per tenant", () => {
     await resetDatabase(adminPool);
     tenantA = await createTenantWithUser();
     tenantB = await createTenantWithUser();
+    // The docs case names one fixed item id; items.id is global, so only tenant A can hold that item.
+    await withTenantTransaction(dataPool, tenantA.id, (client) => insertItemsWithIds(client, [SHARED_ITEM_ID]));
   });
 
   afterAll(async () => {
@@ -129,13 +144,16 @@ describe("formerly global unique keys hold per tenant", () => {
     await adminPool?.end();
   });
 
-  it.each(CASES)("accepts the same $table key in two tenants", async ({ table, insert }) => {
-    await withTenantTransaction(dataPool, tenantA.id, (client) => insert(client, tenantA));
-    await withTenantTransaction(dataPool, tenantB.id, (client) => insert(client, tenantB));
+  it.each(CASES.filter((entry) => entry.singleTenant !== true))(
+    "accepts the same $table key in two tenants",
+    async ({ table, insert }) => {
+      await withTenantTransaction(dataPool, tenantA.id, (client) => insert(client, tenantA));
+      await withTenantTransaction(dataPool, tenantB.id, (client) => insert(client, tenantB));
 
-    expect(await countRows(table, tenantA)).toBe(1);
-    expect(await countRows(table, tenantB)).toBe(1);
-  });
+      expect(await countRows(table, tenantA)).toBe(1);
+      expect(await countRows(table, tenantB)).toBe(1);
+    },
+  );
 
   it.each(CASES)(
     "refuses a duplicate $table key inside one tenant with 23505",

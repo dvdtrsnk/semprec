@@ -82,13 +82,6 @@ async function count(sql: string, params: unknown[] = []): Promise<number> {
 const databaseExists = async (id: string): Promise<boolean> => (await count("databases WHERE id = $1", [id])) === 1;
 const itemsOf = (databaseId: string): Promise<number> => count("items WHERE database_id = $1", [databaseId]);
 
-async function partitionExists(databaseId: string): Promise<boolean> {
-  const { rows } = await adminPool.query<{ present: boolean }>("SELECT to_regclass($1) IS NOT NULL AS present", [
-    `items_p_${databaseId.replace(/-/g, "")}`,
-  ]);
-  return rows[0]?.present === true;
-}
-
 async function purgeAtOf(databaseId: string): Promise<Date | null> {
   const { rows } = await adminPool.query<{ purge_at: Date | null }>("SELECT purge_at FROM databases WHERE id = $1", [
     databaseId,
@@ -196,7 +189,7 @@ describe("purgeExpiredArchivedDatabases (issue gh-1875)", () => {
 
     expect(purged).toBe(1);
     expect(await databaseExists(doomedId)).toBe(false);
-    expect(await partitionExists(doomedId)).toBe(false);
+    expect(await itemsOf(doomedId)).toBe(0);
     expect(await count("items WHERE id = ANY($1::uuid[])", [[liveItemId, trashedItemId, fileItemId]])).toBe(0);
     expect(await count("item_relations WHERE item_a = $1 OR item_b = $1", [liveItemId])).toBe(0);
     expect(await count("relation_definitions WHERE id = $1", [relationDefinitionId])).toBe(0);
@@ -419,7 +412,7 @@ describe("purgeExpiredArchivedDatabases (issue gh-1875)", () => {
     expect(await sweep(fakeStorage().storage)).toBe(1);
 
     expect(await databaseExists(doomedId)).toBe(false);
-    expect(await partitionExists(doomedId)).toBe(false);
+    expect(await itemsOf(doomedId)).toBe(0);
     expect(await propertyExists(pairedPropertyId)).toBe(false);
   });
 
@@ -441,7 +434,7 @@ describe("purgeExpiredArchivedDatabases (issue gh-1875)", () => {
 
     for (const id of [doomedId, inlineId, nestedInlineId]) {
       expect(await databaseExists(id)).toBe(false);
-      expect(await partitionExists(id)).toBe(false);
+      expect(await itemsOf(id)).toBe(0);
     }
     expect(await count("items WHERE id = ANY($1::uuid[])", [[pageId, noteId, nestedPageId, nestedNoteId]])).toBe(0);
   });
@@ -570,7 +563,6 @@ describe("purgeExpiredArchivedDatabases (issue gh-1875)", () => {
     expect(await sweep(fakeStorage().storage)).toBe(0);
 
     expect(await databaseExists(databaseId)).toBe(true);
-    expect(await partitionExists(databaseId)).toBe(true);
     expect(await propertyExists(pairedPropertyId)).toBe(true);
   });
 

@@ -51,11 +51,6 @@ export async function insertItemOrigins(
   );
 }
 
-/** No row is a legitimate outcome: the item was not created by a proposal. */
-export async function deleteItemOrigin(client: PoolClient, itemId: string): Promise<void> {
-  await client.query("DELETE FROM item_origins WHERE item_id = $1", [itemId]);
-}
-
 /**
  * Items with no row of that proposal are skipped: the undo of a confirmed card names every item it trashes, and some
  * cards (`mailThread`) write no origin rows.

@@ -87,8 +87,8 @@ export async function countLiveViewItems(
 
 /**
  * Live members paged by `position`, so a page fills with `limit` live items instead of coming back
- * short for memberships of trashed items. Binding `visibleDatabaseIds` lets the planner prune `items`
- * partitions. Exclusions apply in the join, so a page fills with readable members only.
+ * short for memberships of trashed items. `visibleDatabaseIds` confines the joined items to the tenant's
+ * databases. Exclusions apply in the join, so a page fills with readable members only.
  */
 export async function listLiveViewItemsAfter(
   client: PoolClient,

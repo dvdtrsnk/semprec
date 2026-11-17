@@ -63,9 +63,9 @@ export class GuidanceReferenceNotFoundError extends Error {
 }
 
 /**
- * Validates references Postgres cannot enforce with an FK (`items` is partitioned per database, so `project_item_id`
- * has no FK target). A missing entity rejects with `GuidanceReferenceNotFoundError`; anything else is an infrastructure
- * failure.
+ * Validates references the guidance tables carry no foreign key for (`project_item_id` must name an item of the
+ * Projects database). A missing entity rejects with `GuidanceReferenceNotFoundError`; anything else is an
+ * infrastructure failure.
  */
 export interface GuidanceReferenceStore<Tx> {
   requireProjectsItem(tx: Tx, projectItemId: string): Promise<void>;

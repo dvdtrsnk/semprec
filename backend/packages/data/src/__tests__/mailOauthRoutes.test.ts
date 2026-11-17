@@ -50,6 +50,7 @@ import {
   createTestTenant,
   getTenantZeroId,
   getTestPool,
+  insertItemsWithIds,
   resetDatabase,
 } from "../testSupport/testDb.js";
 
@@ -1713,16 +1714,17 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization", () => {
       expect(liveSync.restarted).toEqual([]);
     });
 
-    it("refuses a state that names another tenant's mailbox like one that names none, and leaves that mailbox alone", async () => {
+    it("cannot store a state that names another tenant's mailbox, and leaves that mailbox alone", async () => {
       const other = await otherTenantCaller();
       const foreign = await existingMailbox(other.tenantId);
       const foreignBefore = await storedMailbox(other.tenantId, foreign);
-      // No route stores such a state: the reauthorize route refuses a foreign mailbox with 404.
-      const { state } = await inTenant(caller.tenantId, (client) =>
-        createMailOauthState(client, { userId: caller.userId, provider: "gmail", mailboxItemId: foreign }),
-      );
-
-      await expectStaleState(state, foreign);
+      // No route stores such a state (the reauthorize route refuses a foreign mailbox with 404), and the state's
+      // foreign key refuses it exactly like an unknown id.
+      await expect(
+        inTenant(caller.tenantId, (client) =>
+          createMailOauthState(client, { userId: caller.userId, provider: "gmail", mailboxItemId: foreign }),
+        ),
+      ).rejects.toMatchObject({ code: "23503", constraint: "mail_oauth_states_mailbox_item_id_tenant_fkey" });
 
       expect(await storedMailbox(other.tenantId, foreign)).toEqual(foreignBefore);
       expect(foreignBefore.refreshToken).toBe(OLD_REFRESH_TOKEN);
@@ -1730,9 +1732,11 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization", () => {
 
     it("refuses a state that names no mailbox, and creates no sync state for its id", async () => {
       const unknown = randomUUID();
-      const { state } = await inTenant(caller.tenantId, (client) =>
-        createMailOauthState(client, { userId: caller.userId, provider: "gmail", mailboxItemId: unknown }),
-      );
+      const { state } = await inTenant(caller.tenantId, async (client) => {
+        // The state's item must exist (foreign key), so it names an item of a non-mailbox database.
+        await insertItemsWithIds(client, [unknown]);
+        return createMailOauthState(client, { userId: caller.userId, provider: "gmail", mailboxItemId: unknown });
+      });
 
       await expectStaleState(state, unknown);
 
@@ -1778,7 +1782,7 @@ describe("POST /api/mail/mailboxes/oauth/complete: reauthorization", () => {
     // state row and waits for the item, before it has read the recorded address, and the second one
     // waits for the sync state row behind it.
     const outcomes = await whileRowLocked(
-      "SELECT 1 FROM items WHERE id = $1 FOR UPDATE",
+      "SELECT 1 FROM items WHERE id = $1 FOR NO KEY UPDATE",
       [mailboxId],
       async (commit) => {
         const settled = [];

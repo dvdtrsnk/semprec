@@ -3,7 +3,13 @@ import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import {
+  createRuntimeRolePool,
+  createTestTenant,
+  getTestPool,
+  insertItemsWithIds,
+  resetDatabase,
+} from "../testSupport/testDb.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
 import {
@@ -51,7 +57,14 @@ async function twoTenantsAsRuntimeRole(client: PoolClient): Promise<Tenants> {
   return { a, b };
 }
 
-function insertMessage(
+/** An item of the client's tenant for a row that names one (mail_message_meta.item_id has a key to items). */
+async function newItemId(client: PoolClient): Promise<string> {
+  const id = randomUUID();
+  await insertItemsWithIds(client, [id]);
+  return id;
+}
+
+async function insertMessage(
   client: PoolClient,
   messageId: string,
   extra: {
@@ -63,7 +76,7 @@ function insertMessage(
   } = {},
 ) {
   return upsertMailMessageMeta(client, {
-    itemId: randomUUID(),
+    itemId: await newItemId(client),
     mailboxItemId: extra.mailboxItemId ?? randomUUID(),
     messageId,
     envelope: {},
@@ -107,11 +120,12 @@ describe("mail identities stay within a tenant", () => {
     it("does not recognize a violation of another unique index", async () => {
       await inRolledBackTransaction(async (client) => {
         const row = await insertMessage(client, "<u1@x>");
+        const itemId = await newItemId(client);
         const error = await client
           .query(
             `INSERT INTO mail_message_meta (item_id, message_id, envelope, mailbox_item_id)
              VALUES ($1, $2, '{}'::jsonb, $3)`,
-            [randomUUID(), "<u1@x>", row.mailboxItemId],
+            [itemId, "<u1@x>", row.mailboxItemId],
           )
           .then(
             () => null,

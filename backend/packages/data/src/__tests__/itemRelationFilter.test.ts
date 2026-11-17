@@ -35,24 +35,20 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   return rows[0].id;
 }
 
-/**
- * Collects every base-table scan executed (`Actual Loops` > 0) in an `EXPLAIN ANALYZE` plan tree, by
- * `Relation Name`. Partitions pruned at runtime report `Actual Loops: 0`; ANALYZE is needed because the
- * `item.database_id = op.database_id` value is only known at execution.
- */
-function collectExecutedRelationNames(plan: Record<string, unknown>, acc: Set<string>): void {
-  const relationName = plan["Relation Name"];
+/** Every executed (`Actual Loops` > 0) scan of `items` in an `EXPLAIN ANALYZE` plan tree, as `Node Type` and index. */
+function collectExecutedItemsScans(plan: Record<string, unknown>, acc: string[]): void {
   const actualLoops = plan["Actual Loops"];
-  if (typeof relationName === "string" && typeof actualLoops === "number" && actualLoops > 0) {
-    acc.add(relationName);
+  if (plan["Relation Name"] === "items" && typeof actualLoops === "number" && actualLoops > 0) {
+    const parts = [plan["Node Type"], plan["Index Name"]].filter((part) => typeof part === "string");
+    acc.push(parts.join(" "));
   }
   const subPlans = plan.Plans;
   if (Array.isArray(subPlans)) {
-    for (const sub of subPlans) collectExecutedRelationNames(sub as Record<string, unknown>, acc);
+    for (const sub of subPlans) collectExecutedItemsScans(sub as Record<string, unknown>, acc);
   }
 }
 
-describe("itemRelationFilter partition pruning (issue #262)", () => {
+describe("itemRelationFilter related-item lookup (issue #262)", () => {
   beforeEach(async () => {
     pool ??= getTestPool();
     chokePoint ??= createChokePoint(pool);
@@ -64,7 +60,7 @@ describe("itemRelationFilter partition pruning (issue #262)", () => {
     await pool?.end();
   });
 
-  it("only scans the related item's own items_p_* partition, not every database's partition", async () => {
+  it("probes the related item by index instead of scanning items", async () => {
     const emailsId = await databaseIdFor("emails");
     const foldersId = await databaseIdFor("folders");
     const filesId = await databaseIdFor("files");
@@ -99,25 +95,26 @@ describe("itemRelationFilter partition pruning (issue #262)", () => {
       ),
     );
 
-    const { rows: partitionRows } = await pool.query<{ tablename: string }>(
-      `SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename LIKE 'items\\_p\\_%'`,
-    );
-    // Every module seedSystem sets up got its own partition, so pruning down to one is meaningful.
-    expect(partitionRows.length).toBeGreaterThan(1);
-    const foldersPartition = `items_p_${foldersId.replace(/-/g, "")}`;
-    expect(partitionRows.map((r) => r.tablename)).toContain(foldersPartition);
-
-    // Collect statistics here so the planner's choice does not depend on when autovacuum last ran.
-    await pool.query("ANALYZE items");
-    const { rows: explainRows } = await pool.query<{ "QUERY PLAN": Array<{ Plan: Record<string, unknown> }> }>(
-      `EXPLAIN (ANALYZE, FORMAT JSON) ${ITEM_RELATION_FILTER_QUERY}`,
-      [folderProperty.id, "specialPurpose", emailItemId],
-    );
+    // A seeded tenant holds too few items for the planner to prefer an index; with sequential scans disabled it
+    // shows the probe it takes once items grow.
+    const explainRows = await withTransaction(pool, async (client) => {
+      await client.query("SET LOCAL enable_seqscan = off");
+      const { rows } = await client.query<{ "QUERY PLAN": Array<{ Plan: Record<string, unknown> }> }>(
+        `EXPLAIN (ANALYZE, FORMAT JSON) ${ITEM_RELATION_FILTER_QUERY}`,
+        [folderProperty.id, "specialPurpose", emailItemId],
+      );
+      return rows;
+    });
     const plan = explainRows[0]!["QUERY PLAN"][0]!.Plan;
-    const relationNames = new Set<string>();
-    collectExecutedRelationNames(plan, relationNames);
+    const scans: string[] = [];
+    collectExecutedItemsScans(plan, scans);
+    expect(scans).toEqual([expect.stringMatching(/^Index Scan items_(pkey|database_id_id_idx)$/)]);
 
-    const scannedItemsPartitions = [...relationNames].filter((name) => name.startsWith("items_p_"));
-    expect(scannedItemsPartitions).toEqual([foldersPartition]);
+    const { rows } = await pool.query<{ value: string | null }>(ITEM_RELATION_FILTER_QUERY, [
+      folderProperty.id,
+      "specialPurpose",
+      emailItemId,
+    ]);
+    expect(rows).toEqual([{ value: "inbox" }]);
   });
 });

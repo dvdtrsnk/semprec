@@ -8,6 +8,7 @@ import {
   createTestTenant,
   getTenantZeroId,
   getTestPool,
+  insertItemsWithIds,
   resetDatabase,
   withTenantTransaction,
 } from "../testSupport/testDb.js";
@@ -1450,7 +1451,7 @@ describe("value link state on writes", () => {
                       (sql, params) => {
                         if (
                           sql.includes("FROM item_relations") &&
-                          sql.includes("FOR UPDATE NOWAIT") &&
+                          sql.includes("UPDATE NOWAIT") &&
                           Array.isArray(params) &&
                           params[0] === definition.id &&
                           params[1] === target.itemA &&
@@ -2170,7 +2171,7 @@ describe("value link state on writes", () => {
                     (sql, params) => {
                       if (
                         !sql.includes("FROM items i JOIN databases") ||
-                        !sql.includes("FOR UPDATE OF i") ||
+                        !sql.includes("UPDATE OF i") ||
                         !Array.isArray(params) ||
                         params[0] !== fixture.item.id
                       )
@@ -2203,7 +2204,7 @@ describe("value link state on writes", () => {
               await waitBlocked(pids.system, pids.user);
               const waiting = await pool.query<{ waiting: boolean }>(
                 `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1
-                  AND query LIKE '%FROM items i JOIN databases%FOR UPDATE OF i%'
+                  AND query LIKE '%FROM items i JOIN databases%FOR NO KEY UPDATE OF i%'
                   AND $2::int = ANY(pg_blocking_pids(pid))) AS waiting`,
                 [pids.user, pids.system],
               );
@@ -2511,7 +2512,7 @@ describe("value link state on writes", () => {
       });
     });
 
-    it("isolates same-item and key handoffs and breaks across runtime tenants", async () => {
+    it("isolates same-key handoffs and breaks across runtime tenants", async () => {
       const tenantA = await createTestTenant(pool);
       const tenantB = await createTestTenant(pool);
       await withRuntimePool(async (runtime) => {
@@ -2521,9 +2522,12 @@ describe("value link state on writes", () => {
           cp.createProperty({ databaseId: fx.files.id, key: "note", name: "Note", type: "text" }),
         );
         await linkIn(runtime, tenantA, fx.file.id, "name");
-        // Rows of another tenant under the same item id and keys must neither authorize nor break anything here.
-        await linkIn(runtime, tenantB, fx.file.id, ["name", "note", "projects"], { ruleKey: "foreign" });
-        const foreignBefore = await readStoredLinks(runtime, tenantB, fx.file.id);
+        // Rows of another tenant under the same keys must neither authorize nor break anything here. They sit on an
+        // item of their own: item ids are unique across tenants and a link must name an item of its tenant.
+        const foreignItemId = randomUUID();
+        await withTenantTransaction(runtime, tenantB, (client) => insertItemsWithIds(client, [foreignItemId]));
+        await linkIn(runtime, tenantB, foreignItemId, ["name", "note", "projects"], { ruleKey: "foreign" });
+        const foreignBefore = await readStoredLinks(runtime, tenantB, foreignItemId);
         expect(foreignBefore).toHaveLength(3);
 
         await runInTenant(tenantA, () => updateAs(USER, fx.files.id, fx.file.id, { name: "changed" }, cp));
@@ -2532,7 +2536,7 @@ describe("value link state on writes", () => {
           state: "broken",
           broken_by: "user",
         });
-        expect(await readStoredLinks(runtime, tenantB, fx.file.id)).toEqual(foreignBefore);
+        expect(await readStoredLinks(runtime, tenantB, foreignItemId)).toEqual(foreignBefore);
 
         const before = await storedState(runtime, tenantA, fx.files.id, fx.file.id);
         const events = recordEvents();
@@ -2547,7 +2551,7 @@ describe("value link state on writes", () => {
         });
         await expect(createEdge()).rejects.toMatchObject({ status: 403, code: "owner_violation" });
         expect(await storedState(runtime, tenantA, fx.files.id, fx.file.id)).toEqual(before);
-        expect(await readStoredLinks(runtime, tenantB, fx.file.id)).toEqual(foreignBefore);
+        expect(await readStoredLinks(runtime, tenantB, foreignItemId)).toEqual(foreignBefore);
         expect(await runInTenant(tenantA, () => cp.listItemRelations(fx.file.id, fx.projectsProperty.id))).toEqual([]);
         expect(events).toEqual([]);
 
@@ -2556,7 +2560,7 @@ describe("value link state on writes", () => {
         await createEdge();
         const own = await readStoredLinks(runtime, tenantA, fx.file.id);
         expect(own.filter((entry) => entry.property_key !== "name").map((entry) => entry.state)).toEqual(["on", "on"]);
-        expect(await readStoredLinks(runtime, tenantB, fx.file.id)).toEqual(foreignBefore);
+        expect(await readStoredLinks(runtime, tenantB, foreignItemId)).toEqual(foreignBefore);
       });
     }, 30000);
   });

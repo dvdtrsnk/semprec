@@ -653,7 +653,7 @@ describe("Speaker mapping suggestions (issue #185)", () => {
                   enqueue: boolean;
                   eventLock: boolean;
                 }>(
-                  "SELECT $2::int = ANY(pg_blocking_pids(pid)) AS blocked, position('INSERT INTO item_relations' IN query) > 0 AS insertion, starts_with(query, 'SELECT graphile_worker.add_job(') AS enqueue, position('FROM items WHERE database_id = $1 AND id = $2 FOR UPDATE' IN query) > 0 AS \"eventLock\" FROM pg_stat_activity WHERE pid = $1::int",
+                  "SELECT $2::int = ANY(pg_blocking_pids(pid)) AS blocked, position('INSERT INTO item_relations' IN query) > 0 AS insertion, starts_with(query, 'SELECT graphile_worker.add_job(') AS enqueue, position('FROM items WHERE database_id = $1 AND id = $2 FOR NO KEY UPDATE' IN query) > 0 AS \"eventLock\" FROM pg_stat_activity WHERE pid = $1::int",
                   [secondPid, firstPid],
                 );
                 // Confirm-first: the user write's participant INSERT waits on the confirm's uncommitted edge; the
@@ -1014,7 +1014,7 @@ describe("Speaker mapping suggestions (issue #185)", () => {
       const holder = await pool.connect();
       try {
         await holder.query("BEGIN");
-        await holder.query("SELECT 1 FROM items WHERE id = $1 FOR UPDATE", [cardId]);
+        await holder.query("SELECT 1 FROM items WHERE id = $1 FOR NO KEY UPDATE", [cardId]);
         expect(await settledWithin(propose(greetedAsAlice()))).toEqual([]);
       } finally {
         await holder.query("ROLLBACK");

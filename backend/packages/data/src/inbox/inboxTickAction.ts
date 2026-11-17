@@ -133,7 +133,7 @@ async function findExistingProposal(
 }
 
 /**
- * Re-reads the unlocked `snapshot` under `FOR UPDATE` and returns it only if it is still the row the tick decided on:
+ * Re-reads the unlocked `snapshot` under `FOR NO KEY UPDATE` and returns it only if it is still the row the tick decided on:
  * live, not `confirmed`/`rejected`, same `fingerprint` and `aiVersion`. Otherwise logs why and returns `null`, and the
  * caller skips its write. A manual edit that moved only `updatedAt` and `version` does not count; the caller passes
  * the locked `version` as `ifVersion`.

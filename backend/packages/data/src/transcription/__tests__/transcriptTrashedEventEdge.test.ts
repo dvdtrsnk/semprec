@@ -1032,9 +1032,18 @@ describe("a transcript whose Event is in the Trash (issue #1743)", () => {
       const world = await buildWorld();
       await trashEvent(world);
       const definition = await eventRelationDefinitionId(world);
-      // Raw SQL: the purge deletes an Event's row and its edges in one transaction, so no production write leaves
-      // the edge without the row. A match reads exactly this when that purge commits between its two reads.
-      await admin.query("DELETE FROM items WHERE database_id = $1 AND id = $2", [world.schema.db.events, world.event]);
+      // Raw SQL with the foreign keys switched off for the superuser's statement: the edges go with the Event's row,
+      // so no stored state has the edge without the row. A match reads exactly this when that purge commits between
+      // its two reads.
+      const raw = await admin.connect();
+      try {
+        await raw.query("BEGIN");
+        await raw.query("SET LOCAL session_replication_role = replica");
+        await raw.query("DELETE FROM items WHERE database_id = $1 AND id = $2", [world.schema.db.events, world.event]);
+        await raw.query("COMMIT");
+      } finally {
+        raw.release();
+      }
       expect(await eventIds(world)).toEqual([]);
       expect(await storedEventEdges(world)).toEqual([world.event]);
 

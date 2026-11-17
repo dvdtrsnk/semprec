@@ -314,10 +314,7 @@ export async function toApprovalRequestDecisionView(
   };
 }
 
-/**
- * `agent_runs.project_item_id` has no FK to `items.id` (`items` is partitioned), so the project join is two
- * batched follow-up reads rather than one SQL join.
- */
+/** The project of each request's run is read in two batched follow-up reads rather than one SQL join. */
 async function loadQueueEntries(
   client: Queryable,
   requests: ApprovalRequest[],

@@ -213,8 +213,8 @@ async function countAreaProjects(
 /**
  * The `subtitleParts` of every source by item id, with a constant number of statements however many results. A
  * company gets the `relationship` marker `company`, since the closed kind set has no company kind. When a module
- * shows one linked item, it is the first by title. `visibleDatabaseIds` lets the statement prune item partitions;
- * items of `unreadableDatabaseIds` are never shown as links.
+ * shows one linked item, it is the first by title. `visibleDatabaseIds` confines linked items to the tenant's
+ * databases; items of `unreadableDatabaseIds` are never shown as links.
  */
 export async function buildSubtitleParts(
   client: PoolClient,
