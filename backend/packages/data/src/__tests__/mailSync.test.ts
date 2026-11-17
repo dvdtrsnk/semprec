@@ -54,11 +54,15 @@ import { parseMailSearchQuery, reindexItemSearch, searchItems } from "../mail/se
 import { NotFoundError, ValidationError } from "../errors.js";
 import { storeCredential, getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
 import {
+  IMAP_NEW_MESSAGES_PER_PASS,
   reconcileImapAccount,
   reconcileImapFolder,
   type ImapFetchedMessage,
+  type ImapFolderRef,
   type ImapMailClient,
 } from "../mail/imapReconcile.js";
+import { lockMailboxSync } from "../mail/mailboxSyncGuard.js";
+import { mailAccountSyncJobKey } from "../mail/mailSyncEnqueue.js";
 import { reconcileGmailAccount, type GmailMailClient } from "../mail/gmailReconcile.js";
 import { reconcileGraphAccount, type GraphChangedMessage, type GraphMailClient } from "../mail/graphReconcile.js";
 import {
@@ -417,6 +421,21 @@ function fetched(uid: number, messageId: string, extra: Partial<ImapFetchedMessa
   return { uid, message: { messageId, envelope: { from: { address: "a@x.com" } }, attachments: [], ...extra } };
 }
 
+/** An IMAP account whose folders hold `counts[path]` messages with UIDs 1..n, honouring `sinceUid` and `limit`. */
+function fakeImapAccount(folders: Array<ImapFolderRef & { count: number }>): ImapMailClient {
+  const countOf = (path: string) => folders.find((folder) => folder.path === path)?.count ?? 0;
+  return fakeImap({
+    listFolders: async () => folders.map(({ path, specialUse }) => ({ path, ...(specialUse ? { specialUse } : {}) })),
+    selectFolder: async (path) => ({ uidvalidity: 7, uidnext: countOf(path) + 1, highestModSeq: null }),
+    fetchMessagesSince: async (path, sinceUid, limit) =>
+      Array.from({ length: countOf(path) }, (_, index) => index + 1)
+        .filter((uid) => uid >= sinceUid)
+        .slice(0, limit)
+        .map((uid) => fetched(uid, `<${path}-${uid}@x>`, { subject: `${path} ${uid}` })),
+    fetchAllUids: async (path) => Array.from({ length: countOf(path) }, (_, index) => index + 1),
+  });
+}
+
 /** A real ImapFlow connection that is never opened; tests stub the methods they reach. */
 function unopenedImapFlow(): ImapFlow {
   return new ImapFlow({
@@ -429,6 +448,7 @@ function unopenedImapFlow(): ImapFlow {
 }
 
 function stubInboxOpen(connection: ImapFlow): void {
+  vi.spyOn(connection, "search").mockResolvedValue([1]);
   vi.spyOn(connection, "mailboxOpen").mockResolvedValue({
     path: "INBOX",
     delimiter: "/",
@@ -1610,6 +1630,43 @@ describe("IMAP reconcile core", () => {
     expect(await folderEdges(params.folderRelationPropertyId)).toBe(1); // one of the two original edges was removed
   });
 
+  tenantIt("a backfill ingests one pass's budget, then resumes after the last ingested UID", async () => {
+    const params = await reconcileParams();
+    const account = fakeImapAccount([{ path: "INBOX", specialUse: "\\Inbox", count: IMAP_NEW_MESSAGES_PER_PASS + 3 }]);
+    const initialSyncCompletedAt = async () =>
+      (
+        await pool.query<{ initial_sync_completed_at: Date | null; due: boolean }>(
+          `SELECT initial_sync_completed_at, next_expected_activity_at <= now() AS due
+           FROM mail_account_sync_state WHERE item_id = $1`,
+          [params.mailboxItemId],
+        )
+      ).rows[0];
+
+    expect(await reconcile(account, params)).toEqual({ complete: false });
+    expect(await emailIds(params.emailsDatabaseId)).toHaveLength(IMAP_NEW_MESSAGES_PER_PASS);
+    expect(await initialSyncCompletedAt()).toEqual({ initial_sync_completed_at: null, due: true });
+
+    expect(await reconcile(account, params)).toEqual({ complete: true });
+    expect(await emailIds(params.emailsDatabaseId)).toHaveLength(IMAP_NEW_MESSAGES_PER_PASS + 3);
+    expect(await initialSyncCompletedAt()).toEqual({ initial_sync_completed_at: expect.any(Date), due: false });
+  });
+
+  tenantIt("a pass syncs the inbox before folders listed ahead of it", async () => {
+    const params = await reconcileParams();
+    const account = fakeImapAccount([
+      { path: "Archive", count: IMAP_NEW_MESSAGES_PER_PASS },
+      { path: "INBOX", specialUse: "\\Inbox", count: 2 },
+    ]);
+
+    expect(await reconcile(account, params)).toEqual({ complete: false });
+    const { rows } = await pool.query<{ name: string }>(
+      "SELECT properties->>'name' AS name FROM items WHERE database_id = $1 AND properties->>'name' LIKE 'INBOX %' ORDER BY 1",
+      [params.emailsDatabaseId],
+    );
+    expect(rows.map((row) => row.name)).toEqual(["INBOX 1", "INBOX 2"]);
+    expect(await emailIds(params.emailsDatabaseId)).toHaveLength(IMAP_NEW_MESSAGES_PER_PASS);
+  });
+
   tenantIt(
     "Gmail in IMAP fallback mode: derives label-folder membership from X-GM-LABELS alongside the physical All Mail edge",
     async () => {
@@ -2551,7 +2608,7 @@ describe("mail sync job error handling", () => {
           ? client.listFolders()
           : stage === "select"
             ? client.selectFolder("INBOX")
-            : client.fetchMessagesSince("INBOX", 1);
+            : client.fetchMessagesSince("INBOX", 1, 10);
       expectSafeImapFailure(await rejectionOf(work), secret);
     },
   );
@@ -2577,7 +2634,7 @@ describe("mail sync job error handling", () => {
     const close = vi.spyOn(iterator, "return").mockRejectedValue(cleanup);
     vi.spyOn(connection, "fetch").mockReturnValue(iterator);
     const warn = vi.spyOn(logger, "warn");
-    const outcome = await rejectionOf(new ImapFlowMailClient(connection).fetchMessagesSince("INBOX", 1));
+    const outcome = await rejectionOf(new ImapFlowMailClient(connection).fetchMessagesSince("INBOX", 1, 10));
     expect(next).toHaveBeenCalledOnce();
     expect(close).toHaveBeenCalledOnce();
     expectSafeImapFailure(outcome, "PRIVATE-SENTINEL");
@@ -2832,6 +2889,69 @@ describe("mail sync job error handling", () => {
     expect(createImapClient).not.toHaveBeenCalled();
   });
 });
+describe("bounded IMAP sync passes", () => {
+  useSeededDatabase();
+
+  const queuedSyncJobs = async (mailboxItemId: string) =>
+    (
+      await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE key = $1", [
+        mailAccountSyncJobKey(mailboxItemId),
+      ])
+    ).rows[0]?.count;
+
+  tenantIt("an unfinished backfill queues the next pass with its batch, a finished one does not", async () => {
+    const mailbox = await createSyncMailbox();
+    const imap = () =>
+      fakeImapAccount([{ path: "INBOX", specialUse: "\\Inbox", count: IMAP_NEW_MESSAGES_PER_PASS + 1 }]);
+
+    await runSync(mailbox, { createImapClient: async () => imap() });
+    expect(await queuedSyncJobs(mailbox)).toBe("1");
+    expect(await syncStatusOf(mailbox)).toBe("ok");
+    expect((await syncState(mailbox))?.initialSyncCompletedAt).toBeNull();
+
+    await pool.query("DELETE FROM graphile_worker._private_jobs WHERE key = $1", [mailAccountSyncJobKey(mailbox)]);
+    await runSync(mailbox, { createImapClient: async () => imap() });
+    expect(await queuedSyncJobs(mailbox)).toBe("0");
+    expect((await syncState(mailbox))?.initialSyncCompletedAt).not.toBeNull();
+  });
+
+  tenantIt(
+    "a pass that finds the mailbox held by another pass is skipped without recording a failure",
+    async () => {
+      const mailbox = await createSyncMailbox();
+      let release: () => void = () => {};
+      const released = new Promise<void>((resolve) => (release = resolve));
+      let held: () => void = () => {};
+      const holding = new Promise<void>((resolve) => (held = resolve));
+      const holder = withTransaction(pool, async (client) => {
+        await lockMailboxSync(client, mailbox);
+        held();
+        await released;
+      });
+      try {
+        await holding;
+        const reconciled = vi.fn();
+        await runSync(mailbox, {
+          createImapClient: async () =>
+            fakeImap({
+              listFolders: async () => {
+                reconciled();
+                return [];
+              },
+            }),
+        });
+        expect(reconciled).not.toHaveBeenCalled();
+      } finally {
+        release();
+        await holder;
+      }
+      expect(await syncStatusOf(mailbox)).toBeUndefined();
+      expect(await syncState(mailbox)).toMatchObject({ lastError: null, failingSince: null });
+    },
+    30_000,
+  );
+});
+
 describe("mailbox Semp problem raised by the sync job", () => {
   interface MailProblemRow {
     category: string;
@@ -3255,6 +3375,10 @@ describe("ImapFlowMailClient", () => {
         calls.push("download");
         return { content: (async function* () {})() };
       },
+      async search() {
+        calls.push("search");
+        return [1];
+      },
       fetch() {
         calls.push("fetch");
         return (async function* () {
@@ -3283,7 +3407,7 @@ describe("ImapFlowMailClient", () => {
 
   it("never calls messageFlagsAdd while fetching message bodies in the background", async () => {
     const raw = fakeImapFlow();
-    const fetchedMessages = await new ImapFlowMailClient(raw).fetchMessagesSince("INBOX", 1);
+    const fetchedMessages = await new ImapFlowMailClient(raw).fetchMessagesSince("INBOX", 1, 10);
 
     // Proves the fetch reached a real message body (`download` was called), so no flag mutation is not
     // merely an empty fetch.
@@ -3371,9 +3495,37 @@ describe("ImapFlowMailClient", () => {
     expect(isImapConnectionLimitError(error)).toBe(expected);
   });
 
+  it("reads an empty body part and an empty attachment, which imapflow answers without a stream", async () => {
+    const raw = fakeImapFlow({
+      download: async () => ({ meta: {} }),
+      fetch: () =>
+        (async function* () {
+          yield {
+            seq: 1,
+            uid: 1,
+            envelope: { from: [{ address: "a@x.com" }], to: [], cc: [] },
+            bodyStructure: {
+              type: "multipart/mixed",
+              childNodes: [
+                { type: "text/plain", part: "1" },
+                { type: "application/pdf", part: "2", disposition: "attachment" },
+              ],
+            },
+            headers: Buffer.from(""),
+          };
+        })(),
+    });
+
+    const [fetched] = await new ImapFlowMailClient(raw).fetchMessagesSince("INBOX", 1, 10);
+    expect(fetched!.message.bodyText).toBe("");
+    const chunks: Buffer[] = [];
+    for await (const chunk of await fetched!.message.attachments[0]!.openStream()) chunks.push(chunk as Buffer);
+    expect(Buffer.concat(chunks)).toHaveLength(0);
+  });
+
   describe("attachment download fallback", () => {
     const attachmentStream = async (raw: ImapFlow): Promise<Readable> => {
-      const messages = await new ImapFlowMailClient(raw).fetchMessagesSince("INBOX", 1);
+      const messages = await new ImapFlowMailClient(raw).fetchMessagesSince("INBOX", 1, 10);
       return await messages[0]!.message.attachments[0]!.openStream();
     };
     function attachmentFetch(): AsyncIterableIterator<FetchMessageObject> {
@@ -4084,7 +4236,11 @@ describe("queued sync status forward repair", () => {
         ]);
         locked();
         await proceed;
-        await recordImapActivity(client, { itemId: success, nextExpectedActivityAt: new Date("2099-01-01") });
+        await recordImapActivity(client, {
+          itemId: success,
+          nextExpectedActivityAt: new Date("2099-01-01"),
+          completesInitialSync: true,
+        });
         await recordSyncError(client, failed, "known failure", "reauthorization");
       }),
     );

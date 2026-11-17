@@ -103,13 +103,20 @@ described elsewhere and only referenced here:
 - A pass is one run of `mailAccountSync` (`handleSyncMailAccountTask` in `mail/mailSyncJob.ts`). Reads of
   mailbox, state and credential happen first; reconcile then runs in one transaction that also talks to the
   provider (existing, accepted cost; do not add new network work there).
+- An IMAP pass ingests at most `IMAP_NEW_MESSAGES_PER_PASS` new messages across the account's folders, the
+  inbox first, lowest UIDs first (`mail/imapReconcile.ts`). A folder left partial records its `uidnext` after
+  the last ingested UID. An unfinished pass enqueues the next pass in its own transaction, leaves the account
+  due at once and keeps `initial_sync_completed_at` unset, so the backfill of a large mailbox is many short
+  committed passes rather than one transaction that holds the mail-thread guard for its whole duration.
 - The mailbox sync guard `lockMailboxSync` (`mail/mailboxSyncGuard.ts`) is a transaction advisory lock on
   `mailbox-sync:v1:<tenant>:<mailbox>`. It requires a tenant scope and a READ COMMITTED transaction of that
   tenant. Optional `maxWaitMs` bounds the wait with a transaction-local `lock_timeout` restored right after
   grant; a timeout throws `MailboxSyncBusyError` (409 `mailbox_sync_busy`).
 - In a pass, `enterSyncPass` takes the guard as the first statement of the write transaction, then re-reads
   the Mailboxes item and sync state row; a trashed/missing item or missing row ends the pass with no provider
-  call and no write.
+  call and no write. The pass waits for the guard at most `MAILBOX_SYNC_PASS_WAIT_MS`; when another pass or a
+  removal still holds it, the pass is skipped and records nothing (no failure, status, problem or
+  notification); the sweep re-enqueues an account that is still due.
 - A pass with no stored credential fails with `MailReauthorizationRequiredError` when the `syncStatus` it read
   is `needsReauthorization`; otherwise it is an ordinary failure.
 - `Mailboxes.syncStatus` (`owner: system`) has two writers: the sync job, and the mailbox removal (value
