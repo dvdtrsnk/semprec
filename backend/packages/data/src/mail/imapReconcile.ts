@@ -95,10 +95,11 @@ export interface ReconcileImapFolderParams {
 
 /**
  * New messages one pass ingests across all folders of an account. A pass is one transaction that holds the tenant's
- * mail-thread guard, so a mailbox with thousands of messages is backfilled over many short passes, each committing
- * its own batch, instead of one pass that blocks every other mail writer and loses everything on a provider error.
+ * mail-thread guard while it downloads bodies and attachments, so a mailbox with thousands of messages is backfilled
+ * over many short passes, each committing its own batch. Kept small enough that a pass over a slow provider ends well
+ * within the statement timeout of the writers waiting for that guard.
  */
-export const IMAP_NEW_MESSAGES_PER_PASS = 50;
+export const IMAP_NEW_MESSAGES_PER_PASS = 10;
 
 export interface ReconcileImapFolderResult {
   ingested: number;
