@@ -372,7 +372,7 @@ export async function toApprovalRequestDecisionView(
  * them: the source project's display name and agent-run id, so the UI can show "where this came
  * from" without a per-project detour, the MCP names of `safeSummary` and the `source` (issue #1766,
  * `loadApprovalSources`). `agent_runs.project_item_id` and `items.id` carry no Postgres FK to each
- * other (see `0001_core_schema.sql`'s header note on partitioned `items`), so both joins are done
+ * other (`items` is partitioned by database, so a bare reference to `items(id)` cannot be declared), so both joins are done
  * here as two batched follow-up reads instead of one SQL join. `locale` is the caller's
  * `users.locale`, in which the title of an item thread is written.
  */

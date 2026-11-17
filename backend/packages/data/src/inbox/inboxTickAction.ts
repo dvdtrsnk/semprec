@@ -552,8 +552,8 @@ export type InvalidReason = z.infer<typeof invalidReasonSchema>;
 
 /**
  * True when a Processing proposal is `invalid` for a reason no revise can repair: its source Inbox
- * item was deleted (issue #1482). A legacy `invalid` card with no `invalidReason` is not final, so
- * it stays revisable.
+ * item was deleted (issue #1482). An `invalid` card with any other or no `invalidReason` is not
+ * final, so it stays revisable.
  */
 export function isFinalInvalid(properties: Record<string, unknown>): boolean {
   if (properties.status !== "invalid") return false;
@@ -725,7 +725,6 @@ async function readTickSnapshot(
   const definition = await getRelationDefinitionByKey(client, config.inboxDatabaseId, "type");
   const edges = definition ? await relationsStore.listRelationsForItem(client, definition.id, item.id) : [];
   const sourceTypeId = edges[0] ? relationsStore.otherSide(edges[0], item.id) : null;
-  const emoji = typeof type?.properties.emoji === "string" ? type.properties.emoji : "";
   const v2Input = await inboxFingerprintInput(client, item, type);
   const fingerprint = computeInboxFingerprintV2(v2Input);
 
@@ -741,15 +740,7 @@ async function readTickSnapshot(
     if (typeof status === "string" && LOCKED_PROPOSAL_STATUSES.has(status)) return null;
     // A `computing` card was sent back for a new computation (issue gh-1947): the fingerprint of the card says what the
     // last computation saw, not whether another one is wanted, so the gate does not apply to it.
-    if (
-      status !== "computing" &&
-      isFingerprintCurrent(existingProposal.properties.fingerprint, {
-        v2Input,
-        legacyEmoji: emoji,
-        legacyText: v2Input.text,
-      })
-    )
-      return null;
+    if (status !== "computing" && isFingerprintCurrent(existingProposal.properties.fingerprint, v2Input)) return null;
   }
 
   // An item that holds a long recording gets the recording card and no model call (issues gh-1978 and gh-1985), and one

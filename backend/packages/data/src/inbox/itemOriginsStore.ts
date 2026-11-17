@@ -5,11 +5,11 @@ import type { ItemRow } from "../types.js";
 
 export type CaptureChannel = "inbox" | "transcript";
 
-/** How the capture time of a stored origin is known; a row written before the basis existed is `legacyUnverified`. */
-export type CaptureTimeBasis = "inboxCapture" | "unknown" | "legacyUnverified";
+/** How the capture time of a stored origin is known. */
+export type CaptureTimeBasis = "inboxCapture" | "unknown";
 
 const CAPTURE_CHANNELS: readonly string[] = ["inbox", "transcript"];
-const CAPTURE_TIME_BASES: readonly string[] = ["inboxCapture", "unknown", "legacyUnverified"];
+const CAPTURE_TIME_BASES: readonly string[] = ["inboxCapture", "unknown"];
 
 function isCaptureChannel(value: string): value is CaptureChannel {
   return CAPTURE_CHANNELS.includes(value);
@@ -25,7 +25,7 @@ export interface ItemOriginSource {
   inboxItemId: string | null;
   sourceTranscriptId: string | null;
   capturedAt: string | null;
-  captureTimeBasis: "inboxCapture" | "unknown";
+  captureTimeBasis: CaptureTimeBasis;
   captureChannel: CaptureChannel;
 }
 
@@ -90,7 +90,7 @@ export interface ItemOrigin {
   proposalId: string;
   /** Null for a transcript card, and for a row whose source Inbox item was never recorded. */
   inboxItemId: string | null;
-  /** Null when no capture time is recorded, always so for the basis `unknown`; a `legacyUnverified` value is the stored estimate, not a verified capture time. */
+  /** Null when no capture time is recorded, always so for the basis `unknown`. */
   capturedAt: string | null;
   captureTimeBasis: CaptureTimeBasis;
   captureChannel: CaptureChannel;

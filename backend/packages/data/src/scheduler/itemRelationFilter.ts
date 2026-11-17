@@ -33,7 +33,7 @@ export function parseItemRelationFilterConfig(raw: unknown): ItemRelationFilterC
 }
 
 /**
- * `items` is PARTITION BY LIST (database_id) (see 0001_core_schema.sql), so the lookup of
+ * `items` is PARTITION BY LIST (database_id), so the lookup of
  * `related` must pin database_id — resolved here off the *other* side's property, via the
  * small unpartitioned `properties` table — or Postgres has to scan every partition instead
  * of pruning to the one the related item actually lives in. Pinning it in a plain join

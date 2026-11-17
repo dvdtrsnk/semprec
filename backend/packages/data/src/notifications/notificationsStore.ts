@@ -119,7 +119,7 @@ export async function getNotificationById(client: Pool | PoolClient, id: string)
  * A reconnecting client's recovery path (issue #152): every unread notification for `userId`,
  * ordered deterministically by creation and then id so a client that paginates or dedupes against
  * a previously seen id gets a stable order even when two rows share a `created_at` timestamp.
- * Backed by `notifications_unread_idx` (migration 0030).
+ * Backed by `notifications_unread_idx`.
  */
 export async function listUnreadNotificationsForUser(
   client: Pool | PoolClient,

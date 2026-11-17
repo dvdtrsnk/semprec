@@ -80,7 +80,7 @@ export interface WriteNotificationInput {
   transitionInstance: string;
   /**
    * Structured data a client can render without a second round trip to the source row (issue
-   * #85's drift findings are the first producer). Defaults to `{}` (migration 0035's column
+   * #85's drift findings are the first producer). Defaults to `{}` (the column
    * default) when omitted.
    */
   payload?: Record<string, unknown>;
@@ -90,7 +90,7 @@ export interface WriteNotificationInput {
  * Runs on the caller's transaction client (never opens its own transaction): rolling back the
  * caller's transaction rolls this insert back with it, and committing it exposes both together.
  * Deduplicates per tenant and recipient on `(tenant_id, userId, sourceTable, sourceId, kind,
- * transitionInstance)` via `notifications_tenant_dedupe_idx` (migration 0064) — a replay is a
+ * transitionInstance)` via `notifications_tenant_dedupe_idx` — a replay is a
  * silent no-op, never a second row, and returns that recipient's own notification id. Two
  * recipients of the same source transition each get their own row.
  *

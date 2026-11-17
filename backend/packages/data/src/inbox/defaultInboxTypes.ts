@@ -17,7 +17,7 @@ import type { ProcessingMethod } from "./inboxTypesStore.js";
 /**
  * The key of the System settings property that lists the defaults already seeded (issue gh-1977). It is a system-owned
  * `json` property of the Inbox module, written only by `seedDefaultInboxItemTypes`: `seedSystem.ts` declares it with
- * an empty list for a fresh tenant and `defaultInboxTypesCutoverMigration.ts` adds it to a populated one.
+ * an empty list.
  */
 export const SEEDED_DEFAULT_INBOX_TYPES_KEY = "seededDefaultInboxTypes";
 export const SEEDED_DEFAULT_INBOX_TYPES_NAME = "Seeded default Inbox types";
@@ -55,8 +55,8 @@ const seededKeysSchema = z.array(z.string());
  * Creates the default Inbox item types that the tenant has not been given yet and records their keys, in the caller's
  * open transaction. Resolves to the keys it created, in table order.
  *
- * The System settings item is locked first (the ADR names it the serialization point), so two concurrent seeders (a
- * deploy cutover and a provisioning) take turns and the second one reads the keys the first recorded. A default whose
+ * The System settings item is locked first (the ADR names it the serialization point), so two concurrent seeders (two
+ * provisioning runs of one tenant) take turns and the second one reads the keys the first recorded. A default whose
  * key is in the marker is never created again, whether or not its type still exists, so a type the user deleted or
  * renamed does not come back. A default whose
  * target database does not exist in the tenant is skipped and not recorded, so the first run after that database exists
@@ -68,7 +68,7 @@ const seededKeysSchema = z.array(z.string());
  * later module's default does.
  *
  * Does nothing when the tenant has no Inbox item types database. Throws when the tenant has the System settings
- * database without the marker property (the cutover adds it, or the seed declares it) or when the marker holds
+ * database without the marker property (the seed declares it) or when the marker holds
  * anything but a list of strings.
  */
 export async function seedDefaultInboxItemTypes(

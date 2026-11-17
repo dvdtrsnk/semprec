@@ -15,9 +15,8 @@ import type { StoredRow } from "./timelineRead.js";
 export const NEXT_OCCURRENCE_REFRESH_ACTION_ID = "calendar.refreshNextOccurrence";
 
 /**
- * The refresh's heartbeat, shared by `seedCalendarsInTransaction` (fresh install) and
- * `runNextOccurrenceDateCutoverMigration` (populated upgrade) so both create the same one: five minutes after midnight
- * in the tenant's system time zone.
+ * The refresh's heartbeat, created by `seedCalendarsInTransaction`: five minutes after midnight in the tenant's system
+ * time zone.
  */
 export const NEXT_OCCURRENCE_REFRESH_HEARTBEAT = {
   name: "Refresh next occurrence of recurring events",

@@ -59,7 +59,7 @@ export async function readRecordingRequest(client: PoolClient, fileItemId: strin
 
 /**
  * The value of `recording_requests.event_decision` that records the user's explicit choice that a recording belongs to no
- * Event (issue gh-1986). The column is `NOT NULL DEFAULT 'none'` (migration 0137): the default means the user did not
+ * Event (issue gh-1986). The column is `NOT NULL DEFAULT 'none'`: the default means the user did not
  * decide, and any value other than this one leaves the match step as it is.
  */
 export const RECORDING_EVENT_DECISION_NO_EVENT = "noEvent";

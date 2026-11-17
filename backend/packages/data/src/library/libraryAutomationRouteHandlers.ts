@@ -27,8 +27,7 @@ interface LibraryAutomationRetryRouteContext {
 /**
  * The metadata job config of a library database: the action config of its seeded `onItemEvent` heartbeat, the one
  * the job of a newly created item runs with, so a retry fetches exactly what that job would. It is read, not rebuilt
- * from the contract, because its `source` is the one the tenant's heartbeat holds
- * (`libraryHeartbeatConfigCutoverMigration.ts` upgrades it).
+ * from the contract, because its `source` is the one the tenant's heartbeat holds.
  */
 export async function readJobConfig(client: PoolClient, database: DatabaseRow): Promise<LibraryMetadataJobConfig> {
   const heartbeats = database.ownerProjectItemId

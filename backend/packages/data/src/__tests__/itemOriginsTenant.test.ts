@@ -27,7 +27,8 @@ describe("item_origins tenant isolation", () => {
     // Raw insert: this test targets the table's row-level security, not the confirm path that writes it.
     await withTenantTransaction(runtimePool, tenantA, (client) =>
       client.query(
-        `INSERT INTO item_origins (item_id, proposal_id, captured_at, capture_channel) VALUES ($1, $2, now(), 'inbox')`,
+        `INSERT INTO item_origins (item_id, proposal_id, captured_at, capture_channel, capture_time_basis)
+         VALUES ($1, $2, now(), 'inbox', 'inboxCapture')`,
         [itemId, randomUUID()],
       ),
     );
@@ -45,8 +46,8 @@ describe("item_origins tenant isolation", () => {
     await expect(
       withTenantTransaction(runtimePool, tenantB, (client) =>
         client.query(
-          `INSERT INTO item_origins (tenant_id, item_id, proposal_id, captured_at, capture_channel)
-           VALUES ($1, $2, $3, now(), 'inbox')`,
+          `INSERT INTO item_origins (tenant_id, item_id, proposal_id, captured_at, capture_channel, capture_time_basis)
+           VALUES ($1, $2, $3, now(), 'inbox', 'inboxCapture')`,
           [tenantA, randomUUID(), randomUUID()],
         ),
       ),

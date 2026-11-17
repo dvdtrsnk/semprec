@@ -13,7 +13,7 @@ import { RECIPES_MODULE_ID } from "../seed/recipesModuleKeys.js";
 
 /**
  * The targets that belong to a module a tenant may not have (issue #1973). Each is an option of the `targetDatabase`
- * select that a populated tenant gains from `inboxTypeTargetOptionsCutoverMigration.ts`, and a write that names one is
+ * select, and a write that names one is
  * accepted only when the tenant has that database (`inboxTypeWriteHook.ts`). `recipes` (issue gh-1974) is the target the
  * recipe proposal writer serves (`recipeExtraction.ts`). A module added later that ships its own database is appended
  * here.

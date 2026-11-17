@@ -482,7 +482,7 @@ export async function loadItemTypes(
 
 /**
  * The reason of an `invalid` card with its sentence in `locale`. A stored reason is read through the schema of
- * issue #1482. A card without one (written before the reason existed) and a stored value that does not parse
+ * issue #1482. A card without one and a stored value that does not parse
  * both give the `unknown` reason: the card is still listed, with the generic sentence.
  */
 async function buildInvalidReason(stored: unknown, locale: string): Promise<InboxCardInvalidReason> {

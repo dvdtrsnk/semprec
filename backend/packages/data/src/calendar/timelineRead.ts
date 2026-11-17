@@ -198,8 +198,7 @@ function text(value: unknown): string | null {
  * For each Event of `$2` that has a live transcript, the first one in the order of its `transcript` relation,
  * which is the order `readEdges` returns edges in, with the transcript's stored `status`. `Events.transcript`
  * of database `$1` is property A of its relation definition, so an edge holds the Event in `item_a` and the
- * transcript in `item_b`: the Events seed declares the relation from Events, and
- * `transcription/eventTranscriptCardinalityCutoverMigration.ts` reads the definition the same way. Each edge
+ * transcript in `item_b`: the Events seed declares the relation from Events. Each edge
  * is joined to its transcript in the property's target database (`config.targetDatabaseId`). A trashed
  * transcript is not joined.
  */

@@ -70,7 +70,7 @@ export const CONNECTION_TIMEOUT_MS = 10_000;
 export const STATEMENT_TIMEOUT_MS = 60_000;
 
 export interface CreatePoolOptions {
-  /** Per-connection `statement_timeout`; defaults to STATEMENT_TIMEOUT_MS; `0` disables it (the migrations CLI, whose contract-step cutovers may run longer). */
+  /** Per-connection `statement_timeout`; defaults to STATEMENT_TIMEOUT_MS; `0` disables it (the migrations CLI, whose migrations may run longer). */
   statementTimeoutMs?: number;
   /**
    * Makes every connection of the pool run as this role (pg startup option `-c role=...`), so a CLI

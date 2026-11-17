@@ -222,7 +222,7 @@ export interface NotificationFanoutDependencies extends PushSenders {
  * The payload of every registration carries the user's badge (issue #1891, `computeBadgeForUser`), computed
  * once per job after the checks above, so a held or filtered notification costs no badge query.
  *
- * `push_deliveries` (migration 0032) is the durable per-(notification, registration) dedup key the issue's
+ * `push_deliveries` is the durable per-(notification, registration) dedup key the issue's
  * Task requires: `claimPushDeliveryTargets` claims a row per active registration exactly once (`ON
  * CONFLICT DO NOTHING` on every retry), and only a delivery that is still neither delivered nor
  * permanently failed is ever dispatched — so a redelivered/retried queue job can never send the

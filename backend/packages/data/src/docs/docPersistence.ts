@@ -81,7 +81,7 @@ async function compact(
     // (represented_at is boundary.created_at, the content timestamp this checkpoint's state
     // was current at). A dormant doc's compaction checkpoint can therefore expire before a
     // query within the nominal retentionDays window reaches it — but that query still finds
-    // the doc's earlier, non-expiring baseline checkpoint (new-doc or cutover), which is
+    // the doc's earlier, non-expiring new-doc baseline checkpoint, which is
     // always represented_at-earlier and NULL-expiry, so replay still succeeds; it just
     // replays a longer stretch of doc_history_updates instead of resuming from the now-
     // expired later checkpoint. History_not_retained is never returned incorrectly by this.

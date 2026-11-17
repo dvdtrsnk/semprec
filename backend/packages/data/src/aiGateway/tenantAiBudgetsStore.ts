@@ -40,7 +40,7 @@ interface AdminAiBudgetAccountRow {
 /**
  * Every account with its tenant's caps and spend (issue #1039), oldest account first. Spend comes
  * from `ai_tenant_spend()`, a router function, because the admin plane runs in system scope where
- * row-level security hides every tenant's `ai_gateway_calls` rows (migration 0076). An account whose
+ * row-level security hides every tenant's `ai_gateway_calls` rows. An account whose
  * tenant has no budget row reports `hasBudget: false` and null caps; its spend is still shown. An
  * account is joined to its own `users.tenant_id` only, with no sole-tenant fallback, so an account
  * without a tenant is not listed: it has no tenant to hold caps or spend.

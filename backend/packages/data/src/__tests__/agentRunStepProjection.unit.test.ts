@@ -671,16 +671,6 @@ describe("approvalStepState (issue #1862)", () => {
       { approvalState: "conflict", conflictReason: "approval.conflict.other" },
     ],
     [
-      "a request from before the execution protocol",
-      { status: "approved", executionStatus: "legacy_terminal", executionResult: null },
-      { approvalState: "conflict", conflictReason: "approval.conflict.other" },
-    ],
-    [
-      "a request the cutover rejected and marked legacy_terminal",
-      { status: "rejected", executionStatus: "legacy_terminal", executionResult: null },
-      { approvalState: "rejected" },
-    ],
-    [
       "an approved request that is not queued",
       { status: "approved", executionStatus: "not_approved", executionResult: null },
       null,
@@ -708,7 +698,6 @@ describe("projectAgentRunSteps approval state (issue #1862)", () => {
     ["executed", { status: "approved", executionStatus: "succeeded" }, "executed", "ok"],
     ["rejected", { status: "rejected", executionStatus: "not_approved" }, "rejected", "ok"],
     ["conflict", { status: "approved", executionStatus: "conflict" }, "conflict", "error"],
-    ["legacy", { status: "approved", executionStatus: "legacy_terminal" }, "conflict", "error"],
   ] as const)("shows a %s request as %s and the step as %s", async (_name, request, approvalState, state) => {
     const step = await read({ ...request, executionResult: { text: SENTINEL } });
 

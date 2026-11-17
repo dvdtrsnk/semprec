@@ -308,32 +308,6 @@ describe("GET /api/items/:id/origin (issue gh-1967)", () => {
       expect(origin.capturedAt).toBeNull();
       expect(origin.captureTimeBasis).toBe("unknown");
     });
-
-    it("keeps legacyUnverified, with the stored time, for a row written before the basis existed", async () => {
-      const itemId = await createByHand(tenantA, "companies", { name: "Old" });
-      const proposalId = randomUUID();
-      // Raw insert: a row of the old writer, which the confirm path of this release can no longer produce; the column
-      // default is what marks it `legacyUnverified`.
-      await withTenantTransaction(runtimePool, tenantA, (client) =>
-        client.query(
-          `INSERT INTO item_origins (item_id, proposal_id, captured_at, capture_channel)
-           VALUES ($1, $2, '2026-01-01T00:00:00Z', 'inbox')`,
-          [itemId, proposalId],
-        ),
-      );
-
-      const origin = await bodyOf(tenantA, itemId);
-
-      expect(origin).toMatchObject({
-        proposalId,
-        capturedAt: "2026-01-01T00:00:00.000Z",
-        captureTimeBasis: "legacyUnverified",
-        captureChannel: "inbox",
-        inboxItemId: null,
-        sourceText: null,
-        siblings: [],
-      });
-    });
   });
 
   describe("a transcript origin", () => {

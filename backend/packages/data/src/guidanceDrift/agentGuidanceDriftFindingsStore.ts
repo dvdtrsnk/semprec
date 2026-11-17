@@ -41,7 +41,7 @@ const COLUMNS = "id, project_item_id, fingerprint, payload, status, first_seen_a
 
 /**
  * Concrete `PoolClient` implementation of `@semprec/shared`'s `GuidanceDriftFindingStore`
- * (issue #85), backed by migration 0035's `agent_guidance_drift_findings` table and its
+ * (issue #85), backed by the `agent_guidance_drift_findings` table and its
  * `unique(project_item_id, fingerprint)` constraint.
  *
  * A write that changes which findings of a project are active (a finding raised or reactivated, a

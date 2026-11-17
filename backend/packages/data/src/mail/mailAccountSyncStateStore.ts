@@ -253,8 +253,8 @@ export async function recordGmailWatchRegistration(
 const PROVIDER_ACCOUNT_ADDRESS_INDEX = "mail_account_sync_state_tenant_provider_address_uq";
 
 /**
- * Another mailbox of the same tenant already records this provider account address (issue #1454,
- * migration 0125). The OAuth connect flow (issue gh-1686, `mail/mailOauthRouteHandlers.ts`) answers
+ * Another mailbox of the same tenant already records this provider account address (issue #1454).
+ * The OAuth connect flow (issue gh-1686, `mail/mailOauthRouteHandlers.ts`) answers
  * it as 409 with that mailbox's id. The password connect flow (issue gh-1736,
  * `mail/mailboxPasswordRouteHandlers.ts`) answers it as 409 without one, and raises it itself for an
  * address that a mailbox's address list holds. A reauthorization (issue gh-1742) of a mailbox that

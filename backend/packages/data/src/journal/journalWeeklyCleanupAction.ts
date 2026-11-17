@@ -16,9 +16,8 @@ import { JOURNAL_PERIOD_TYPES, type JournalPeriodType } from "./journalPeriods.j
 export { JOURNAL_WEEKLY_CLEANUP_ACTION_ID } from "./journalWeeklyCleanupKeys.js";
 
 /**
- * The weekly Journal cleanup heartbeat (issue #1883), shared by `seedSystem` (fresh install) and
- * `runJournalWeeklyCleanupCutoverMigration` (populated upgrade) so both create the same one: every Sunday at 21:00 in
- * the tenant's system time zone.
+ * The weekly Journal cleanup heartbeat (issue #1883), created by `seedSystem`: every Sunday at 21:00 in the tenant's
+ * system time zone.
  */
 export const JOURNAL_WEEKLY_CLEANUP_HEARTBEAT = {
   name: "Weekly journal cleanup",
@@ -66,7 +65,7 @@ async function weeklyCleanupTaskText(client: PoolClient): Promise<string> {
 /**
  * Creates the weekly Journal cleanup heartbeat on `projectItemId` unless the tenant already has a heartbeat with its
  * name and action, and says whether it created one. Read then insert, so the caller must keep two runs for one tenant
- * apart: `seedSystem` holds its seed lock, the cutover takes a table lock.
+ * apart: `seedSystem` holds its seed lock.
  */
 export async function ensureJournalWeeklyCleanupHeartbeat(client: PoolClient, projectItemId: string): Promise<boolean> {
   const existing = await client.query(`SELECT 1 FROM project_heartbeats WHERE action_id = $1 AND name = $2 LIMIT 1`, [

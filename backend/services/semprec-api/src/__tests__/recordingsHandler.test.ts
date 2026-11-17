@@ -442,12 +442,18 @@ describe("POST /api/recordings through the dispatcher", () => {
       if (!files || !emails) throw new Error("Missing recording heartbeat databases");
       const attachments = (await cp.listProperties(emails.id)).find((property) => property.key === "attachments");
       if (!attachments) throw new Error("Missing Emails attachments relation");
+      const fileEvents = (await cp.listProperties(files.id)).find((property) => property.key === "events");
+      if (!fileEvents) throw new Error("Missing Files events relation");
       const before = await withTransaction(runtime, (client) =>
         getItemAutomation(client, consumed.result.transcriptId),
       );
       if (!before) throw new Error("Missing transcription automation");
       await createFilesTranscriptionTriggerAction(runtime)(
-        { filesDatabaseId: files.id, attachmentsRelationPropertyId: attachments.id },
+        {
+          filesDatabaseId: files.id,
+          attachmentsRelationPropertyId: attachments.id,
+          eventsRelationPropertyId: fileEvents.id,
+        },
         { heartbeatId: "fixture", projectItemId: "fixture", itemId: uploaded.fileItemId },
       );
       const after = await withTransaction(runtime, (client) => getItemAutomation(client, consumed.result.transcriptId));

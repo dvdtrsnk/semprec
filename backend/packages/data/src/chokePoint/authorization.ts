@@ -37,9 +37,9 @@ function ownerViolation(view: { id: string }, reason: string): ForbiddenError {
 /**
  * `config.systemKey` is written by the system alone (issue #1798): a view that carries it is read-only for every actor
  * (`assertViewWritable`), so a key set by a client would mint a view nobody can edit or delete again, and a key chosen
- * ahead of a seed or cutover would take the `(database_id, systemKey)` slot of a system view. The choke-point entry
+ * ahead of a seed would take the `(database_id, systemKey)` slot of a system view. The choke-point entry
  * points (`createView`, `patchView`) therefore refuse a config that has the key unless the actor is `system`; the seeds
- * and cutovers create their system views through `viewsStore.createView` directly. The generic application service maps
+ * create their system views through `viewsStore.createView` directly. The generic application service maps
  * every caller to `user` or `ai_agent`. Presence is the test, not the value, as in `assertViewWritable`.
  */
 export function assertSystemKeyWritable(config: Record<string, unknown> | undefined, actor: Actor): void {

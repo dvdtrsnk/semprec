@@ -11,7 +11,7 @@ export interface PublishFindingInput {
  * Inserts a `manifest_drift_findings` row unless an active (unresolved) finding with the same
  * `(kind, dedupeKey)` already exists in the current tenant — the dedupe is per tenant, and the
  * `tenant_id` column default fills the tenant from the scope. The partial unique index
- * `manifest_drift_findings_tenant_active_idx` (migration 0064) is the conflict arbiter and what
+ * `manifest_drift_findings_tenant_active_idx` is the conflict arbiter and what
  * makes two concurrent callers reporting the same drift race safely: the loser's insert is a
  * no-op instead of a duplicate active finding.
  */

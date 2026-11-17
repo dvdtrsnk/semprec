@@ -22,8 +22,7 @@ export function isUniqueViolation(err: unknown, constraint: string): boolean {
 
 /**
  * Issue #145: a select/multi_select property's `config.options` must already be in the
- * `{ key, label? }[]` catalog shape — the bare-string shape only ever exists in already-
- * written rows, repaired once by migration 0029, never accepted from a new write.
+ * `{ key, label? }[]` catalog shape; a bare-string option is refused.
  */
 function assertValidSelectOptions(type: PropertyType, config: Record<string, unknown> | undefined): void {
   if (type !== "select" && type !== "multi_select") return;
@@ -406,7 +405,8 @@ export async function setPropertyMigrationStatus(
 
 /**
  * Records that a property-type migration discarded an unconvertible value. Idempotent, and
- * deliberately not reset here — see migration 0026 for why this outlives a single job run.
+ * deliberately not reset here: the fact belongs to the retype, not to the run that observed it, and a
+ * retried or overlapping run skips the values an earlier run dropped, so it could not record them again.
  */
 export async function markPropertyMigrationDroppedValues(client: PoolClient, propertyId: string): Promise<void> {
   await client.query(`UPDATE properties SET migration_dropped_values = true WHERE id = $1`, [propertyId]);

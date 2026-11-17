@@ -8,21 +8,11 @@ import { canonicalizeJson, compareByCodePoint } from "@semprec/shared";
  * the pre-existing `{text,startsAt,endsAt}` object shape instead — the same property, two shapes,
  * distinguished by `kind`.
  *
- * The Inbox fingerprint is versioned (issue #1606). A value starting with `v2:` is version 2
- * (`computeInboxFingerprintV2`); any other string is a version 1 value written before that issue
- * (`computeInboxFingerprint`). `isFingerprintCurrent` compares a stored value of either version.
+ * The Inbox fingerprint is versioned (issue #1606): the tick writes version 2, a value starting with
+ * `v2:` (`computeInboxFingerprintV2`).
  */
 
 const V2_PREFIX = "v2:";
-
-/**
- * Version 1 fingerprint of an Inbox source (issue #223): the canonical type emoji plus the item's
- * text. The tick writes version 2 only; this stays so that a version 1 value already stored can be
- * compared (see `isFingerprintCurrent`).
- */
-export function computeInboxFingerprint(emoji: string, text: string): string {
-  return createHash("sha256").update(JSON.stringify({ emoji, text })).digest("hex");
-}
 
 /** Everything version 2 of the Inbox fingerprint covers (issue #1606). */
 export interface InboxFingerprintV2Input {
@@ -58,18 +48,9 @@ export function computeInboxFingerprintV2(input: InboxFingerprintV2Input): strin
 }
 
 /**
- * Whether a stored Inbox fingerprint still describes the item (issue #1606). A version 2 value is
- * compared with the version 2 fingerprint of `current.v2Input`. Any other stored value is version 1
- * and is compared with the version 1 fingerprint of the current emoji and text only, so a card written
- * before this version is recomputed when its emoji or text changed, and not when only its date, time or
- * attachments changed.
+ * Whether a stored Inbox fingerprint still describes the item (issue #1606): it equals the version 2
+ * fingerprint of `current`. Any other stored value is stale.
  */
-export function isFingerprintCurrent(
-  stored: unknown,
-  current: { v2Input: InboxFingerprintV2Input; legacyEmoji: string; legacyText: string },
-): boolean {
-  if (typeof stored === "string" && stored.startsWith(V2_PREFIX)) {
-    return stored === computeInboxFingerprintV2(current.v2Input);
-  }
-  return stored === computeInboxFingerprint(current.legacyEmoji, current.legacyText);
+export function isFingerprintCurrent(stored: unknown, current: InboxFingerprintV2Input): boolean {
+  return typeof stored === "string" && stored.startsWith(V2_PREFIX) && stored === computeInboxFingerprintV2(current);
 }

@@ -53,11 +53,7 @@ const testMetadataResolver: CollectionMetadataResolver = {
 };
 
 const ALL_CAPABILITIES = new Set(CAPABILITY_IDS);
-const TERMINAL_EXECUTION_STATUSES: ReadonlySet<ApprovalRequest["executionStatus"]> = new Set([
-  "succeeded",
-  "conflict",
-  "legacy_terminal",
-]);
+const TERMINAL_EXECUTION_STATUSES: ReadonlySet<ApprovalRequest["executionStatus"]> = new Set(["succeeded", "conflict"]);
 
 /** Polls `check` until it returns `true` or `timeoutMs` elapses, then fails via the final assertion. */
 async function waitFor(check: () => Promise<boolean>, timeoutMs = 10_000): Promise<void> {

@@ -321,7 +321,7 @@ export async function seedEmailModuleInTransaction(
   // one-directional for the same reason.
   // A person may send many emails (issue #1457), so this is many_to_many. Cardinality does not
   // keep "one message, one sender"; today mail/personLinkingActions.ts is the only writer of this
-  // edge. Populated installs are switched by mail/emailsSenderPeopleCardinalityCutoverMigration.ts.
+  // edge.
   await relate(
     {
       sourceDatabaseId: emails.id,

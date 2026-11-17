@@ -561,7 +561,7 @@ export function createGenericOperationGateway(
  * true)`), and:
  *
  * - returns the persisted `execution_result` unmutated, without ever touching the resource, when
- *   the row is already `succeeded`/`conflict`/`legacy_terminal` — a redelivered queue job is a
+ *   the row is already `succeeded`/`conflict` — a redelivered queue job is a
  *   deterministic no-op, never a second mutation;
  * - rejects (throws, rolling back the transaction) when the row is missing/malformed or is not
  *   `approved`+`queued` — the caller (`handleApprovalRequestExecuteTask`) discards this function's
@@ -595,11 +595,7 @@ export async function replayApprovedGenericOperation(
     }
     const lockedPayload = locked.payload;
 
-    if (
-      locked.executionStatus === "succeeded" ||
-      locked.executionStatus === "conflict" ||
-      locked.executionStatus === "legacy_terminal"
-    ) {
+    if (locked.executionStatus === "succeeded" || locked.executionStatus === "conflict") {
       return { error: locked.executionStatus !== "succeeded", result: JSON.stringify(locked.executionResult) };
     }
     if (locked.status !== "approved" || locked.executionStatus !== "queued") {

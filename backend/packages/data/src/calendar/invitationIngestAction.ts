@@ -43,9 +43,7 @@ export const CALENDAR_INGEST_INVITATION_ACTION_ID = "calendar.ingestInvitation";
 const configSchema = z.object({ emailsDatabaseId: z.uuid(), invitationsDatabaseId: z.uuid() });
 
 /**
- * The ingest's heartbeat, shared by `seedInvitationsDatabaseInTransaction` (fresh install) and
- * `runInvitationIngestHeartbeatCutoverMigration` (populated upgrade) so both create the same one: an `onItemEvent`
- * create rule on the Emails database, owned by `projectItemId`, the system project of the Invitations database.
+ * The ingest's heartbeat, created by `seedInvitationsDatabaseInTransaction`: an `onItemEvent` create rule on the Emails database, owned by `projectItemId`, the system project of the Invitations database.
  */
 export function invitationIngestHeartbeat(input: {
   projectItemId: string;

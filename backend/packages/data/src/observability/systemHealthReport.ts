@@ -138,10 +138,9 @@ async function getAlertingChecks(client: Queryable): Promise<AlertingCheck[]> {
  * re-checking this query. The two literals below are the only SQL `tenantOnly` switches in;
  * neither takes caller input.
  *
- * A legacy job whose envelope carries no `tenantId` (enqueued before `enqueueJob` stamped it) is
- * counted in no tenant's report: `runInTaskScope` refuses such a tenant-task job, and the
- * deploy-time `runLegacyJobEnvelopeStampMigration` stamps the sole tenant onto any still queued.
- * It appears only in the operator report's global counts.
+ * A job whose envelope carries no `tenantId` (one not enqueued through `enqueueJob`) is counted in
+ * no tenant's report: `runInTaskScope` refuses such a tenant-task job. It appears only in the
+ * operator report's global counts.
  */
 async function getQueueHealthCounts(client: Queryable, tenantOnly: boolean): Promise<QueueHealthCounts> {
   const jobSource = tenantOnly
@@ -164,7 +163,7 @@ async function getQueueHealthCounts(client: Queryable, tenantOnly: boolean): Pro
 
 /**
  * `item_automation.item_id` has no FK to `items` (partitioned table, application-enforced
- * referential integrity — same deviation `0005_library_module.sql`'s own comment documents), so
+ * referential integrity, as for every table that references an item by id), so
  * grouping by database goes through a plain join rather than a stored `database_id` column.
  */
 async function getItemAutomationErrorCounts(client: Queryable): Promise<ItemAutomationErrorCount[]> {
@@ -297,7 +296,7 @@ async function getTenantStatusCounts(client: Queryable): Promise<TenantStatusCou
 
 /**
  * The three cross-tenant counts, run as `semprec_router` behind `ops_health_counts()`
- * (migration 0075, docs/operations/database-roles.md). The function always returns one row of
+ * (docs/operations/database-roles.md). The function always returns one row of
  * numbers, so a missing row means the function or its grants are broken and is thrown rather than
  * reported as zero errors.
  */

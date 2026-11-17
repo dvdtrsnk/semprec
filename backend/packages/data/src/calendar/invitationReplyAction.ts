@@ -33,9 +33,7 @@ const configSchema = z.object({
 });
 
 /**
- * The reply heartbeat, shared by `seedInvitationsDatabaseInTransaction` (fresh install) and
- * `runInvitationReplyHeartbeatCutoverMigration` (populated upgrade) so both create the same one: an `onItemEvent`
- * create rule on the Emails database, owned by `projectItemId`, the system project of the Invitations database.
+ * The reply heartbeat, created by `seedInvitationsDatabaseInTransaction`: an `onItemEvent` create rule on the Emails database, owned by `projectItemId`, the system project of the Invitations database.
  */
 export function invitationReplyHeartbeat(input: {
   projectItemId: string;

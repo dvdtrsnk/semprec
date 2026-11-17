@@ -19,9 +19,7 @@ export const FILES_TRANSCRIPTION_TRIGGER_ACTION_ID = "core.filesTranscriptionTri
 export const TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID = "core.transcriptionRequeueSweep";
 
 /**
- * The requeue sweep's heartbeat, shared by `seedSystem` (fresh install) and
- * `runTranscriptionRequeueHeartbeatCutoverMigration` (populated upgrade) so both create the same
- * one. 04:30 keeps it clear of the other daily heartbeats (03:05, 04:00).
+ * The requeue sweep's heartbeat, created by `seedSystem`. 04:30 keeps it clear of the other daily heartbeats (03:05, 04:00).
  */
 export const TRANSCRIPTION_REQUEUE_HEARTBEAT = {
   name: "Transcription requeue sweep",
@@ -34,13 +32,11 @@ const logger = createLogger("transcription");
  * The heartbeat's `action_config`: the Files database this action is scoped to, plus the relation
  * properties a candidate file is checked against, Emails.attachments and Files.events. The seed
  * (seed/seedSystem.ts) stores their ids in the config; they are not re-resolved on every fire.
- * `eventsRelationPropertyId` (issue #1698) is optional: a heartbeat seeded before it has no such key
- * until `transcriptionTriggerEventsCutoverMigration.ts` sets it, and its config must still parse.
  */
 const filesTranscriptionTriggerConfigSchema = z.object({
   filesDatabaseId: z.string().uuid(),
   attachmentsRelationPropertyId: z.string().uuid(),
-  eventsRelationPropertyId: z.string().uuid().optional(),
+  eventsRelationPropertyId: z.string().uuid(),
 });
 
 /** Shared with `transcriptionRouteHandlers.ts`'s own mime-type gate on `POST /api/transcriptions`. */
@@ -61,8 +57,7 @@ export function readBlobId(properties: Record<string, unknown>): string | undefi
  * `libraryMetadataActions.ts`'s trigger. A file filed from an Inbox attachment (an item with an
  * `inbox` origin row, issue #1703) is skipped too: transcribing it is proposed explicitly (#1978).
  * A file attached to an Event (at least one Files.events edge, issue #1698) is skipped like an
- * email attachment: it is a plain attachment, not a recording. A heartbeat whose config has no
- * `eventsRelationPropertyId` yet (seeded earlier, not cut over) skips that one check.
+ * email attachment: it is a plain attachment, not a recording.
  */
 export function createFilesTranscriptionTriggerAction(pool: Pool): ActionHandler {
   return async (actionConfig: Record<string, unknown>, context: ActionContext) => {
@@ -95,15 +90,13 @@ export function createFilesTranscriptionTriggerAction(pool: Pool): ActionHandler
         if (attachmentEdges.length > 0) return; // an Emails attachment, not a standalone recording
       }
 
-      if (config.eventsRelationPropertyId) {
-        const eventsDefinition = await relationsStore.getRelationDefinitionByPropertyId(
-          client,
-          config.eventsRelationPropertyId,
-        );
-        if (eventsDefinition) {
-          const eventEdges = await relationsStore.listRelationsForItem(client, eventsDefinition.id, fileItem.id);
-          if (eventEdges.length > 0) return; // an Event attachment, not a standalone recording
-        }
+      const eventsDefinition = await relationsStore.getRelationDefinitionByPropertyId(
+        client,
+        config.eventsRelationPropertyId,
+      );
+      if (eventsDefinition) {
+        const eventEdges = await relationsStore.listRelationsForItem(client, eventsDefinition.id, fileItem.id);
+        if (eventEdges.length > 0) return; // an Event attachment, not a standalone recording
       }
 
       await enqueueTranscriptionCreate(client, { fileItemId: fileItem.id });

@@ -517,17 +517,16 @@ async function projectToolStep(
 /** The reason key of a request whose MCP tool call failed on execution (issue #1437): that outcome is `failed`, not a conflict. */
 const APPROVAL_CALL_FAILED_KEY = "approval.outcome.failed";
 
-/** The reason of a conflict that no `execution_result_jsonb` discriminator explains, and of a request from before the execution protocol. */
+/** The reason of a conflict that no `execution_result_jsonb` discriminator explains. */
 const APPROVAL_CONFLICT_OTHER_KEY = "approval.conflict.other";
 
 /**
  * Where an approval step stands, from its request (issue #1862); `null` for a state no row can have (an
  * `approved` request whose execution is not `queued`, `succeeded` or terminal). The decision comes first:
- * a `pending` request is `pending` and a `rejected` one `rejected` whatever its execution status, so a
- * request the cutover to the execution protocol rejected and marked `legacy_terminal` reads `rejected`.
+ * a `pending` request is `pending` and a `rejected` one `rejected` whatever its execution status.
  * An approved one reads its execution: `queued` is `executing`, `succeeded` `executed`, a `conflict` whose
- * reason is the failed MCP call (`approvalConflictReason`) `failed` and any other `conflict`, like
- * `legacy_terminal`, `conflict` with that reason's key. Only the discriminators of the stored result are
+ * reason is the failed MCP call (`approvalConflictReason`) `failed` and any other `conflict` `conflict` with
+ * that reason's key. Only the discriminators of the stored result are
  * read; its text never is.
  */
 export function approvalStepState(
@@ -547,8 +546,6 @@ export function approvalStepState(
         ? { approvalState: "failed" }
         : { approvalState: "conflict", conflictReason: key };
     }
-    case "legacy_terminal":
-      return { approvalState: "conflict", conflictReason: APPROVAL_CONFLICT_OTHER_KEY };
     case "not_approved":
       return null;
   }

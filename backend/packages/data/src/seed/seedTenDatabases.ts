@@ -244,11 +244,10 @@ export async function seedTenDatabasesInTransaction(
     { key: "contact", name: "Contact", type: "select", owner: "user", config: selectConfig(["phone", "email"]) },
     { key: "phones", name: "Phones", type: "longText", owner: "user" },
     // Issue #1660: derived from the person's past Events, Emails and Transcripts, written only by
-    // `people/lastContact.ts`'s recompute; populated installs get it from the People lastContact cutover.
+    // `people/lastContact.ts`'s recompute.
     { key: "lastContact", name: "Last contact", type: "date", owner: "system", ownerProcess: PEOPLE_MODULE_ID },
     // Issue #1795: the calendar's birthday source reads the month and day. A person whose year is unknown stores
-    // a placeholder leap year with `birthdayYearKnown` false; populated installs get both from the People
-    // birthday cutover.
+    // a placeholder leap year with `birthdayYearKnown` false.
     { key: "birthday", name: "Birthday", type: "date", owner: "user" },
     { key: "birthdayYearKnown", name: "Year known", type: "checkbox", owner: "user" },
   ]);
@@ -269,7 +268,7 @@ export async function seedTenDatabasesInTransaction(
       }),
     },
     { key: "date", name: "Date", type: "date", owner: "user", config: { default: "today" } },
-    // { blobId } over the shared `blobs` table (0004_ten_databases.sql).
+    // { blobId } over the shared `blobs` table.
     { key: "file", name: "File", type: "file", owner: "user" },
   ]);
 
@@ -298,21 +297,17 @@ export async function seedTenDatabasesInTransaction(
     { key: "description", name: "Description", type: "longText", owner: "user" },
     { key: "alertMinutes", name: "Alert minutes", type: "number", owner: "user" },
     { key: "travelMinutes", name: "Travel minutes", type: "number", owner: "user" },
-    // The iCalendar identity of an Event (issue #1599), computed by `calendar/eventIcalIdentityTransform.ts`;
-    // a populated tenant gets the same two definitions from `calendar/eventsIcalIdentityCutoverMigration.ts`.
+    // The iCalendar identity of an Event (issue #1599), computed by `calendar/eventIcalIdentityTransform.ts`.
     { key: "icalUid", name: "iCalendar UID", type: "text", owner: "system", locked: true },
     { key: "icalSequence", name: "iCalendar sequence", type: "number", owner: "system", locked: true },
-    // The fixed recurrence rule of an Event (issue gh-1817), judged by `calendar/eventRecurrenceHook.ts`; a populated
-    // tenant gets the same definition from `calendar/eventsRecurrenceCutoverMigration.ts`.
+    // The fixed recurrence rule of an Event (issue gh-1817), judged by `calendar/eventRecurrenceHook.ts`.
     { key: "recurrence", name: "Recurrence", type: "json", owner: "user" },
     // The day of the nearest occurrence on or after today in the tenant time zone (issue gh-1905), computed by
     // `calendar/nextOccurrenceDateTransform.ts` and refreshed daily by `calendar/nextOccurrenceRefreshAction.ts`, so the
-    // generic sort, group and filter work on a recurring Event. Declared like `time`; a populated tenant gets the same
-    // definition from `calendar/nextOccurrenceDateCutoverMigration.ts`.
+    // generic sort, group and filter work on a recurring Event. Declared like `time`.
     { key: "nextOccurrenceDate", name: "Next occurrence date", type: "date", owner: "system", locked: true },
     // The identity of a materialized occurrence of a recurring Event (issue gh-1843), written only by
-    // `calendar/materializeEventOccurrence.ts`; a populated tenant gets the same two definitions from
-    // `calendar/eventsOccurrenceCutoverMigration.ts`.
+    // `calendar/materializeEventOccurrence.ts`.
     {
       key: EVENT_SERIES_ID_PROPERTY_KEY,
       name: "Series ID",
@@ -583,8 +578,7 @@ export async function seedTenDatabasesInTransaction(
     cardinality: "one_to_many",
     inverse: { key: "project", name: "Project" },
   });
-  // Events <-> Files: files attached to an event (issue #1588). Populated installs get the same pair from
-  // `blobs/eventsFilesRelationCutoverMigration.ts`.
+  // Events <-> Files: files attached to an event (issue #1588).
   await relate({
     sourceDatabaseId: events.id,
     key: "files",
@@ -594,8 +588,7 @@ export async function seedTenDatabasesInTransaction(
     owner: "user",
     inverse: { key: "events", name: "Events", owner: "user" },
   });
-  // Events <-> People: an Event's participants, read from the person as `People.events` (issue #1664). Populated
-  // installs get the inverse from `calendar/peopleEventsInverseCutoverMigration.ts`.
+  // Events <-> People: an Event's participants, read from the person as `People.events` (issue #1664).
   await relate({
     sourceDatabaseId: events.id,
     key: "people",
@@ -606,9 +599,8 @@ export async function seedTenDatabasesInTransaction(
   });
   // Events <-> Transcripts: explicit bidirectional. One Event has many transcripts (the parts of one
   // meeting, each with its own summary); a transcript has at most one Event. `property_id_a` is
-  // Events.transcript (the "one" side), so the trigger from 0013 guards only `item_b`, the transcript.
-  // Populated installs seeded with the earlier `one_to_one` are cut over by
-  // `transcription/eventTranscriptCardinalityCutoverMigration.ts`.
+  // Events.transcript (the "one" side), so the `enforce_relation_cardinality` trigger guards only `item_b`, the
+  // transcript.
   await relate({
     sourceDatabaseId: events.id,
     key: "transcript",
@@ -645,8 +637,7 @@ export async function seedTenDatabasesInTransaction(
     cardinality: "many_to_many",
     inverse: { key: "healthRecords", name: "Health records" },
   });
-  // Tasks <-> Health records: a follow-up task and the records it belongs to (issue #1836). Populated installs get
-  // the same pair from `seed/healthRecordTasksCutoverMigration.ts`.
+  // Tasks <-> Health records: a follow-up task and the records it belongs to (issue #1836).
   await relate({
     sourceDatabaseId: tasks.id,
     key: "healthRecords",

@@ -145,8 +145,7 @@ export async function seedSleepModuleInTransaction(
   const create = (descriptor: { key: string; name: string }, properties: readonly PropSpec[]) =>
     createSleepDatabase(client, descriptor, properties, project.id, viewTypeRegistry);
   const settingsId = await create(SLEEP_DATABASE_DESCRIPTORS.settings, SETTINGS_PROPERTIES);
-  // Created before the schema lock below, which `propertiesStore` honours; a tenant seeded earlier gets it from
-  // `sleep/sleepSettingsAreaCutoverMigration.ts`.
+  // Created before the schema lock below, which `propertiesStore` honours.
   await createRelationPropertyWithClient(client, {
     sourceDatabaseId: settingsId,
     key: SLEEP_SETTINGS_AREA_KEY,

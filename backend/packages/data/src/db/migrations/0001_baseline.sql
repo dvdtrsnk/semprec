@@ -862,7 +862,7 @@ CREATE TABLE public.approval_requests (
     reason text,
     tool_call_id text,
     description jsonb,
-    CONSTRAINT approval_requests_execution_status_check CHECK ((execution_status = ANY (ARRAY['not_approved'::text, 'queued'::text, 'succeeded'::text, 'conflict'::text, 'legacy_terminal'::text]))),
+    CONSTRAINT approval_requests_execution_status_check CHECK ((execution_status = ANY (ARRAY['not_approved'::text, 'queued'::text, 'succeeded'::text, 'conflict'::text]))),
     CONSTRAINT approval_requests_reason_length_check CHECK (((reason IS NULL) OR (char_length(reason) <= 500))),
     CONSTRAINT approval_requests_risk_class_check CHECK ((risk_class = ANY (ARRAY['unclassified'::text, 'read'::text, 'write'::text, 'destructive'::text, 'outbound'::text, 'breaksLink'::text]))),
     CONSTRAINT approval_requests_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text])))
@@ -1355,10 +1355,10 @@ CREATE TABLE public.item_origins (
     source_transcript_id uuid,
     captured_at timestamp with time zone,
     capture_channel text NOT NULL,
-    capture_time_basis text DEFAULT 'legacyUnverified'::text NOT NULL,
+    capture_time_basis text NOT NULL,
     CONSTRAINT item_origins_capture_channel_check CHECK ((capture_channel = ANY (ARRAY['inbox'::text, 'transcript'::text]))),
-    CONSTRAINT item_origins_capture_provenance_check CHECK ((((capture_time_basis = 'inboxCapture'::text) AND (captured_at IS NOT NULL)) OR ((capture_time_basis = 'unknown'::text) AND (captured_at IS NULL)) OR (capture_time_basis = 'legacyUnverified'::text))),
-    CONSTRAINT item_origins_capture_time_basis_check CHECK ((capture_time_basis = ANY (ARRAY['inboxCapture'::text, 'unknown'::text, 'legacyUnverified'::text])))
+    CONSTRAINT item_origins_capture_provenance_check CHECK ((((capture_time_basis = 'inboxCapture'::text) AND (captured_at IS NOT NULL)) OR ((capture_time_basis = 'unknown'::text) AND (captured_at IS NULL)))),
+    CONSTRAINT item_origins_capture_time_basis_check CHECK ((capture_time_basis = ANY (ARRAY['inboxCapture'::text, 'unknown'::text])))
 );
 
 COMMENT ON TABLE public.item_origins IS 'semprec:tenancy=tenant';

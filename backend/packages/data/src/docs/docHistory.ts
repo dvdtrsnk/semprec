@@ -182,8 +182,8 @@ export async function handleDocHistoryCleanupTask(pool: Pool): Promise<void> {
  * Unlike the pre-#216 reader, this never has to refuse a reconstruction because a later
  * compaction deleted something it needed: `doc_history_updates` is mirrored on every append
  * and never touched by compaction, so any timestamp inside the retained window can always be
- * replayed forward from its nearest checkpoint (the new-doc baseline, a compaction
- * checkpoint, or the populated-upgrade cutover baseline).
+ * replayed forward from its nearest checkpoint (the new-doc baseline or a compaction
+ * checkpoint).
  *
  * - A nonexistent `docId` raises `NotFoundError` (404 `not_found`).
  * - A future `at` raises `ValidationError` (400 `validation_failed`).

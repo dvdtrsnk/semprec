@@ -372,7 +372,7 @@ const AGENT_SESSION_ACTION_IDS: ReadonlySet<string> = new Set([
  * that catalog only covers real, module-registered actions, while tests register arbitrary ids
  * (`"noop"`, `"markRan"`, ...) that must still resolve to a task name to enqueue onto. An
  * unresolvable *heartbeat* (not action id) is a different failure mode, handled by the callers
- * that already look one up (schedulerStore.ts, the legacy job migration).
+ * that already look one up (schedulerStore.ts).
  */
 export function resolveHeartbeatFireTaskName(actionId: string): CoreTaskName | AgentTaskName {
   return AGENT_SESSION_ACTION_IDS.has(actionId)

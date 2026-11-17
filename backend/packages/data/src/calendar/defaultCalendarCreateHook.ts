@@ -96,8 +96,7 @@ async function lockChosenCalendar(
 /**
  * The id of the live calendar marked `isDefault`, with the row of every live calendar so marked locked
  * `FOR SHARE` until the caller's transaction ends, or `null` when there is none. Should several be marked,
- * the one with the lowest id is taken, the choice `calendarsCutoverMigration.ts` makes for the Events it
- * links.
+ * the one with the lowest id is taken.
  *
  * The statement runs a second time when the first returns nothing. A statement that waited for a
  * concurrent change of the calendar it read as the default checks that row again and no other, so it
@@ -122,8 +121,6 @@ async function lockDefaultCalendar(client: PoolClient, calendarsDatabaseId: stri
  * The choke point's item-create hook for the Events database (registered by `../domainWriteHooks.ts`):
  * links the new Event to one calendar through its `calendar` relation.
  *
- * - A tenant without a calendars database (its calendars cutover has not run yet) gets no edge, and a
- *   chosen calendar is not checked.
  * - An Event that already has a calendar edge when the hook runs keeps it and gets no other, and a chosen
  *   calendar is not checked.
  * - An Event whose create names the `calendar` relation in its initial relations
@@ -138,15 +135,16 @@ async function lockDefaultCalendar(client: PoolClient, calendarsDatabaseId: stri
  * as a server error, after the error log line `default_calendar_missing` that carries the two ids. A
  * create with a chosen calendar is judged by that calendar alone, and one whose Event already has a
  * calendar edge or whose initial relations name the calendar writes nothing here: none of them reads the
- * default, so a missing default fails none of them. A calendars database whose Events `calendar` relation
- * is missing fails the create with a plain error in every case, with a chosen calendar or without. The
+ * default, so a missing default fails none of them. A tenant without a calendars database, and a calendars
+ * database whose Events `calendar` relation is missing, fail the create with a plain error in every case,
+ * with a chosen calendar or without: the seed creates both with the Events database. The
  * hook writes its edge through `createRelationWithClient` without a writer, so as a system write, with that
  * write's guards and hooks.
  */
 export const defaultCalendarCreateHook: ItemCreateHook = async ({ client, database, item, initialRelations }) => {
   if (!database.system || database.ownerModuleId !== EVENTS_MODULE_ID) return;
   const calendars = await databasesStore.getDatabaseByModuleId(client, CALENDARS_MODULE_ID);
-  if (!calendars) return;
+  if (!calendars) throw new Error("Calendars database not found");
 
   const property = await propertiesStore.getPropertyByKey(client, database.id, EVENT_CALENDAR_PROPERTY_KEY);
   const definition = property ? await relationsStore.getRelationDefinitionByPropertyId(client, property.id) : null;

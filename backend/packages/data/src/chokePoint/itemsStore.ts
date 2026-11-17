@@ -145,7 +145,7 @@ export interface InsertItemResult {
  * `idempotency_keys` to the caller's tenant, so the same key in another tenant is a
  * different reservation. The reservation insert names no conflict target, so every
  * unique index on `idempotency_keys` is an arbiter. The only one is the tenant-leading primary
- * key `idempotency_keys_pkey (tenant_id, key)`, which migration 0082 (#1065) promoted.
+ * key `idempotency_keys_pkey (tenant_id, key)`.
  */
 export async function insertItemWithReplay(
   client: Queryable,

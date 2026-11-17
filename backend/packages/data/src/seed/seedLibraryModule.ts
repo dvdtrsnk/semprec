@@ -36,8 +36,7 @@ function selectConfig(options: string[], colors: Record<string, string> = {}): R
 
 /**
  * The rating filter presets of Books and Movies (issue #1622): "5 stars", "4 and up", "3 and up" and "No rating"
- * (empty or 0), labelled from `library/i18n`. Seeded here for a fresh install and written to existing tenants by
- * `ratingFilterPresetsCutoverMigration.ts`.
+ * (empty or 0), labelled from `library/i18n`.
  */
 export function ratingFilterPresetsConfig(databaseKey: typeof BOOKS_MODULE_ID | typeof MOVIES_MODULE_ID): {
   filterPresets: Array<{ value: number; op: "gte"; labelKey: string }>;
@@ -56,8 +55,7 @@ export function ratingFilterPresetsConfig(databaseKey: typeof BOOKS_MODULE_ID | 
 /**
  * The user-owned cover properties of Books and Movies (issue #1793). The system-owned `cover` has one writer, the
  * library metadata job, so the cover a user chooses or removes lives in these three: the cover shown is nothing
- * when `coverRemoved`, else `coverOverride` when set, else `cover`. `libraryCoverOverrideCutoverMigration.ts`
- * adds the same properties to a tenant seeded before them.
+ * when `coverRemoved`, else `coverOverride` when set, else `cover`.
  */
 function coverOverrideSpecs(): PropSpec[] {
   return [
@@ -162,7 +160,7 @@ export async function seedLibraryModuleInTransaction(
     { key: "author", name: null, type: "text", owner: "user" },
     { key: "year", name: null, type: "number", owner: "user" },
     { key: "isbn", name: null, type: "text", owner: "user" },
-    // { blobId } over the shared `blobs` table (0004_ten_databases.sql) — coverKey.
+    // { blobId } over the shared `blobs` table — coverKey.
     { key: "cover", name: null, type: "image", owner: "system" },
     ...coverOverrideSpecs(),
     { key: "rating", name: null, type: "number", owner: "user", config: ratingFilterPresetsConfig(BOOKS_MODULE_ID) },
@@ -193,7 +191,7 @@ export async function seedLibraryModuleInTransaction(
     { key: "year", name: null, type: "number", owner: "user" },
     // "Movie" vs. "Series" stays just a label next to statusKey — no season/episode structure.
     { key: "type", name: null, type: "select", owner: "user", config: selectConfig(["movie", "series"]) },
-    // { blobId } over the shared `blobs` table (0004_ten_databases.sql) — coverKey.
+    // { blobId } over the shared `blobs` table — coverKey.
     { key: "cover", name: null, type: "image", owner: "system" },
     ...coverOverrideSpecs(),
     { key: "rating", name: null, type: "number", owner: "user", config: ratingFilterPresetsConfig(MOVIES_MODULE_ID) },

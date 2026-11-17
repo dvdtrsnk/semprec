@@ -51,6 +51,7 @@ describe("Files transcription trigger (issue #180)", () => {
   let filesId: string;
   let emailsId: string;
   let attachmentsPropertyId: string;
+  let eventsPropertyId: string;
 
   beforeEach(async () => {
     pool ??= getTestPool();
@@ -64,6 +65,11 @@ describe("Files transcription trigger (issue #180)", () => {
     );
     if (!attachmentsProperty) throw new Error("Emails.attachments property was not seeded");
     attachmentsPropertyId = attachmentsProperty.id;
+    const eventsProperty = await withTransaction(pool, (client) =>
+      propertiesStore.getPropertyByKey(client, filesId, "events"),
+    );
+    if (!eventsProperty) throw new Error("Files.events property was not seeded");
+    eventsPropertyId = eventsProperty.id;
   });
 
   afterAll(async () => {
@@ -71,7 +77,11 @@ describe("Files transcription trigger (issue #180)", () => {
   });
 
   function actionConfig() {
-    return { filesDatabaseId: filesId, attachmentsRelationPropertyId: attachmentsPropertyId };
+    return {
+      filesDatabaseId: filesId,
+      attachmentsRelationPropertyId: attachmentsPropertyId,
+      eventsRelationPropertyId: eventsPropertyId,
+    };
   }
 
   async function createFileItem(mimeType: string): Promise<string> {
@@ -340,8 +350,8 @@ describe("Files transcription trigger and Event attachments (issue #1698)", () =
     return { id: row.id, config: row.action_config };
   }
 
-  /** The config of a heartbeat seeded before issue #1698 and not cut over yet. */
-  function oldConfig(): Record<string, unknown> {
+  /** A config with every key but `eventsRelationPropertyId`. */
+  function configWithoutEvents(): Record<string, unknown> {
     return { filesDatabaseId: ids.files, attachmentsRelationPropertyId: ids.attachmentsProperty };
   }
 
@@ -439,24 +449,18 @@ describe("Files transcription trigger and Event attachments (issue #1698)", () =
     expect(await queuedTranscriptionJobs(fileItemId)).toEqual(bothTranscriptionJobs(fileItemId));
   });
 
-  it.each([
-    ["a standalone audio file", false],
-    ["an audio file with a Files.events edge", true],
-  ])(
-    "a config without eventsRelationPropertyId still runs and enqueues %s, as before",
-    async (_label, attachedToEvent) => {
-      const fileItemId = await createAudioFile({ attachedToEvent });
+  it("rejects a config without eventsRelationPropertyId and enqueues nothing", async () => {
+    const fileItemId = await createAudioFile({ attachedToEvent: false });
 
-      await fire(oldConfig(), fileItemId);
+    await expect(fire(configWithoutEvents(), fileItemId)).rejects.toThrow(z.ZodError);
 
-      expect(await queuedTranscriptionJobs(fileItemId)).toEqual(bothTranscriptionJobs(fileItemId));
-    },
-  );
+    expect(await queuedTranscriptionJobs(fileItemId)).toEqual([]);
+  });
 
   it("enqueues when eventsRelationPropertyId names no relation definition", async () => {
     const fileItemId = await createAudioFile({ attachedToEvent: true });
 
-    await fire({ ...oldConfig(), eventsRelationPropertyId: randomUUID() }, fileItemId);
+    await fire({ ...configWithoutEvents(), eventsRelationPropertyId: randomUUID() }, fileItemId);
 
     expect(await queuedTranscriptionJobs(fileItemId)).toEqual(bothTranscriptionJobs(fileItemId));
   });
@@ -464,7 +468,9 @@ describe("Files transcription trigger and Event attachments (issue #1698)", () =
   it("rejects a config whose eventsRelationPropertyId is not a uuid and enqueues nothing", async () => {
     const fileItemId = await createAudioFile({ attachedToEvent: false });
 
-    await expect(fire({ ...oldConfig(), eventsRelationPropertyId: "events" }, fileItemId)).rejects.toThrow(z.ZodError);
+    await expect(fire({ ...configWithoutEvents(), eventsRelationPropertyId: "events" }, fileItemId)).rejects.toThrow(
+      z.ZodError,
+    );
 
     expect(await queuedTranscriptionJobs(fileItemId)).toEqual([]);
   });

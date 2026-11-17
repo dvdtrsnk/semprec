@@ -15,9 +15,7 @@ import { assertValidTimezone } from "../timezone.js";
 export const TASKS_DAY_ROLLOVER_ACTION_ID = "core.tasksDayRollover";
 
 /**
- * The rollover's heartbeat, shared by `seedSystem` (fresh install) and
- * `runTasksDayRolloverHeartbeatCutoverMigration` (populated upgrade) so both create the same one: midnight in the
- * tenant's system time zone.
+ * The rollover's heartbeat, created by `seedSystem`: midnight in the tenant's system time zone.
  */
 export const TASKS_DAY_ROLLOVER_HEARTBEAT = {
   name: "Tasks day rollover",

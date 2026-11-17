@@ -6,7 +6,7 @@ import type { ItemRelationRow, RelationDefinitionRow } from "../types.js";
 import { assertKnownValue } from "../dbRowValidation.js";
 import { visibleDatabaseIds } from "./itemsStore.js";
 
-/** The custom SQLSTATE `enforce_relation_cardinality` (0013_relation_cardinality.sql) raises on a cardinality conflict. */
+/** The custom SQLSTATE `enforce_relation_cardinality` (the schema's trigger function) raises on a cardinality conflict. */
 const CARDINALITY_VIOLATION_ERRCODE = "SC001";
 
 function isCardinalityViolation(err: unknown): boolean {

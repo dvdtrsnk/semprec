@@ -275,11 +275,6 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   return rows[0].id;
 }
 
-/** The version 1 fingerprint (issue #223), pinned by formula: the tick no longer writes it (issue #1606). */
-function legacyFingerprintOf(emoji: string, text: string): string {
-  return createHash("sha256").update(JSON.stringify({ emoji, text })).digest("hex");
-}
-
 /**
  * The version 2 fingerprint (issue #1606) written out by hand: canonical JSON with the keys in code-point
  * order and the attachment hashes sorted, and `transcribedText` empty. The test does not reuse the
@@ -1283,29 +1278,6 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       await runTick(pool, databaseIds, item.id, compute);
       expect(calls).toBe(2);
     });
-    it("keeps legacy v1 compatibility for an untyped source", async () => {
-      const { type, item } = await fixture();
-      await runTick(pool, databaseIds, item.id, async () => ({
-        properties: { name: "Task" },
-        candidates: [{ typeId: type.id, confidence: 0.9 }],
-      }));
-      const card = await findProposalForItem(pool, proposalsId, item.id);
-      if (!card) throw new Error("Missing card");
-      await withTransaction(pool, (client) =>
-        updateItemWithClient(
-          client,
-          {
-            databaseId: proposalsId,
-            itemId: card.id,
-            propertiesPatch: { fingerprint: legacyFingerprintOf("", "Buy milk") },
-          },
-          { allowedSystemKeys: ["fingerprint"] },
-        ),
-      );
-      await runTick(pool, databaseIds, item.id, async () => {
-        throw new Error("Unchanged legacy source must not compute");
-      });
-    });
     it("discards recognition after a source type-edge change", async () => {
       const { type, item } = await fixture();
       await runTick(pool, databaseIds, item.id, async () => {
@@ -1618,7 +1590,7 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
     expect(rows[0].n).toBe(1);
   });
 
-  describe("version 2 fingerprint inputs and the version 1 compatibility rule (issue #1606)", () => {
+  describe("version 2 fingerprint inputs (issue #1606)", () => {
     async function createInboxType(name: string, emoji: string) {
       return withTransaction(pool, (client) =>
         createInboxTypeWithClient(client, {
@@ -1672,10 +1644,7 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       await deleteInboxAttachment(pool, attachment.attachmentId);
     }
 
-    /**
-     * Sets the stored fingerprint of a proposal. The tick no longer writes version 1 values, so a
-     * card that holds one (as a card written before issue #1606 does) is built by setting it here.
-     */
+    /** Sets the stored fingerprint of a proposal, for a value the tick does not write. */
     async function setProposalFingerprint(proposalId: string, fingerprint: string) {
       await withTransaction(pool, (client) =>
         itemsStore.updateItemProperties(client, {
@@ -1833,62 +1802,14 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
       expect(after!.properties.fingerprint).not.toBe(before!.properties.fingerprint);
     });
 
-    it("a version 1 card whose emoji and text are unchanged is not recomputed, even when its time changes", async () => {
+    it("a card whose stored fingerprint is not a version 2 value is recomputed and stored as version 2", async () => {
       const type = await createInboxType("Task", "☑️");
       const item = await createInboxItemOfType("Buy milk", type.id);
       await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
       const created = await findProposalForItem(pool, proposalsId, item.id);
-      await setProposalFingerprint(created!.id, legacyFingerprintOf("☑️", "Buy milk"));
-      const legacyCard = await findProposalForItem(pool, proposalsId, item.id);
+      const digest = String(created!.properties.fingerprint).slice("v2:".length);
+      await setProposalFingerprint(created!.id, digest);
 
-      await runTick(pool, databaseIds, item.id, async () => {
-        throw new Error("computeProposal must not be called for an unchanged version 1 fingerprint");
-      });
-
-      await editInboxItem(item.id, { time: "10:30" });
-      await runTick(pool, databaseIds, item.id, async () => {
-        throw new Error("computeProposal must not be called when only the time of a version 1 card changed");
-      });
-
-      const after = await findProposalForItem(pool, proposalsId, item.id);
-      expect(after!.properties.fingerprint).toBe(legacyFingerprintOf("☑️", "Buy milk"));
-      expect(after!.updatedAt).toBe(legacyCard!.updatedAt);
-    });
-
-    it("a version 1 card whose text changed is recomputed and stored as a version 2 fingerprint", async () => {
-      const type = await createInboxType("Task", "☑️");
-      const item = await createInboxItemOfType("Buy milk", type.id);
-      await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-      const created = await findProposalForItem(pool, proposalsId, item.id);
-      await setProposalFingerprint(created!.id, legacyFingerprintOf("☑️", "Buy milk"));
-
-      await editInboxItem(item.id, { text: "Buy bread" });
-      let calls = 0;
-      await runTick(pool, databaseIds, item.id, async () => {
-        calls++;
-        return { properties: { name: "Buy bread" } };
-      });
-
-      expect(calls).toBe(1);
-      const revised = await findProposalForItem(pool, proposalsId, item.id);
-      expect(revised!.id).toBe(created!.id);
-      expect(revised!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy bread" }));
-    });
-
-    it("a version 1 card whose type emoji changed is recomputed and stored as a version 2 fingerprint", async () => {
-      const type = await createInboxType("Task", "☑️");
-      const item = await createInboxItemOfType("Buy milk", type.id);
-      await runTick(pool, databaseIds, item.id, async () => ({ properties: { name: "Buy milk" } }));
-      const created = await findProposalForItem(pool, proposalsId, item.id);
-      await setProposalFingerprint(created!.id, legacyFingerprintOf("☑️", "Buy milk"));
-
-      await withTransaction(pool, (client) =>
-        itemsStore.updateItemProperties(client, {
-          databaseId: typesId,
-          itemId: type.id,
-          propertiesPatch: { emoji: "📌" },
-        }),
-      );
       let calls = 0;
       await runTick(pool, databaseIds, item.id, async () => {
         calls++;
@@ -1897,6 +1818,7 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip (issue #22
 
       expect(calls).toBe(1);
       const revised = await findProposalForItem(pool, proposalsId, item.id);
+      expect(revised!.id).toBe(created!.id);
       expect(revised!.properties.fingerprint).toBe(fingerprintV2Of({ typeId: type.id, text: "Buy milk" }));
     });
   });

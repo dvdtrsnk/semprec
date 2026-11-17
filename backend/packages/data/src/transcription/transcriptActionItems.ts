@@ -143,7 +143,7 @@ export async function createActionItemTask(
 
   const tasks = await getDatabaseByModuleId(client, TASKS_MODULE_ID);
   const sourceEvents = tasks && (await getPropertyByKey(client, tasks.id, "sourceEvents"));
-  // The seed and `tasks/tasksSourceEventsCutoverMigration.ts` give every tenant with transcripts both.
+  // The seed gives every tenant both.
   if (!tasks || !sourceEvents) throw new Error("The Tasks database or its 'sourceEvents' relation is missing");
   const eventId = await readLiveTranscriptEventId(client, transcript.databaseId, transcript.id);
   const idempotencyKey = `transcript-action-item:${transcript.id}:${input.actionItemId}`;

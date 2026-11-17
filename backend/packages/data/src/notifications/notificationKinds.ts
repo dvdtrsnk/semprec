@@ -1,15 +1,15 @@
 /**
  * The closed initial kind catalog (issue #237), extended by issue #85's two guidance-drift
- * transitions (migration 0035's `notifications_kind_check`) and issue #169's three internal
+ * transitions (in `notifications_kind_check`) and issue #169's three internal
  * degradation checks. `approval_pending`, `agent_run_error`, `heartbeat_error`,
  * `automation_error`, `mail_sync_error`, `agent_guidance_drift`, `agent_guidance_drift_resolved`,
  * `process_stale`, `queue_backlog`, and `mail_sync_stalled` have a producer (this issue ships only
  * `heartbeat_error`'s, at `scheduler/sweep.ts`; #85's own two; #169's three, at
  * `observability/observabilityCheckSystem.ts`; the rest land in #149). `backup_restore_failed`'s
  * producer is issue #178's monthly restore test, at `observability/restoreTestResult.ts`.
- * `semp_problem` (issue #1466, migration 0121) is written by `raiseProblem`
+ * `semp_problem` (issue #1466) is written by `raiseProblem`
  * (`semp/sempProblemsStore.ts`) when a deduplicated Semp problem is created or its severity rises.
- * `calendar_invitation` (issue gh-1954, migration 0171) is written by the invitation ingest
+ * `calendar_invitation` (issue gh-1954) is written by the invitation ingest
  * (`calendar/invitationIngestAction.ts`) when a pending invitation is first created.
  *
  * Its own file so both `notify.ts` (the writer) and `notificationsStore.ts` (the fanout job's

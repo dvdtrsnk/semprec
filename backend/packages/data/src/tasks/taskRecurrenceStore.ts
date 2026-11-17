@@ -51,10 +51,8 @@ export function publicTaskRecurrenceTemplate(template: TaskRecurrenceTemplate): 
  * store's callers (advanceTaskRecurrenceWithClient.ts) need the already-validated, discriminated
  * `TaskRecurrenceRule`, not a round-trip cast back through `unknown`.
  *
- * `seriesId`, `anchorDate` and `template` are null on a row without a series: one written before issue #1605 that the
- * series cutover left alone (inactive, or its instance done), one whose tenant's cutover failed or has not run yet,
- * or one a previous release inserted.
- * `createTaskRecurrence` and the cutover always set the three together.
+ * `seriesId`, `anchorDate` and `template` are nullable columns, null together on a row without a series.
+ * `createTaskRecurrence`, the only insert, always sets the three together.
  */
 export interface TaskRecurrence {
   itemId: string;

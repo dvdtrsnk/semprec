@@ -154,8 +154,7 @@ export interface Item {
   properties: Record<string, unknown>;
   computed: Record<string, unknown>;
   /**
-   * When the item was created (ISO 8601), set by the database; no item write changes it. An item that
-   * predates the field carries its last update time at the issue #1594 backfill instead.
+   * When the item was created (ISO 8601), set by the database; no item write changes it.
    */
   createdAt: string;
   updatedAt: string;

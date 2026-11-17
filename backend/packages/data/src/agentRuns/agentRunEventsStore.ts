@@ -354,8 +354,8 @@ const REPLACED_REPLY_RANGES = `SELECT agent_run_id, event_from_id, event_to_id F
  * the checkpoint and every event before it a smaller one — the `id >=` bound is therefore exact,
  * not an approximation. The result starts with the `compaction` row itself (when any exists) so
  * the caller's walk still resets on it; with no checkpoint, `COALESCE(..., 0)` returns every
- * event of every session run. Uses `agent_runs_session_wake_idx` (migration 0017) and
- * `agent_run_events_run_idx` (migration 0015).
+ * event of every session run. Uses `agent_runs_session_wake_idx` and
+ * `agent_run_events_run_idx`.
  *
  * For a thread (issue gh-1930) the events of every assistant message that a regeneration replaced
  * (`semp_messages.replaced_by_message_id` set) are left out: those with the message's `agent_run_id` and an id from its

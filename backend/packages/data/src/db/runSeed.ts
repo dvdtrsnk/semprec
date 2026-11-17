@@ -3,9 +3,8 @@ import { runAsSystem } from "@semprec/shared";
 import { forEachMaintainedTenant, provisionTenant } from "../tenancy/provisionTenant.js";
 
 /**
- * The seed CLI's body (issue #644, per tenant since #1005): provisions the system databases and
- * module data migrations of every `provisioning`, `active` and `suspended` tenant, one tenant at
- * a time. The pool must connect as a role row-level security applies to (`createPool(url, { role:
+ * The seed CLI's body (issue #644, per tenant since #1005): provisions the system databases of every
+ * `provisioning`, `active` and `suspended` tenant, one tenant at a time. The pool must connect as a role row-level security applies to (`createPool(url, { role:
  * "semprec_data" })`).
  *
  * Each outcome is `provisionTenant`'s own, decided under that tenant's advisory lock. If any tenant

@@ -28,7 +28,7 @@ export interface MailEnvelope {
   to?: MailEnvelopeAddress[];
   cc?: MailEnvelopeAddress[];
   bcc?: MailEnvelopeAddress[];
-  /** Reply-To addresses; absent when the message has none (and for messages synced before this field existed). */
+  /** Reply-To addresses; absent when the message has none. */
   replyTo?: MailEnvelopeAddress[];
 }
 
@@ -37,7 +37,7 @@ export type MailMessageMigrationStatus = "stable" | "partial" | "done";
 
 export interface MailMessageMetaRow {
   itemId: string;
-  /** The Mailbox item this message was ingested for — message identity is per mailbox, `(mailbox_item_id, message_id)`. `null` only for a legacy-migrated row (migrationJob/mailLegacyEmailMigration.ts) or a pre-0052 row with no resolvable folder edge. */
+  /** The Mailbox item this message was ingested for — message identity is per mailbox, `(mailbox_item_id, message_id)`. The column is nullable; every ingest and send writes it. */
   mailboxItemId: string | null;
   messageId: string;
   inReplyTo: string | null;
@@ -52,13 +52,13 @@ export interface MailMessageMetaRow {
   messageKind: MailMessageKind;
   /** For a DSN only: the Message-ID (from References/In-Reply-To) of the outgoing message it reports on. */
   dsnOriginalMessageId: string | null;
-  /** 'stable' = a normal ingest; 'partial'/'done' = produced by the legacy-Emails backfill job (migrationJob/mailLegacyEmailMigration.ts). */
+  /** 'stable' for every row a current writer produces; the column also admits 'partial' and 'done'. */
   migrationStatus: MailMessageMigrationStatus;
-  /** Plain-text preview (at most 200 characters); `null` until ingest, send or the backfill sets it. */
+  /** Plain-text preview (at most 200 characters); `null` until ingest or send sets it. */
   previewText: string | null;
-  /** When the message entered Semprec; `null` until ingest, send or the backfill sets it. */
+  /** When the message entered Semprec; `null` until ingest or send sets it. */
   ingestedAt: Date | null;
-  /** Bulk or automatic mail, decided once at ingest (mail/bulkMail.ts); `false` for rows ingested before issue #1502. */
+  /** Bulk or automatic mail, decided once at ingest (mail/bulkMail.ts). */
   isBulk: boolean;
 }
 
@@ -109,7 +109,7 @@ const COLUMNS =
 
 export interface UpsertMailMessageMetaInput {
   itemId: string;
-  /** `null` only from the legacy-Emails migration, whose rows have no mailbox; a `NULL` never conflicts, so such a row is always a fresh insert. */
+  /** A `NULL` never conflicts, so a row without a mailbox is always a fresh insert. */
   mailboxItemId: string | null;
   messageId: string;
   inReplyTo?: string | null;
@@ -212,22 +212,6 @@ export async function getMailMessageMetaByMailboxAndMessageId(
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
-/**
- * Any row for `messageId`, across mailboxes — kept for the legacy-Emails migration's collision
- * check only. Since message identity is per mailbox, several rows can share one `message_id`;
- * this returns the first of them (lowest `item_id`), so it is never a dedup key for ingest.
- */
-export async function getMailMessageMetaByMessageId(
-  client: Queryable,
-  messageId: string,
-): Promise<MailMessageMetaRow | null> {
-  const { rows } = await client.query<MailMessageMetaDbRow>(
-    `SELECT ${COLUMNS} FROM mail_message_meta WHERE message_id = $1 ORDER BY item_id LIMIT 1`,
-    [messageId],
-  );
-  return rows[0] ? mapRow(rows[0]) : null;
-}
-
 export async function getMailMessageMetaByProviderMessageId(
   client: Queryable,
   providerMessageId: string,
@@ -241,7 +225,7 @@ export async function getMailMessageMetaByProviderMessageId(
 
 /**
  * The partial-unique index that arbitrates distinct `message_id`s racing to the same non-null
- * `provider_message_id` within a tenant. Migration 0082 (#1065) dropped the legacy global one.
+ * `provider_message_id` within a tenant.
  */
 const PROVIDER_MESSAGE_ID_CONFLICT_CONSTRAINT = "mail_message_meta_tenant_provider_msg_uq";
 
@@ -371,8 +355,7 @@ export async function createMailThread(client: PoolClient, subjectHint?: string)
 
 /**
  * The Threads item that mail thread `threadId` is bound to (`mail_threads.item_id`), in the caller's tenant. A thread
- * that does not exist, or that no Threads item is bound to yet, throws: a thread has its item from its creation on and
- * from the cutover of issue #1573 on for every older one.
+ * that does not exist, or that no Threads item is bound to yet, throws: a thread has its item from its creation on.
  */
 export async function getMailThreadItemId(client: Queryable, threadId: string): Promise<string> {
   const { rows } = await client.query<{ item_id: string | null }>(

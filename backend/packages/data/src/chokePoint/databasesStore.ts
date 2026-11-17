@@ -145,7 +145,7 @@ export async function createDatabase(client: PoolClient, input: CreateDatabaseIn
     throw new Error(`Generated database id is not a UUID: ${database.id}`);
   }
   // The runtime role does not own `items`, so the `items_p_<hex>` partition is created by the
-  // SECURITY DEFINER function from migration 0048 rather than by inline DDL.
+  // SECURITY DEFINER function `create_items_partition` rather than by inline DDL.
   await client.query("SELECT create_items_partition($1::uuid)", [database.id]);
 
   return database;
@@ -416,7 +416,7 @@ export async function listInlineDatabaseIds(client: PoolClient, itemIds: readonl
 /**
  * Permanently removes an inline database whose last item the trash purge (issue #675) has just
  * hard-deleted: its `rollup_dependencies` (through their owner, `rollup/dependencies.ts`) and
- * `item_search_index` rows (FKs to `databases` without a cascade), its `items_p_<hex>` partition through migration 0050's SECURITY DEFINER function,
+ * `item_search_index` rows (FKs to `databases` without a cascade), its `items_p_<hex>` partition through the SECURITY DEFINER function `drop_items_partition`,
  * then the `databases` row itself (`properties` and `views` cascade by FK). The caller must have
  * confirmed the partition is empty in the same transaction.
  */

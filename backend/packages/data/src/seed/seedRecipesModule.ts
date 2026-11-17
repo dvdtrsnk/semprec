@@ -20,7 +20,7 @@ interface PropSpec {
 /**
  * The seven properties of a recipe; the labels of each, of the options and of the presets are in `recipes/i18n`.
  * `sourceUrl` (issue gh-1974) is the page a recipe was taken from; `recipes/recipeSourceUrlHook.ts` checks each value
- * written and `recipes/recipesSourceUrlCutoverMigration.ts` gives it to a tenant seeded before it.
+ * written.
  */
 const RECIPE_PROPERTIES: readonly PropSpec[] = [
   { key: "name", type: "title", owner: "user" },
@@ -66,8 +66,7 @@ export interface RecipesModuleResult {
  * and the default `gallery` view (two columns, 4:3 tiles, the photo as the tile image). The schema is locked
  * once the view exists. Resolves with the id of the project item it created.
  *
- * Not idempotent on its own: `seedSystem` calls it once for a new tenant and
- * `recipes/recipesModuleCutoverMigration.ts` calls it only for a tenant without a `recipes` database.
+ * Not idempotent on its own: `seedSystem` calls it once for a new tenant.
  */
 export async function seedRecipesModuleInTransaction(
   client: PoolClient,

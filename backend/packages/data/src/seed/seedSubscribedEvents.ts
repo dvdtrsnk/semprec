@@ -6,7 +6,7 @@ import { requireAffectedRows, requireSingleRow } from "../db/pool.js";
 import type { DatabaseRow, PropertyType } from "../types.js";
 import { SUBSCRIBED_EVENTS_MODULE_ID } from "./calendarsKeys.js";
 
-/** The keys of the recurrence properties (issue gh-1966), the ones `calendar/subscribedEventsRecurrenceCutoverMigration.ts` adds. */
+/** The keys of the recurrence properties (issue gh-1966). */
 export const SUBSCRIBED_EVENT_RECURRENCE_KEYS = ["recurrenceRule", "exceptionDates", "recurrenceId"] as const;
 
 interface PropSpec {
@@ -89,12 +89,10 @@ async function createSubscribedEventsRelation(
 /**
  * Creates the `subscribedEvents` system database (issue gh-1962) in the caller's open transaction: the database
  * under the project that owns `calendars`, its system-owned properties, the relation to Calendars, and the
- * schema lock. The fresh seed (`seedCalendarsInTransaction`) and `calendar/subscribedEventsCutoverMigration.ts`
- * both call it, so a seeded and a cut-over tenant get identical definitions. No row is seeded, and a name is
+ * schema lock. No row is seeded, and a name is
  * stored as null: the labels come from the calendar module catalog.
  *
- * Not idempotent on its own: `seedCalendarsInTransaction` calls it once for the Calendars database it creates, and
- * the cutover calls it only for a tenant that has the Calendars database and no subscribed events database.
+ * Not idempotent on its own: `seedCalendarsInTransaction` calls it once for the Calendars database it creates.
  */
 export async function seedSubscribedEventsInTransaction(
   client: PoolClient,

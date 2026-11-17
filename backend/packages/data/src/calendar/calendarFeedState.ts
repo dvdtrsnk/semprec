@@ -1,4 +1,4 @@
-// The store of `calendar_feed_state` (issue gh-1960, migration 0172): what the subscription sweep
+// The store of `calendar_feed_state` (issue gh-1960): what the subscription sweep
 // (`calendarSubscriptionSweep.ts`) keeps per subscription calendar between two runs. The sweep is the only writer of a
 // row's contents; `calendarFeedStatePurgeHook` (registered in `domainWriteHooks.ts` and run by `runItemPurgeHooks` in
 // the purge transaction, docs/adr/2026-11-10-item-purge-domain-hooks.md) only deletes the row with its calendar item.

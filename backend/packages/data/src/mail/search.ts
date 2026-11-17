@@ -7,9 +7,9 @@ import { DRAFTS_AND_SENT_SPECIAL_PURPOSES, FLAGGED_PROPERTY_KEY, READ_PROPERTY_K
  * Full-text search over synced message content (issue #26's scope: Emails only — the
  * generic `items`/`properties` model has no single "message text" column, so this is a
  * separate index table maintained by the application's write path, not a generated column).
- * `'czech'` is the text-search configuration 0006_mail_sync.sql builds on `unaccent` + `simple`,
- * which 0046_czech_hunspell_search.sql puts a Hunspell dictionary in front of once the
- * provisioned assets exist.
+ * `'czech'` is the text-search configuration the schema builds on `unaccent` + `simple`, which
+ * `activate_czech_hunspell_search()` puts a Hunspell dictionary in front of once the provisioned
+ * assets exist.
  */
 export interface ReindexItemSearchInput {
   itemId: string;

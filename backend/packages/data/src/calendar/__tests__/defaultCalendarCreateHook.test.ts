@@ -463,8 +463,7 @@ describe("default calendar create hook (issue #1761)", () => {
   describe("a tenant whose calendars are incomplete", () => {
     /**
      * Removes the `Calendars.events` / `Events.calendar` relation of the tenant, and with `dropCalendars` the
-     * calendars database, its rows and its system project too: the state of a tenant seeded before issue #1600.
-     * The schema is locked and system-owned and no public path removes it, so this runs in the tenant's scope
+     * calendars database, its rows and its system project too. The schema is locked and system-owned and no public path removes it, so this runs in the tenant's scope
      * on the admin pool; that pool bypasses row-level security, so every statement names the tenant's own ids.
      */
     async function removeCalendars(tenantId: string, dropCalendars: boolean): Promise<void> {
@@ -499,7 +498,7 @@ describe("default calendar create hook (issue #1761)", () => {
       });
     }
 
-    it("creates Events normally, without a calendar, in a tenant that has no calendars database", async () => {
+    it("fails the create, with a chosen calendar or without, in a tenant that has no calendars database", async () => {
       const ids = await runInTenant(tenant, async () => {
         const f = await setup();
         return { events: f.db("events"), work: f.calendar("Work") };
@@ -507,15 +506,15 @@ describe("default calendar create hook (issue #1761)", () => {
       await removeCalendars(tenant, true);
       await runInTenant(tenant, async () => {
         const cp = createChokePoint(runtime);
-        const event = await cp.createItem({ databaseId: ids.events, properties: EVENT }, undefined, undefined, USER);
-        // With no calendars database the hook writes nothing, so a chosen calendar is not looked at either.
-        const chosen = await withTransaction(runtime, (client) =>
-          createEventInCalendar(client, { properties: EVENT }, ids.work, { writer: USER }),
-        );
-        for (const created of [event, chosen]) {
-          expect(created.properties).toMatchObject(EVENT);
-          expect(await cp.listItemRelations(created.id)).toEqual([]);
-        }
+        await expect(
+          cp.createItem({ databaseId: ids.events, properties: EVENT }, undefined, undefined, USER),
+        ).rejects.toThrow("Calendars database not found");
+        await expect(
+          withTransaction(runtime, (client) =>
+            createEventInCalendar(client, { properties: EVENT }, ids.work, { writer: USER }),
+          ),
+        ).rejects.toThrow("Calendars database not found");
+        expect((await cp.listItems(ids.events, { limit: 50 })).items).toEqual([]);
         expect(calendarEdgeWriters).toEqual([]);
       });
       // The other tenant keeps its calendars and its default.

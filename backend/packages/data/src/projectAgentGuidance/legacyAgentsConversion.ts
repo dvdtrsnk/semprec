@@ -53,8 +53,7 @@ export function legacyAgentsTextToSections(text: string): ProjectAgentGuidanceSe
 /**
  * Writes the guidance row of one project from its legacy `agents` text (issue #1449). The row is inserted only when
  * the project has none, so a repeated call, or one after the user edited the row, changes nothing. An inserted row
- * also gets its `core.agentGuidanceDrift` heartbeat in the same transaction, because migration 0035 backfilled
- * heartbeats only for rows that existed then.
+ * also gets its `core.agentGuidanceDrift` heartbeat in the same transaction.
  *
  * Resolves `true` when this call inserted the row. A text that converts to no section text writes nothing, and a
  * converted document above `MAX_PROJECT_AGENT_GUIDANCE_MARKDOWN_BYTES` is skipped with a warning that names the tenant

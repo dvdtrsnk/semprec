@@ -4,8 +4,7 @@ import { FILES_MODULE_ID, HEALTH_RECORDS_MODULE_ID, TRANSCRIPTS_MODULE_ID } from
 
 /**
  * The keys of the system databases that are marked `sensitive` (issue #1808): the Health records and the
- * three sleep databases. The seeds create these databases with the flag and
- * `runSensitiveDatabasesCutoverMigration` sets it for the tenants that already had them.
+ * three sleep databases. The seeds create these databases with the flag.
  */
 export const SENSITIVE_DATABASE_KEYS: readonly string[] = [
   HEALTH_RECORDS_MODULE_ID,

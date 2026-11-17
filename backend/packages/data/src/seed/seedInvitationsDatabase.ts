@@ -65,14 +65,11 @@ const CALENDAR_RELATION_CONTEXT: SystemRelationWriteContext = { ownerProcess: CA
  * (`suggestedCalendar`, `event`, `sourceEmail`, `mailbox`) are `many_to_many` and one-directional, because
  * the schemas of their targets are locked; the schema of the new database is locked once complete. It
  * creates no rows. It also creates the `calendar.ingestInvitation` heartbeat (issue gh-1929) on the same system project
- * item: it fires on every new Emails item and reads the message's calendar part. A populated tenant that already has
- * the database gets the heartbeat from `calendar/invitationIngestHeartbeatCutoverMigration.ts`. The
+ * item: it fires on every new Emails item and reads the message's calendar part. The
  * `calendar.applyInvitationReply` heartbeat (issue gh-1950) is created on the same project item and fires on every new
- * Emails item as well; a populated tenant gets it from `calendar/invitationReplyHeartbeatCutoverMigration.ts`.
+ * Emails item as well.
  *
- * Not idempotent on its own: `seedSystem` calls it once for a new tenant, and
- * `calendar/invitationsDatabaseCutoverMigration.ts` calls it only for a tenant without an invitations
- * database. The Events, People, Emails and Mailboxes databases must already exist.
+ * Not idempotent on its own: `seedSystem` calls it once for a new tenant. The Events, People, Emails and Mailboxes databases must already exist.
  */
 export async function seedInvitationsDatabaseInTransaction(
   client: PoolClient,

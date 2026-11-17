@@ -107,8 +107,7 @@ export interface ItemRow {
   properties: Record<string, unknown>;
   computed: Record<string, unknown>;
   /**
-   * When the row was inserted (`items.created_at`, set by the database); no item write changes it. A row
-   * that predates the column carries its `updated_at` at the time of the issue #1594 backfill instead.
+   * When the row was inserted (`items.created_at`, set by the database); no item write changes it.
    */
   createdAt: string;
   updatedAt: string;

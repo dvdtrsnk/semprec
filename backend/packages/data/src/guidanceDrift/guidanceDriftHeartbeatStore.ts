@@ -11,7 +11,7 @@ const AGENT_GUIDANCE_DRIFT_RULE = { kind: "dailyTime", at: "04:30" } as const;
 /**
  * Concrete `PoolClient` implementation of `@semprec/shared`'s `GuidanceHeartbeatStore`
  * (issue #85), replacing #214's no-op placeholder. Persists the exact canonical fields the issue
- * specifies on every project's `core.agentGuidanceDrift` heartbeat, relying on migration 0035's
+ * specifies on every project's `core.agentGuidanceDrift` heartbeat, relying on the
  * partial unique index `project_heartbeats_guidance_drift_unique` — `(project_item_id, action_id)
  * WHERE action_id = 'core.agentGuidanceDrift'` — to make this upsert race-safe against concurrent
  * installs or repeated guidance writes for the same project.

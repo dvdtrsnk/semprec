@@ -462,7 +462,7 @@ export function createAgentRunWatchRegistry(pool: Pool): AgentRunWatchRegistry {
     async watch(ws, tenantId, userId, runId, afterEventId) {
       const pendingToken = beginWatch(ws, runId);
 
-      // agent_runs.actor_user_id is NOT NULL after migration 0042's cutover: every row carries the
+      // agent_runs.actor_user_id is NOT NULL: every row carries the
       // user its writes are attributed to (the session user for a user-triggered root run, the
       // setup owner for heartbeat/system runs, the parent's actor for a delegated run). That
       // column is the authorized watcher, with no fallback. A different authenticated user gets

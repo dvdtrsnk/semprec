@@ -22,7 +22,7 @@ export interface NotificationPreferences {
 /** The fields a change sets; an omitted field keeps its stored value. */
 export type NotificationPreferencesPatch = Partial<Omit<NotificationPreferences, "updatedAt">>;
 
-/** What a user without a row has. Migration 0119 declares the same values as the column defaults. */
+/** What a user without a row has. The schema declares the same values as the column defaults. */
 const DEFAULT_VALUES: Omit<NotificationPreferences, "updatedAt"> = {
   approvals: true,
   invites: true,

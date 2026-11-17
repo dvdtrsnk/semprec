@@ -254,8 +254,7 @@ export async function sendSempMessage(
 /**
  * The automation header and the running run of a tick thread (issue #1562). The rule is validated against
  * `moduleRuleKinds`, the rule kinds of the active modules, as the scheduler validates it. The heartbeat
- * comes from a left join; `semp_threads.heartbeat_id` references it `ON DELETE RESTRICT`
- * (`0087_semp_threads_and_messages.sql`), so no ordinary path leaves a tick thread without its heartbeat
+ * comes from a left join; `semp_threads.heartbeat_id` references it `ON DELETE RESTRICT`, so no ordinary path leaves a tick thread without its heartbeat
  * and the `heartbeat: null` branch is defensive. The project name is read only from a live project item.
  */
 async function readTickThreadHeader(

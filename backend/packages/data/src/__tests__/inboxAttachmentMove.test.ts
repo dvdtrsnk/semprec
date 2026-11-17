@@ -972,8 +972,15 @@ describe("file from attachment on confirm (issue #1703)", () => {
     const attachmentsProperty = await withTransaction(pool, (client) =>
       propertiesStore.getPropertyByKey(client, emailsId, "attachments"),
     );
+    const eventsProperty = await withTransaction(pool, (client) =>
+      propertiesStore.getPropertyByKey(client, filesId, "events"),
+    );
     const handler = createFilesTranscriptionTriggerAction(pool);
-    const config = { filesDatabaseId: filesId, attachmentsRelationPropertyId: attachmentsProperty!.id };
+    const config = {
+      filesDatabaseId: filesId,
+      attachmentsRelationPropertyId: attachmentsProperty!.id,
+      eventsRelationPropertyId: eventsProperty!.id,
+    };
     await handler(config, { heartbeatId: "hb", projectItemId: "proj", itemId: fileItem!.id });
     expect(await jobExists(transcriptionJobKey(fileItem!.id))).toBe(false);
 

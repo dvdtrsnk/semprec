@@ -36,7 +36,7 @@ interface MailboxRemovalImpactRow {
  * (`id`, `is_drafts`) are the non-deleted Folders related to the mailbox, and `mailbox_emails`
  * (`email_id`, `is_draft`) the non-deleted Emails in any of them, each once. An Email is a draft when
  * one of its folders is a Drafts folder. The relation definitions are found by the property key on the
- * module-owned database, the way migration 0053 finds them. The impact report below and the removal
+ * module-owned database. The impact report below and the removal
  * job (`mailboxRemovalJob.ts`, issue gh-2029) both start from this text, so both apply one definition.
  */
 export const MAILBOX_REMOVAL_MEMBERS_CTE_SQL = `

@@ -120,9 +120,7 @@ export async function seedInboxPipelineInTransaction(
     { key: "date", name: "Date", type: "date", owner: "user" },
     { key: "time", name: "Time", type: "time", owner: "user" },
     { key: "text", name: "Text", type: "text", owner: "user", config: { format: "markdown" } },
-    // Issue gh-1964: how and from where the item was captured, and when the server accepted it. Declared here for fresh
-    // installs and added to populated tenants by inbox/inboxCapturePropertiesCutoverMigration.ts; keep the two lists
-    // identical. `addedAt` is written by the capture helper (`inbox/inboxStore.ts`), as the Inbox module.
+    // Issue gh-1964: how and from where the item was captured, and when the server accepted it. `addedAt` is written by the capture helper (`inbox/inboxStore.ts`), as the Inbox module.
     {
       key: "captureChannel",
       name: "Capture channel",
@@ -140,8 +138,7 @@ export async function seedInboxPipelineInTransaction(
       config: { includeTime: true },
     },
     // Issue gh-1980: the transcript of the item's short voice notes, written by the transcribe process and never by
-    // the person, whose own text stays in `text`. Declared here for fresh installs and added to populated tenants by
-    // seed/inboxTranscribedTextCutoverMigration.ts; keep the two identical.
+    // the person, whose own text stays in `text`.
     {
       key: INBOX_TRANSCRIBED_TEXT_KEY,
       name: "Transcribed text",
@@ -161,9 +158,7 @@ export async function seedInboxPipelineInTransaction(
     // validation ("database" requires targetDatabase, "pageContent" and "journal" reject it) is
     // enforced in inbox/inboxTypesStore.ts, not here — same reason inboxCreateHook.ts enforces
     // date/time itself: the schema engine has no generic cross-field validation concept.
-    // The `journal` option (issue gh-1975) is added to populated tenants by
-    // inbox/inboxJournalMethodCutoverMigration.ts. The seed reads the options from PROCESSING_METHODS; the cutover
-    // appends the 'journal' key itself.
+    // The options, `journal` (issue gh-1975) among them, are read from PROCESSING_METHODS.
     {
       key: "processingMethod",
       name: "Processing method",
@@ -182,14 +177,13 @@ export async function seedInboxPipelineInTransaction(
       name: "Target database",
       type: "select",
       owner: "user",
-      // The ten hardcoded databases, then the module targets (issue #1973), appended like the cutover appends them.
+      // The ten hardcoded databases, then the module targets (issue #1973).
       config: selectConfig([...TEN_DATABASE_MODULE_IDS, ...INBOX_TYPE_MODULE_TARGET_DATABASES]),
     },
   ]);
 
   await createProps(client, processingProposals.id, [
-    // `mailThread` (issue gh-2034) is the card of a task that Semp proposes from a mail thread. A populated tenant gets
-    // the option from mail/threadTaskProposalCutoverMigration.ts; keep the two lists identical.
+    // `mailThread` (issue gh-2034) is the card of a task that Semp proposes from a mail thread.
     {
       key: "kind",
       name: "Kind",
@@ -222,8 +216,7 @@ export async function seedInboxPipelineInTransaction(
     // Filled in by confirm; not a relation, since the target can be any system database's item.
     { key: "resultItemId", name: "Result item ID", type: "text", owner: "system" },
     { key: "resultLabel", name: "Result label", type: "text", owner: "system" },
-    // Card state (issue #1451). Declared here for fresh installs and added to populated tenants by
-    // inbox/processingProposalsCardStateCutoverMigration.ts; keep the two lists identical.
+    // Card state (issue #1451).
     // The last proposal written by an automated producer, the base for "return to the assistant's proposal".
     { key: "aiProposal", name: "AI proposal", type: "json", owner: "system" },
     { key: "userOverrides", name: "User overrides", type: "json", owner: "system" },
@@ -240,8 +233,7 @@ export async function seedInboxPipelineInTransaction(
     { key: "results", name: "Results", type: "json", owner: "system" },
     // Producer-written data of a transcript card; declared as an opaque json property until its producer defines the shape.
     { key: "context", name: "Context", type: "json", owner: "system" },
-    // Issue #1939: set on a sibling card made by splitting an Inbox source; holds the primary card's id. Declared here
-    // for fresh installs and added to populated tenants by inbox/processingProposalsSplitCutoverMigration.ts.
+    // Issue #1939: set on a sibling card made by splitting an Inbox source; holds the primary card's id.
     { key: "splitFromProposalId", name: "Split from proposal ID", type: "text", owner: "system" },
   ]);
 
@@ -319,8 +311,7 @@ export async function seedInboxPipelineInTransaction(
   // Processing proposals -> Threads (issue gh-2034): the thread a `mailThread` card proposes a task for, written
   // with the card. The Threads database exists because seedSystem.ts runs seedEmailModuleInTransaction before this
   // seed. Threads is schema-locked, so the relation is one-directional; `many_to_many` for the reason given above
-  // (a thread can be the source of several cards over time). A populated tenant gets it from
-  // mail/threadTaskProposalCutoverMigration.ts.
+  // (a thread can be the source of several cards over time).
   const threads = await databasesStore.getDatabaseByModuleId(client, THREADS_MODULE_ID);
   if (!threads) throw new Error("Threads database is missing: the email module must be seeded first");
   await relate(

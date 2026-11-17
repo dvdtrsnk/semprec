@@ -336,7 +336,7 @@ interface SourceMessage {
  * which must belong to `threadId` when that is given too (a 400 naming `sourceEmailId` otherwise); without it the newest
  * message of the thread that is not a draft and was not sent by the user, else the newest that is not a draft.
  * An unknown message or thread, and a thread without such a message, is a 404; a message that belongs to no mailbox
- * (one of the legacy migration) is a 400.
+ * is a 400.
  */
 async function findSourceMessage(
   client: PoolClient,

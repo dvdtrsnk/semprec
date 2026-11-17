@@ -81,10 +81,9 @@ async function insertUserRelationProperty(client: PoolClient, databaseId: string
  * The `Calendars.events` / `Events.calendar` pair: one calendar, many Events, so `Calendars.events` is
  * property A of a `one_to_many` definition and each Event has at most one calendar. Events is
  * `schema_locked` and `propertiesStore` refuses to change a locked schema, so both properties, the
- * relation definition and the property configs are written with raw SQL in the three steps
- * `transcription/transcriptsCatalogCutoverMigration.ts` uses, under an exclusive `properties` lock.
- * The fresh seed and the cutover both reach it through `seedCalendarsInTransaction`, so the
- * definitions are identical. Returns the relation definition id.
+ * relation definition and the property configs are written with raw SQL in three steps (the two
+ * properties, the definition, the configs), under an exclusive `properties` lock. Returns the relation
+ * definition id.
  */
 async function createCalendarEventsRelation(
   client: PoolClient,
@@ -127,13 +126,11 @@ export interface CalendarsSeedResult {
  * `systemKey` system-owned by the calendar module), the `Calendars.events` / `Events.calendar` relation,
  * and the eight default and system calendars. The project's and the rows' names come from the calendar
  * module catalog in the tenant user's language (`cs` while the tenant has no user), and the daily
- * `calendar.refreshNextOccurrence` heartbeat of the module's system project (issue gh-1905; a populated tenant
- * that already has the calendars database gets it from `calendar/nextOccurrenceDateCutoverMigration.ts`). The schema
+ * `calendar.refreshNextOccurrence` heartbeat of the module's system project (issue gh-1905). The schema
  * is locked once complete. The `subscribedEvents` system database (issue gh-1962) is created last, after the
  * calendars, by `seedSubscribedEventsInTransaction`.
  *
- * Not idempotent on its own: `seedSystem` calls it once for a new tenant and
- * `calendar/calendarsCutoverMigration.ts` calls it only for a tenant without a calendars database.
+ * Not idempotent on its own: `seedSystem` calls it once for a new tenant.
  */
 export async function seedCalendarsInTransaction(
   client: PoolClient,

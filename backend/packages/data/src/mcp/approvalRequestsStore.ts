@@ -24,25 +24,22 @@ const APPROVAL_REQUEST_STATUSES: readonly ApprovalRequestStatus[] = ["pending", 
  * The exactly-once execution protocol's own state machine (issue #89), independent of the
  * approval decision above: `not_approved` (default) -> `queued` (set atomically alongside
  * `status: 'approved'`) -> `succeeded` (the mutation committed) or `conflict` (a terminal
- * revalidation failure — the resource changed or its authorization no longer holds). A
- * populated-upgrade row that predates this column is `legacy_terminal` and never executes.
+ * revalidation failure — the resource changed or its authorization no longer holds).
  */
-export type ApprovalRequestExecutionStatus = "not_approved" | "queued" | "succeeded" | "conflict" | "legacy_terminal";
+export type ApprovalRequestExecutionStatus = "not_approved" | "queued" | "succeeded" | "conflict";
 
 const APPROVAL_REQUEST_EXECUTION_STATUSES: readonly ApprovalRequestExecutionStatus[] = [
   "not_approved",
   "queued",
   "succeeded",
   "conflict",
-  "legacy_terminal",
 ];
 
 /**
  * The persisted `{ kind, resourceId, sha256 }` shape every approval request now carries
  * (issue #89). `kind` is validated against the closed five-destructive-operation enum only by
  * `DestructiveApprovalPreflight` at the point a *new* generic-operation request is created — this
- * store-level type stays a plain string so the still-live `mcpInvoke` request kind (and a
- * populated-upgrade's `legacy_unavailable` kind) can also satisfy the column's `NOT NULL`
+ * store-level type stays a plain string so the still-live `mcpInvoke` request kind can also satisfy the column's `NOT NULL`
  * constraint without widening it into a union this module has no reason to know about.
  */
 export interface ApprovalResourceSnapshot {
@@ -610,9 +607,7 @@ export interface ListApprovalRequestsPageInput {
 /**
  * The SQL of the two lists. A pending request is ordered by `requested_at`. A decided one is ordered
  * by `decided_at`, which `decideApprovalRequest` sets in the statement that decides the request. A
- * decided row without it has no place in the order and is in neither list. The one-time cutover of
- * issue #89 (`approvalRequestExecutionStatusCutoverMigration.ts`) left such rows: it rejected the
- * requests that were pending when it ran and set no decision time.
+ * decided row without it has no place in the order and is in neither list.
  */
 const LIST_STATUS_SQL = {
   pending: { predicate: "ar.status = 'pending'", orderedAt: "ar.requested_at" },

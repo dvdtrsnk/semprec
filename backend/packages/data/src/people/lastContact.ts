@@ -1,7 +1,7 @@
 // Issue #1660: People's derived `lastContact` — the calendar date, in the tenant time zone, of the latest
 // past Event, Email or Transcript a person took part in. Only `recomputePersonLastContact` writes it,
 // through the choke point as the declared `people` owner process; the hooks in `lastContactHooks.ts`,
-// the daily sweep and the cutover only queue that recompute.
+// and the daily sweep only queue that recompute.
 // Constrained by: docs/adr/2026-09-10-choke-point-api-for-state-writes.md and
 // docs/adr/2026-09-10-single-writer-ownership-model.md
 import type { Pool, PoolClient } from "pg";
