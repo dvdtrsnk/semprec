@@ -15,6 +15,8 @@ export interface ReindexItemSearchInput {
 }
 
 export async function reindexItemSearch(client: Queryable, input: ReindexItemSearchInput): Promise<void> {
+  // Postgres text cannot hold U+0000, which text extracted from a PDF attachment can carry; it is no word.
+  const text = input.text.replaceAll("\u0000", " ");
   // A repeat rebuild keeps the timestamp when both vector and database are unchanged.
   await client.query(
     `INSERT INTO item_search_index (item_id, database_id, search_vector, updated_at)
@@ -22,7 +24,7 @@ export async function reindexItemSearch(client: Queryable, input: ReindexItemSea
      ON CONFLICT (item_id) DO UPDATE SET search_vector = EXCLUDED.search_vector, database_id = EXCLUDED.database_id, updated_at = now()
      WHERE item_search_index.search_vector IS DISTINCT FROM EXCLUDED.search_vector
         OR item_search_index.database_id IS DISTINCT FROM EXCLUDED.database_id`,
-    [input.itemId, input.databaseId, input.text],
+    [input.itemId, input.databaseId, text],
   );
 }
 

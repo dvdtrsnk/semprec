@@ -14,6 +14,7 @@
   "status.reply.shortText": "Odpověď se nedokončila.",
   "status.guidanceDrift.title": "Pokyny projektu potřebují pozornost",
   "status.guidanceDrift.text": "Zkontrolujte pokyny projektu {projectName}.",
+  "status.guidanceDrift.textClaim": "{projectName}: {claim}",
   "status.guidanceDrift.shortText": "Pokyny projektu potřebují pozornost.",
   "status.libraryAutomation.title": "Automatizace knihovny potřebuje pozornost",
   "status.libraryAutomation.text": "Automatizace knihovny se nedokončila.",
