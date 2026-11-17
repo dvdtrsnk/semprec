@@ -1291,8 +1291,8 @@ describe("inbox custom route handlers (issue #239)", () => {
   });
 
   describe("createReopenProposalRouteHandler (issue #1937)", () => {
-    /** Older than any stored `updatedAt`, so it never equals the version a card holds. */
-    const STALE_VERSION = "2000-01-01T00:00:00.000Z";
+    /** Higher than any version a card reaches in a test, so it never equals the version a card holds. */
+    const STALE_VERSION = "999999999";
 
     async function storedCard(cardId: string): Promise<ItemRow> {
       const card = await itemsStore.getItemById(pool, proposalsId, cardId);
@@ -1466,12 +1466,12 @@ describe("inbox custom route handlers (issue #239)", () => {
       expect(await writtenState()).toEqual(state);
     });
 
-    it("reopens a rejected card when ifVersion is its current updatedAt", async () => {
+    it("reopens a rejected card when ifVersion is its current version", async () => {
       const cardId = await createDatabaseProposal("Buy milk");
       await reject(cardId);
-      const { updatedAt } = await storedCard(cardId);
+      const { version } = await storedCard(cardId);
 
-      const item = await reopen(cardId, { ifVersion: updatedAt });
+      const item = await reopen(cardId, { ifVersion: version });
 
       expect(item.properties.status).toBe("proposed");
     });
@@ -1607,7 +1607,8 @@ describe("inbox custom route handlers (issue #239)", () => {
   });
 
   describe("createReopenProposalRouteHandler on a confirmed card (issue #1943)", () => {
-    const STALE_VERSION = "2000-01-01T00:00:00.000Z";
+    /** Higher than any version a card reaches in a test, so it never equals the version a card holds. */
+    const STALE_VERSION = "999999999";
     const EVENT_DATE = "2024-03-01T12:00:00.000Z";
     let tasksId: string;
     let transcriptsId: string;
@@ -1882,7 +1883,7 @@ describe("inbox custom route handlers (issue #239)", () => {
         });
         expect(await writtenState()).toEqual(before);
 
-        const { item } = await reopenCard(cardId, { ifVersion: card.updatedAt });
+        const { item } = await reopenCard(cardId, { ifVersion: card.version });
         expect(item.properties.status).toBe("proposed");
         expect((await anyItem(taskId)).deletedAt).not.toBeNull();
       },
@@ -2932,7 +2933,8 @@ describe("inbox custom route handlers (issue #239)", () => {
   });
 
   describe("ifVersion on confirm and reject (issue #1852)", () => {
-    const STALE_VERSION = "2000-01-01T00:00:00.000Z";
+    /** Higher than any version a card reaches in a test, so it never equals the version a card holds. */
+    const STALE_VERSION = "999999999";
     const handlers = { confirm: createConfirmProposalRouteHandler, reject: createRejectProposalRouteHandler } as const;
     type Action = keyof typeof handlers;
     const ACTIONS: Action[] = ["confirm", "reject"];
@@ -2982,9 +2984,9 @@ describe("inbox custom route handlers (issue #239)", () => {
 
     it.each(ACTIONS)("%s: the current ifVersion of an open card succeeds", async (action) => {
       const cardId = await createDatabaseProposal("Buy milk");
-      const { updatedAt } = await storedCard(cardId);
+      const { version } = await storedCard(cardId);
 
-      const item = itemOf(await call(action, cardId, { ifVersion: updatedAt }));
+      const item = itemOf(await call(action, cardId, { ifVersion: version }));
 
       expect(item.properties.status).toBe(TERMINAL_STATUS[action]);
       expect((await storedCard(cardId)).properties.status).toBe(TERMINAL_STATUS[action]);
@@ -3041,9 +3043,9 @@ describe("inbox custom route handlers (issue #239)", () => {
           { allowedSystemKeys: ["status"] },
         ),
       );
-      const { updatedAt } = await storedCard(cardId);
+      const { version } = await storedCard(cardId);
 
-      await expect(call("confirm", cardId, { ifVersion: updatedAt })).rejects.toMatchObject({
+      await expect(call("confirm", cardId, { ifVersion: version })).rejects.toMatchObject({
         status: 400,
         code: "validation_failed",
         details: { field: "status", currentStatus: "needsClarification" },
@@ -3459,12 +3461,12 @@ describe("inbox custom route handlers (issue #239)", () => {
       expect(response.item.properties.status).toBe("proposed");
     });
 
-    it("applies an ifVersion that equals the card's updatedAt", async () => {
+    it("applies an ifVersion that equals the card's version", async () => {
       const cardId = await createEventCard();
       const eventId = await createEvent("Planning");
       const card = await readCard(cardId);
 
-      const response = await callRevise(cardId, { ...linkEvent(eventId), ifVersion: card.updatedAt });
+      const response = await callRevise(cardId, { ...linkEvent(eventId), ifVersion: card.version });
 
       expect(response.status).toBe(200);
     });
@@ -3472,10 +3474,10 @@ describe("inbox custom route handlers (issue #239)", () => {
     it("answers a stale ifVersion with version_conflict carrying the current card and writes nothing", async () => {
       const cardId = await createEventCard();
       const eventId = await createEvent("Planning");
-      const stale = (await readCard(cardId)).updatedAt;
+      const stale = (await readCard(cardId)).version;
       await callRevise(cardId, { message: "A first note" });
       const current = await readCard(cardId);
-      expect(current.updatedAt).not.toBe(stale);
+      expect(current.version).not.toBe(stale);
 
       const error = await callRevise(cardId, { ...linkEvent(eventId), ifVersion: stale }).catch((e: unknown) => e);
 
@@ -3571,7 +3573,7 @@ describe("inbox custom route handlers (issue #239)", () => {
 
       const result = await handler({
         params: { id: proposalId },
-        body: { set: { primary: { name: "Buy oat milk" } }, ifVersion: (await readCard(proposalId)).updatedAt },
+        body: { set: { primary: { name: "Buy oat milk" } }, ifVersion: (await readCard(proposalId)).version },
       });
 
       expect(result.status).toBe(200);
@@ -3579,7 +3581,7 @@ describe("inbox custom route handlers (issue #239)", () => {
 
     it("answers a stale ifVersion with a version conflict that carries the current card, and writes nothing", async () => {
       const proposalId = await createDatabaseProposal("Buy milk");
-      const stale = (await readCard(proposalId)).updatedAt;
+      const stale = (await readCard(proposalId)).version;
       const handler = createUpdateProposalValuesRouteHandler(pool);
       await handler({ params: { id: proposalId }, body: { set: { primary: { name: "First" } } } });
       const before = await readCard(proposalId);
@@ -3854,7 +3856,7 @@ describe("inbox custom route handlers (issue #239)", () => {
       it("stores nothing for a refused update, so the key can be used again", async () => {
         const proposalId = await createDatabaseProposal("Buy milk");
         const handler = createUpdateProposalValuesRouteHandler(pool);
-        const stale = (await readCard(proposalId)).updatedAt;
+        const stale = (await readCard(proposalId)).version;
         await handler({ params: { id: proposalId }, body: { set: { primary: { name: "First" } } } });
 
         await expect(
@@ -3870,7 +3872,7 @@ describe("inbox custom route handlers (issue #239)", () => {
         const retried = await runInTenant(getTenantZeroId(), async () =>
           handler({
             params: { id: proposalId },
-            body: { set: { primary: { name: "Second" } }, ifVersion: (await readCard(proposalId)).updatedAt },
+            body: { set: { primary: { name: "Second" } }, ifVersion: (await readCard(proposalId)).version },
             ...keyed("key-1"),
           }),
         );
@@ -3975,7 +3977,7 @@ describe("inbox custom route handlers (issue #239)", () => {
 
       const result = await createResetProposalOverridesRouteHandler(pool)({
         params: { id: proposalId },
-        body: { ifVersion: (await readCard(proposalId)).updatedAt },
+        body: { ifVersion: (await readCard(proposalId)).version },
       });
 
       expect(result.status).toBe(200);
@@ -3984,7 +3986,7 @@ describe("inbox custom route handlers (issue #239)", () => {
 
     it("answers a stale ifVersion with a version conflict that carries the current card, and writes nothing", async () => {
       const proposalId = await createDatabaseProposal("Buy milk");
-      const stale = (await readCard(proposalId)).updatedAt;
+      const stale = (await readCard(proposalId)).version;
       await createUpdateProposalValuesRouteHandler(pool)({
         params: { id: proposalId },
         body: { set: { primary: { name: "First" } } },
@@ -4108,7 +4110,7 @@ describe("inbox custom route handlers (issue #239)", () => {
 
       const result = await createRecomputeProposalRouteHandler(pool)({
         params: { id: proposalId },
-        body: { ifVersion: (await readCard(proposalId)).updatedAt },
+        body: { ifVersion: (await readCard(proposalId)).version },
       });
 
       expect(result.status).toBe(200);
@@ -4117,7 +4119,7 @@ describe("inbox custom route handlers (issue #239)", () => {
 
     it("answers a stale ifVersion with a version conflict that carries the current card, and writes nothing", async () => {
       const proposalId = await createDatabaseProposal("Buy milk");
-      const stale = (await readCard(proposalId)).updatedAt;
+      const stale = (await readCard(proposalId)).version;
       await createUpdateProposalValuesRouteHandler(pool)({
         params: { id: proposalId },
         body: { set: { primary: { name: "First" } } },

@@ -256,6 +256,7 @@ describe("the mail draft routes (issue gh-1867)", () => {
           "createdBy",
           "lastEditedBy",
           "updatedAt",
+          "version",
           "sentAt",
         ].sort(),
       );
@@ -381,7 +382,7 @@ describe("the mail draft routes (issue gh-1867)", () => {
       const { body: created } = await createDraft(newDraft(f));
 
       const updated = await updateDraft(created.id, {
-        ifVersion: created.updatedAt,
+        ifVersion: created.version,
         to: [PETR, JANA],
         subject: "Nabídka - odpověď",
       });
@@ -418,7 +419,7 @@ describe("the mail draft routes (issue gh-1867)", () => {
       const edited = await withTransaction(runtime, (client) =>
         updateEmailDraft(
           client,
-          { draftItemId: created.id, ifVersion: created.updatedAt, body: "Text od agenta" },
+          { draftItemId: created.id, ifVersion: created.version, body: "Text od agenta" },
           { writer: { writerKind: "agent" }, actingUserId: USER_ID },
         ),
       );
@@ -431,10 +432,10 @@ describe("the mail draft routes (issue gh-1867)", () => {
     await runInTenant(tenant, async () => {
       const f = await setup();
       const { body: created } = await createDraft(newDraft(f, { threadId: f.threadId }));
-      const { body: second } = await updateDraft(created.id, { ifVersion: created.updatedAt, subject: "Druhá verze" });
+      const { body: second } = await updateDraft(created.id, { ifVersion: created.version, subject: "Druhá verze" });
       recordThreadAnnouncements();
 
-      const refusal = await updateDraft(created.id, { ifVersion: created.updatedAt, subject: "Z dávné verze" }).catch(
+      const refusal = await updateDraft(created.id, { ifVersion: created.version, subject: "Z dávné verze" }).catch(
         (error: unknown) => error,
       );
 
@@ -443,7 +444,7 @@ describe("the mail draft routes (issue gh-1867)", () => {
       expect((await readDraft(created.id)).body).toEqual(second);
       expect(events).toEqual([]);
       // The current version is accepted, so the refusal above was about the version.
-      const accepted = await updateDraft(created.id, { ifVersion: second.updatedAt, subject: "Třetí verze" });
+      const accepted = await updateDraft(created.id, { ifVersion: second.version, subject: "Třetí verze" });
       expect(accepted.body.subject).toBe("Třetí verze");
     });
   });
@@ -458,7 +459,7 @@ describe("the mail draft routes (issue gh-1867)", () => {
       recordThreadAnnouncements();
 
       for (const attempt of [
-        updateDraft(created.id, { ifVersion: sent.updatedAt, subject: "Po odeslání" }),
+        updateDraft(created.id, { ifVersion: sent.version, subject: "Po odeslání" }),
         updateDraft(created.id, { ifVersion: "2020-01-01T00:00:00.000Z", subject: "Po odeslání" }),
         discardDraft(created.id),
       ]) {
@@ -497,7 +498,7 @@ describe("the mail draft routes (issue gh-1867)", () => {
       const before = await itemRow(providerDraft.id);
 
       const attempts = [
-        updateDraft(providerDraft.id, { ifVersion: providerDraft.updatedAt, subject: "Změna" }),
+        updateDraft(providerDraft.id, { ifVersion: providerDraft.version, subject: "Změna" }),
         discardDraft(providerDraft.id),
       ];
       for (const attempt of attempts) {
@@ -521,14 +522,14 @@ describe("the mail draft routes (issue gh-1867)", () => {
       const { body: created } = await createDraft(newDraft(f));
 
       const refusal = await updateDraft(created.id, {
-        ifVersion: created.updatedAt,
+        ifVersion: created.version,
         from: "stranger@example.test",
       }).catch((error: unknown) => error);
 
       if (!(refusal instanceof ForbiddenError)) throw new Error("Expected a ForbiddenError");
       expect(refusal.code).toBe("from_address_not_registered");
       expect((await readDraft(created.id)).body).toEqual(created);
-      const accepted = await updateDraft(created.id, { ifVersion: created.updatedAt, from: ALIAS_ADDRESS });
+      const accepted = await updateDraft(created.id, { ifVersion: created.version, from: ALIAS_ADDRESS });
       expect(accepted.body.from).toBe(ALIAS_ADDRESS);
     });
   });
@@ -546,11 +547,11 @@ describe("the mail draft routes (issue gh-1867)", () => {
       );
 
       await expect(createDraft(newDraft(f))).rejects.toBeInstanceOf(NotFoundError);
-      await expect(updateDraft(created.id, { ifVersion: created.updatedAt, from: OWN_ADDRESS })).rejects.toBeInstanceOf(
+      await expect(updateDraft(created.id, { ifVersion: created.version, from: OWN_ADDRESS })).rejects.toBeInstanceOf(
         NotFoundError,
       );
       // An update that names no sender checks no address, so the mailbox is not read.
-      const kept = await updateDraft(created.id, { ifVersion: created.updatedAt, subject: "Still editable" });
+      const kept = await updateDraft(created.id, { ifVersion: created.version, subject: "Still editable" });
       expect(kept.body.subject).toBe("Still editable");
     });
   });
@@ -561,14 +562,14 @@ describe("the mail draft routes (issue gh-1867)", () => {
       const { body: created } = await createDraft(newDraft(f, { threadId: f.threadId }));
 
       for (const moved of [{ mailboxId: f.mailboxWithoutDraftsId }, { threadId: null }, { threadId: randomUUID() }]) {
-        await expect(updateDraft(created.id, { ifVersion: created.updatedAt, ...moved })).rejects.toBeInstanceOf(
+        await expect(updateDraft(created.id, { ifVersion: created.version, ...moved })).rejects.toBeInstanceOf(
           ValidationError,
         );
       }
       expect((await readDraft(created.id)).body).toEqual(created);
 
       const same = await updateDraft(created.id, {
-        ifVersion: created.updatedAt,
+        ifVersion: created.version,
         mailboxId: f.mailboxId,
         threadId: f.threadId,
       });
@@ -582,10 +583,10 @@ describe("the mail draft routes (issue gh-1867)", () => {
       const { body: created } = await createDraft(newDraft(f));
 
       await expect(
-        updateDraft(created.id, { ifVersion: created.updatedAt, sourceEmailId: randomUUID() }),
+        updateDraft(created.id, { ifVersion: created.version, sourceEmailId: randomUUID() }),
       ).rejects.toBeInstanceOf(NotFoundError);
       const accepted = await updateDraft(created.id, {
-        ifVersion: created.updatedAt,
+        ifVersion: created.version,
         mode: "forward",
         sourceEmailId: f.receivedId,
       });
@@ -642,7 +643,7 @@ describe("the mail draft routes (issue gh-1867)", () => {
             { allowedSystemKeys: EMAIL_INGEST_ALLOWED_SYSTEM_KEYS },
           );
         },
-        () => updateDraft(created.id, { ifVersion: created.updatedAt, subject: "Late edit" }),
+        () => updateDraft(created.id, { ifVersion: created.version, subject: "Late edit" }),
       );
 
       expect(outcome.status).toBe("rejected");
@@ -660,7 +661,7 @@ describe("the mail draft routes (issue gh-1867)", () => {
         async (client) => {
           await markMailDraftSent(client, created.id);
         },
-        () => updateDraft(created.id, { ifVersion: created.updatedAt, subject: "Late edit" }),
+        () => updateDraft(created.id, { ifVersion: created.version, subject: "Late edit" }),
       );
 
       expect(outcome.status).toBe("rejected");
@@ -680,7 +681,7 @@ describe("the mail draft routes (issue gh-1867)", () => {
       expect((await itemRow(created.id))?.deleted).toBe(true);
       expect(await count("mail_drafts")).toBe(0);
       await expect(readDraft(created.id)).rejects.toBeInstanceOf(NotFoundError);
-      await expect(updateDraft(created.id, { ifVersion: created.updatedAt })).rejects.toBeInstanceOf(NotFoundError);
+      await expect(updateDraft(created.id, { ifVersion: created.version })).rejects.toBeInstanceOf(NotFoundError);
       await expect(discardDraft(created.id)).rejects.toBeInstanceOf(NotFoundError);
     });
   });
@@ -733,7 +734,7 @@ describe("the mail draft routes (issue gh-1867)", () => {
       const { body: created } = await createDraft(newDraft(f, { threadId: f.threadId }));
       expect(events).toEqual([announced]);
 
-      const { body: updated } = await updateDraft(created.id, { ifVersion: created.updatedAt, body: "Nový text" });
+      const { body: updated } = await updateDraft(created.id, { ifVersion: created.version, body: "Nový text" });
       expect(events).toEqual([announced, announced]);
 
       await discardDraft(updated.id);
@@ -742,7 +743,7 @@ describe("the mail draft routes (issue gh-1867)", () => {
 
       events = [];
       const { body: loose } = await createDraft(newDraft(f));
-      const { body: looseUpdated } = await updateDraft(loose.id, { ifVersion: loose.updatedAt, body: "Text" });
+      const { body: looseUpdated } = await updateDraft(loose.id, { ifVersion: loose.version, body: "Text" });
       await discardDraft(looseUpdated.id);
       expect(events).toEqual([]);
     });
@@ -821,7 +822,7 @@ describe("the mail draft routes (issue gh-1867)", () => {
           (client) =>
             updateEmailDraft(
               client,
-              { draftItemId: created.id, ifVersion: created.updatedAt, body: "Nový text" },
+              { draftItemId: created.id, ifVersion: created.version, body: "Nový text" },
               context,
             ),
         ],
@@ -890,7 +891,7 @@ describe("the mail draft routes (issue gh-1867)", () => {
 
     const attempts: [string, (id: string) => Promise<unknown>][] = [
       ["read", (id) => readDraft(id, foreign)],
-      ["update", (id) => updateDraft(id, { ifVersion: draft.updatedAt, subject: "Cizí" }, foreign)],
+      ["update", (id) => updateDraft(id, { ifVersion: draft.version, subject: "Cizí" }, foreign)],
       ["discard", (id) => discardDraft(id, foreign)],
     ];
     for (const [name, attempt] of attempts) {

@@ -522,7 +522,7 @@ async function buildProposalCards(
       baseKind,
       status: timedOut ? "computeFailed" : candidate.status,
       ...(timedOut ? { computeTimedOut: true as const } : {}),
-      version: item.updatedAt,
+      version: item.version,
       resolvedSource,
       context: item.properties.context ?? null,
       targets: await buildTargets(context, baseKind, envelope, steps),

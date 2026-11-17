@@ -283,7 +283,7 @@ describe("one-turn read allowances of a Semp turn (issue #1849)", () => {
       faux.setResponses([
         toolCall(
           "item_patch",
-          { itemId: attached.id, properties: { name: "After" }, ifVersion: attached.updatedAt },
+          { itemId: attached.id, properties: { name: "After" }, ifVersion: attached.version },
           "patch-attached",
         ),
         fauxAssistantMessage("done"),

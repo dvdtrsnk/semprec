@@ -157,7 +157,7 @@ export function createHttpGenericOperations(options: HttpGenericOperationsOption
       return itemSchema.parse(
         await request(config, `/items/${id(itemId)}`, {
           method: "PATCH",
-          body: JSON.stringify({ properties: propertiesPatch, ifVersion: current.updatedAt }),
+          body: JSON.stringify({ properties: propertiesPatch, ifVersion: current.version }),
         }),
       );
     },

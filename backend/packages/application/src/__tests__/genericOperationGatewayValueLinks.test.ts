@@ -138,7 +138,7 @@ async function linkState(runtime: Pool, itemId: string, propertyKey: string) {
 async function versionOf(itemId: string): Promise<string> {
   const item = await cp.findItem(itemId);
   if (!item) throw new Error("Item not found");
-  return item.updatedAt;
+  return item.version;
 }
 
 async function agent(runtime: Pool): Promise<AuthenticatedActor> {

@@ -770,8 +770,8 @@ describe("Semp thread live prompt", () => {
         ),
       );
       const created = await runInTenant(tenant, () =>
-        runtime.query<{ id: string; updated_at: Date }>(
-          "SELECT id, updated_at FROM items WHERE database_id = $1 AND deleted_at IS NULL",
+        runtime.query<{ id: string; version: string }>(
+          "SELECT id, version FROM items WHERE database_id = $1 AND deleted_at IS NULL",
           [fixture.tasksId],
         ),
       );
@@ -804,7 +804,7 @@ describe("Semp thread live prompt", () => {
         tools["item.patch"](runId, {
           itemId: created.rows[0]?.id,
           properties: { name: "Koupit ovesné mléko" },
-          ifVersion: created.rows[0]?.updated_at.toISOString(),
+          ifVersion: created.rows[0]?.version,
         }),
       );
       expect(patched, patched.result).toMatchObject({ error: false });
@@ -817,8 +817,8 @@ describe("Semp thread live prompt", () => {
       // The revise tool still refuses the confirmed card, and the card stays exactly as it was.
       const card = () =>
         runInTenant(tenant, () =>
-          runtime.query<{ properties: unknown; updated_at: Date }>(
-            "SELECT properties, updated_at FROM items WHERE id = $1",
+          runtime.query<{ properties: unknown; version: string }>(
+            "SELECT properties, version FROM items WHERE id = $1",
             [fixture.cardId],
           ),
         );
@@ -831,7 +831,7 @@ describe("Semp thread live prompt", () => {
       const refused = await runInTenant(tenant, () =>
         createInboxProposalReviseTool(runtime)(runId, {
           proposalId: fixture.cardId,
-          ifVersion: cardBefore.rows[0]?.updated_at.toISOString(),
+          ifVersion: cardBefore.rows[0]?.version,
           properties: { name: "Koupit bio mléko" },
         }),
       );

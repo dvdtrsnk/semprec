@@ -434,7 +434,7 @@ describe("sending a mail draft over HTTP (issue gh-1896)", () => {
     // A forward starts with no recipient; the person addresses it before sending.
     const read = await createMailDraftReadRouteHandler(runtime)(ctx({ id: draftId }, undefined));
     await createMailDraftUpdateRouteHandler(runtime)(
-      ctx({ id: draftId }, { ifVersion: read.body.updatedAt, to: [PETR] }),
+      ctx({ id: draftId }, { ifVersion: read.body.version, to: [PETR] }),
     );
     const transport = recordingTransport();
 
@@ -585,7 +585,7 @@ describe("sending a mail draft over HTTP (issue gh-1896)", () => {
   describe("a draft that is written while it is being sent", () => {
     async function versionOf(draftId: string): Promise<string> {
       const read = await createMailDraftReadRouteHandler(runtime)(ctx({ id: draftId }, undefined));
-      return read.body.updatedAt;
+      return read.body.version;
     }
 
     const updateAs = async (draftId: string, fields: Record<string, unknown>) =>

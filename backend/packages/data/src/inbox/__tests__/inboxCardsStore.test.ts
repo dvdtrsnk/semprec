@@ -440,12 +440,14 @@ describe("listInboxCards (issue #1807)", () => {
       );
     }
 
-    async function stored(cardId: string): Promise<{ updatedAt: string; properties: Record<string, unknown> }> {
+    async function stored(
+      cardId: string,
+    ): Promise<{ updatedAt: string; version: string; properties: Record<string, unknown> }> {
       const card = await inTenantZero(() =>
         withTransaction(adminPool, (client) => itemsStore.getItemById(client, proposalsId, cardId)),
       );
       if (!card) throw new Error(`card ${cardId} not found`);
-      return { updatedAt: card.updatedAt, properties: card.properties };
+      return { updatedAt: card.updatedAt, version: card.version, properties: card.properties };
     }
 
     it("lists a card that has been computing for less than the timeout as computing, without the timeout flag", async () => {
@@ -469,7 +471,7 @@ describe("listInboxCards (issue #1807)", () => {
       const listed = cardOf(await listCards(adminPool, ownerId), card.cardId);
 
       expect(listed).toEqual({ ...fresh, status: "computeFailed", computeTimedOut: true });
-      expect(listed.version).toBe(before.updatedAt);
+      expect(listed.version).toBe(before.version);
     });
 
     it("leaves the stored card as it was, uncounted like every computing card", async () => {
@@ -691,7 +693,7 @@ describe("listInboxCards (issue #1807)", () => {
 
       const listed = cardOf(await listCards(adminPool, ownerId), card.cardId);
 
-      expect(listed.version).toBe(stored!.updatedAt);
+      expect(listed.version).toBe(stored!.version);
       expect(listed.envelope).toEqual(stored!.properties.proposal);
       expect(listed.envelope).toMatchObject({ entityKind: "database", properties: { name: "Buy milk" } });
       expect(listed.context).toEqual(context);

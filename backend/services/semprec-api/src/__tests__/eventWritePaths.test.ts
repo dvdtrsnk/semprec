@@ -173,7 +173,7 @@ describe("Events writes through REST, the agent gateway and MCP (issues #1598, #
     expect(created.status).toBe(201);
     await expectCreationIdentity(created.body, "REST");
     const item = itemBody.parse(created.body);
-    const patched = await rest("PATCH", `/api/items/${item.id}`, { properties: PATCH, ifVersion: item.updatedAt });
+    const patched = await rest("PATCH", `/api/items/${item.id}`, { properties: PATCH, ifVersion: item.version });
     expect(patched.status).toBe(200);
     return item.id;
   }
@@ -189,7 +189,7 @@ describe("Events writes through REST, the agent gateway and MCP (issues #1598, #
     await gateway().invoke("item.patch", agentActor, new Set(CAPABILITY_IDS), {
       itemId: created.id,
       properties: PATCH,
-      ifVersion: created.updatedAt,
+      ifVersion: created.version,
     });
     return created.id;
   }
@@ -197,7 +197,7 @@ describe("Events writes through REST, the agent gateway and MCP (issues #1598, #
   async function viaMcp(): Promise<string> {
     const created = await mcp("semprec.item.create", { databaseId: eventsId, properties: CREATE });
     await expectCreationIdentity(created, "MCP");
-    await mcp("semprec.item.patch", { itemId: created.id, properties: PATCH, ifVersion: created.updatedAt });
+    await mcp("semprec.item.patch", { itemId: created.id, properties: PATCH, ifVersion: created.version });
     return created.id;
   }
 
@@ -228,7 +228,7 @@ describe("Events writes through REST, the agent gateway and MCP (issues #1598, #
     const before = await stored(item.id);
     const response = await rest("PATCH", `/api/items/${item.id}`, {
       properties: { [key]: value },
-      ifVersion: item.updatedAt,
+      ifVersion: item.version,
     });
     expect(response.status).toBe(403);
     expect(response.body).toMatchObject({ error: { code: "owner_violation", details: { field: key } } });

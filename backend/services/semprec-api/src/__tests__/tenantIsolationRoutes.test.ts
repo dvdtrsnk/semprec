@@ -778,7 +778,7 @@ async function seedTenant(): Promise<TenantFixture> {
   // A second member, so a foreign reorder of the first one to position 1 would change the order.
   await sendOk(member, { method: "PUT", path: `/api/views/${curatedView.id}/items/${targetItem.id}`, body: {} });
   // Re-read after the relation write, which may have bumped the item's version.
-  const itemVersion = readString(await sendOk(member, { method: "GET", path: `/api/items/${item.id}` }), "updatedAt");
+  const itemVersion = readString(await sendOk(member, { method: "GET", path: `/api/items/${item.id}` }), "version");
 
   // Starts with an ID3 tag so content detection treats the upload as audio.
   const fileContent = `ID3 audio of ${randomUUID()}`;
@@ -1132,14 +1132,14 @@ function draftBody(mailboxId: string, subject: string): Record<string, unknown> 
   };
 }
 
-async function seedDraft(tenant: TenantFixture): Promise<{ mailboxId: string; draftId: string; updatedAt: string }> {
+async function seedDraft(tenant: TenantFixture): Promise<{ mailboxId: string; draftId: string; version: string }> {
   const mailboxId = await mailboxForDrafts(tenant);
   const text = await sendOk(tenant.member, {
     method: "POST",
     path: "/api/mail/drafts",
     body: draftBody(mailboxId, `Draft of ${tenant.tenantId}`),
   });
-  return { mailboxId, draftId: readString(text, "id"), updatedAt: readString(text, "updatedAt") };
+  return { mailboxId, draftId: readString(text, "id"), version: readString(text, "version") };
 }
 
 async function uploadAttachableFile(tenant: TenantFixture): Promise<string> {
@@ -2519,23 +2519,21 @@ const ROUTE_CASES: Record<string, RouteCase> = {
   "mail draft update": async () => {
     const foreign = await seedDraft(a);
     const own = await seedDraft(b);
-    const update = (id: string | undefined, updatedAt: string): Request => ({
+    const update = (id: string | undefined, version: string): Request => ({
       method: "PATCH",
       path: `/api/mail/drafts/${id}`,
-      body: { ifVersion: updatedAt, subject: "Changed by the isolation test" },
+      body: { ifVersion: version, subject: "Changed by the isolation test" },
     });
     const readOfA = () => sendOk(a.member, { method: "GET", path: `/api/mail/drafts/${foreign.draftId}` });
     const before = await readOfA();
     await leavesAUnchanged(async () => {
-      const refused = await expectForeignLikeRandom(b.member, [foreign.draftId], ([id]) =>
-        update(id, foreign.updatedAt),
-      );
+      const refused = await expectForeignLikeRandom(b.member, [foreign.draftId], ([id]) => update(id, foreign.version));
       expect(refused.status).toBe(404);
     });
     expect(await readOfA()).toBe(before);
-    const answer = await expectExcludesA(b.member, update(own.draftId, own.updatedAt), [own.draftId]);
+    const answer = await expectExcludesA(b.member, update(own.draftId, own.version), [own.draftId]);
     expect(readString(answer.text, "subject")).toBe("Changed by the isolation test");
-    const owner = await send(a.member, update(foreign.draftId, foreign.updatedAt));
+    const owner = await send(a.member, update(foreign.draftId, foreign.version));
     expect(owner.status).toBe(200);
   },
   "mail draft discard": async () => {
@@ -4124,7 +4122,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
         body: { properties: { name: "Retry probe" } },
       });
       const itemId = readString(created, "id");
-      const version = readString(created, "updatedAt");
+      const version = readString(created, "version");
       const upload = await sendOk(tenant.member, {
         method: "POST",
         path: "/api/blobs",
@@ -4846,7 +4844,7 @@ const ROUTE_CASES: Record<string, RouteCase> = {
     const generic = await send(b.member, {
       method: "PATCH",
       path: `/api/items/${own.id}`,
-      body: { properties: { status: "declined" }, ifVersion: readString(accepted, "updatedAt") },
+      body: { properties: { status: "declined" }, ifVersion: readString(accepted, "version") },
     });
     expect(generic.status, generic.text).toBe(403);
   },
@@ -7893,7 +7891,7 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
       path: ownPath,
       body: {
         properties: { [a.propertyKey]: "allowed" },
-        ifVersion: readString(created, "updatedAt"),
+        ifVersion: readString(created, "version"),
       },
     });
     const parsed: unknown = JSON.parse(changed);
@@ -7968,15 +7966,15 @@ describe("two-tenant isolation over every REST route and MCP operation (issue #1
       );
       const path = `/api/proposals/${cardId}/${action}`;
       const decided = action === "confirm" ? "confirmed" : "rejected";
-      const stale = "2000-01-01T00:00:00.000Z";
-      const current = readString(await sendOk(a.member, { method: "GET", path: `/api/items/${cardId}` }), "updatedAt");
+      const stale = "999999999";
+      const current = readString(await sendOk(a.member, { method: "GET", path: `/api/items/${cardId}` }), "version");
 
       const conflict = await send(a.member, { method: "POST", path, body: { ifVersion: stale } });
       expect(conflict.status).toBe(409);
       expect(JSON.parse(conflict.text)).toMatchObject({
         error: {
           code: "version_conflict",
-          details: { currentItem: { id: cardId, updatedAt: current, properties: { status: "proposed" } } },
+          details: { currentItem: { id: cardId, version: current, properties: { status: "proposed" } } },
         },
       });
       expect(await sendOk(a.member, { method: "GET", path: `/api/items/${cardId}` })).toContain('"status":"proposed"');

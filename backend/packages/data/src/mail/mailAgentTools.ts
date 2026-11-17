@@ -451,7 +451,7 @@ function mailDraftUpdate(pool: Pool): MailToolCore {
           client,
           {
             draftItemId: args.data.draftId,
-            ifVersion: item.updatedAt,
+            ifVersion: item.version,
             body: args.data.body,
             ...(args.data.subject === undefined ? {} : { subject: args.data.subject }),
           },

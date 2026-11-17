@@ -14,7 +14,15 @@ describe("http generic operations", () => {
       fetchImpl: async (input, init) => {
         calls.push({ url: String(input), body: JSON.parse(String(init?.body)) });
         return jsonResponse({
-          items: [{ id: "e1", databaseId: "db", properties: { name: "Hi" }, updatedAt: "2026-01-01T00:00:00.000Z" }],
+          items: [
+            {
+              id: "e1",
+              databaseId: "db",
+              properties: { name: "Hi" },
+              updatedAt: "2026-01-01T00:00:00.000Z",
+              version: "1",
+            },
+          ],
           nextCursor: null,
         });
       },
@@ -35,6 +43,7 @@ describe("http generic operations", () => {
     databaseId: "db",
     properties: { read: false },
     updatedAt: "2026-01-01T00:00:00.000Z",
+    version: "3",
     ...overrides,
   });
 
@@ -120,7 +129,7 @@ describe("http generic operations", () => {
           body: init?.body === undefined ? undefined : JSON.parse(String(init.body)),
         });
         return init?.method === "PATCH"
-          ? jsonResponse(itemBody({ properties: { read: true }, updatedAt: "2026-02-02T00:00:00.000Z" }))
+          ? jsonResponse(itemBody({ properties: { read: true }, updatedAt: "2026-02-02T00:00:00.000Z", version: "4" }))
           : jsonResponse(itemBody());
       },
     });
@@ -133,7 +142,7 @@ describe("http generic operations", () => {
     expect(calls[1]).toMatchObject({
       url: "/api/items/e1",
       method: "PATCH",
-      body: { properties: { read: true }, ifVersion: "2026-01-01T00:00:00.000Z" },
+      body: { properties: { read: true }, ifVersion: "3" },
     });
     expect(item.properties.read).toBe(true);
   });

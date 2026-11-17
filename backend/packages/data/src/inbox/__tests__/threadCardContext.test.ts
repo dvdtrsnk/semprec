@@ -179,11 +179,11 @@ describe("the card context of an Inbox item thread (issue #1938)", () => {
   const load = (tenant: string, itemId: string) =>
     runInTenant(tenant, () => withTransaction(runtime, (client) => loadInboxCardThreadContext(client, itemId)));
 
-  /** The version of the card the context names: its stored `updatedAt`, the value the model passes back as `ifVersion`. */
+  /** The version of the card the context names: its stored `version`, the value the model passes back as `ifVersion`. */
   const versionOf = (cardId: string) =>
     runInTenant(owner, async () => {
-      const row = await runtime.query<{ updated_at: Date }>("SELECT updated_at FROM items WHERE id = $1", [cardId]);
-      return row.rows[0]?.updated_at.toISOString();
+      const row = await runtime.query<{ version: string }>("SELECT version FROM items WHERE id = $1", [cardId]);
+      return row.rows[0]?.version;
     });
 
   const decide = (fixture: Fixture, decision: "confirm" | "reject") =>
@@ -368,7 +368,7 @@ describe("the card context of an Inbox item thread (issue #1938)", () => {
   describe("the text of the prompt", () => {
     const base = {
       proposalId: randomUUID(),
-      version: "2026-11-06T12:31:00.000Z",
+      version: "7",
       status: "proposed",
       source: { text: "Buy milk", date: "2026-11-06", time: "12:30", type: "Task", attachments: [] },
     };

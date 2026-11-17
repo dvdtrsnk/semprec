@@ -299,7 +299,7 @@ async function userEdits(t: MailTenant, draft: z.infer<typeof draftViewSchema>):
   const result = await inTenant(t, () =>
     createMailDraftUpdateRouteHandler(runtime)({
       params: { id: draft.id },
-      body: { ifVersion: draft.updatedAt, body: "Edited by the user" },
+      body: { ifVersion: draft.version, body: "Edited by the user" },
       identity: { user: { id: t.userId } },
     }),
   );

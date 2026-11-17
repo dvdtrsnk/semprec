@@ -64,12 +64,12 @@ async function itemCount(): Promise<number> {
   return Number(rows[0]!.count);
 }
 
-async function seedServer(connectionConfig: unknown): Promise<{ id: string; updatedAt: string }> {
-  const { rows } = await pool.query<{ id: string; updated_at: Date }>(
-    "INSERT INTO items (id, database_id, properties) VALUES ($1, $2, $3::jsonb) RETURNING id, updated_at",
+async function seedServer(connectionConfig: unknown): Promise<{ id: string; updatedAt: string; version: string }> {
+  const { rows } = await pool.query<{ id: string; updated_at: Date; version: string }>(
+    "INSERT INTO items (id, database_id, properties) VALUES ($1, $2, $3::jsonb) RETURNING id, updated_at, version",
     [randomUUID(), mcpServersId, JSON.stringify({ name: "Seeded", connectionConfig })],
   );
-  return { id: rows[0]!.id, updatedAt: rows[0]!.updated_at.toISOString() };
+  return { id: rows[0]!.id, updatedAt: rows[0]!.updated_at.toISOString(), version: rows[0]!.version };
 }
 
 describe("mcpServers connectionConfig on every write path (issue #1029)", () => {
@@ -146,11 +146,11 @@ describe("mcpServers connectionConfig on every write path (issue #1029)", () => 
     });
   }
 
-  async function restPatch(item: { id: string; updatedAt: string }, connectionConfig: unknown) {
+  async function restPatch(item: { id: string; updatedAt: string; version: string }, connectionConfig: unknown) {
     return fetch(`${baseUrl}/api/items/${item.id}`, {
       method: "PATCH",
       headers,
-      body: JSON.stringify({ properties: { connectionConfig }, ifVersion: item.updatedAt }),
+      body: JSON.stringify({ properties: { connectionConfig }, ifVersion: item.version }),
     });
   }
 
@@ -214,7 +214,7 @@ describe("mcpServers connectionConfig on every write path (issue #1029)", () => 
         gateway().invoke("item.patch", agentActor, new Set(CAPABILITY_IDS), {
           itemId: seeded.id,
           properties: { connectionConfig: config },
-          ifVersion: seeded.updatedAt,
+          ifVersion: seeded.version,
         }),
       );
       const { rows } = await pool.query("SELECT properties FROM items WHERE id = $1", [seeded.id]);
@@ -245,7 +245,7 @@ describe("mcpServers connectionConfig on every write path (issue #1029)", () => 
       await gateway().invoke("item.patch", agentActor, new Set(CAPABILITY_IDS), {
         itemId: seeded.id,
         properties: { connectionConfig: GOOD_CONFIG },
-        ifVersion: seeded.updatedAt,
+        ifVersion: seeded.version,
       });
       expect(created.id).toBeDefined();
       expect((await mcpCreate(GOOD_CONFIG)).error).toBeUndefined();

@@ -13,6 +13,7 @@ function row(id: string, properties: Record<string, unknown>): ItemRow {
     createdAt: "2026-10-16T08:12:00Z",
     updatedAt: "2026-10-16T08:12:00Z",
     deletedAt: null,
+    version: "1",
   };
 }
 

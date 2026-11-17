@@ -27,7 +27,7 @@ export async function migrateItemPropertyWithClient(
     }
     requireAffectedRows(
       await client.query(
-        `UPDATE items SET properties = jsonb_set(properties, ARRAY[$3]::text[], $4::jsonb), updated_at = now() WHERE database_id = $1 AND id = $2`,
+        `UPDATE items SET properties = jsonb_set(properties, ARRAY[$3]::text[], $4::jsonb), updated_at = now(), version = version + 1 WHERE database_id = $1 AND id = $2`,
         [databaseId, itemId, key, serialized],
       ),
       "property type migration value conversion update",
@@ -36,7 +36,7 @@ export async function migrateItemPropertyWithClient(
   }
   requireAffectedRows(
     await client.query(
-      `UPDATE items SET properties = properties - $3, updated_at = now() WHERE database_id = $1 AND id = $2`,
+      `UPDATE items SET properties = properties - $3, updated_at = now(), version = version + 1 WHERE database_id = $1 AND id = $2`,
       [databaseId, itemId, key],
     ),
     "property type migration dropped value update",

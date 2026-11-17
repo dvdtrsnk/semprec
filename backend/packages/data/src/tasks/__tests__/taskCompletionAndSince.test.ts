@@ -55,7 +55,7 @@ describe("Tasks completion and first planned day", () => {
       const done = await cp.updateItem({
         databaseId: tasks,
         itemId: item.id,
-        ifVersion: item.updatedAt,
+        ifVersion: item.version,
         propertiesPatch: { status: "done" },
       });
       expect(done.properties).toMatchObject({
@@ -69,7 +69,7 @@ describe("Tasks completion and first planned day", () => {
       const repeated = await cp.updateItem({
         databaseId: tasks,
         itemId: item.id,
-        ifVersion: done.updatedAt,
+        ifVersion: done.version,
         propertiesPatch: { status: "done" },
       });
       expect(repeated.properties.completedOn).toBe(done.properties.completedOn);
@@ -77,7 +77,7 @@ describe("Tasks completion and first planned day", () => {
       const corrected = await cp.updateItem({
         databaseId: tasks,
         itemId: item.id,
-        ifVersion: repeated.updatedAt,
+        ifVersion: repeated.version,
         propertiesPatch: { completedOn: "2026-10-12" },
       });
       expect(corrected.properties).toEqual({ ...repeated.properties, completedOn: "2026-10-12" });
@@ -86,7 +86,7 @@ describe("Tasks completion and first planned day", () => {
       const reopened = await cp.updateItem({
         databaseId: tasks,
         itemId: item.id,
-        ifVersion: corrected.updatedAt,
+        ifVersion: corrected.version,
         propertiesPatch: { status: "notDone" },
       });
       expect(reopened.properties).toMatchObject({ completedOn: null, completedAt: null, date: "2026-10-22" });
@@ -98,7 +98,7 @@ describe("Tasks completion and first planned day", () => {
       const before = await cp.getItem(tasks, item.id);
       for (const patch of [{ completedOn: "2026-10-14" }, { status: "done", completedOn: "2026-10-16" }]) {
         await expect(
-          cp.updateItem({ databaseId: tasks, itemId: item.id, ifVersion: item.updatedAt, propertiesPatch: patch }),
+          cp.updateItem({ databaseId: tasks, itemId: item.id, ifVersion: item.version, propertiesPatch: patch }),
         ).rejects.toMatchObject({ code: "validation_failed", details: { field: "completedOn" } });
         expect(await cp.getItem(tasks, item.id)).toEqual(before);
       }
@@ -131,7 +131,7 @@ describe("Tasks completion and first planned day", () => {
       const done = await cp.updateItem({
         databaseId: tasks,
         itemId: item.id,
-        ifVersion: item.updatedAt,
+        ifVersion: item.version,
         propertiesPatch: { status: "done", completedOn: "2026-10-12" },
       });
       expect(done.properties).toMatchObject({ date: "2026-10-16", completedOn: "2026-10-12" });
@@ -140,7 +140,7 @@ describe("Tasks completion and first planned day", () => {
       const stopped = await cp.updateItem({
         databaseId: tasks,
         itemId: item.id,
-        ifVersion: done.updatedAt,
+        ifVersion: done.version,
         propertiesPatch: { status: "wontDo" },
       });
       expect(stopped.properties).toMatchObject({ completedOn: null, completedAt: null, date: "2026-10-16" });
@@ -152,14 +152,14 @@ describe("Tasks completion and first planned day", () => {
       const moved = await cp.updateItem({
         databaseId: tasks,
         itemId: item.id,
-        ifVersion: item.updatedAt,
+        ifVersion: item.version,
         propertiesPatch: { date: "2026-10-16" },
       });
       expect(moved.properties.since).toBe("2026-10-14");
       const done = await cp.updateItem({
         databaseId: tasks,
         itemId: item.id,
-        ifVersion: moved.updatedAt,
+        ifVersion: moved.version,
         propertiesPatch: { status: "done", completedOn: "2026-10-14" },
       });
       expect(done.properties).toMatchObject({ date: "2026-10-16", since: "2026-10-14", completedOn: "2026-10-14" });
@@ -177,7 +177,7 @@ describe("Tasks completion and first planned day", () => {
         const moved = await cp.updateItem({
           databaseId: tasks,
           itemId: item.id,
-          ifVersion: item.updatedAt,
+          ifVersion: item.version,
           propertiesPatch: { date: "2026-10-20" },
         });
         expect(moved.properties.since ?? null).toBeNull();
@@ -195,7 +195,7 @@ describe("Tasks completion and first planned day", () => {
       const moved = await cp.updateItem({
         databaseId: tasks,
         itemId: item.id,
-        ifVersion: item.updatedAt,
+        ifVersion: item.version,
         propertiesPatch: { date: "2026-10-14" },
       });
       expect(moved.properties).toMatchObject({ since: "2026-10-13", sinceTime: { from: "10:00", to: "11:00" } });
@@ -203,7 +203,7 @@ describe("Tasks completion and first planned day", () => {
       const movedAgain = await cp.updateItem({
         databaseId: tasks,
         itemId: item.id,
-        ifVersion: moved.updatedAt,
+        ifVersion: moved.version,
         propertiesPatch: { date: "2026-10-20", timeFrom: "09:00" },
       });
       expect(movedAgain.properties).toMatchObject({ since: "2026-10-13", sinceTime: { from: "10:00", to: "11:00" } });
@@ -220,7 +220,7 @@ describe("Tasks completion and first planned day", () => {
         { completedAt: "2026-10-14T00:00:00.000Z" },
       ]) {
         await expect(
-          cp.updateItem({ databaseId: tasks, itemId: item.id, ifVersion: movedAgain.updatedAt, propertiesPatch }),
+          cp.updateItem({ databaseId: tasks, itemId: item.id, ifVersion: movedAgain.version, propertiesPatch }),
         ).rejects.toMatchObject({ code: "owner_violation" });
       }
     }));

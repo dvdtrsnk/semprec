@@ -95,12 +95,12 @@ export async function computeNextOccurrenceDate(
   event: Record<string, unknown>,
   today: Date,
   timeZone: string,
-  stored: { client: PoolClient; eventsDatabaseId: string; id: string; updatedAt: Date },
+  stored: { client: PoolClient; eventsDatabaseId: string; id: string; updatedAt: Date; version: string },
   lookaheadDays: number = NEXT_OCCURRENCE_LOOKAHEAD_DAYS,
 ): Promise<string | null> {
-  const { client, eventsDatabaseId, id, updatedAt } = stored;
+  const { client, eventsDatabaseId, id, updatedAt, version } = stored;
   const values = await computeNextOccurrenceDates(
-    { client, eventsDatabaseId, rows: [{ id, properties: event, updated_at: updatedAt }] },
+    { client, eventsDatabaseId, rows: [{ id, properties: event, updated_at: updatedAt, version }] },
     today,
     timeZone,
     lookaheadDays,

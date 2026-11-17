@@ -49,7 +49,11 @@ provides these, so no route reimplements them:
   mapped to 413). There is no default cap;
 - errors: a `ChokePointError` becomes `{ error: { code, details } }` at its status through
   `toErrorResponseBody`. `details` pass through `publicErrorDetails`, which drops anything that is not
-  a flat record of primitives. Any other error is logged and answered `500 internal_error`;
+  a flat record of primitives. A `pg.DatabaseError` (narrowed with `instanceof`) with a classified
+  SQLSTATE is answered by `databaseErrorResponse` (`adapter/errorContract.ts`) with only its code:
+  `23505` → 409 `unique_violation`, `23503` → 409 `foreign_key_violation`, `23514` → 400
+  `check_violation`, and `40001`/`40P01` that outlived the transaction retry → 503
+  `transaction_conflict` with `Retry-After: 1`. Any other error is logged and answered `500 internal_error`;
 - authorization covers ownership of the resource being mutated, not just the existence of a session.
   An identifier in the body (a user id, a "decided by") is a claim to check against the
   authenticated identity;

@@ -593,6 +593,7 @@ describe("calendar timeline: recurring task occurrences (issue gh-1886)", () => 
         "timeFrom",
         "title",
         "updatedAt",
+        "version",
       ].sort(),
     );
     expect(compact.find((entry) => entry.id === plain)).not.toHaveProperty("seriesId");

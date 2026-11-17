@@ -205,7 +205,7 @@ describe("sensitive databases over POST /mcp (issue #1998)", () => {
       await call(humanHeaders, "semprec.item.patch", {
         itemId: record.id,
         properties: { name: "After" },
-        ifVersion: record.updatedAt,
+        ifVersion: record.version,
       }),
     );
     expectForbidden(await call(humanHeaders, "semprec.item.delete", { itemId: record.id }));

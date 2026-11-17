@@ -7,6 +7,9 @@ export {
   requireAffectedRows,
   requireManagedTransaction,
   markManagedTransactionRollbackOnly,
+  retryingTransientConflicts,
+  isTransientConflict,
+  TRANSIENT_CONFLICT_ATTEMPTS,
   type Queryable,
 } from "./db/pool.js";
 export { readItemPatchChangeMetadata } from "./chokePoint/itemPatchChangeMetadata.js";
@@ -540,7 +543,6 @@ export {
   type TaskRecurrence,
   type TaskRecurrenceTemplate,
 } from "./tasks/taskRecurrenceStore.js";
-export { advanceTaskRecurrence, type AdvanceTaskRecurrenceInput } from "./tasks/advanceTaskRecurrence.js";
 export {
   projectTaskOccurrences,
   type ProjectTaskOccurrencesInput,

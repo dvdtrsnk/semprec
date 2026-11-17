@@ -19,7 +19,7 @@ import * as databasesStore from "./databasesStore.js";
 import * as propertiesStore from "./propertiesStore.js";
 import * as itemsStore from "./itemsStore.js";
 import * as relationsStore from "./relationsStore.js";
-import { findDependenciesBySource } from "../rollup/dependencies.js";
+import { findDependenciesBySources } from "../rollup/dependencies.js";
 import { enqueueRollupRecompute } from "../rollup/recompute.js";
 import { triggerOnItemEventHeartbeats, recomputeAllForTimezoneChange } from "../scheduler/schedulerStore.js";
 import type { ActionQueueAffinity } from "../scheduler/actions.js";
@@ -347,24 +347,31 @@ async function applyItemPreWriteTransforms(
   return transformed;
 }
 
+/** Re-reads a row this transaction wrote and still holds locked. */
+async function requireStoredItem(client: PoolClient, item: ItemRow): Promise<ItemRow> {
+  const stored = await itemsStore.getItemById(client, item.databaseId, item.id);
+  if (!stored) throw new NotFoundError(`Item ${item.id} not found`);
+  return stored;
+}
+
 /**
  * A create on an archived database is let through only as an exact replay of an idempotency key that
  * committed a row before archiving, so a retry does not turn a transient error permanent. Any other
- * key (including one whose item is missing or trashed) gets `database_archived`. Returns the replay
- * row to return verbatim, or `null` when the database is not archived.
+ * key (including one whose item is missing or trashed) gets `database_archived`. Returns the
+ * database row the create goes on with, or the replay row to return verbatim.
  */
 async function assertDatabaseWritableForCreate(
   client: PoolClient,
   databaseId: string,
   idempotencyKey: string | undefined,
-): Promise<ItemRow | null> {
+): Promise<{ database: DatabaseRow; replay?: never } | { replay: ItemRow; database?: never }> {
   const database = await databasesStore.getDatabase(client, databaseId);
   if (!database) throw new NotFoundError(`Database ${databaseId} not found`);
-  if (!database.archivedAt) return null;
+  if (!database.archivedAt) return { database };
 
   if (idempotencyKey) {
     const replay = await itemsStore.findIdempotentReplay(client, databaseId, idempotencyKey, { requireLive: true });
-    if (replay) return replay;
+    if (replay) return { replay };
   }
   throw new ForbiddenError(
     `Database ${databaseId} is archived and cannot be written to`,
@@ -415,12 +422,11 @@ export async function createItemReportingReplay(
 ): Promise<{ item: ItemRow; created: boolean }> {
   // Also required for an idempotent replay.
   await assertWriterDatabaseAccess(client, options.writer, input.databaseId, "write");
-  const replay = await assertDatabaseWritableForCreate(client, input.databaseId, input.idempotencyKey);
-  if (replay) return { item: replay, created: false };
+  const writable = await assertDatabaseWritableForCreate(client, input.databaseId, input.idempotencyKey);
+  if (writable.replay) return { item: writable.replay, created: false };
+  const { database } = writable;
 
   const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
-  const database = await databasesStore.getDatabase(client, input.databaseId);
-  if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`);
   const writer = options.writer ?? SYSTEM_WRITER;
   assertWritableProperties(properties, Object.keys(input.properties ?? {}), options);
   assertCallerMayWriteDatabase(database, properties, writer, options);
@@ -430,7 +436,7 @@ export async function createItemReportingReplay(
   let itemProperties = input.properties ?? {};
   const defaultedKeys = new Set<string>();
   const moduleId = database.ownerModuleId;
-  const { item, created } = await itemsStore.insertItemWithReplay(
+  const { item: inserted, created } = await itemsStore.insertItemWithReplay(
     client,
     { databaseId: input.databaseId, properties: itemProperties, idempotencyKey: input.idempotencyKey },
     async () => {
@@ -480,19 +486,24 @@ export async function createItemReportingReplay(
       return itemProperties;
     },
   );
-  if (!created) return { item, created: false };
+  if (!created) return { item: inserted, created: false };
 
   // In the same transaction, so a rejection rolls the row back.
   await runItemCreateHooks({
     client,
     database,
-    item,
+    item: inserted,
     properties: itemProperties,
     defaultedKeys,
     humanWriterUserId: options.humanWriterUserId,
     writer,
     initialRelations,
   });
+  // A create hook may write the new item again (Areas assigns its `position`): answer with the row as stored.
+  const item =
+    itemsStore.itemPropertyWriteCount(client, inserted.databaseId, inserted.id) === 0
+      ? inserted
+      : await requireStoredItem(client, inserted);
   await triggerOnItemEventHeartbeats(client, input.databaseId, "create", item.id, options.queueAffinity);
   runAfterCommit(client, () =>
     notifyInvalidation({
@@ -556,11 +567,9 @@ export async function updateItemWithClient(
   options: UpdateItemWithClientOptions = {},
 ): Promise<itemsStore.UpdateItemResult> {
   await assertWriterDatabaseAccess(client, options.writer, input.databaseId, "write", input.itemId);
-  await assertDatabaseNotArchived(client, input.databaseId);
+  const database = await assertDatabaseNotArchived(client, input.databaseId);
   const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
   const patchKeys = Object.keys(input.propertiesPatch);
-  const database = await databasesStore.getDatabase(client, input.databaseId);
-  if (!database) throw new NotFoundError(`Database ${input.databaseId} not found`);
   const command = database.ownerModuleId ? getItemUpdateCommand(database.ownerModuleId) : undefined;
   const commandProperty = command && properties.find((property) => property.key === command.key);
   const hasCommand =
@@ -607,7 +616,7 @@ export async function updateItemWithClient(
     stored = await itemsStore.lockItemById(client, input.databaseId, input.itemId);
     if (!stored || stored.deletedAt) throw new NotFoundError(`Item ${input.itemId} not found`);
   }
-  if (stored && input.ifVersion !== undefined && input.ifVersion !== stored.updatedAt) {
+  if (stored && input.ifVersion !== undefined && input.ifVersion !== stored.version) {
     throw new ConflictError("Item was modified since ifVersion was read", { current: stored });
   }
   const ordinaryPatch = { ...input.propertiesPatch };
@@ -653,46 +662,53 @@ export async function updateItemWithClient(
     }
   }
 
-  const { previous, ...item } = await itemsStore.updateItemProperties(client, {
+  const { previous, ...written } = await itemsStore.updateItemProperties(client, {
     databaseId: input.databaseId,
     itemId: input.itemId,
     propertiesPatch,
     ifVersion: input.ifVersion,
   });
+  const ownWriteCount = itemsStore.itemPropertyWriteCount(client, written.databaseId, written.id);
   // A user or agent write that changes a linked value ends its link here. An agent under a run asks
   // for approval first, rolling this transaction back.
   const changedKeys = writtenKeys.filter((key) => !isDeepStrictEqual(previous[key], propertiesPatch[key]));
-  await requireApprovalForChangedItemLinks(client, writer, { itemId: item.id, changedKeys });
-  await breakValueLinks(client, { itemId: item.id, propertyKeys: changedKeys, writerKind: writer.writerKind });
+  await requireApprovalForChangedItemLinks(client, writer, { itemId: written.id, changedKeys });
+  await breakValueLinks(client, { itemId: written.id, propertyKeys: changedKeys, writerKind: writer.writerKind });
   // Every domain's transactional side effect on this write runs here, in the same transaction.
   await runItemUpdateHooks({
     client,
     database,
-    item,
+    item: written,
     propertiesPatch,
     previous,
     humanWriterUserId: options.humanWriterUserId,
     writer,
     skipMailDesiredStateRecording: options.skipMailDesiredStateRecording,
   });
+  // An update hook may write the same item again: answer with the row as stored, so its `version` is current.
+  const item =
+    itemsStore.itemPropertyWriteCount(client, written.databaseId, written.id) === ownWriteCount
+      ? written
+      : await requireStoredItem(client, written);
   await triggerOnItemEventHeartbeats(client, input.databaseId, "update", item.id, options.queueAffinity);
 
-  for (const key of writtenKeys) {
-    const dependencies = await findDependenciesBySource(client, input.databaseId, key);
-    for (const dependency of dependencies) {
-      const edges = await relationsStore.listRelationsForItem(client, dependency.relationDefinitionId, item.id);
-      for (const edge of edges) {
-        await enqueueRollupRecompute(client, dependency.rollupPropertyId, relationsStore.otherSide(edge, item.id));
-      }
+  for (const dependency of await findDependenciesBySources(client, input.databaseId, writtenKeys)) {
+    const edges = await relationsStore.listRelationsForItem(client, dependency.relationDefinitionId, item.id);
+    for (const edge of edges) {
+      await enqueueRollupRecompute(client, dependency.rollupPropertyId, relationsStore.otherSide(edge, item.id));
     }
   }
 
-  const settingsItemId = await getSystemSettingsItemId(client).catch((err) => {
-    if (err instanceof NotFoundError) return null; // system not seeded yet
-    throw err;
-  });
-  if (settingsItemId === item.id && typeof propertiesPatch.timezone === "string") {
-    const timezone = propertiesPatch.timezone;
+  // Only the settings item's own `timezone` write needs to know which item that is.
+  const timezone = typeof propertiesPatch.timezone === "string" ? propertiesPatch.timezone : null;
+  const settingsItemId =
+    timezone === null
+      ? null
+      : await getSystemSettingsItemId(client).catch((err) => {
+          if (err instanceof NotFoundError) return null; // system not seeded yet
+          throw err;
+        });
+  if (timezone !== null && settingsItemId === item.id) {
     // Validated here; an invalid zone would otherwise surface much later as a Postgres "Invalid time
     // value" from next_fire_at = NaN.
     assertValidTimezone(timezone);
@@ -814,6 +830,7 @@ export function createItemWriteOps(deps: Pick<ChokePointDeps, "pool" | "queueAff
                   createdAt: z.string(),
                   updatedAt: z.string(),
                   deletedAt: z.string().nullable(),
+                  version: z.string(),
                 })
                 .passthrough(),
             })

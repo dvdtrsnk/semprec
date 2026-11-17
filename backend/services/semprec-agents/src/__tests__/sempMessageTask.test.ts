@@ -1818,7 +1818,7 @@ describe("queued Semp messages", () => {
           { databaseId: tasks.id, properties: { name: "Move me", date: "2026-11-02" } },
           { writer: { writerKind: "system" } },
         );
-        return { id: created.id, databaseId: tasks.id, version: created.updatedAt };
+        return { id: created.id, databaseId: tasks.id, version: created.version };
       }),
     );
     const faux = fauxProvider();

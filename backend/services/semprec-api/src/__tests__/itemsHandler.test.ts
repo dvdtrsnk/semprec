@@ -97,6 +97,7 @@ interface ItemBody {
   properties: Record<string, unknown>;
   computed: Record<string, unknown>;
   updatedAt: string;
+  version: string;
   deletedAt: string | null;
   path?: ItemBody[];
   links?: Record<string, unknown>;
@@ -479,19 +480,23 @@ describe("item routes (issue #241)", () => {
         ).status,
       ).toBe(200);
       const itemUrl = `${base}/api/items/${fixture.task.id}`;
-      const itemSchema = z.object({ updatedAt: z.string(), properties: z.record(z.string(), z.unknown()) });
+      const itemSchema = z.object({
+        updatedAt: z.string(),
+        version: z.string(),
+        properties: z.record(z.string(), z.unknown()),
+      });
       const before = itemSchema.parse(await (await fetch(itemUrl, { headers })).json());
       const foreignHeaders = { ...(await authHeader()), "Content-Type": "application/json" };
       const foreign = await fetch(itemUrl, {
         method: "PATCH",
         headers: foreignHeaders,
-        body: JSON.stringify({ properties: { status: "done" }, ifVersion: before.updatedAt }),
+        body: JSON.stringify({ properties: { status: "done" }, ifVersion: before.version }),
       });
       const randomId = randomUUID();
       const random = await fetch(`${base}/api/items/${randomId}`, {
         method: "PATCH",
         headers: foreignHeaders,
-        body: JSON.stringify({ properties: { status: "done" }, ifVersion: before.updatedAt }),
+        body: JSON.stringify({ properties: { status: "done" }, ifVersion: before.version }),
       });
       expect(foreign.status).toBe(404);
       expect(random.status).toBe(404);
@@ -503,7 +508,7 @@ describe("item routes (issue #241)", () => {
         headers,
         body: JSON.stringify({
           properties: { status: "done", completedOn: "2999-01-01" },
-          ifVersion: before.updatedAt,
+          ifVersion: before.version,
         }),
       });
       expect(refused.status).toBe(400);
@@ -514,7 +519,7 @@ describe("item routes (issue #241)", () => {
       const done = await fetch(itemUrl, {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ properties: { status: "done" }, ifVersion: before.updatedAt }),
+        body: JSON.stringify({ properties: { status: "done" }, ifVersion: before.version }),
       });
       expect(done.status).toBe(200);
       const completed = itemSchema.parse(await done.json());
@@ -541,7 +546,7 @@ describe("item routes (issue #241)", () => {
       const movedResponse = await fetch(`${base}/api/items/${rollover.task.id}`, {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ properties: { date: "2000-01-02" }, ifVersion: rollover.task.updatedAt }),
+        body: JSON.stringify({ properties: { date: "2000-01-02" }, ifVersion: rollover.task.version }),
       });
       expect(movedResponse.status).toBe(200);
       const moved = itemSchema.parse(await movedResponse.json());
@@ -592,7 +597,7 @@ describe("item routes (issue #241)", () => {
         const response = await fetch(`${base}/api/items/${rollover.task.id}`, {
           method: "PATCH",
           headers,
-          body: JSON.stringify({ properties, ifVersion: moved.updatedAt }),
+          body: JSON.stringify({ properties, ifVersion: moved.version }),
         });
         expect(response.status).toBe(403);
         expect(await response.json()).toMatchObject({ error: { code: "owner_violation" } });
@@ -637,7 +642,7 @@ describe("item routes (issue #241)", () => {
       return fetch(`${baseUrl}/api/items/${fixture.item.id}`, {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ properties, ifVersion: current.updatedAt }),
+        body: JSON.stringify({ properties, ifVersion: current.version }),
       });
     };
     const valid = await patch({ icon: "briefcase", color: "#5856D6" });
@@ -866,7 +871,7 @@ describe("item routes (issue #241)", () => {
       return fetch(`${baseUrl}/api/items/${current.id}`, {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ properties, ifVersion: current.updatedAt }),
+        body: JSON.stringify({ properties, ifVersion: current.version }),
       });
     };
     const done = await patch({ status: "done" });
@@ -898,7 +903,7 @@ describe("item routes (issue #241)", () => {
       return fetch(`${baseUrl}/api/items/${item.id}`, {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ properties, ifVersion: item.updatedAt }),
+        body: JSON.stringify({ properties, ifVersion: item.version }),
       });
     };
     const changed = await patch({ status: "longTerm" });
@@ -942,7 +947,7 @@ describe("item routes (issue #241)", () => {
         body: JSON.stringify({ properties, ifVersion }),
       });
     for (const color of ["red", "Červená"]) {
-      const response = await patch({ color }, fixture.item.updatedAt);
+      const response = await patch({ color }, fixture.item.version);
       expect(response.status).toBe(400);
       expect(await response.json()).toMatchObject({
         error: { code: "validation_failed", details: { field: "color" } },
@@ -952,14 +957,14 @@ describe("item routes (issue #241)", () => {
           ?.properties.color,
       ).toBe("#FF3B30");
     }
-    const valid = await patch({ color: "#ff3b30" }, fixture.item.updatedAt);
+    const valid = await patch({ color: "#ff3b30" }, fixture.item.version);
     expect(valid.status).toBe(200);
     const changed = await runInTenant(getTenantZeroId(), () =>
       chokePoint.getItem(fixture.database.id, fixture.item.id),
     );
     if (!changed) throw new Error("Missing item");
     expect(changed.properties.color).toBe("#ff3b30");
-    const clear = await patch({ color: null }, changed.updatedAt);
+    const clear = await patch({ color: null }, changed.version);
     expect(clear.status).toBe(200);
     // Values that predate validation cannot be written through the current API.
     await pool.query("UPDATE items SET properties = jsonb_set(properties, '{color}', $1::jsonb) WHERE id = $2", [
@@ -968,7 +973,7 @@ describe("item routes (issue #241)", () => {
     ]);
     const legacy = await runInTenant(getTenantZeroId(), () => chokePoint.getItem(fixture.database.id, fixture.item.id));
     if (!legacy) throw new Error("Missing legacy item");
-    const unrelated = await patch({ name: "Renamed" }, legacy.updatedAt);
+    const unrelated = await patch({ name: "Renamed" }, legacy.version);
     expect(unrelated.status).toBe(200);
     expect(
       (await runInTenant(getTenantZeroId(), () => chokePoint.getItem(fixture.database.id, fixture.item.id)))?.properties
@@ -1145,7 +1150,7 @@ describe("item routes (issue #241)", () => {
     });
     expect(valid.status).toBe(201);
     const validBody: unknown = await valid.json();
-    const typeItem = z.object({ id: z.string(), updatedAt: z.string() }).parse(validBody);
+    const typeItem = z.object({ id: z.string(), updatedAt: z.string(), version: z.string() }).parse(validBody);
     const patch = (properties: Record<string, unknown>, ifVersion: string) =>
       fetch(`${baseUrl}/api/items/${typeItem.id}`, {
         method: "PATCH",
@@ -1158,7 +1163,7 @@ describe("item routes (issue #241)", () => {
       { targetDatabase: "nonsense" },
       { processingMethod: "pageContent" },
     ]) {
-      const rejected = await patch(properties, typeItem.updatedAt);
+      const rejected = await patch(properties, typeItem.version);
       expect(rejected.status).toBe(400);
       expect(await rejected.json()).toMatchObject({
         error: { code: "validation_failed", details: { field: "targetDatabase" } },
@@ -1178,7 +1183,7 @@ describe("item routes (issue #241)", () => {
     );
     const legacy = await runInTenant(getTenantZeroId(), () => chokePoint.getItem(databases.types.id, typeItem.id));
     if (!legacy) throw new Error("Missing legacy type");
-    const renamed = await patch({ name: "Renamed" }, legacy.updatedAt);
+    const renamed = await patch({ name: "Renamed" }, legacy.version);
     expect(renamed.status).toBe(200);
     expect(await renamed.json()).toMatchObject({ properties: { name: "Renamed", targetDatabase: "journal" } });
   });
@@ -1223,23 +1228,23 @@ describe("item routes (issue #241)", () => {
       const url = `${base}/api/items/${mailbox.id}`;
       const before = await fetch(url, { headers });
       const body = z
-        .object({ updatedAt: z.string(), properties: z.record(z.string(), z.unknown()) })
+        .object({ updatedAt: z.string(), version: z.string(), properties: z.record(z.string(), z.unknown()) })
         .parse(await before.json());
       const refused = await fetch(url, {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ properties: { addresses: "bad@example.test" }, ifVersion: body.updatedAt }),
+        body: JSON.stringify({ properties: { addresses: "bad@example.test" }, ifVersion: body.version }),
       });
       expect(refused.status).toBe(403);
       expect(await refused.json()).toMatchObject({ error: { code: "owner_violation" } });
       const unchanged = z
-        .object({ updatedAt: z.string(), properties: z.record(z.string(), z.unknown()) })
+        .object({ updatedAt: z.string(), version: z.string(), properties: z.record(z.string(), z.unknown()) })
         .parse(await (await fetch(url, { headers })).json());
       expect(unchanged).toEqual(body);
       const allowed = await fetch(url, {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ properties: { name: "Allowed" }, ifVersion: body.updatedAt }),
+        body: JSON.stringify({ properties: { name: "Allowed" }, ifVersion: body.version }),
       });
       expect(allowed.status).toBe(200);
       expect(await allowed.json()).toMatchObject({
@@ -1309,12 +1314,16 @@ describe("item routes (issue #241)", () => {
         return { card, item };
       });
       const cardUrl = `${base}/api/items/${fixture.card.id}`;
-      const schema = z.object({ updatedAt: z.string(), properties: z.record(z.string(), z.unknown()) });
+      const schema = z.object({
+        updatedAt: z.string(),
+        version: z.string(),
+        properties: z.record(z.string(), z.unknown()),
+      });
       const before = schema.parse(await (await fetch(cardUrl, { headers })).json());
       const refused = await fetch(cardUrl, {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ properties: { reason: "Injected" }, ifVersion: before.updatedAt }),
+        body: JSON.stringify({ properties: { reason: "Injected" }, ifVersion: before.version }),
       });
       expect(refused.status).toBe(403);
       expect(await refused.json()).toMatchObject({ error: { code: "owner_violation" } });
@@ -1322,7 +1331,7 @@ describe("item routes (issue #241)", () => {
       const allowed = await fetch(`${base}/api/items/${fixture.item.id}`, {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ properties: { note: "after" }, ifVersion: fixture.item.updatedAt }),
+        body: JSON.stringify({ properties: { note: "after" }, ifVersion: fixture.item.version }),
       });
       expect(allowed.status).toBe(200);
       expect(await allowed.json()).toMatchObject({ properties: { note: "after" } });
@@ -1398,7 +1407,7 @@ describe("item routes (issue #241)", () => {
         const response = await fetch(`${runtimeUrl}/api/items/${item.id}`, {
           method: "PATCH",
           headers,
-          body: JSON.stringify({ properties, ifVersion: item.updatedAt }),
+          body: JSON.stringify({ properties, ifVersion: item.version }),
         });
         expect(response.status).toBe(200);
       }
@@ -1427,7 +1436,7 @@ describe("item routes (issue #241)", () => {
       const response = await fetch(`${baseUrl}/api/items/${item.id}`, {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ properties: { rating }, ifVersion: item.updatedAt }),
+        body: JSON.stringify({ properties: { rating }, ifVersion: item.version }),
       });
       if (rating === 7 || rating === 2.5) {
         expect(response.status).toBe(400);
@@ -1466,7 +1475,7 @@ describe("item routes (issue #241)", () => {
       const response = await fetch(`${baseUrl}/api/items/${task.id}`, {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ properties, ifVersion: task.updatedAt }),
+        body: JSON.stringify({ properties, ifVersion: task.version }),
       });
       expect(response.status).toBe(400);
       const body: unknown = await response.json();
@@ -1483,13 +1492,15 @@ describe("item routes (issue #241)", () => {
       });
       expect(response.status).toBe(200);
       const body: unknown = await response.json();
-      return z.object({ updatedAt: z.string(), properties: z.record(z.string(), z.unknown()) }).parse(body);
+      return z
+        .object({ updatedAt: z.string(), version: z.string(), properties: z.record(z.string(), z.unknown()) })
+        .parse(body);
     };
-    const normalized = await patch({ date: "2026-10-13", timeFrom: "9:00" }, task.updatedAt);
+    const normalized = await patch({ date: "2026-10-13", timeFrom: "9:00" }, task.version);
     expect(normalized.properties).toMatchObject({ timeFrom: "09:00", time: "09:00" });
-    const late = await patch({ timeFrom: "23:55", timeTo: "24:00" }, normalized.updatedAt);
+    const late = await patch({ timeFrom: "23:55", timeTo: "24:00" }, normalized.version);
     expect(late.properties).toMatchObject({ timeFrom: "23:55", timeTo: "24:00", time: "23:55–24:00" });
-    const cleared = await patch({ date: null }, late.updatedAt);
+    const cleared = await patch({ date: null }, late.version);
     expect(cleared.properties).toMatchObject({ date: null, timeFrom: null, timeTo: null, time: null });
     const replayHeaders = { ...headers, "Idempotency-Key": randomUUID() };
     const request = () =>
@@ -1566,7 +1577,7 @@ describe("item routes (issue #241)", () => {
     const patch = await fetch(`${baseUrl}/api/items/${fixture.item.id}`, {
       method: "PATCH",
       headers,
-      body: JSON.stringify({ properties: { rating: 7 }, ifVersion: fixture.item.updatedAt }),
+      body: JSON.stringify({ properties: { rating: 7 }, ifVersion: fixture.item.version }),
     });
     expect(patch.status).toBe(200);
     const patchBody: unknown = await patch.json();
@@ -2004,7 +2015,7 @@ describe("item routes (issue #241)", () => {
         method = "PATCH";
         payload = {
           properties: { read: true },
-          ifVersion: path === "conflict" ? "2000-01-01T00:00:00.000Z" : item.updatedAt,
+          ifVersion: path === "conflict" ? "2000-01-01T00:00:00.000Z" : item.version,
         };
       }
       const response = await fetch(`${baseUrl}${url}`, {
@@ -2278,7 +2289,7 @@ describe("item routes (issue #241)", () => {
       const res = await fetch(`${baseUrl}/api/items/${item.id}`, {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ properties: { title: "Dune (2021)" }, ifVersion: item.updatedAt }),
+        body: JSON.stringify({ properties: { title: "Dune (2021)" }, ifVersion: item.version }),
       });
       expect(res.status).toBe(200);
       const body: unknown = await res.json();
@@ -2291,6 +2302,7 @@ describe("item routes (issue #241)", () => {
         createdAt: item.createdAt,
         updatedAt: expect.any(String),
         deletedAt: null,
+        version: String(Number(item.version) + 1),
       });
       expect(body).not.toHaveProperty("previous");
     });
@@ -2303,7 +2315,7 @@ describe("item routes (issue #241)", () => {
       const res = await fetch(`${baseUrl}/api/items/${item.id}`, {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ ifVersion: item.updatedAt }),
+        body: JSON.stringify({ ifVersion: item.version }),
       });
       expect(res.status).toBe(400);
       const body = (await res.json()) as ErrorBody;
@@ -2323,7 +2335,7 @@ describe("item routes (issue #241)", () => {
       const res = await fetch(`${baseUrl}/api/items/${item.id}`, {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ properties: { title: "Dune: Part Two" }, ifVersion: item.updatedAt }),
+        body: JSON.stringify({ properties: { title: "Dune: Part Two" }, ifVersion: item.version }),
       });
 
       expect(res.status).toBe(200);
@@ -2347,7 +2359,7 @@ describe("item routes (issue #241)", () => {
       const patch = await fetch(`${baseUrl}/api/items/${item.id}`, {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ properties: { title: "Changed" }, ifVersion: item.updatedAt, writerKind: "system" }),
+        body: JSON.stringify({ properties: { title: "Changed" }, ifVersion: item.version, writerKind: "system" }),
       });
       const create = await fetch(`${baseUrl}/api/databases/${db.id}/items`, {
         method: "POST",
@@ -2384,13 +2396,13 @@ describe("item routes (issue #241)", () => {
       await fetch(`${baseUrl}/api/items/${item.id}`, {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ properties: { title: "Dune (2021)" }, ifVersion: item.updatedAt }),
+        body: JSON.stringify({ properties: { title: "Dune (2021)" }, ifVersion: item.version }),
       });
 
       const res = await fetch(`${baseUrl}/api/items/${item.id}`, {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ properties: { title: "Dune Part Two" }, ifVersion: item.updatedAt }),
+        body: JSON.stringify({ properties: { title: "Dune Part Two" }, ifVersion: item.version }),
       });
       expect(res.status).toBe(409);
       const body = (await res.json()) as ErrorBody & { error: { details: { currentItem: ItemBody } } };
@@ -2421,7 +2433,7 @@ describe("item routes (issue #241)", () => {
       const res = await fetch(`${baseUrl}/api/items/${item.id}`, {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ properties: { [rollup.key]: 5 }, ifVersion: item.updatedAt }),
+        body: JSON.stringify({ properties: { [rollup.key]: 5 }, ifVersion: item.version }),
       });
       expect(res.status).toBe(403);
       const body = (await res.json()) as ErrorBody;
@@ -2437,7 +2449,7 @@ describe("item routes (issue #241)", () => {
       const res = await fetch(`${baseUrl}/api/items/${item.id}`, {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ properties: { title: "Dune (2021)" }, ifVersion: item.updatedAt }),
+        body: JSON.stringify({ properties: { title: "Dune (2021)" }, ifVersion: item.version }),
       });
       expect(res.status).toBe(403);
       const body = (await res.json()) as ErrorBody;
@@ -3540,7 +3552,7 @@ describe("item routes (issue #241)", () => {
       const response = await fetch(`${baseUrl}/api/items/${file.id}`, {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ properties: { note: "changed" }, ifVersion: file.updatedAt }),
+        body: JSON.stringify({ properties: { note: "changed" }, ifVersion: file.version }),
       });
       expect(response.status).toBe(200);
       const read = await fetch(`${baseUrl}/api/items/${file.id}?include=links`, { headers });
@@ -4710,17 +4722,21 @@ describe("item routes (issue #241)", () => {
       if (!tasksDb) throw new Error("Tasks not seeded");
     });
 
-    async function createTask(properties: Record<string, unknown>): Promise<{ id: string; updatedAt: string }> {
+    async function createTask(
+      properties: Record<string, unknown>,
+    ): Promise<{ id: string; updatedAt: string; version: string }> {
       const created = await runInTenant(getTenantZeroId(), () =>
         chokePoint.createItem({ databaseId: tasksDb, properties: { name: "Task", ...properties } }),
       );
-      return { id: created.id, updatedAt: created.updatedAt };
+      return { id: created.id, updatedAt: created.updatedAt, version: created.version };
     }
 
-    async function storedItem(id: string): Promise<{ properties: Record<string, unknown>; updatedAt: string }> {
+    async function storedItem(
+      id: string,
+    ): Promise<{ properties: Record<string, unknown>; updatedAt: string; version: string }> {
       const item = await runInTenant(getTenantZeroId(), () => chokePoint.getItem(tasksDb, id));
       if (!item) throw new Error(`Item ${id} missing`);
-      return { properties: item.properties, updatedAt: item.updatedAt };
+      return { properties: item.properties, updatedAt: item.updatedAt, version: item.version };
     }
 
     async function storedProperties(id: string): Promise<Record<string, unknown>> {
@@ -4783,8 +4799,8 @@ describe("item routes (issue #241)", () => {
       async (_label, date) => {
         const recurring = await createTask({ date: "2026-10-22" });
         expect((await recurrence("PUT", recurring.id, { preset: "weekly" })).status).toBe(200);
-        const { properties: before, updatedAt } = await storedItem(recurring.id);
-        const response = await patch(recurring.id, { date }, updatedAt);
+        const { properties: before, version } = await storedItem(recurring.id);
+        const response = await patch(recurring.id, { date }, version);
         expect(response.status).toBe(400);
         expect(httpError.parse(await response.json()).error).toEqual({
           code: "validation_failed",
@@ -4796,7 +4812,7 @@ describe("item routes (issue #241)", () => {
 
     it("clears the date of a task without a series over REST", async () => {
       const once = await createTask({ date: "2026-10-22", timeFrom: "09:00", timeTo: "10:00" });
-      const response = await patch(once.id, { date: null }, once.updatedAt);
+      const response = await patch(once.id, { date: null }, once.version);
       expect(response.status).toBe(200);
       expect(await storedProperties(once.id)).toMatchObject({ date: null, timeFrom: null, timeTo: null });
     });
@@ -4804,7 +4820,7 @@ describe("item routes (issue #241)", () => {
     it("refuses a client PATCH of status missed with 400 on status, and accepts missed to done (gh-1668)", async () => {
       const task = await createTask({ date: "2026-10-22" });
       const before = await storedProperties(task.id);
-      const refused = await patch(task.id, { status: "missed" }, task.updatedAt);
+      const refused = await patch(task.id, { status: "missed" }, task.version);
       expect(refused.status).toBe(400);
       expect(httpError.parse(await refused.json()).error).toEqual({
         code: "validation_failed",
@@ -4815,7 +4831,7 @@ describe("item routes (issue #241)", () => {
       await runInTenant(getTenantZeroId(), () =>
         chokePoint.updateItem({ databaseId: tasksDb, itemId: task.id, propertiesPatch: { status: "missed" } }),
       );
-      const done = await patch(task.id, { status: "done" }, (await storedItem(task.id)).updatedAt);
+      const done = await patch(task.id, { status: "done" }, (await storedItem(task.id)).version);
       expect(done.status).toBe(200);
       expect(await storedProperties(task.id)).toMatchObject({ status: "done", completedOn: expect.any(String) });
     });

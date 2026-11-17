@@ -44,6 +44,7 @@ const itemRowSchema = z.object({
   computed: z.record(z.string(), z.unknown()),
   created_at: z.date(),
   updated_at: z.date(),
+  version: z.string(),
   series_id: z.string(),
   occurrence_date: z.string(),
 });
@@ -102,7 +103,7 @@ export async function projectTaskOccurrences(
   if (series.length === 0) return [];
 
   const itemsResult = await client.query<z.input<typeof itemRowSchema>>(
-    `SELECT id, database_id, properties, computed, created_at, updated_at,
+    `SELECT id, database_id, properties, computed, created_at, updated_at, version,
        properties->>'seriesId' AS series_id, properties->>'occurrenceDate' AS occurrence_date
      FROM items
      WHERE database_id = (SELECT id FROM databases WHERE owner_module_id = $1) AND deleted_at IS NULL
@@ -129,6 +130,7 @@ export async function projectTaskOccurrences(
         updatedAt: row.updated_at.toISOString(),
         // The query reads non-deleted items only.
         deletedAt: null,
+        version: row.version,
       },
     });
   }

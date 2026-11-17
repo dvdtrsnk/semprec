@@ -1,3 +1,4 @@
+import type { DatabaseError } from "pg";
 import type { ActiveHeartbeatRunSummary, ChokePointError, ItemRow } from "@semprec/data";
 import { toItemEnvelope, type ItemEnvelope } from "./itemEnvelope.js";
 
@@ -43,6 +44,10 @@ export const ITEM_ERROR_CODES = [
   "regenerate_after_compaction",
   "unsupported_media_type",
   "unsupported_attachment_type",
+  "unique_violation",
+  "foreign_key_violation",
+  "check_violation",
+  "transaction_conflict",
 ] as const;
 
 export type ItemErrorCode = (typeof ITEM_ERROR_CODES)[number];
@@ -90,7 +95,41 @@ export const ITEM_ERROR_STATUS_BY_CODE: Readonly<Record<ItemErrorCode, number>> 
   regenerate_after_compaction: 409,
   unsupported_media_type: 415,
   unsupported_attachment_type: 415,
+  unique_violation: 409,
+  foreign_key_violation: 409,
+  check_violation: 400,
+  transaction_conflict: 503,
 };
+
+/** The SQLSTATEs answered by their own code; any other database error is a 500. */
+const DATABASE_ERROR_CODES: Readonly<Record<string, ItemErrorCode>> = {
+  "23505": "unique_violation",
+  "23503": "foreign_key_violation",
+  "23514": "check_violation",
+  "40001": "transaction_conflict",
+  "40P01": "transaction_conflict",
+};
+
+/** Seconds a client waits before repeating a request that kept conflicting with concurrent writes. */
+const TRANSACTION_CONFLICT_RETRY_AFTER_SECONDS = 1;
+
+/**
+ * The response for a Postgres error whose SQLSTATE says what went wrong, or `null` for any other. The body
+ * carries only the code: constraint names, columns and values stay in the log.
+ */
+export function databaseErrorResponse(
+  err: DatabaseError,
+): { status: number; body: ErrorResponseBody; headers?: Record<string, string> } | null {
+  const code = err.code === undefined ? undefined : DATABASE_ERROR_CODES[err.code];
+  if (code === undefined) return null;
+  return {
+    status: ITEM_ERROR_STATUS_BY_CODE[code],
+    body: { error: { code } },
+    ...(code === "transaction_conflict"
+      ? { headers: { "Retry-After": String(TRANSACTION_CONFLICT_RETRY_AFTER_SECONDS) } }
+      : {}),
+  };
+}
 
 function isItemErrorCode(code: string): code is ItemErrorCode {
   return (ITEM_ERROR_CODES as readonly string[]).includes(code);
@@ -125,6 +164,7 @@ function isVersionConflictDetails(details: unknown): details is { current: ItemR
     typeof row.computed === "object" &&
     row.computed !== null &&
     typeof row.updatedAt === "string" &&
+    typeof row.version === "string" &&
     (row.deletedAt === null || typeof row.deletedAt === "string")
   );
 }

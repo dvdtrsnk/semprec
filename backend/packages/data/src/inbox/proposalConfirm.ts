@@ -625,6 +625,7 @@ async function buildConfirmationResults(
             ? "mcpSyncQueued"
             : null,
       updatedAt: item.updatedAt,
+      version: item.version,
       blockIds: written.ref === "primary" ? blockIds : [],
     });
   }

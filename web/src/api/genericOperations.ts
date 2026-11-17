@@ -15,6 +15,8 @@ export const itemSchema = z.object({
   computed: z.record(z.string(), z.unknown()).default({}),
   updatedAt: z.string(),
   deletedAt: z.string().nullable().default(null),
+  /** The optimistic-concurrency token an update sends back as `ifVersion`. */
+  version: z.string(),
 });
 
 export type Item = z.infer<typeof itemSchema>;

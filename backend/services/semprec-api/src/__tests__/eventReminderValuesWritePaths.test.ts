@@ -46,7 +46,7 @@ const noopMailer: PasswordResetMailer = { async sendPasswordResetEmail() {} };
 const moduleRegistry = await loadFullModuleRegistry();
 
 const itemBody = z
-  .object({ id: z.string(), updatedAt: z.string(), properties: z.record(z.string(), z.unknown()) })
+  .object({ id: z.string(), updatedAt: z.string(), version: z.string(), properties: z.record(z.string(), z.unknown()) })
   .passthrough();
 const storedRow = z.object({ properties: z.record(z.string(), z.unknown()), updated_at: z.string() });
 const restError = z.object({
@@ -284,12 +284,12 @@ describe("Events reminder values are judged alike through REST, the agent gatewa
   /** REST must answer 200. */
   async function patchVia(
     path: Transport,
-    item: { id: string; updatedAt: string },
+    item: { id: string; updatedAt: string; version: string },
     properties: Record<string, unknown>,
   ) {
-    const input = { itemId: item.id, properties, ifVersion: item.updatedAt };
+    const input = { itemId: item.id, properties, ifVersion: item.version };
     if (path === "rest") {
-      const patched = await rest("PATCH", `/api/items/${item.id}`, { properties, ifVersion: item.updatedAt });
+      const patched = await rest("PATCH", `/api/items/${item.id}`, { properties, ifVersion: item.version });
       expect(patched.status).toBe(200);
       return itemBody.parse(patched.body);
     }
@@ -331,17 +331,17 @@ describe("Events reminder values are judged alike through REST, the agent gatewa
       const refusals = {
         rest: await restRefusal("PATCH", `/api/items/${targets.rest.id}`, {
           properties: values,
-          ifVersion: targets.rest.updatedAt,
+          ifVersion: targets.rest.version,
         }),
         gateway: await gatewayRefusal("item.patch", {
           itemId: targets.gateway.id,
           properties: values,
-          ifVersion: targets.gateway.updatedAt,
+          ifVersion: targets.gateway.version,
         }),
         mcp: await mcpRefusal("semprec.item.patch", {
           itemId: targets.mcp.id,
           properties: values,
-          ifVersion: targets.mcp.updatedAt,
+          ifVersion: targets.mcp.version,
         }),
       };
       expectSameRefusal(refusals, field);

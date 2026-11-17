@@ -323,7 +323,7 @@ describe("marking the answers that return an item linked to a sensitive record (
         const outcome = await tools()["item.patch"](agent.runId, {
           itemId: file.id,
           properties: { name: "After" },
-          ifVersion: file.updatedAt,
+          ifVersion: file.version,
         });
         expect(outcome.error).toBe(false);
         expect(outcome.sensitive).toBe(true);

@@ -188,13 +188,13 @@ describe("inbox.proposal.split agent tool (issue #1939)", () => {
 
   async function readCard(fixture: ThreadFixture, cardId = fixture.cardId) {
     return runInTenant(fixture.tenant, async () => {
-      const row = await runtime.query<{ properties: unknown; updated_at: Date }>(
-        "SELECT properties, updated_at FROM items WHERE id = $1",
+      const row = await runtime.query<{ properties: unknown; updated_at: Date; version: string }>(
+        "SELECT properties, updated_at, version FROM items WHERE id = $1",
         [cardId],
       );
       const stored = row.rows[0];
       if (!stored) throw new Error("Card is missing");
-      return { properties: stored.properties, updatedAt: stored.updated_at.toISOString() };
+      return { properties: stored.properties, updatedAt: stored.updated_at.toISOString(), version: stored.version };
     });
   }
 
@@ -210,8 +210,8 @@ describe("inbox.proposal.split agent tool (issue #1939)", () => {
 
   async function snapshot(fixture: ThreadFixture) {
     return runInTenant(fixture.tenant, async () => {
-      const cards = await runtime.query<{ id: string; properties: unknown; updated_at: Date }>(
-        "SELECT id, properties, updated_at FROM items WHERE database_id = $1 ORDER BY id",
+      const cards = await runtime.query<{ id: string; properties: unknown; updated_at: Date; version: string }>(
+        "SELECT id, properties, updated_at, version FROM items WHERE database_id = $1 ORDER BY id",
         [fixture.proposalsId],
       );
       const edges = await runtime.query<{ count: number }>("SELECT count(*)::int AS count FROM item_relations");
@@ -230,7 +230,7 @@ describe("inbox.proposal.split agent tool (issue #1939)", () => {
   const call = async (fixture: ThreadFixture, args: Record<string, unknown>, runId = fixture.runId) => {
     if ("ifVersion" in args) return callRaw(fixture, args, runId);
     const version = await readCard(fixture, String(args.proposalId)).then(
-      (card) => card.updatedAt,
+      (card) => card.version,
       () => "no-such-version",
     );
     return callRaw(fixture, { ...args, ifVersion: version }, runId);
@@ -246,7 +246,7 @@ describe("inbox.proposal.split agent tool (issue #1939)", () => {
     const answer = successSchema.parse(JSON.parse(result.result));
     expect(answer.proposalId).toBe(fixture.cardId);
     expect(answer.siblingProposalIds).toHaveLength(1);
-    expect(answer.version).toBe((await readCard(fixture)).updatedAt);
+    expect(answer.version).toBe((await readCard(fixture)).version);
     const siblingId = answer.siblingProposalIds[0];
     if (!siblingId) throw new Error("Missing sibling");
     const primary = storedCardSchema.parse((await readCard(fixture)).properties);
@@ -319,7 +319,7 @@ describe("inbox.proposal.split agent tool (issue #1939)", () => {
     const fixture = await createCardThread(owner);
     const before = await snapshot(fixture);
     const cards = taskCards(fixture);
-    const valid = { proposalId: fixture.cardId, ifVersion: (await readCard(fixture)).updatedAt, cards };
+    const valid = { proposalId: fixture.cardId, ifVersion: (await readCard(fixture)).version, cards };
     const manyCards = Array.from({ length: 11 }, (_, index) => ({
       entityKind: "database",
       target: fixture.tasksId,
@@ -428,7 +428,7 @@ describe("inbox.proposal.split agent tool (issue #1939)", () => {
 
   it("refuses a split composed from a card the user changed since, and accepts it again from the version the answer carries", async () => {
     const fixture = await createCardThread(owner);
-    const seen = (await readCard(fixture)).updatedAt;
+    const seen = (await readCard(fixture)).version;
     await runInTenant(owner, () =>
       withTransaction(runtime, (client) =>
         reviseProposalWithClient(client, { processingProposalsDatabaseId: fixture.proposalsId }, fixture.cardId, {
@@ -454,7 +454,7 @@ describe("inbox.proposal.split agent tool (issue #1939)", () => {
 
     const current = await callRaw(fixture, {
       proposalId: fixture.cardId,
-      ifVersion: before.cards.find((card) => card.id === fixture.cardId)?.updated_at,
+      ifVersion: before.cards.find((card) => card.id === fixture.cardId)?.version,
       cards: taskCards(fixture),
     });
     expect(current.error).toBe(false);
@@ -520,13 +520,13 @@ describe("inbox.proposal.split agent tool (issue #1939)", () => {
 
       const refused = await split.invoke({
         proposalId: other.cardId,
-        ifVersion: (await readCard(other)).updatedAt,
+        ifVersion: (await readCard(other)).version,
         cards: taskCards(other),
       });
       expect(refused).toEqual(NOT_FOUND);
       const done = await split.invoke({
         proposalId: fixture.cardId,
-        ifVersion: (await readCard(fixture)).updatedAt,
+        ifVersion: (await readCard(fixture)).version,
         cards: taskCards(fixture),
       });
       expect(done.error).toBe(false);

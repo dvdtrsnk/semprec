@@ -182,7 +182,7 @@ export async function computeDestructiveResourceProjection(
         database.ownerModuleId && check.input.properties
           ? await getItemPatchApprovalContribution(database.ownerModuleId)?.(client, item, check.input.properties)
           : null;
-      if (contribution && check.input.ifVersion !== undefined && check.input.ifVersion !== item.updatedAt) {
+      if (contribution && check.input.ifVersion !== undefined && check.input.ifVersion !== item.version) {
         throw new ConflictError("Item was modified since ifVersion was read", { current: item });
       }
       // The properties this patch changes are the ones `updateItemWithClient` ends links for.

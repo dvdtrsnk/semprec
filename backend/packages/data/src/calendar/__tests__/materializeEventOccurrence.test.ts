@@ -343,7 +343,7 @@ describe("materialize an event occurrence (issue gh-1843)", () => {
           databaseId: f.db("events"),
           itemId: item.id,
           propertiesPatch: { timeFrom: "09:15", timeTo: "09:45" },
-          ifVersion: item.updatedAt,
+          ifVersion: item.version,
         },
         userId,
         userId,

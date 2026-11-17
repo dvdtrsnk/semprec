@@ -9,7 +9,6 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import { createBlob, getBlob } from "../blobs/blobsStore.js";
-import { advanceTaskRecurrence } from "../tasks/advanceTaskRecurrence.js";
 import { startTaskSeries } from "../testSupport/taskSeriesFixtures.js";
 import { ConflictError } from "../errors.js";
 import { getOrCreateJournalItem } from "../journal/journalStore.js";
@@ -23,6 +22,19 @@ async function databaseIdFor(moduleId: string): Promise<string> {
   const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [moduleId]);
   if (!rows[0]) throw new Error(`Database '${moduleId}' was not seeded`);
   return rows[0].id;
+}
+
+/** Completes a recurring occurrence through the choke point's `done` write and returns the one instance it created. */
+async function completeAndFindNext(tasksId: string, taskId: string) {
+  const before = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [tasksId]);
+  const known = new Set(before.rows.map((row) => row.id));
+  await chokePoint.updateItem({ databaseId: tasksId, itemId: taskId, propertiesPatch: { status: "done" } });
+  const after = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [tasksId]);
+  const created = after.rows.filter((row) => !known.has(row.id));
+  expect(created).toHaveLength(1);
+  const next = await chokePoint.getItem(tasksId, created[0]!.id);
+  if (next === null) throw new Error("The next occurrence was not readable");
+  return next;
 }
 
 describe("ten hardcoded databases (issue #24)", () => {
@@ -210,40 +222,16 @@ describe("ten hardcoded databases (issue #24)", () => {
     });
 
     // The advance carries the Project edge to the next instance, a write of Tasks.project: in the tenant scope.
-    const next = await runInTenant(getTenantZeroId(), () =>
-      advanceTaskRecurrence(pool, { databaseId: tasksId, itemId: task.id, timezone: "Europe/Prague" }),
-    );
-    expect(next).not.toBeNull();
-    expect(next!.properties.name).toBe("Take out trash");
-    expect(next!.properties.status).toBe("notDone");
+    const next = await runInTenant(getTenantZeroId(), () => completeAndFindNext(tasksId, task.id));
+    expect(next.properties.name).toBe("Take out trash");
+    expect(next.properties.status).toBe("notDone");
 
     const completed = await chokePoint.getItem(tasksId, task.id);
     expect(completed?.properties.status).toBe("done");
 
-    const newEdges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, next!.id));
+    const newEdges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, next.id));
     expect(newEdges).toHaveLength(1);
     expect([newEdges[0]!.itemA, newEdges[0]!.itemB]).toContain(project.id);
-
-    const plain = await chokePoint.createItem({
-      databaseId: tasksId,
-      properties: { name: "One-off", status: "notDone" },
-    });
-    const noop = await advanceTaskRecurrence(pool, {
-      databaseId: tasksId,
-      itemId: plain.id,
-      timezone: "Europe/Prague",
-    });
-    expect(noop).toBeNull();
-    const plainAfter = await chokePoint.getItem(tasksId, plain.id);
-    expect(plainAfter?.properties.status).toBe("notDone");
-
-    // Re-advancing the completed original is a no-op: its series already has the next occurrence.
-    const reAdvanceOriginal = await advanceTaskRecurrence(pool, {
-      databaseId: tasksId,
-      itemId: task.id,
-      timezone: "Europe/Prague",
-    });
-    expect(reAdvanceOriginal).toBeNull();
   });
 
   it("task recurrence: a soft-deleted counterpart on a carried-forward edge is dropped, not a reason to fail the advance", async () => {
@@ -276,10 +264,9 @@ describe("ten hardcoded databases (issue #24)", () => {
 
     await chokePoint.softDeleteItem(projectsId, project.id);
 
-    const next = await advanceTaskRecurrence(pool, { databaseId: tasksId, itemId: task.id, timezone: "Europe/Prague" });
-    expect(next).not.toBeNull();
+    const next = await completeAndFindNext(tasksId, task.id);
 
-    const newEdges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, next!.id));
+    const newEdges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, next.id));
     expect(newEdges).toHaveLength(0);
   });
 
@@ -314,13 +301,12 @@ describe("ten hardcoded databases (issue #24)", () => {
       mode: "floating",
       rule: { unit: "days", n: 1 },
     });
-    const next = await advanceTaskRecurrence(pool, { databaseId: tasksId, itemId: task.id, timezone: "Europe/Prague" });
-    expect(next).not.toBeNull();
+    const next = await runInTenant(getTenantZeroId(), () => completeAndFindNext(tasksId, task.id));
 
     const edges = await withTransaction(pool, (client) => relationsStore.listAllRelationsForItem(client, event.id));
     const linkedItemIds = edges.flatMap((e) => [e.itemA, e.itemB]);
     expect(linkedItemIds).toContain(task.id);
-    expect(linkedItemIds).not.toContain(next!.id);
+    expect(linkedItemIds).not.toContain(next.id);
   });
 
   describe("task recurrence through the choke point's `status: 'done'` write", () => {

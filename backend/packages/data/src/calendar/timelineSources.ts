@@ -58,8 +58,9 @@ export interface CalendarTimelineItem {
   carriedFrom: string | null;
   /** Filled by `readCalendarTimeline` after the sources have read their items. */
   attendance: "tentative" | null;
-  /** A write passes it back as `ifVersion`. */
   updatedAt: string;
+  /** The item's `version`; a write passes it back as `ifVersion`. */
+  version: string;
   /** `true` for an entry that is not a stored row, or whose row no client may edit (a subscribed event). */
   readOnly: boolean;
 }

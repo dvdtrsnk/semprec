@@ -33,6 +33,14 @@ concurrent writers are ordered. What may be written, and by whom, is in
   that catches a busy/refusal error cannot commit earlier work. The mark survives savepoint rollback.
 - An escaping error from `fn` stays primary; cleanup failures never replace it.
 
+### Transaction-local state
+
+- `TransactionLocal` (`data/db/pool.ts`) holds a module's state for one `withTransaction` invocation,
+  keyed on the invocation itself, so nothing in it outlives the transaction or reaches another one.
+  A savepoint rollback does not reset it; it may only hold facts that stay safe after one. The item
+  store counts each transaction's property writes per item in it, so a create or update whose hooks
+  wrote the same item again re-reads the row and answers with its current `version`.
+
 ### Savepoints
 
 - `withSavepoint(client, fn)` runs one step of the active managed transaction between `SAVEPOINT`
@@ -142,8 +150,16 @@ transactional contract is:
 - A predicate that decides whether to lock belongs in the locking statement itself (re-evaluated
   against the latest committed row), not in an earlier read.
 - No lock is held across external work; no hook waits on a provider.
-- A deadlock (`40P01`) is never mapped to a domain error and nothing retries automatically; an
-  explicit caller retry is a fresh transaction.
+- A deadlock (`40P01`) or serialization failure (`40001`) is never mapped to a domain error inside the
+  data layer. Inside `retryingTransientConflicts` (`data/db/pool.ts`), a READ COMMITTED
+  `withTransaction` that fails with one is rolled back and its body run again in a fresh transaction,
+  at most `TRANSIENT_CONFLICT_ATTEMPTS` (3) attempts; then the original error propagates. A
+  transaction opened inside a body being retried is not retried on its own. Transactions with an
+  explicit isolation level are never retried: their callers handle the conflict (the Inbox tick's
+  own retry, the guidance routes' 409). The HTTP adapter runs every handler in this scope; workers,
+  scripts and direct data-layer calls do not, so a lock-order test still sees the deadlock.
+- A transaction body is therefore safe to re-run: it does no external work and keeps no state
+  across attempts other than what it returns.
 
 ### Busy refusals
 

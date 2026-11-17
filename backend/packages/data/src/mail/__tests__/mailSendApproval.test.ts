@@ -183,8 +183,8 @@ async function setupMail(tenantId: string): Promise<MailFixture> {
 
 interface DraftRef {
   id: string;
-  /** The Emails item's `updatedAt` as the draft routes hand it out: the `ifVersion` of the next edit. */
-  updatedAt: string;
+  /** The Emails item's `version` as the draft routes hand it out: the `ifVersion` of the next edit. */
+  version: string;
 }
 
 async function newDraft(f: MailFixture, overrides: Record<string, unknown> = {}): Promise<DraftRef> {
@@ -208,14 +208,14 @@ async function newDraft(f: MailFixture, overrides: Record<string, unknown> = {})
     f.tenant,
   );
   expect(created.status).toBe(201);
-  return { id: created.body.id, updatedAt: created.body.updatedAt };
+  return { id: created.body.id, version: created.body.version };
 }
 
 const replyTo = (f: MailFixture) => ({ threadId: f.threadId, mode: "reply", sourceEmailId: f.receivedId });
 
 async function editDraft(f: MailFixture, draft: DraftRef, fields: Record<string, unknown>): Promise<void> {
   const updated = await inT(
-    () => createMailDraftUpdateRouteHandler(runtime)(ctx({ id: draft.id }, { ifVersion: draft.updatedAt, ...fields })),
+    () => createMailDraftUpdateRouteHandler(runtime)(ctx({ id: draft.id }, { ifVersion: draft.version, ...fields })),
     f.tenant,
   );
   expect(updated.status).toBe(200);

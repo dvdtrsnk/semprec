@@ -10,6 +10,7 @@ const harness = new PageHttpHarness();
 const cardBody = z.object({
   id: z.string(),
   updatedAt: z.string(),
+  version: z.string(),
   properties: z.object({
     status: z.string(),
     proposal: z.object({ properties: z.record(z.string(), z.unknown()) }),
@@ -127,7 +128,7 @@ describe("POST /api/proposals/:id/reset-overrides over HTTP (issue #1912)", () =
 
   it("answers 409 version_conflict with the current card in details.currentItem when ifVersion is stale, and writes nothing", async () => {
     const id = await createCard(harness.tenantA, "Send the invoice");
-    const stale = cardBody.pick({ updatedAt: true }).parse(JSON.parse(await readCard(id))).updatedAt;
+    const stale = cardBody.pick({ version: true }).parse(JSON.parse(await readCard(id))).version;
     await editTitle(id, "First edit");
     const before = await readCard(id);
 
@@ -140,7 +141,7 @@ describe("POST /api/proposals/:id/reset-overrides over HTTP (issue #1912)", () =
     expect(await readCard(id)).toBe(before);
   });
 
-  it("answers 400 for an ifVersion that is no timestamp, and writes nothing", async () => {
+  it("answers 400 for an ifVersion that is no version, and writes nothing", async () => {
     const id = await createCard(harness.tenantA, "Send the invoice");
     await editTitle(id, "First edit");
     const before = await readCard(id);

@@ -98,7 +98,7 @@ export async function updateProposalValuesWithClient(
   if (isFinalInvalid(proposal.properties)) {
     throw new ValidationError("Cannot edit a proposal whose source Inbox item was deleted", { field: "status" });
   }
-  if (input.ifVersion !== undefined && input.ifVersion !== proposal.updatedAt) {
+  if (input.ifVersion !== undefined && input.ifVersion !== proposal.version) {
     throw new ConflictError("Proposal was modified since ifVersion was read", { current: proposal });
   }
   const set = input.set ?? {};

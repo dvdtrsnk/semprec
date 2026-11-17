@@ -205,7 +205,7 @@ describe("an external client on /mcp through the generic operation gateway (issu
         gateway().invoke("item.patch", external(), ALL_CAPABILITIES, {
           itemId: record.id,
           properties: { name: "After" },
-          ifVersion: record.updatedAt,
+          ifVersion: record.version,
         }),
       ).rejects.toMatchObject(FORBIDDEN);
       await expect(
@@ -224,7 +224,7 @@ describe("an external client on /mcp through the generic operation gateway (issu
       const patched = await gateway().invoke("item.patch", rest(), ALL_CAPABILITIES, {
         itemId: record.id,
         properties: { name: "After" },
-        ifVersion: record.updatedAt,
+        ifVersion: record.version,
       });
       expect(patched.properties.name).toBe("After");
     });
@@ -449,7 +449,7 @@ describe("an external client on /mcp through the generic operation gateway (issu
           gateway().invoke("item.patch", external(), ALL_CAPABILITIES, {
             itemId: record.id,
             properties: { name: "x" },
-            ifVersion: record.updatedAt,
+            ifVersion: record.version,
           }),
       ];
       for (const call of calls) {

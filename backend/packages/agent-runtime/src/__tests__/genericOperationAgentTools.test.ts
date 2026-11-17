@@ -125,7 +125,7 @@ describe("generic operation AgentTools (issue #220)", () => {
         const rejected = await tools["item.patch"](run.id, {
           itemId: validType.id,
           properties: { targetDatabase },
-          ifVersion: validType.updatedAt,
+          ifVersion: validType.version,
         });
         expect(rejected.error).toBe(true);
         expect(rejected.result).toMatch(/^validation_failed:/);
@@ -215,7 +215,7 @@ describe("generic operation AgentTools (issue #220)", () => {
           const refused = await tools["item.patch"](run.id, {
             itemId: fixture.mailboxId,
             properties: { addresses: "bad@example.test" },
-            ifVersion: before.updatedAt,
+            ifVersion: before.version,
           });
           expect(refused.error).toBe(true);
           expect(refused.result).toMatch(/^owner_violation:/);
@@ -223,7 +223,7 @@ describe("generic operation AgentTools (issue #220)", () => {
           const allowed = await tools["item.patch"](run.id, {
             itemId: fixture.mailboxId,
             properties: { name: "Allowed" },
-            ifVersion: before.updatedAt,
+            ifVersion: before.version,
           });
           expect(allowed.error).toBe(false);
           expect(
@@ -282,7 +282,7 @@ describe("generic operation AgentTools (issue #220)", () => {
             const result = await tools["item.patch"](run.id, {
               itemId: item.id,
               properties,
-              ifVersion: item.updatedAt,
+              ifVersion: item.version,
             });
             expect(result.error).toBe(false);
           }
@@ -331,6 +331,8 @@ describe("generic operation AgentTools (issue #220)", () => {
           typeof value.id !== "string" ||
           !("updatedAt" in value) ||
           typeof value.updatedAt !== "string" ||
+          !("version" in value) ||
+          typeof value.version !== "string" ||
           !("properties" in value) ||
           typeof value.properties !== "object" ||
           value.properties === null
@@ -339,6 +341,7 @@ describe("generic operation AgentTools (issue #220)", () => {
         return {
           id: value.id,
           updatedAt: value.updatedAt,
+          version: value.version,
           properties: Object.fromEntries(Object.entries(value.properties)),
         };
       };
@@ -361,7 +364,7 @@ describe("generic operation AgentTools (issue #220)", () => {
         await tools["item.patch"](run.id, {
           itemId: created.id,
           properties: { timeFrom: "8:30" },
-          ifVersion: created.updatedAt,
+          ifVersion: created.version,
         }),
       );
       expect(patched.properties).toMatchObject({
@@ -488,7 +491,7 @@ describe("generic operation AgentTools (issue #220)", () => {
       const outcome = await tools["item.patch"](run.id, {
         itemId: item.id,
         properties: { read: true },
-        ifVersion: item.updatedAt,
+        ifVersion: item.version,
       });
       expect(outcome.error).toBe(false);
       expect(outcome.result).toContain("safe");
@@ -515,7 +518,7 @@ describe("generic operation AgentTools (issue #220)", () => {
       const outcome = await tools["item.patch"](run.id, {
         itemId: item.id,
         properties: { due: "2026-10-22T09:00" },
-        ifVersion: item.updatedAt,
+        ifVersion: item.version,
       });
 
       expect(outcome.error).toBe(false);
@@ -545,7 +548,7 @@ describe("generic operation AgentTools (issue #220)", () => {
         const outcome = await tools["item.patch"](run.id, {
           itemId: item.id,
           properties: { due: "new" },
-          ifVersion: item.updatedAt,
+          ifVersion: item.version,
         });
         expect(outcome.error).toBe(false);
         expect(outcome.changes).toEqual([{ key: "due", after: "new" }]);
@@ -563,7 +566,7 @@ describe("generic operation AgentTools (issue #220)", () => {
       const outcome = await tools["item.patch"](run.id, {
         itemId: item.id,
         properties: { title: long, body: "secret new body" },
-        ifVersion: item.updatedAt,
+        ifVersion: item.version,
       });
 
       expect(outcome.error).toBe(false);
@@ -611,7 +614,7 @@ describe("generic operation AgentTools (issue #220)", () => {
           const result = await tools["item.patch"](run.id, {
             itemId: item.id,
             properties: { body: "new secret" },
-            ifVersion: item.updatedAt,
+            ifVersion: item.version,
           });
           expect(result.error).toBe(false);
           expect(result.changes).toEqual([{ key: "body" }]);
@@ -649,7 +652,7 @@ describe("generic operation AgentTools (issue #220)", () => {
           const result = await tools["item.patch"](run.id, {
             itemId: item.id,
             properties: { due: "new" },
-            ifVersion: item.updatedAt,
+            ifVersion: item.version,
           });
           expect(result.error).toBe(false);
           expect(result.changes).toEqual([{ key: "due" }]);

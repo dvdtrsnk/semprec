@@ -130,6 +130,12 @@ Order inside the caller's transaction:
    heartbeat triggers; rollup recompute enqueue for every written key; after-commit invalidation.
 
 - The returned `previous` lists only the caller's keys.
+- The optimistic-concurrency token is `items.version` (a `bigint`, sent as a decimal string
+  `version` on every item read and write result). Every write that advances `updated_at`
+  (`updateItemProperties`, the property-migration rewrites) increments it in the same statement;
+  `computed` writes, trash and restore leave both unchanged. `ifVersion` is compared with the
+  locked row's `version`, never with a timestamp: two writes in one transaction-start millisecond
+  still get distinct versions.
 
 ### Pre-write transforms
 

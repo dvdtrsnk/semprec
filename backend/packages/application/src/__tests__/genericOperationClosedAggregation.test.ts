@@ -249,11 +249,11 @@ describe("agent filters and rollups over health records through the generic oper
       const agent = await newAgent();
       const computedOf = (item: { computed: Record<string, unknown> }) => item.computed[healthCount.key];
       const patch = async (actor: AuthenticatedActor) => {
-        const { updatedAt } = await gateway().invoke("item.get", human(), ALL_CAPABILITIES, { itemId: holder.id });
+        const { version } = await gateway().invoke("item.get", human(), ALL_CAPABILITIES, { itemId: holder.id });
         return gateway().invoke("item.patch", actor, ALL_CAPABILITIES, {
           itemId: holder.id,
           properties: { name: "Holder" },
-          ifVersion: updatedAt,
+          ifVersion: version,
         });
       };
 

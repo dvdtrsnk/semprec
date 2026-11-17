@@ -56,6 +56,7 @@ const databaseBody = z.object({
 const itemBody = z.object({
   id: z.string(),
   updatedAt: z.string(),
+  version: z.string(),
   properties: z.record(z.string(), z.unknown()),
 });
 const errorBody = z.object({
@@ -414,7 +415,7 @@ describe("Recipes module over HTTP (issue #1707)", () => {
     expect(await recipeIds(czech, recipes.id)).toEqual([recipe.id]);
 
     const patch = (photo: unknown) =>
-      request(czech, "PATCH", `/api/items/${recipe.id}`, { properties: { photo }, ifVersion: recipe.updatedAt });
+      request(czech, "PATCH", `/api/items/${recipe.id}`, { properties: { photo }, ifVersion: recipe.version });
     expect(await patch({ blobId: pdf })).toEqual(PHOTO_REFUSED);
     expect(await patch({ blobId: foreign })).toEqual(PHOTO_REFUSED);
     const read = await request(czech, "GET", `/api/items/${recipe.id}`);
@@ -464,7 +465,7 @@ describe("Recipes module over HTTP (issue #1707)", () => {
     expect(recipe.properties.sourceUrl).toBe("https://recipes.example.com/goulash");
 
     const patch = (sourceUrl: unknown) =>
-      request(czech, "PATCH", `/api/items/${recipe.id}`, { properties: { sourceUrl }, ifVersion: recipe.updatedAt });
+      request(czech, "PATCH", `/api/items/${recipe.id}`, { properties: { sourceUrl }, ifVersion: recipe.version });
     expect(await patch("https://192.168.1.10/goulash")).toEqual(SOURCE_REFUSED);
     const read = await request(czech, "GET", `/api/items/${recipe.id}`);
     expect(itemBody.parse(read.body)).toMatchObject({

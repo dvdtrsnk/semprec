@@ -7,11 +7,11 @@ export function incompatibleStatusError(message: string, status: unknown): Valid
 }
 
 /**
- * Confirm/reject optimistic concurrency: an `ifVersion` other than the locked card's `updatedAt` throws the 409
+ * Confirm/reject optimistic concurrency: an `ifVersion` other than the locked card's `version` throws the 409
  * `version_conflict` with the card as `details.current`. No `ifVersion` means no check.
  */
 export function assertProposalVersion(proposal: ItemRow, ifVersion: string | undefined): void {
-  if (ifVersion !== undefined && ifVersion !== proposal.updatedAt) {
+  if (ifVersion !== undefined && ifVersion !== proposal.version) {
     throw new ConflictError("Proposal was modified since ifVersion was read", { current: proposal });
   }
 }

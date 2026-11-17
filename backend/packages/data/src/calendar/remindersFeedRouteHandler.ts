@@ -46,7 +46,7 @@ export interface UpcomingReminder {
 
 /** Stored days are compared as text and never cast, so an unreadable value cannot fail the statement. */
 const CANDIDATES_SQL = `
-  SELECT i.id, i.properties, i.updated_at
+  SELECT i.id, i.properties, i.updated_at, i.version
     FROM items i
    WHERE i.tenant_id = app_tenant_default() AND i.database_id = $1 AND i.deleted_at IS NULL
      AND left(i.properties->>'date', 10) COLLATE "C" BETWEEN $2 AND $3

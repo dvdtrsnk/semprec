@@ -42,6 +42,7 @@ const SAMPLE_ITEM: ItemRow = {
   createdAt: "2026-09-11T00:00:00.000Z",
   updatedAt: "2026-09-11T00:00:00.000Z",
   deletedAt: null,
+  version: "1",
 };
 
 /**

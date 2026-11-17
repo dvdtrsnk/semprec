@@ -420,7 +420,7 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     const res = await fetch(`${baseUrl}/api/items/${fx.itemA.id}`, {
       method: "PATCH",
       headers,
-      body: JSON.stringify({ properties: { title: "Updated" }, ifVersion: fx.itemA.updatedAt }),
+      body: JSON.stringify({ properties: { title: "Updated" }, ifVersion: fx.itemA.version }),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { properties: Record<string, unknown> };

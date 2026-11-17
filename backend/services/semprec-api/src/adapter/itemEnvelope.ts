@@ -3,10 +3,7 @@ import type { Pool } from "pg";
 import { loadBlobMetadataForItems, withTransaction } from "@semprec/data";
 import type { ItemBlobMetadata, ItemRow, ItemValueLinks } from "@semprec/data";
 
-/**
- * Always the full authoritative row, never an empty 204. `updatedAt` doubles as the `ifVersion`
- * token; there is no separate version counter.
- */
+/** Always the full authoritative row, never an empty 204. `version` is the `ifVersion` token. */
 export interface ItemEnvelope {
   derived?: Item["derived"];
   automation?: Item["automation"];
@@ -19,6 +16,7 @@ export interface ItemEnvelope {
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+  version: string;
   fromInbox?: boolean;
   /** Present only when the read asked for `include=links`. */
   links?: ItemValueLinks;
@@ -49,6 +47,7 @@ export function toItemEnvelope(
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
     deletedAt: item.deletedAt,
+    version: item.version,
     ...(item.fromInbox === undefined ? {} : { fromInbox: item.fromInbox }),
     ...(item.links === undefined ? {} : { links: item.links }),
     ...(item.derived === undefined ? {} : { derived: item.derived }),
