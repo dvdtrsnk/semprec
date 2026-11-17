@@ -286,7 +286,11 @@ export class ImapFlowMailClient implements ImapMailClient {
   }
 
   private async downloadText(uid: number, part: string): Promise<string> {
-    const { content } = await this.providerCall(() => this.client.download(String(uid), part, { uid: true }));
+    // imapflow answers an empty part (a 0-byte body, as iCloud stores some) without a `content` stream.
+    const { content }: { content?: Readable } = await this.providerCall(() =>
+      this.client.download(String(uid), part, { uid: true }),
+    );
+    if (content === undefined) return "";
     const chunks: Buffer[] = [];
     for await (const chunk of this.providerStream(() => content)) chunks.push(chunk as Buffer);
     return Buffer.concat(chunks).toString("utf8");
@@ -308,11 +312,16 @@ export class ImapFlowMailClient implements ImapMailClient {
     let primary: { value: unknown } | undefined;
     const observed: unknown[] = [];
     try {
-      const result = await this.client.download(String(uid), part, {
+      const result: { content?: Readable } = await this.client.download(String(uid), part, {
         uid: true,
         maxBytes: MAX_ATTACHMENT_BYTES,
       });
       content = result.content;
+      // An empty part comes without a stream; it is a complete, empty attachment.
+      if (content === undefined) {
+        completed = true;
+        return;
+      }
       for await (const chunk of content) {
         const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         offset = this.nextAttachmentOffset(offset, bytes.length);

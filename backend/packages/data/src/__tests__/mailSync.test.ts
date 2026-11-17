@@ -3495,6 +3495,34 @@ describe("ImapFlowMailClient", () => {
     expect(isImapConnectionLimitError(error)).toBe(expected);
   });
 
+  it("reads an empty body part and an empty attachment, which imapflow answers without a stream", async () => {
+    const raw = fakeImapFlow({
+      download: async () => ({ meta: {} }),
+      fetch: () =>
+        (async function* () {
+          yield {
+            seq: 1,
+            uid: 1,
+            envelope: { from: [{ address: "a@x.com" }], to: [], cc: [] },
+            bodyStructure: {
+              type: "multipart/mixed",
+              childNodes: [
+                { type: "text/plain", part: "1" },
+                { type: "application/pdf", part: "2", disposition: "attachment" },
+              ],
+            },
+            headers: Buffer.from(""),
+          };
+        })(),
+    });
+
+    const [fetched] = await new ImapFlowMailClient(raw).fetchMessagesSince("INBOX", 1, 10);
+    expect(fetched!.message.bodyText).toBe("");
+    const chunks: Buffer[] = [];
+    for await (const chunk of await fetched!.message.attachments[0]!.openStream()) chunks.push(chunk as Buffer);
+    expect(Buffer.concat(chunks)).toHaveLength(0);
+  });
+
   describe("attachment download fallback", () => {
     const attachmentStream = async (raw: ImapFlow): Promise<Readable> => {
       const messages = await new ImapFlowMailClient(raw).fetchMessagesSince("INBOX", 1, 10);
