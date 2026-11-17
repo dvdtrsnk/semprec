@@ -50,7 +50,6 @@ import { seedInvitationsDatabaseInTransaction } from "./seedInvitationsDatabase.
 import { seedRecipesModuleInTransaction } from "./seedRecipesModule.js";
 import { seedSleepModuleInTransaction } from "./seedSleepModule.js";
 import { SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS } from "./systemProjectAgentGuidance.js";
-import { runModuleDataMigrations } from "../migrationJob/moduleDataMigration.js";
 
 export { PROJECTS_MODULE_ID } from "./tenDatabaseKeys.js";
 
@@ -90,9 +89,8 @@ export async function admitTenantInTransaction(client: PoolClient, caller: strin
 
 /**
  * Takes the per-tenant structural seed lock `(2331, hashtext(tenant id))` of the caller's tenant, then
- * admits the tenant as `admitTenantInTransaction` does: the lock and admission order `seedSystem` uses,
- * shared with the calendars cutover's schema transaction so both serialize on one lock
- * (docs/adr/2026-11-07-calendar-cutover-uses-bounded-transactions.md). Returns the tenant id.
+ * admits the tenant as `admitTenantInTransaction` does: the lock and admission order `seedSystem` uses.
+ * Returns the tenant id.
  */
 export async function lockTenantSeedInTransaction(client: PoolClient, caller: string): Promise<string> {
   const tenantId = await requireTenantId(client, caller);
@@ -232,8 +230,7 @@ export async function seedSystem(
       owner: "user",
     });
 
-    // The defaults of the Inbox item types that were seeded (issue gh-1977), none yet. A populated tenant gets the
-    // property from inbox/defaultInboxTypesCutoverMigration.ts; keep the two identical.
+    // The defaults of the Inbox item types that were seeded (issue gh-1977), none yet.
     await propertiesStore.createProperty(client, {
       databaseId: settingsDb.id,
       key: SEEDED_DEFAULT_INBOX_TYPES_KEY,
@@ -325,8 +322,7 @@ export async function seedSystem(
       throw new Error("Emails.attachments property not found after seedEmailModuleInTransaction");
     }
     // Issue #1698: the trigger also skips a file attached to an Event, so it needs the Files.events
-    // property id seedTenDatabasesInTransaction above created. A populated install gets it from
-    // runTranscriptionTriggerEventsCutoverMigration instead.
+    // property id seedTenDatabasesInTransaction above created.
     const eventsProperty = await propertiesStore.getPropertyByKey(client, tenDatabases.files.id, "events");
     if (!eventsProperty) {
       throw new Error("Files.events property not found after seedTenDatabasesInTransaction");
@@ -343,24 +339,21 @@ export async function seedSystem(
       },
     });
     // Daily transcription requeue (issue #186): puts every failed Transcriptions row back into
-    // the pipeline as a fresh batch. A populated install gets it from
-    // runTranscriptionRequeueHeartbeatCutoverMigration instead.
+    // the pipeline as a fresh batch.
     await createHeartbeat(client, {
       projectItemId: semprecProject.id,
       ...TRANSCRIPTION_REQUEUE_HEARTBEAT,
       actionId: TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
       actionConfig: { transcriptsDatabaseId: tenDatabases.transcripts.id },
     });
-    // Midnight Tasks rollover (issue #1674): moves unfinished one-off tasks to the new day. A populated install gets it
-    // from runTasksDayRolloverHeartbeatCutoverMigration instead.
+    // Midnight Tasks rollover (issue #1674): moves unfinished one-off tasks to the new day.
     await createHeartbeat(client, {
       projectItemId: semprecProject.id,
       ...TASKS_DAY_ROLLOVER_HEARTBEAT,
       actionId: TASKS_DAY_ROLLOVER_ACTION_ID,
       actionConfig: { tasksDatabaseId: tenDatabases.tasks.id },
     });
-    // Weekly Journal cleanup (issue #1883): asks the assistant to tidy the Journal every Sunday evening. A populated
-    // install gets it from runJournalWeeklyCleanupCutoverMigration instead.
+    // Weekly Journal cleanup (issue #1883): asks the assistant to tidy the Journal every Sunday evening.
     await ensureJournalWeeklyCleanupHeartbeat(client, semprecProject.id);
 
     // Inbox / Inbox item types / Processing proposals (issue #101): the three databases
@@ -387,22 +380,17 @@ export async function seedSystem(
 
     // Invitations (issue gh-1901): the calendar module's incoming-invitation database. After the Calendars seed
     // above, whose project item owns it, and after the email module seed, whose Emails and Mailboxes it relates to.
-    // A tenant seeded before it gets the database from runInvitationsDatabaseCutoverMigration instead.
     await seedInvitationsDatabaseInTransaction(client, calendars);
 
-    // Recipes (issue #1707): depends only on the Projects database above. A tenant seeded before it gets the
-    // module from runRecipesModuleCutoverMigration instead.
+    // Recipes (issue #1707): depends only on the Projects database above.
     await seedRecipesModuleInTransaction(client, projectsDb.id, viewTypeRegistry);
 
     // Sleep (issue #1776): three system databases, one settings item and two default plans. Depends only on the
     // Projects database above and, for the `sleepSettings.area` relation (issue gh-1833), the Areas database of the
-    // ten databases. A tenant seeded before it gets the module from runSleepModuleCutoverMigration instead.
+    // ten databases.
     await seedSleepModuleInTransaction(client, projectsDb.id, tenDatabases.areas.id, viewTypeRegistry);
     return "created";
   });
 
-  // Active module data migrations are resumable and independently idempotent. Run them
-  // after the structural seed transaction so item batches never prolong its lock scope.
-  await runModuleDataMigrations(pool, moduleRegistry);
   return outcome;
 }

@@ -129,21 +129,6 @@ export interface ModuleQuickFilterDescriptor {
 }
 
 /**
- * A manifest-declared resumable data migration (issue #111) for one `from_version` ->
- * `to_version` transition of `databaseKey`'s items, distinct from the plain-string
- * `migrations` field above (that one names the module's own structural/DDL files applied
- * by the forward-only runner, issue #224). `converterExport` names a `ModuleDataMigrationConverter`
- * (`registry.ts`) of shape `(properties, context) => properties` that the module data migration
- * runner calls once per item; a converter that needs no context may declare only `properties`.
- */
-export interface ModuleDataMigrationDescriptor {
-  databaseKey: string;
-  fromVersion: string;
-  toVersion: string;
-  converterExport: string;
-}
-
-/**
  * `capability`, when present, names an entry that must be granted at runtime (see
  * `ModuleRegistry.getAgentTools`) for the tool to appear in a projection at all — an
  * ungranted tool is absent, never present-but-denied.
@@ -337,7 +322,6 @@ export interface ModuleManifest {
   taskNames?: ModuleTaskDescriptor[];
   workers?: ModuleWorkerDescriptor[];
   migrations?: string[];
-  dataMigrations?: ModuleDataMigrationDescriptor[];
   customRoutes?: ModuleCustomRouteDescriptor[];
   linkRules?: Array<ModuleLinkRuleDescriptor | ModuleResolverLinkRuleDescriptor>;
   /**
@@ -578,13 +562,6 @@ const moduleDatabaseDescriptorSchema = z
     }
   });
 
-const moduleDataMigrationDescriptorSchema = z.object({
-  databaseKey: z.string().min(1),
-  fromVersion: z.string().min(1),
-  toVersion: z.string().min(1),
-  converterExport: z.string().min(1),
-});
-
 const moduleAgentToolDescriptorSchema = z
   .object({
     name: z.string().min(1),
@@ -723,7 +700,6 @@ export const moduleManifestSchema = z.object({
   taskNames: z.array(moduleTaskDescriptorSchema).optional(),
   workers: z.array(moduleWorkerDescriptorSchema).optional(),
   migrations: z.array(z.string().min(1)).optional(),
-  dataMigrations: z.array(moduleDataMigrationDescriptorSchema).optional(),
   customRoutes: z.array(moduleCustomRouteDescriptorSchema).optional(),
   linkRules: z.array(z.union([moduleLinkRuleDescriptorSchema, moduleResolverLinkRuleDescriptorSchema])).optional(),
   editorSchemas: z.record(z.string().min(1), editorSchemaDescriptorSchema).optional(),

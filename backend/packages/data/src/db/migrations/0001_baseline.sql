@@ -1965,48 +1965,6 @@ CREATE UNIQUE INDEX mcp_tool_registrations_tenant_id_id_uq ON public.mcp_tool_re
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mcp_tool_registrations TO semprec_side;
 
 -- ----------------------------------------------------------------------------------------------------
--- module_migration_progress
--- ----------------------------------------------------------------------------------------------------
-
-CREATE TABLE public.module_migration_progress (
-    module_id text NOT NULL,
-    database_key text NOT NULL,
-    from_version text NOT NULL,
-    to_version text NOT NULL,
-    pass smallint DEFAULT 1 NOT NULL,
-    cursor uuid,
-    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
-    CONSTRAINT module_migration_progress_pass_check CHECK ((pass = ANY (ARRAY[1, 2])))
-);
-
-COMMENT ON TABLE public.module_migration_progress IS 'semprec:tenancy=tenant';
-
-ALTER TABLE ONLY public.module_migration_progress
-    ADD CONSTRAINT module_migration_progress_pkey PRIMARY KEY (tenant_id, module_id, database_key, from_version, to_version);
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.module_migration_progress TO semprec_side;
-
--- ----------------------------------------------------------------------------------------------------
--- module_migrations
--- ----------------------------------------------------------------------------------------------------
-
-CREATE TABLE public.module_migrations (
-    module_id text NOT NULL,
-    database_key text NOT NULL,
-    from_version text NOT NULL,
-    to_version text NOT NULL,
-    ran_at timestamp with time zone DEFAULT now() NOT NULL,
-    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL
-);
-
-COMMENT ON TABLE public.module_migrations IS 'semprec:tenancy=tenant';
-
-ALTER TABLE ONLY public.module_migrations
-    ADD CONSTRAINT module_migrations_pkey PRIMARY KEY (tenant_id, module_id, database_key, from_version, to_version);
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.module_migrations TO semprec_side;
-
--- ----------------------------------------------------------------------------------------------------
 -- notification_preferences
 -- ----------------------------------------------------------------------------------------------------
 
@@ -3279,12 +3237,6 @@ ALTER TABLE ONLY public.mcp_server_connection_state
 ALTER TABLE ONLY public.mcp_tool_registrations
     ADD CONSTRAINT mcp_tool_registrations_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
-ALTER TABLE ONLY public.module_migration_progress
-    ADD CONSTRAINT module_migration_progress_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-ALTER TABLE ONLY public.module_migrations
-    ADD CONSTRAINT module_migrations_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
 ALTER TABLE ONLY public.notification_preferences
     ADD CONSTRAINT notification_preferences_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
@@ -3761,18 +3713,6 @@ ALTER TABLE public.mcp_tool_registrations ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON public.mcp_tool_registrations AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
 
 CREATE POLICY tenant_rows ON public.mcp_tool_registrations USING (true) WITH CHECK (true);
-
-ALTER TABLE public.module_migration_progress ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY tenant_isolation ON public.module_migration_progress AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
-
-CREATE POLICY tenant_rows ON public.module_migration_progress USING (true) WITH CHECK (true);
-
-ALTER TABLE public.module_migrations ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY tenant_isolation ON public.module_migrations AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
-
-CREATE POLICY tenant_rows ON public.module_migrations USING (true) WITH CHECK (true);
 
 ALTER TABLE public.notification_preferences ENABLE ROW LEVEL SECURITY;
 

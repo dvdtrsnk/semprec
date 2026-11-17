@@ -128,7 +128,6 @@ describe("approved destructive operations write as the requesting agent (issue #
       undefined,
       undefined,
       undefined,
-      undefined,
       replayApprovedGenericOperation,
     );
     await runOnce({ pgPool: pool, taskList });

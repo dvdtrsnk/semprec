@@ -13,11 +13,7 @@ import {
 } from "./scheduler/sweep.js";
 import { handleRollupRecomputeTask, handleRollupRecomputeFullTask } from "./rollup/recompute.js";
 import { handleJournalInboxRecomputeTask } from "./inbox/journalInboxCompute.js";
-import { handleMailGmailPseudoFolderCleanupTask } from "./mail/gmailPseudoFolderCleanupJob.js";
-import { handleMailMessagePreviewBackfillTask } from "./mail/mailMessagePreviewBackfillJob.js";
-import { handleMailThreadBackfillTask } from "./mail/mailThreadBackfillJob.js";
 import { handleMailboxRemovalTask } from "./mail/mailboxRemovalJob.js";
-import { handleMailSearchTextReindexTask } from "./mail/mailSearchTextReindexJob.js";
 import { handleItemSearchBackfillTask } from "./search/itemSearchBackfill.js";
 import { handleItemSearchReindexDependentsTask } from "./search/itemSearchFanout.js";
 import { handleItemSearchPageTextTask } from "./search/pageTextJob.js";
@@ -48,11 +44,6 @@ import {
 } from "./mail/mailSyncJob.js";
 import { LocalFsBlobStorageWriter, resolveBlobStorageDir, type BlobStorageWriter } from "./mail/blobStorage.js";
 import type { MailTransportFactory } from "./mail/mailTransport.js";
-import {
-  handleMailLegacyEmailMigrationTask,
-  noopLegacyRawMimeFetcher,
-  type LegacyRawMimeFetcher,
-} from "./migrationJob/mailLegacyEmailMigration.js";
 import {
   handleApprovalRequestExecuteTask,
   type GenericOperationApprovalReplay,
@@ -151,7 +142,6 @@ export function createCoreTaskList(
   libraryMetadataFetcher: LibraryMetadataFetcher = noopLibraryMetadataFetcher,
   mailSyncAdapters: MailSyncAdapterFactory = noopMailSyncAdapterFactory,
   mailBlobStorage: BlobStorageWriter = new LocalFsBlobStorageWriter(resolveBlobStorageDir("MAIL_ATTACHMENTS_DIR")),
-  legacyRawMimeFetcher: LegacyRawMimeFetcher = noopLegacyRawMimeFetcher,
   moduleRegistry?: ModuleRegistry,
   pushSenders?: PushSenders,
   genericOperationApprovalReplay?: GenericOperationApprovalReplay,
@@ -244,31 +234,12 @@ export function createCoreTaskList(
         }),
       );
     },
-    [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: async () => {
-      await handleMailMessagePreviewBackfillTask(pool);
-    },
-    [CORE_TASK_NAMES.MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP]: async () => {
-      await handleMailGmailPseudoFolderCleanupTask(pool, mailSyncAdapters.loadGmailLabels);
-    },
-    [CORE_TASK_NAMES.MAIL_THREAD_BACKFILL]: async () => {
-      await handleMailThreadBackfillTask(pool);
-    },
     // Issue gh-2029: soft-deletes a removed mailbox's Emails and Folders in committed chunks.
     [CORE_TASK_NAMES.MAILBOX_REMOVAL]: async (payload) => {
       await handleMailboxRemovalTask(pool, payload);
     },
-    [CORE_TASK_NAMES.MAIL_SEARCH_TEXT_REINDEX]: async () => {
-      await handleMailSearchTextReindexTask(pool, mailBlobStorage, filesBlobStorage);
-    },
     [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: async () => {
       await handleMailSearchReindexSweepTask(pool);
-    },
-    [CORE_TASK_NAMES.MAIL_LEGACY_EMAIL_MIGRATION]: async (payload) => {
-      await handleMailLegacyEmailMigrationTask(
-        pool,
-        { emailsDatabaseId: requireString(payload, "emailsDatabaseId") },
-        legacyRawMimeFetcher,
-      );
     },
     [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: async (payload) => {
       await handleApprovalRequestExecuteTask(

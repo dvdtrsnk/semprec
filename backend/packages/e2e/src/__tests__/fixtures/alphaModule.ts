@@ -31,9 +31,6 @@ export const manifest: ModuleManifest = {
     },
   ],
   migrations: ["0001_e2e_alpha_marker.sql"],
-  dataMigrations: [
-    { databaseKey: "e2eAlphaItems", fromVersion: "1.0.0", toVersion: "2.0.0", converterExport: "convertAlphaItem" },
-  ],
 };
 
 export interface IngestPayload {
@@ -79,8 +76,4 @@ export const alphaTickRuleSchema = {
 
 export function computeAlphaTickNextFireAt(_rule: unknown, _timezone: string, after: Date): Date {
   return new Date(after.getTime() + 60_000);
-}
-
-export function convertAlphaItem(properties: Record<string, unknown>): Record<string, unknown> {
-  return { ...properties, migrated: true };
 }

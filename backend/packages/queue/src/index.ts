@@ -52,13 +52,6 @@ export const CORE_TASK_NAMES = {
   // Issue #1715: copies the text of a parent document's `page` blocks onto the `title` of their Pages items, enqueued by
   // a page edit with a 10-second debounce (`preserve_run_at`).
   PAGE_TITLE_MIRROR: "pageTitleMirror",
-  // Issue #1468: fills mail_message_meta.preview_text/ingested_at for rows that predate them.
-  MAIL_MESSAGE_PREVIEW_BACKFILL: "mailMessagePreviewBackfill",
-  // Issue #1496: removes Gmail pseudo-label folders (UNREAD, STARRED, CATEGORY_*...) and keeps their mail in Archive.
-  MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP: "mailGmailPseudoFolderCleanup",
-  // Issue #1570: threads stored mail that has no thread (sent messages before #1474) and merges copies of one
-  // Message-ID that were split across threads.
-  MAIL_THREAD_BACKFILL: "mailThreadBackfill",
   MAIL_LINK_PERSON_EMAILS: "mailLinkPersonEmails",
   // Issue gh-2029: soft-deletes a removed mailbox's Folders and Emails in committed chunks, enqueued by the removal
   // transaction under the job key `mailbox-removal-<mailboxItemId>`.
@@ -66,9 +59,7 @@ export const CORE_TASK_NAMES = {
   HEARTBEAT_SWEEP: "heartbeatSweep",
   // Issue #222: the API-runtime half of `heartbeatFire`'s split for every deterministic
   // heartbeat action (including library processing); the agent-session half is
-  // `AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT`. The legacy `heartbeatFire` name is gone —
-  // #222's install migration re-enqueues every pending legacy job under the correct one of
-  // these two before the old handler is removed.
+  // `AGENT_TASK_NAMES.HEARTBEAT_FIRE_AGENT`.
   HEARTBEAT_FIRE_CORE: "heartbeatFireCore",
   ROLLUP_RECOMPUTE: "rollupRecompute",
   ROLLUP_RECOMPUTE_FULL: "rollupRecomputeFull",
@@ -86,10 +77,6 @@ export const CORE_TASK_NAMES = {
   // Issue #26: periodic safety net for Emails items whose search index write was skipped
   // (a direct-DB write outside ingestEmailMessage's own standard path).
   MAIL_SEARCH_REINDEX_SWEEP: "mailSearchReindexSweep",
-  MAIL_SEARCH_TEXT_REINDEX: "mailSearchTextReindex",
-  // Issue #93: backfills mail_message_meta (envelope/threadId/messageId) for legacy Emails
-  // items that predate it.
-  MAIL_LEGACY_EMAIL_MIGRATION: "mailLegacyEmailMigration",
   // Issue #106: recomputes one Journal day item's cached `items.computed` Inbox-item list.
   JOURNAL_INBOX_RECOMPUTE: "journalInboxRecompute",
   // Issue #131: the reserved execution job an approval decision enqueues once (and only once)
@@ -190,9 +177,6 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS]: "api",
   [CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT]: "api",
   [CORE_TASK_NAMES.PAGE_TITLE_MIRROR]: "api",
-  [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: "api",
-  [CORE_TASK_NAMES.MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP]: "api",
-  [CORE_TASK_NAMES.MAIL_THREAD_BACKFILL]: "api",
   [CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS]: "api",
   [CORE_TASK_NAMES.MAILBOX_REMOVAL]: "api",
   [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: "api",
@@ -207,8 +191,6 @@ export const CORE_TASK_AFFINITY: Record<CoreTaskName, TaskAffinity> = {
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC]: "api",
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: "api",
   [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: "api",
-  [CORE_TASK_NAMES.MAIL_SEARCH_TEXT_REINDEX]: "api",
-  [CORE_TASK_NAMES.MAIL_LEGACY_EMAIL_MIGRATION]: "api",
   [CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE]: "api",
   [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: "api",
   [CORE_TASK_NAMES.NOTIFICATION_FANOUT]: "api",
@@ -272,9 +254,6 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.ITEM_SEARCH_REINDEX_DEPENDENTS]: "tenant",
   [CORE_TASK_NAMES.ITEM_SEARCH_PAGE_TEXT]: "tenant",
   [CORE_TASK_NAMES.PAGE_TITLE_MIRROR]: "tenant",
-  [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: "system",
-  [CORE_TASK_NAMES.MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP]: "system",
-  [CORE_TASK_NAMES.MAIL_THREAD_BACKFILL]: "system",
   [CORE_TASK_NAMES.MAIL_LINK_PERSON_EMAILS]: "tenant",
   [CORE_TASK_NAMES.MAILBOX_REMOVAL]: "tenant",
   [CORE_TASK_NAMES.HEARTBEAT_SWEEP]: "system",
@@ -289,8 +268,6 @@ export const TASK_TENANCY: Record<CoreTaskName | AgentTaskName, TaskTenancy> = {
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC]: "tenant",
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: "system",
   [CORE_TASK_NAMES.MAIL_SEARCH_REINDEX_SWEEP]: "system",
-  [CORE_TASK_NAMES.MAIL_SEARCH_TEXT_REINDEX]: "system",
-  [CORE_TASK_NAMES.MAIL_LEGACY_EMAIL_MIGRATION]: "tenant",
   [CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE]: "tenant",
   [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: "tenant",
   [CORE_TASK_NAMES.NOTIFICATION_FANOUT]: "tenant",
@@ -390,7 +367,7 @@ export async function assertSearchTaskIdentifiersRegistered(client: Queryable): 
 
 /**
  * Grants the runtime least-privilege roles (issue #243: `semprec_data`/`semprec_side`, created
- * by packages/data's `0040_least_privilege_roles.sql`) full access to graphile-worker's own
+ * by packages/data's baseline migration) full access to graphile-worker's own
  * `graphile_worker` schema — its tables can't be listed in that migration because
  * `ensureQueueSchema` (graphile-worker's own migration runner) is what creates them, and it
  * hasn't run yet at that point. Call this once, immediately after `ensureQueueSchema`, as
@@ -635,8 +612,7 @@ const tenantStatusRowSchema = z.object({ status: z.enum(["provisioning", "active
  * level with the job name, id and trace id (never the payload) and throws
  * `TenantScopeMissingError`, without a query and without calling the handler. graphile-worker
  * records the failure and retries until the job is permanently failed, where
- * `observabilityCheckSystem`'s failed-jobs check reports it. Legacy jobs still queued at deploy
- * time are stamped beforehand by `runLegacyJobEnvelopeStampMigration` in `@semprec/data`.
+ * `observabilityCheckSystem`'s failed-jobs check reports it.
  */
 async function runInTaskScope(
   name: string,

@@ -1,4 +1,3 @@
-export { enqueueMailSearchTextReindex } from "./mail/mailSearchTextReindexJob.js";
 import "./domainWriteHooks.js";
 
 export {
@@ -22,9 +21,6 @@ export { indexItem } from "./search/itemSearchIndexer.js";
 export { enqueueItemSearchBackfill, type ItemSearchBackfillOptions } from "./search/itemSearchBackfill.js";
 export { enqueueTenantSearchReindex } from "./search/itemSearchFanout.js";
 export { searchItemGroups, type SearchItemGroupsInput } from "./search/searchItemsQuery.js";
-export { enqueueMailGmailPseudoFolderCleanup } from "./mail/gmailPseudoFolderCleanupJob.js";
-export { enqueueMailMessagePreviewBackfill } from "./mail/mailMessagePreviewBackfillJob.js";
-export { enqueueMailThreadBackfill } from "./mail/mailThreadBackfillJob.js";
 
 export { createChokePoint, type ChokePoint } from "./chokePoint/chokePoint.js";
 export type { Actor } from "./chokePoint/authorization.js";
@@ -120,7 +116,6 @@ export {
   createHeartbeatFireAgentTask,
   resolveModuleRuleKinds,
 } from "./scheduler/sweep.js";
-export { runHeartbeatFireQueueSplitMigration } from "./scheduler/heartbeatFireQueueSplitMigration.js";
 
 export {
   ROLLUP_AGGREGATIONS,
@@ -148,7 +143,6 @@ export {
   runPropertyTypeMigrationJob,
   handlePropertyTypeMigrationTask,
 } from "./migrationJob/propertyTypeMigration.js";
-export { runModuleDataMigration, runModuleDataMigrations } from "./migrationJob/moduleDataMigration.js";
 
 export * from "./manifest/permissionManifest.js";
 export * from "./manifest/driftCheck.js";
@@ -458,7 +452,6 @@ export {
   resolveDocHistoryRetentionDays,
   retentionHours,
 } from "./docs/docHistoryConfig.js";
-export { runDocHistoryCutoverMigration } from "./docs/docHistoryCutoverMigration.js";
 export { manifest as docsModuleManifest } from "./docs/docsModuleManifest.js";
 export { PAGES_MODULE_ID, ensurePagesDatabase } from "./docs/pagesDatabase.js";
 export { collectSubpageTree } from "./docs/pageTrash.js";
@@ -630,7 +623,6 @@ export {
   createReplaceEventPeopleRouteHandler,
 } from "./calendar/eventParticipantsRouteHandlers.js";
 export { duplicateCalendarItem } from "./calendar/duplicateCalendarItem.js";
-export { convertEventDateToWallClock } from "./calendar/eventDateMigration.js";
 export { createDuplicateCalendarItemRouteHandler } from "./calendar/duplicateCalendarItemRouteHandler.js";
 export { createAreaOverviewRouteHandler } from "./areas/areaOverviewRouteHandler.js";
 export { createEventInCalendar } from "./calendar/defaultCalendarCreateHook.js";
@@ -820,7 +812,6 @@ export {
   legacyAgentsTextToSections,
   seedProjectAgentGuidanceFromLegacyText,
 } from "./projectAgentGuidance/legacyAgentsConversion.js";
-export { runProjectAgentGuidanceCutoverMigration } from "./projectAgentGuidance/projectAgentGuidanceCutoverMigration.js";
 export { seedSystemProjectAgentGuidance } from "./projectAgentGuidance/seedSystemProjectAgentGuidance.js";
 
 export { RETENTION_DAYS, purgeExpiredTrash, handleItemTrashPurgeSweepTask } from "./trash/purgeExpiredTrash.js";
@@ -942,8 +933,6 @@ export { createMailSummaryRouteHandler } from "./mail/mailSummary.js";
 export { createMailFolderListRouteHandler } from "./mail/mailFolderList.js";
 
 export { THREADS_MODULE_ID } from "./seed/emailModuleKeys.js";
-export { runThreadsDatabaseCutoverMigration } from "./mail/threadsDatabaseCutoverMigration.js";
-export { runThreadTaskProposalCutoverMigration } from "./mail/threadTaskProposalCutoverMigration.js";
 export { readRecordingRequest, recordRecordingIntake } from "./transcription/recordingIntake.js";
 
 export { createLibraryMetadataFetcher } from "./library/libraryMetadataFetcher.js";

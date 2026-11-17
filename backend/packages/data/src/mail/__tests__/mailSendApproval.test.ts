@@ -956,7 +956,6 @@ describe("approval of a mail send by an agent (issue gh-1913)", () => {
           undefined, // libraryMetadataFetcher
           undefined, // mailSyncAdapters
           storage, // mailBlobStorage
-          undefined, // legacyRawMimeFetcher
           undefined, // moduleRegistry
           undefined, // pushSenders
           undefined, // genericOperationApprovalReplay

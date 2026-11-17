@@ -239,15 +239,9 @@ async function approveAndRun(tenant: Tenant, requestId: string): Promise<void> {
       }),
     ),
   );
-  const handler = createCoreTaskList(
-    pool,
-    createActionRegistry(),
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    registry,
-  )[CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE];
+  const handler = createCoreTaskList(pool, createActionRegistry(), undefined, undefined, undefined, registry)[
+    CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE
+  ];
   if (!handler) throw new Error("Missing approval handler");
   await runOnce({ pgPool: pool, taskList: { [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: handler } });
 }

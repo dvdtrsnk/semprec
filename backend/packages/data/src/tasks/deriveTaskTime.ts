@@ -12,12 +12,3 @@ function formatTaskTime(value: string): string {
   if (!match) return value;
   return `${match[1]!.padStart(2, "0")}:${match[2]!.padStart(2, "0")}`;
 }
-
-/** Manifest data-migration converter: corrects only a stale derived Tasks time value. */
-export function backfillTaskTimeProperties(properties: Record<string, unknown>): Record<string, unknown> {
-  const timeFrom = typeof properties.timeFrom === "string" ? properties.timeFrom : null;
-  const timeTo = typeof properties.timeTo === "string" ? properties.timeTo : null;
-  const time = deriveTaskTime(timeFrom, timeTo);
-  if ((properties.time ?? null) === time) return properties;
-  return { ...properties, time };
-}

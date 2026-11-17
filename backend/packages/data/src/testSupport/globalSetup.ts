@@ -8,14 +8,6 @@ import { Pool } from "pg";
 import { runAsSystem } from "@semprec/shared";
 import { ensureQueueSchema, grantQueueSchemaPrivileges } from "@semprec/queue";
 import { runMigrations } from "../db/migrate.js";
-import { runDocHistoryCutoverMigration } from "../docs/docHistoryCutoverMigration.js";
-import { runAgentRunsActorUserIdCutoverMigration } from "../agentRuns/agentRunsActorUserIdCutoverMigration.js";
-import { runApprovalRequestExecutionStatusCutoverMigration } from "../mcp/approvalRequestExecutionStatusCutoverMigration.js";
-import { runHeartbeatFireQueueSplitMigration } from "../scheduler/heartbeatFireQueueSplitMigration.js";
-import { runLegacyJobEnvelopeStampMigration } from "../tenancy/legacyJobEnvelopeStampMigration.js";
-import { createPool } from "../db/pool.js";
-import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
-import { activateCzechHunspellSearch } from "../mail/czechHunspellSearch.js";
 import { preserveFailingExitCode } from "./preserveFailingExitCode.js";
 import { sweepStalePostgresDirs } from "./stalePostgresDirs.js";
 import { ModuleRegistry } from "@semprec/module-registry";
@@ -158,30 +150,11 @@ export default async function setup(): Promise<() => Promise<void>> {
     process.env.CREDENTIALS_MASTER_KEY ??= Buffer.alloc(32, 7).toString("base64");
 
     const pool = new Pool({ connectionString });
-    const tenantPool = createPool(connectionString, { role: "semprec_data" });
-    try {
-      await runAsSystem("test database setup", async () => {
-        await runMigrations(pool);
-        await activateCzechHunspellSearch(pool);
-        await runDocHistoryCutoverMigration(pool);
-        await runAgentRunsActorUserIdCutoverMigration(pool);
-        await runApprovalRequestExecutionStatusCutoverMigration(pool);
-        // Before the tenant cutovers, as in runMigrationsCli.ts: their writes queue search jobs.
-        await ensureQueueSchema(pool);
-        await grantQueueSchemaPrivileges(pool);
-        await runTenantCutoverMigrations(tenantPool);
-        await runHeartbeatFireQueueSplitMigration(pool);
-        await runLegacyJobEnvelopeStampMigration(pool);
-      });
-    } finally {
-      // Logged and swallowed, as runMigrationsCli's endPool does: a throw here would replace the
-      // setup or cutover error that is actually worth reporting.
-      try {
-        await tenantPool.end();
-      } catch (err) {
-        console.error("globalSetup: failed to end the tenant migration pool", err);
-      }
-    }
+    await runAsSystem("test database setup", async () => {
+      await runMigrations(pool);
+      await ensureQueueSchema(pool);
+      await grantQueueSchemaPrivileges(pool);
+    });
 
     // Tenant zero's id is the stable anchor of every test: `resetDatabase` re-creates it with this id.
     const sole = await pool.query<{ id: string | null }>("SELECT app_sole_tenant() AS id");
@@ -190,9 +163,6 @@ export default async function setup(): Promise<() => Promise<void>> {
       throw new Error("globalSetup: app_sole_tenant() returned NULL after the migrations — tenant zero is missing");
     }
     process.env.TEST_TENANT_ZERO_ID = tenantZeroId;
-    // Test database only: the guard makes a second tenant impossible, and the two-tenant harness
-    // needs one. IF EXISTS keeps this working once the go-live migration removes the guard itself.
-    await pool.query("DROP INDEX IF EXISTS tenants_single_tenant_guard");
     await pool.end();
   } catch (err) {
     if (onSignal) {

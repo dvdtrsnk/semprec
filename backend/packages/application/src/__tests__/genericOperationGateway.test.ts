@@ -3186,7 +3186,6 @@ describe("createGenericOperationGateway (issue #220)", () => {
         undefined,
         undefined,
         undefined,
-        undefined,
         replayApprovedGenericOperation,
       );
       const drainUntil = async (count: number, sum: number | null) => {
@@ -3743,7 +3742,6 @@ describe("createGenericOperationGateway (issue #220)", () => {
         undefined,
         undefined,
         undefined,
-        undefined,
         genericOperationApprovalReplay,
       );
     }
@@ -3958,17 +3956,7 @@ describe("createGenericOperationGateway (issue #220)", () => {
 
       await runOnce({
         pgPool: pool,
-        taskList: createCoreTaskList(
-          pool,
-          new Map(),
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-        ),
+        taskList: createCoreTaskList(pool, new Map(), undefined, undefined, undefined, undefined, undefined, undefined),
       });
 
       expect(approvalAnnouncements).toEqual([{ approvalRequestId: requestId, userId: run.actorUserId }]);

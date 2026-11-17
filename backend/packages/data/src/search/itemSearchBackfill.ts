@@ -4,7 +4,6 @@ import { CORE_TASK_NAMES } from "@semprec/queue";
 import { currentTenantScope, TenantScopeMissingError } from "@semprec/shared";
 import { withTransaction } from "../db/pool.js";
 import { EMAILS_MODULE_ID } from "../seed/emailModuleKeys.js";
-import { assertRowSecurityActive, forEachMaintainedTenant } from "../tenancy/provisionTenant.js";
 import { indexItem } from "./itemSearchIndexer.js";
 import { enqueueSearchLaneJob } from "./searchLaneEnqueue.js";
 
@@ -57,13 +56,5 @@ export async function handleItemSearchBackfillTask(pool: Pool, payload: unknown)
     if (rows.length === CHUNK_SIZE && last) {
       await enqueueItemSearchBackfill(client, { ...options, afterItemId: last.id });
     }
-  });
-}
-
-/** Deploy calls this after queue schema grants, using the semprec_data pool so RLS applies. */
-export async function runItemSearchBackfillCutover(pool: Pool, onlyMissing = true): Promise<void> {
-  await assertRowSecurityActive(pool);
-  await forEachMaintainedTenant(pool, async () => {
-    await withTransaction(pool, (client) => enqueueItemSearchBackfill(client, { onlyMissing }));
   });
 }

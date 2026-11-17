@@ -183,7 +183,6 @@ describe("trash and restore of a page with its subpages (issue #1723)", () => {
       undefined,
       undefined,
       undefined,
-      undefined,
       replayApprovedGenericOperation,
     );
     const execute = taskList[CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE];

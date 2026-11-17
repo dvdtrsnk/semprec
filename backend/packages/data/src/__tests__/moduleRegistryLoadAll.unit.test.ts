@@ -165,9 +165,9 @@ describe("all module manifests loaded together (module-contract issue #115)", ()
     let active = new Set(ALL_MODULE_IDS.filter((id) => id !== "docs"));
     const registry = await loadAll(() => active);
 
-    expect((await registry.getMigrations()).some((m) => m.moduleId === "docs")).toBe(false);
+    expect((await registry.getDatabases()).some((db) => db.moduleId === "docs")).toBe(false);
 
     active = new Set(ALL_MODULE_IDS);
-    expect((await registry.getMigrations()).some((m) => m.moduleId === "docs")).toBe(true);
+    expect((await registry.getDatabases()).some((db) => db.moduleId === "docs")).toBe(true);
   });
 });

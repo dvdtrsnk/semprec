@@ -151,7 +151,6 @@ describe("account export routes (issue #1043)", () => {
       undefined,
       undefined,
       undefined,
-      undefined,
       files,
     );
     const exportTask = coreTasks[CORE_TASK_NAMES.TENANT_EXPORT];

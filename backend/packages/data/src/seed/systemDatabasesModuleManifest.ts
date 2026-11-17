@@ -26,11 +26,6 @@ export {
   createJournalPeriodReadRouteHandler,
   createJournalPeriodEnsureRouteHandler,
 } from "../journal/journalRouteHandlers.js";
-export { backfillTaskTimeProperties } from "../tasks/deriveTaskTime.js";
-export { normalizeTaskDatesAndTimes } from "../tasks/normalizeTaskDatesAndTimes.js";
-export { backfillTaskEffectiveDate } from "../tasks/backfillTaskEffectiveDate.js";
-export { backfillTaskStatus } from "../tasks/backfillTaskStatus.js";
-export { convertEventDateToWallClock } from "../calendar/eventDateMigration.js";
 export {
   createTaskRecurrenceClearRouteHandler,
   createTaskRecurrenceSetRouteHandler,
@@ -176,7 +171,7 @@ const DATE_ASCENDING = { property: "date", direction: "asc" } as const;
 
 /**
  * Retrofit manifest (module-contract issue #226) for the ten hardcoded system databases
- * (issue #24): `0004_ten_databases.sql` (the `task_recurrence` and `blobs` tables backing
+ * (issue #24): the schema's `task_recurrence` and `blobs` tables (backing
  * Tasks recurrence and generic blob storage) plus `seedTenDatabases.ts`, which actually
  * creates the ten databases below. Each `databases[].key` reuses the database's existing
  * `owner_module_id` (`tenDatabaseKeys.ts`) and `.name` reuses its existing display name
@@ -389,50 +384,6 @@ export const manifest: ModuleManifest = {
     TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
     TASKS_DAY_ROLLOVER_ACTION_ID,
     JOURNAL_WEEKLY_CLEANUP_ACTION_ID,
-  ],
-  migrations: ["0004_ten_databases.sql"],
-  dataMigrations: [
-    {
-      databaseKey: TASKS_MODULE_ID,
-      fromVersion: "1.0.0",
-      toVersion: "1.1.0",
-      converterExport: "backfillTaskTimeProperties",
-    },
-    // Issue #1657: repairs dates and times stored before the Tasks write rules existed. The manifest `version`
-    // above was already past 1.2.0 when this transition was added and is not lowered for it.
-    {
-      databaseKey: TASKS_MODULE_ID,
-      fromVersion: "1.1.0",
-      toVersion: "1.2.0",
-      converterExport: "normalizeTaskDatesAndTimes",
-    },
-    // Issue #1780: a task without host events has the `effectiveDate` of its `date`. The manifest `version` above was
-    // already past 1.3.0 when this transition was added and is not lowered for it.
-    {
-      databaseKey: TASKS_MODULE_ID,
-      fromVersion: "1.2.0",
-      toVersion: "1.3.0",
-      converterExport: "backfillTaskEffectiveDate",
-    },
-    // Issue sp-9cf1be65: a task stored without a status (a create that named `status: null`, a patch that cleared it,
-    // or a row older than the property default) gets `notDone`. The manifest `version` above was already past 1.4.0
-    // when this transition was added and is not lowered or raised for it.
-    {
-      databaseKey: TASKS_MODULE_ID,
-      fromVersion: "1.3.0",
-      toVersion: "1.4.0",
-      converterExport: "backfillTaskStatus",
-    },
-    // Issue gh-1797: an Event stored with a time of day inside `date` gets the wall-clock `date`, `timeFrom`, `timeTo`
-    // and `time` that new Events have. Events have their own version series, separate from Tasks; this is the first
-    // entry of it, placed after the Tasks entries above. The manifest `version` above was already past 1.1.0 when this
-    // transition was added and is not lowered for it.
-    {
-      databaseKey: EVENTS_MODULE_ID,
-      fromVersion: "1.0.0",
-      toVersion: "1.1.0",
-      converterExport: "convertEventDateToWallClock",
-    },
   ],
   linkRules: [
     // A file's companies are the union of its projects' companies (issue #1653).

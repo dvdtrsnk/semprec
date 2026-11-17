@@ -121,14 +121,6 @@ export interface ModuleMigrationProjection {
   migration: string;
 }
 
-export interface ModuleDataMigrationProjection {
-  moduleId: string;
-  databaseKey: string;
-  fromVersion: string;
-  toVersion: string;
-  converterExport: string;
-}
-
 /**
  * A module task's payload schema and handler resolved to the actual imported values (not
  * just the export names `ModuleTaskProjection` carries) — what a queue-registration consumer
@@ -151,43 +143,6 @@ export interface ModuleHeartbeatRuleKindDefinition {
   kind: string;
   schema: { safeParse: (raw: unknown) => { success: boolean; data?: unknown; error?: { message: string } } };
   nextFireAt: (rule: unknown, timezone: string, after: Date) => Date | null;
-}
-
-/**
- * What the module data migration runner passes a converter besides the item's `properties`
- * (`docs/adr/2026-10-29-module-data-migration-converter-context.md`). `timezone` is the tenant's
- * configured time zone, read once per run after the run's advisory lock is taken. `itemId` is the
- * id of the item being converted. `log` writes one structured entry carrying the item id and
- * `reason`; `reason` is a short code, and no property value may be passed in it.
- */
-export interface ModuleDataMigrationConverterContext {
-  timezone: string;
-  itemId: string;
-  log: (reason: string) => void;
-}
-
-/**
- * A module data migration converter, `(properties, context) => properties`. A converter that does
- * not use `context` may declare only `properties`. Every converter must be idempotent:
- * `converter(converter(p))` deep-equals `converter(p)` (see
- * `docs/adr/2026-09-28-two-pass-skip-locked-module-data-migration.md`). The context is read-only
- * and carries no database access.
- */
-export type ModuleDataMigrationConverter = (
-  properties: Record<string, unknown>,
-  context: ModuleDataMigrationConverterContext,
-) => Record<string, unknown>;
-
-/**
- * A module data migration's converter resolved to the actual imported function, for the
- * module data migration runner (issue #111) to call once per item.
- */
-export interface ModuleDataMigrationDefinition {
-  moduleId: string;
-  databaseKey: string;
-  fromVersion: string;
-  toVersion: string;
-  converter: ModuleDataMigrationConverter;
 }
 
 export interface ModuleRegistryOptions {
@@ -278,7 +233,6 @@ export class ModuleRegistry {
     }
 
     this.assertExportsExist(path, manifest, imported);
-    this.assertDataMigrationsReferenceOwnDatabases(path, manifest);
 
     const catalogs = await loadModuleCatalogs(path);
 
@@ -323,10 +277,6 @@ export class ModuleRegistry {
     for (const ruleKind of manifest.heartbeatRuleKinds ?? []) {
       this.requireSchemaExport(imported, ruleKind.schemaExport, path, `heartbeat rule kind "${ruleKind.kind}"`);
       this.requireFunctionExport(imported, ruleKind.nextFireAtExport, path, `heartbeat rule kind "${ruleKind.kind}"`);
-    }
-    for (const dataMigration of manifest.dataMigrations ?? []) {
-      const label = `data migration "${dataMigration.databaseKey}" (${dataMigration.fromVersion} -> ${dataMigration.toVersion})`;
-      this.requireFunctionExport(imported, dataMigration.converterExport, path, label);
     }
     for (const route of manifest.customRoutes ?? []) {
       this.requireFunctionExport(imported, route.handlerExport, path, `custom route "${route.name}"`);
@@ -392,31 +342,6 @@ export class ModuleRegistry {
   private commitEditorSchemaBaseKinds(manifest: ModuleManifest): void {
     for (const baseKind of Object.keys(manifest.editorSchemas ?? {})) {
       this.editorSchemaBaseKindOwners.set(baseKind, manifest.id);
-    }
-  }
-
-  /**
-   * A data migration's `databaseKey` must name one of this same manifest's own databases —
-   * a module has no business declaring a data migration for a database it doesn't own.
-   * Checked separately from `claimCrossModuleIdentifiers` (which only ever compares against
-   * *other* modules' claims) since this is a same-manifest, internal-consistency check.
-   */
-  private assertDataMigrationsReferenceOwnDatabases(path: string, manifest: ModuleManifest): void {
-    const ownDatabaseKeys = new Set(manifest.databases.map((db) => db.key));
-    const seen = new Set<string>();
-    for (const dataMigration of manifest.dataMigrations ?? []) {
-      if (!ownDatabaseKeys.has(dataMigration.databaseKey)) {
-        throw new Error(
-          `Data migration loading "${path}" targets database key "${dataMigration.databaseKey}", which this manifest does not declare in "databases"`,
-        );
-      }
-      const key = `${dataMigration.databaseKey}:${dataMigration.fromVersion}:${dataMigration.toVersion}`;
-      if (seen.has(key)) {
-        throw new Error(
-          `Duplicate data migration for database key "${dataMigration.databaseKey}" (${dataMigration.fromVersion} -> ${dataMigration.toVersion}) loading "${path}"`,
-        );
-      }
-      seen.add(key);
     }
   }
 
@@ -845,33 +770,6 @@ export class ModuleRegistry {
     const active = await this.getActiveModules();
     return active.flatMap((loaded) =>
       (loaded.manifest.migrations ?? []).map((migration) => ({ moduleId: loaded.manifest.id, migration })),
-    );
-  }
-
-  async getDataMigrations(): Promise<ModuleDataMigrationProjection[]> {
-    const active = await this.getActiveModules();
-    return active.flatMap((loaded) =>
-      (loaded.manifest.dataMigrations ?? []).map((dataMigration) => ({
-        moduleId: loaded.manifest.id,
-        ...dataMigration,
-      })),
-    );
-  }
-
-  /**
-   * Resolves each active module's declared data migrations to their actual imported
-   * converter function, for the module data migration runner (issue #111) to execute.
-   */
-  async getDataMigrationDefinitions(): Promise<ModuleDataMigrationDefinition[]> {
-    const active = await this.getActiveModules();
-    return active.flatMap((loaded) =>
-      (loaded.manifest.dataMigrations ?? []).map((dataMigration) => ({
-        moduleId: loaded.manifest.id,
-        databaseKey: dataMigration.databaseKey,
-        fromVersion: dataMigration.fromVersion,
-        toVersion: dataMigration.toVersion,
-        converter: loaded.exports[dataMigration.converterExport] as ModuleDataMigrationDefinition["converter"],
-      })),
     );
   }
 

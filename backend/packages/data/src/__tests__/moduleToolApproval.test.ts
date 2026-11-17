@@ -696,15 +696,9 @@ describe("module tool approval requests (issue #1791)", () => {
     it("executes through the worker's task list, which hands over its module registry", async () => {
       const fixture = await createRunFixture(tenantA);
       const request = await approvedRequest(fixture);
-      const handler = createCoreTaskList(
-        runtime,
-        createActionRegistry(),
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        registry,
-      )[CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE];
+      const handler = createCoreTaskList(runtime, createActionRegistry(), undefined, undefined, undefined, registry)[
+        CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE
+      ];
       if (!handler) throw new Error("Missing approval handler");
 
       await runOnce({ pgPool: runtime, taskList: { [CORE_TASK_NAMES.APPROVAL_REQUEST_EXECUTE]: handler } });

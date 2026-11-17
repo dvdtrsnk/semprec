@@ -190,7 +190,6 @@ describe("Inbox attachments as counted blob references (issue #1564)", () => {
         undefined,
         undefined,
         undefined,
-        undefined,
         files,
         { files: filesDir, mailAttachments: mailDir },
       );
@@ -322,7 +321,6 @@ describe("Inbox attachments as counted blob references (issue #1564)", () => {
           undefined,
           undefined,
           mail,
-          undefined,
           undefined,
           undefined,
           undefined,

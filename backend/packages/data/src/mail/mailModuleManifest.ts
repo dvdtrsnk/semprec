@@ -72,11 +72,10 @@ export { createMailboxRemovalRouteHandler } from "./mailboxRemoval.js";
 
 /**
  * Retrofit manifest (module-contract issue #227) for mail sync and mailbox (issue #26):
- * Mailboxes/Folders/Emails (`0006_mail_sync.sql`, `0007_mail_delivered_to_and_dsn.sql`) and
- * the `mailbox-client` view type (`views/mailboxClientViewType.ts`). `newEmail`'s
+ * Mailboxes/Folders/Emails and the `mailbox-client` view type (`views/mailboxClientViewType.ts`). `newEmail`'s
  * `core.agentRun` heartbeat and the sync/reindex jobs registered under `CORE_TASK_NAMES`
- * (`mailAccountSync`, `mailAccountSyncSweep`, `mailSearchReindexSweep`,
- * `mailLegacyEmailMigration` — all wired in `worker.ts`'s `createCoreTaskList`) are
+ * (`mailAccountSync`, `mailAccountSyncSweep`, `mailSearchReindexSweep` — all wired in `worker.ts`'s
+ * `createCoreTaskList`) are
  * core-registered, not module-declared, the same reason the docs manifest (#226) excludes
  * its cron tasks — so the only `taskNames` entries are the module's own `mailTriageThreadProject` (issue gh-1872),
  * which `threadProjectTriage.ts` enqueues, and `mailSyncThreadTaskPeople` (issue gh-1923, `threadTaskPeople.ts`).
@@ -185,7 +184,6 @@ export const manifest: ModuleManifest = {
   viewTypes: [MAILBOX_CLIENT_VIEW_TYPE],
   heartbeatActions: [MAIL_REINDEX_PERSON_EMAILS_ACTION_ID, MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID],
   workers: [{ name: "semprec-mailsync", handlerExport: "createNoopMailLiveSyncLifecycleFactory" }],
-  migrations: ["0006_mail_sync.sql", "0007_mail_delivered_to_and_dsn.sql"],
   linkRules: [
     // A task made from a thread takes over the thread's project (issue gh-1900). Ownership handoff: `Tasks.project`
     // stays `owner: user`, and the `valueLinks` process writes it only while the task's value link for that property

@@ -746,7 +746,6 @@ describe("mcpServerSync job (issue gh-1976)", () => {
         undefined, // libraryMetadataFetcher
         undefined, // mailSyncAdapters
         undefined, // mailBlobStorage
-        undefined, // legacyRawMimeFetcher
         undefined, // moduleRegistry
         undefined, // pushSenders
         undefined, // genericOperationApprovalReplay

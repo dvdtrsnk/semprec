@@ -1042,7 +1042,6 @@ async function runExportJobs(): Promise<void> {
     undefined,
     undefined,
     undefined,
-    undefined,
     filesStorage,
   );
   const exportTask = coreTasks[CORE_TASK_NAMES.TENANT_EXPORT];

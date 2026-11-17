@@ -549,7 +549,6 @@ describe("library cover candidates (issue gh-1812)", () => {
           undefined,
           undefined,
           undefined,
-          undefined,
           new LocalFsBlobStorageWriter(storageRoot),
         ),
       });

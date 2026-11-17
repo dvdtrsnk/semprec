@@ -253,15 +253,6 @@ describe("ModuleRegistry projections", () => {
     expect(await registry.getHeartbeatActions()).toEqual(["fixtureGood.heartbeat"]);
     expect(await registry.getHeartbeatRuleKinds()).toEqual(["fixtureGood.onWidgetTick"]);
     expect(await registry.getMigrations()).toEqual([{ moduleId: "fixture-good", migration: "0001_fixture_good.sql" }]);
-    expect(await registry.getDataMigrations()).toEqual([
-      {
-        moduleId: "fixture-good",
-        databaseKey: "fixtureGoodItems",
-        fromVersion: "1.0.0",
-        toVersion: "2.0.0",
-        converterExport: "convertFixtureGoodItem",
-      },
-    ]);
     expect(await registry.getSystemProjectModuleIds()).toEqual(["fixture-good"]);
 
     const tasks = await registry.getTasks();
@@ -486,48 +477,6 @@ describe("ModuleRegistry projections", () => {
     const inactive = await loadBoth(() => new Set(["fixture-second"]));
     expect(await inactive.getHeartbeatRuleKindDefinitions()).toEqual([]);
   });
-
-  it("resolves data migration definitions to their actual imported converter, active modules only", async () => {
-    const registry = await loadBoth(alwaysActive);
-    const definitions = await registry.getDataMigrationDefinitions();
-    expect(definitions).toHaveLength(1);
-    expect(definitions[0]).toMatchObject({
-      moduleId: "fixture-good",
-      databaseKey: "fixtureGoodItems",
-      fromVersion: "1.0.0",
-      toVersion: "2.0.0",
-    });
-    expect(typeof definitions[0]?.converter).toBe("function");
-
-    const inactive = await loadBoth(() => new Set(["fixture-second"]));
-    expect(await inactive.getDataMigrationDefinitions()).toEqual([]);
-  });
-});
-
-describe("ModuleRegistry data migration validation", () => {
-  it("rejects a data migration whose converterExport is missing", async () => {
-    const registry = new ModuleRegistry(alwaysActive);
-    await expect(registry.loadModule(fixturePath("missingDataMigrationConverterModule.js"))).rejects.toThrow(
-      /missing export "doesNotExist"/,
-    );
-    expect(registry.listModuleIds()).toEqual([]);
-  });
-
-  it("rejects a data migration targeting a database key this manifest doesn't declare", async () => {
-    const registry = new ModuleRegistry(alwaysActive);
-    await expect(registry.loadModule(fixturePath("unknownDatabaseKeyDataMigrationModule.js"))).rejects.toThrow(
-      /targets database key "notMyDatabase", which this manifest does not declare/,
-    );
-    expect(registry.listModuleIds()).toEqual([]);
-  });
-
-  it("rejects the same (databaseKey, fromVersion, toVersion) declared twice in one manifest", async () => {
-    const registry = new ModuleRegistry(alwaysActive);
-    await expect(registry.loadModule(fixturePath("duplicateDataMigrationModule.js"))).rejects.toThrow(
-      /Duplicate data migration for database key "fixtureDupItems" \(1\.0\.0 -> 2\.0\.0\)/,
-    );
-    expect(registry.listModuleIds()).toEqual([]);
-  });
 });
 
 describe("ModuleRegistry.loadModule catalogs (issue #236)", () => {
@@ -592,15 +541,7 @@ describe("ModuleRegistry.loadModule check ordering (issue #783)", () => {
     expect(loadModuleCatalogs).not.toHaveBeenCalled();
   });
 
-  it("rejects a module failing assertDataMigrationsReferenceOwnDatabases without loading its catalogs", async () => {
-    const registry = new ModuleRegistry(alwaysActive);
-    await expect(registry.loadModule(fixturePath("unknownDatabaseKeyDataMigrationModule.js"))).rejects.toThrow(
-      /targets database key "notMyDatabase", which this manifest does not declare/,
-    );
-    expect(loadModuleCatalogs).not.toHaveBeenCalled();
-  });
-
-  it("still loads and commits catalogs for a module passing both synchronous checks", async () => {
+  it("still loads and commits catalogs for a module passing the synchronous check", async () => {
     const registry = new ModuleRegistry(() => new Set(["fixture-catalog-good"]));
     const moduleId = await registry.loadModule(fixturePath("catalogGood/module.js"));
 

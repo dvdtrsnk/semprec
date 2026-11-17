@@ -105,7 +105,6 @@ function titleTaskList(): TaskList {
     undefined,
     undefined,
     undefined,
-    undefined,
     gateway,
   );
   const title = registered[CORE_TASK_NAMES.SEMP_THREAD_TITLE];

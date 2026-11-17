@@ -260,7 +260,6 @@ describe("Semp history reference resolution", () => {
         undefined,
         undefined,
         undefined,
-        undefined,
         files,
         { files: filesDir, mailAttachments: mailDir },
       );

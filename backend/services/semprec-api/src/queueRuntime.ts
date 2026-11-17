@@ -44,7 +44,7 @@ export interface ApiQueueRuntime {
  * database the mail module is not seeded in, and a tenant without those databases fails only the
  * job that needs them, naming the missing module ids and the seed CLI. Gmail, Graph and IMAP mail
  * accounts sync through the transports `createMailSyncAdapters` builds (#1505, #1508, #1510).
- * The remaining adapters (mail blob storage, a legacy raw-MIME fetcher, push senders) stay on
+ * The remaining adapters (mail blob storage, push senders) stay on
  * `createApiCoreTaskList`'s own defaults here — wiring one in is each adapter's own composition-root
  * concern once it exists. The calendar's `calendarSendEventInvitation` module task sends through the mail
  * transports `createMailTransportFactory` builds from the same Gmail and Microsoft OAuth client keys; this root
@@ -65,9 +65,6 @@ export async function createApiQueueRuntime(
 ): Promise<ApiQueueRuntime> {
   await ensureQueueSchema(pool);
   await grantQueueSchemaPrivileges(pool);
-  // No data migration runs at the start of this service: one-time application-code steps run from
-  // `db/runMigrationsCli.ts` at deploy time (docs/adr/2026-09-10-app-code-post-migration-steps.md), which
-  // includes issue #222's cutover of a job still queued under the legacy `heartbeatFire` name.
 
   const gmail = readOAuthClient(process.env, "GMAIL_OAUTH_CLIENT_ID", "GMAIL_OAUTH_CLIENT_SECRET");
   const graph = readOAuthClient(process.env, "MS_GRAPH_OAUTH_CLIENT_ID", "MS_GRAPH_OAUTH_CLIENT_SECRET");
@@ -83,7 +80,6 @@ export async function createApiQueueRuntime(
     createLibraryMetadataFetcher({ tmdbToken: process.env.TMDB_READ_TOKEN }),
     createMailSyncAdapters({ pool, env: process.env }), // mailSyncAdapters: Gmail, Graph and IMAP
     undefined, // mailBlobStorage
-    undefined, // legacyRawMimeFetcher
     moduleRegistry,
     undefined, // pushSenders
     replayApprovedGenericOperation,
