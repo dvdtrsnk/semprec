@@ -69,6 +69,12 @@ extension AppSempRouter: SempRouting {
         }
     }
 
+    func showMailbox(mailboxId: String) {
+        afterClosing { [context, tab] in
+            context.push(.mailAccount(mailboxId: mailboxId, tab: tab()), in: tab())
+        }
+    }
+
     func showItemThread(inboxItemId: String, title: String, meta: String?) {
         presenter.present(.thread(start: .item, threadId: nil, inboxItemId: inboxItemId, title: title, meta: meta))
     }

@@ -47,6 +47,7 @@ private extension SempStatusViewModel {
         case .openChat(let threadId, let messageId): router.showChat(threadId: threadId, messageId: messageId)
         case .openThread(let threadId): router.showThread(threadId: threadId, type: .tick, title: nil)
         case .openProject(let projectId): router.showProject(projectId: projectId)
+        case .openMailbox(let mailboxId): router.showMailbox(mailboxId: mailboxId)
         }
     }
 }

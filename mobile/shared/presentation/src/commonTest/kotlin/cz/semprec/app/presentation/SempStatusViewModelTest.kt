@@ -193,7 +193,7 @@ class SempStatusViewModelTest : MainDispatcherTest() {
         vm.close()
     }
 
-    @Test fun `the link of a problem opens its chat its thread or its project`() = runTest(dispatcher) {
+    @Test fun `the link of a problem opens its chat its thread its project or its mailbox`() = runTest(dispatcher) {
         val fake = FakeSempStatusRepository(
             reportAnswer = RepositoryResult.Content(
                 report(
@@ -201,14 +201,17 @@ class SempStatusViewModelTest : MainDispatcherTest() {
                     problem("p2", SempProblemAction.OpenThread("t2")),
                     problem("p3", SempProblemAction.OpenProject("pr1")),
                     problem("p4"),
+                    problem("p5", SempProblemAction.OpenMailbox("mb1")),
                 ),
             ),
         )
         val vm = status(fake)
         val effects = effectsOf(vm)
         runCurrent()
+        assertEquals(SempIssueLink.MAILBOX, vm.state.value.issues.single { it.id == "p5" }.link)
+        assertNull(vm.state.value.issues.single { it.id == "p5" }.fix)
 
-        listOf("p1", "p2", "p3", "p4", "missing").forEach { vm.onAction(SempStatusAction.Open(it)) }
+        listOf("p1", "p2", "p3", "p4", "p5", "missing").forEach { vm.onAction(SempStatusAction.Open(it)) }
         runCurrent()
 
         assertEquals(
@@ -216,6 +219,7 @@ class SempStatusViewModelTest : MainDispatcherTest() {
                 SempStatusEffect.OpenChat("t1", "m1"),
                 SempStatusEffect.OpenThread("t2"),
                 SempStatusEffect.OpenProject("pr1"),
+                SempStatusEffect.OpenMailbox("mb1"),
             ),
             effects,
         )

@@ -10,6 +10,7 @@ sealed interface SempProblemAction {
     data class OpenThread(val threadId: String) : SempProblemAction
     data class DisableHeartbeat(val heartbeatId: String) : SempProblemAction
     data class OpenProject(val projectId: String) : SempProblemAction
+    data class OpenMailbox(val mailboxId: String) : SempProblemAction
 }
 
 /** One active problem; [title], [text] and [shortText] are the server's, in the person's language. */

@@ -70,11 +70,12 @@ class HttpSempStatusRepositoryTest {
                 SempProblemAction.OpenChat("th-2", "msg-1"),
                 SempProblemAction.DisableHeartbeat("hb-1"),
                 SempProblemAction.OpenProject("pr-1"),
+                SempProblemAction.OpenMailbox("mb-1"),
             ),
             problem.actions,
         )
         assertEquals(SempProblemSeverity.WARNING, report.problems[1].severity)
-        assertEquals(emptyList(), report.problems[1].actions)
+        assertEquals(listOf(SempProblemAction.OpenMailbox("mb-1")), report.problems[1].actions)
         assertEquals("Queue is empty", report.resolved.single().title)
     }
 

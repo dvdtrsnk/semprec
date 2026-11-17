@@ -20,6 +20,8 @@ public protocol SempRouting: AnyObject {
     func showItem(itemId: String, databaseKey: String?)
     /// The agent page of a project.
     func showProject(projectId: String)
+    /// The account of a mailbox that needs attention.
+    func showMailbox(mailboxId: String)
     /// The chat with the thread of an Inbox item the person dropped on the bubble.
     func showItemThread(inboxItemId: String, title: String, meta: String?)
 }
@@ -37,5 +39,6 @@ final class PreviewSempRouter: SempRouting {
     func showStatus() {}
     func showItem(itemId: String, databaseKey: String?) {}
     func showProject(projectId: String) {}
+    func showMailbox(mailboxId: String) {}
     func showItemThread(inboxItemId: String, title: String, meta: String?) {}
 }

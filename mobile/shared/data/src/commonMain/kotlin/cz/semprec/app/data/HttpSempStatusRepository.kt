@@ -109,8 +109,8 @@ private fun JsonElement.asChatTarget(): Pair<String, String>? {
 
 /**
  * The actions this app can carry out. `retryPrompt` names only the message, so it is paired with the thread of the
- * `openChat` action of the same problem; mailbox sign-in and transcription retries have no flow in the app and are
- * left out.
+ * `openChat` action of the same problem. `reauthMailbox` names the mailbox that needs attention; the app has no sign-in
+ * flow and opens the mailbox's account instead. Transcription retries have no flow in the app and are left out.
  */
 private fun List<SempActionDto>.toDomain(): List<SempProblemAction> {
     val chat = firstNotNullOfOrNull { if (it.kind == "openChat") it.target.asChatTarget() else null }
@@ -122,6 +122,7 @@ private fun List<SempActionDto>.toDomain(): List<SempProblemAction> {
             "openThread" -> action.target.asId()?.let(SempProblemAction::OpenThread)
             "disableHeartbeat" -> action.target.asId()?.let(SempProblemAction::DisableHeartbeat)
             "openProject" -> action.target.asId()?.let(SempProblemAction::OpenProject)
+            "reauthMailbox" -> action.target.asId()?.let(SempProblemAction::OpenMailbox)
             else -> null
         }
     }
