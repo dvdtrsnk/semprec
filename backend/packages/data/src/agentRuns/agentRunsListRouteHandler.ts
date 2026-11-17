@@ -17,17 +17,8 @@ import {
   type TriggeredBy,
 } from "./agentRunsStore.js";
 import { replyOutcomeOfStoredSteps, type ReplyOutcome } from "./replyOutcome.js";
-
-/**
- * Duck-typed custom-route shape the API mount casts this export to. The caller's id scopes the runs and its
- * `users.locale` localizes labels and summaries.
- */
-interface ListAgentRunsRouteRequestContext {
-  req: { url?: string };
-  identity: { user: { id: string; locale: string } };
-}
-
-type CustomRouteResult = { status: number; body: unknown };
+import type { CustomRouteResult, RouteUser, RouteLocale, RouteUrl } from "../customRoute.js";
+import { requestUrl } from "../customRoute.js";
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
@@ -320,12 +311,12 @@ async function projectRows(
 /**
  * `GET /api/agent-runs?projectItemId=&limit=`, shaped for the project's agent page only. `limit` (default 20,
  * 1-100) counts rows. Only the session user's own runs, never a supervisor's. An unknown or foreign project id
- * answers `{ rows: [] }`. Tenant and user come only from the session; all reads share one REPEATABLE READ
- * snapshot.
+ * answers `{ rows: [] }`. Tenant and user come only from the session, whose `users.locale` localizes labels and
+ * summaries; all reads share one REPEATABLE READ snapshot.
  */
 export function createListAgentRunsRouteHandler(pool: Pool) {
-  return async (ctx: ListAgentRunsRouteRequestContext): Promise<CustomRouteResult> => {
-    const url = new URL(ctx.req.url ?? "/", "http://localhost");
+  return async (ctx: RouteUser & RouteLocale & RouteUrl): Promise<CustomRouteResult> => {
+    const url = requestUrl(ctx.req);
     const projectItemId = parseProjectItemId(url.searchParams.get("projectItemId"));
     const limit = parseLimit(url.searchParams.get("limit"));
     const rows = await withTransaction(

@@ -2,12 +2,7 @@ import type { Pool } from "pg";
 import { withTransaction } from "../db/pool.js";
 import type { ItemRow } from "../types.js";
 import { materializeEventOccurrence } from "./materializeEventOccurrence.js";
-
-/** Matches `semprec-api`'s `AdapterRequestContext` structurally, without depending on its HTTP types. */
-interface EventOccurrenceRequestContext {
-  params: Record<string, string>;
-  identity: { user: { id: string } };
-}
+import type { RouteParams, RouteUser } from "../customRoute.js";
 
 /**
  * `POST /api/events/series/:seriesId/occurrences/:date`: materializes one occurrence. 201 when this request
@@ -15,7 +10,7 @@ interface EventOccurrenceRequestContext {
  * `materializeEventOccurrence` for the transaction, lock and errors.
  */
 export function createMaterializeEventOccurrenceRouteHandler(pool: Pool) {
-  return async (ctx: EventOccurrenceRequestContext): Promise<{ status: number; item: ItemRow }> => {
+  return async (ctx: RouteParams & RouteUser): Promise<{ status: number; item: ItemRow }> => {
     const userId = ctx.identity.user.id;
     const { item, created } = await withTransaction(pool, (client) =>
       materializeEventOccurrence(client, {

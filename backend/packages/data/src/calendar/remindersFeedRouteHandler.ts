@@ -16,6 +16,8 @@ import { logger } from "./logger.js";
 import { ALL_DAY_REMINDER_HOUR, computeReminderFireAt, type ReminderInput } from "./reminderFireTime.js";
 import { toTimelineItems, type StoredRow } from "./timelineRead.js";
 import type { CalendarTimelineItem } from "./timelineSources.js";
+import type { CustomRouteResult, RouteUrl } from "../customRoute.js";
+import { requestUrl } from "../customRoute.js";
 
 const DEFAULT_HOURS = 48;
 const MAX_HOURS = 168;
@@ -49,10 +51,6 @@ const CANDIDATES_SQL = `
    WHERE i.tenant_id = app_tenant_default() AND i.database_id = $1 AND i.deleted_at IS NULL
      AND left(i.properties->>'date', 10) COLLATE "C" BETWEEN $2 AND $3
    ORDER BY i.id`;
-
-interface RemindersFeedRouteRequestContext {
-  req: { url?: string };
-}
 
 function text(value: unknown): string | null {
   return typeof value === "string" ? value : null;
@@ -229,8 +227,8 @@ async function readUpcomingReminders(client: PoolClient, interval: FeedInterval)
  * around a sleep window is the client's job. The reads share one repeatable-read snapshot.
  */
 export function createRemindersFeedRouteHandler(pool: Pool) {
-  return async (ctx: RemindersFeedRouteRequestContext): Promise<{ status: number; body: UpcomingReminder[] }> => {
-    const interval = readInterval(new URL(ctx.req.url ?? "/", "http://localhost").searchParams);
+  return async (ctx: RouteUrl): Promise<CustomRouteResult<UpcomingReminder[]>> => {
+    const interval = readInterval(requestUrl(ctx.req).searchParams);
     const body = await withTransaction(pool, (client) => readUpcomingReminders(client, interval), {
       isolation: "repeatable_read",
     });

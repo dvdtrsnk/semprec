@@ -61,18 +61,17 @@ import { containsNul, MAX_REVISE_MESSAGE_LENGTH } from "./reviseInputChecks.js";
 import type { ItemRow } from "../types.js";
 import { isProposalOptionField, listProposalOptions, PROPOSAL_OPTION_FIELDS } from "./proposalOptions.js";
 import { readItemOrigin } from "./itemOriginsStore.js";
+import type { CustomRouteResult, RouteParams, RouteBody, RouteUser, RouteLocale } from "../customRoute.js";
+import { requestUrl, requireBodyObject } from "../customRoute.js";
 
-/**
- * Duck-typed shape of `semprec-api`'s custom-route context, so this package need not import that service's HTTP types.
- */
-interface CustomRouteRequestContext {
-  params: Record<string, string>;
-  body: unknown;
+/** `identity` and `req` are optional on the card routes. */
+interface InboxRouteContext extends RouteParams, RouteBody {
   identity?: { user: { id: string; locale?: string } };
   req?: { headers: Record<string, string | string[] | undefined>; url?: string };
 }
 
-type CustomRouteResult =
+/** Either the card, serialized into the item envelope with its extra top-level fields, or a raw JSON body. */
+type InboxRouteResult =
   | {
       status: number;
       item: ItemRow;
@@ -81,7 +80,7 @@ type CustomRouteResult =
       keptItems?: KeptItem[];
       attachments?: CaptureAttachmentResponse[];
     }
-  | { status: number; body: unknown };
+  | CustomRouteResult;
 
 function requireParam(params: Record<string, string>, name: string): string {
   const value = params[name];
@@ -139,7 +138,7 @@ function parseConfirmCredential(body: Record<string, unknown>): ConfirmProposalC
 
 /** Thin mapping: every confirmation rule lives in `confirmProposalWithClient`. */
 export function createConfirmProposalRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: InboxRouteContext): Promise<InboxRouteResult> => {
     const proposalId = requireParam(ctx.params, "id");
     const body = bodyObject(ctx.body);
     const credential = parseConfirmCredential(body);
@@ -181,7 +180,7 @@ function parseRejectMessage(body: Record<string, unknown>): string | undefined {
  * the answer has no `results`.
  */
 export function createRejectProposalRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: InboxRouteContext): Promise<InboxRouteResult> => {
     const proposalId = requireParam(ctx.params, "id");
     const body = bodyObject(ctx.body);
     const message = parseRejectMessage(body);
@@ -199,7 +198,7 @@ export function createRejectProposalRouteHandler(pool: Pool) {
  * left in place (empty for any other reopen).
  */
 export function createReopenProposalRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: InboxRouteContext): Promise<InboxRouteResult> => {
     const proposalId = requireParam(ctx.params, "id");
     const ifVersion = parseIfVersion(bodyObject(ctx.body));
     const actingUserId = ctx.identity?.user.id;
@@ -241,10 +240,7 @@ function requireNonEmptyString(value: unknown, field: string): string {
  * Whether a lone `message` is allowed is decided by `reviseProposalWithClient`.
  */
 function parseReviseBody(body: unknown): ReviseProposalInput {
-  if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    throw new ValidationError("Request body must be a JSON object");
-  }
-  const fields = body as Record<string, unknown>;
+  const fields = requireBodyObject(body);
   for (const key of Object.keys(fields)) {
     if (!REVISE_BODY_KEYS.includes(key)) {
       throw new ValidationError(`Unknown field '${key}'`, { field: key });
@@ -301,7 +297,7 @@ function parseReviseBody(body: unknown): ReviseProposalInput {
 
 /** Thin mapping; validation, lock check and status transition commit in one transaction in `reviseProposalWithClient`. */
 export function createReviseProposalRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: InboxRouteContext): Promise<InboxRouteResult> => {
     const proposalId = requireParam(ctx.params, "id");
     const input = parseReviseBody(ctx.body);
     const actingUserId = ctx.identity?.user.id;
@@ -409,7 +405,7 @@ const UPDATE_VALUES_ROUTE = "PATCH /api/proposals/:id/values";
  * body replays the first answer and applies nothing; the same key with another card or body is `400`.
  */
 export function createUpdateProposalValuesRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: InboxRouteContext): Promise<InboxRouteResult> => {
     const proposalId = requireParam(ctx.params, "id");
     const input = parseUpdateValuesBody(ctx.body);
     const idempotencyKey = readIdempotencyKeyHeader(ctx.req?.headers);
@@ -443,7 +439,7 @@ export function createUpdateProposalValuesRouteHandler(pool: Pool) {
 
 /** Thin mapping over `resetProposalOverridesWithClient`. */
 export function createResetProposalOverridesRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: InboxRouteContext): Promise<InboxRouteResult> => {
     const proposalId = requireParam(ctx.params, "id");
     const ifVersion = parseIfVersion(bodyObject(ctx.body));
     const item = await withTransaction(pool, async (client) => {
@@ -464,7 +460,7 @@ export function createResetProposalOverridesRouteHandler(pool: Pool) {
  * system-owned `status` or queue the tick in the same transaction.
  */
 export function createRecomputeProposalRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: InboxRouteContext): Promise<InboxRouteResult> => {
     const proposalId = requireParam(ctx.params, "id");
     if (!UUID_RE.test(proposalId)) throw new ValidationError("'id' must be a UUID string", { field: "id" });
     const body = bodyObject(ctx.body);
@@ -491,10 +487,10 @@ const INCLUDE_DONE_VALUE = "true";
  * unknown as a random id.
  */
 export function createProposalOptionsRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: InboxRouteContext): Promise<InboxRouteResult> => {
     const proposalId = requireParam(ctx.params, "id");
     if (!UUID_RE.test(proposalId)) throw new ValidationError("'id' must be a UUID string", { field: "id" });
-    const query = new URL(ctx.req?.url ?? "/", "http://localhost").searchParams;
+    const query = requestUrl(ctx.req ?? {}).searchParams;
     const field = query.get("field");
     if (field === null || !isProposalOptionField(field)) {
       throw new ValidationError(`'field' must be one of: ${PROPOSAL_OPTION_FIELDS.join(", ")}`, { field: "field" });
@@ -526,7 +522,7 @@ const ITEM_ORIGIN_NOT_FOUND_MESSAGE = "Item origin not found";
  * 404. Tenant comes only from the session.
  */
 export function createItemOriginRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: InboxRouteContext): Promise<InboxRouteResult> => {
     const itemId = requireParam(ctx.params, "id");
     if (!UUID_RE.test(itemId)) throw new ValidationError("'id' must be a UUID string", { field: "id" });
     const origin = await withTransaction(pool, (client) => readItemOrigin(client, itemId));
@@ -552,7 +548,7 @@ function parseChangeTypeBody(body: unknown): Pick<ChangeInboxItemTypeInput, "typ
 
 /** Thin mapping over `changeInboxItemTypeWithClient`, in the one transaction opened here. `card` is `null` without one. */
 export function createChangeInboxItemTypeRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: InboxRouteContext): Promise<InboxRouteResult> => {
     const itemId = requireParam(ctx.params, "id");
     if (!UUID_RE.test(itemId)) throw new ValidationError("'id' must be a UUID string", { field: "id" });
     const input = parseChangeTypeBody(ctx.body);
@@ -626,7 +622,7 @@ function parseCaptureBody(body: unknown): CaptureInput {
  * at, and nothing is written; a trashed item does not count, as in the generic create.
  */
 export function createCaptureInboxItemRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: InboxRouteContext): Promise<InboxRouteResult> => {
     const input = parseCaptureBody(ctx.body);
     const idempotencyKey = readIdempotencyKeyHeader(ctx.req?.headers);
     const { item, attachments } = await withTransaction(pool, async (client) => {
@@ -660,10 +656,6 @@ export function createCaptureInboxItemRouteHandler(pool: Pool) {
     });
     return { status: 201, item, attachments };
   };
-}
-
-interface InboxTypesRouteRequestContext {
-  identity: { user: { locale: string } };
 }
 
 interface InboxTypeEntry extends InboxTypeSummary {
@@ -711,7 +703,7 @@ async function resolveTargetLabel(
 
 /** Only active types; each distinct target label is resolved once. */
 export function createInboxTypesRouteHandler(pool: Pool) {
-  return async (ctx: InboxTypesRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: RouteLocale): Promise<CustomRouteResult> => {
     const locale = toManifestLocale(ctx.identity.user.locale);
     const catalogResolver = await getCatalogResolver();
     const types = await withTransaction(pool, async (client) => {
@@ -738,16 +730,12 @@ export function createInboxTypesRouteHandler(pool: Pool) {
   };
 }
 
-interface InboxCardsRouteRequestContext {
-  identity: { user: { id: string; locale: string } };
-}
-
 /**
  * At most 200 entries plus the counted `total`; each card carries its base kind's `editorSchema`. Tenant and user come
  * only from the session; no paging or filtering.
  */
 export function createInboxCardsRouteHandler(pool: Pool) {
-  return async (ctx: InboxCardsRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: RouteUser & RouteLocale): Promise<CustomRouteResult> => {
     const { id: ownerUserId, locale } = ctx.identity.user;
     const list = await withTransaction(pool, (client) => listInboxCards(client, { ownerUserId, locale }));
     const registry = await getModuleRegistry();
@@ -760,13 +748,9 @@ export function createInboxCardsRouteHandler(pool: Pool) {
   };
 }
 
-interface InboxCardsCountRouteRequestContext {
-  identity: { user: { id: string } };
-}
-
 /** The same number as `total` of `GET /api/inbox/cards`, without reading the stack. */
 export function createInboxCardsCountRouteHandler(pool: Pool) {
-  return async (ctx: InboxCardsCountRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: RouteUser): Promise<CustomRouteResult> => {
     const total = await withTransaction(pool, (client) =>
       countOpenInboxCards(client, { ownerUserId: ctx.identity.user.id }),
     );

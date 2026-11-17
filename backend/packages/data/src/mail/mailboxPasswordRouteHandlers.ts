@@ -26,6 +26,7 @@ import {
   MailServerUnreachableError,
   MailTlsFailedError,
 } from "./providerTypes.js";
+import type { RouteBody, RouteUser, RouteLocale } from "../customRoute.js";
 
 /** Gmail and Outlook sign in through OAuth instead. */
 const PASSWORD_MAILBOX_PROVIDERS = ["icloud", "generic"] as const;
@@ -229,11 +230,6 @@ function requireThrottle(dependencies: MailboxPasswordRouteDependencies): Verifi
   return throttle;
 }
 
-interface MailboxPasswordRouteContext {
-  identity: { user: { id: string; locale: string } };
-  body: unknown;
-}
-
 /**
  * `POST /api/mail/mailboxes` connects an iCloud or a generic IMAP mailbox. No transaction is open across
  * the verification:
@@ -248,7 +244,7 @@ interface MailboxPasswordRouteContext {
  * The password is sealed by `storeCredential` and is in no response and no log line.
  */
 export function createMailboxPasswordConnectRouteHandler(pool: Pool, dependencies: MailboxPasswordRouteDependencies) {
-  return async (ctx: MailboxPasswordRouteContext): Promise<{ status: number; item: ItemRow }> => {
+  return async (ctx: RouteBody & RouteUser & RouteLocale): Promise<{ status: number; item: ItemRow }> => {
     const request = parseConnectRequest(ctx.body);
     // Read per request: a mount without a member must still start.
     const verifyPassword = requireVerifyPassword(dependencies);

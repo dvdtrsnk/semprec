@@ -5,6 +5,8 @@ import { ValidationError } from "../errors.js";
 import { isCalendarDate } from "./eventValidationHook.js";
 import { readCalendarTimeline } from "./timelineRead.js";
 import type { CalendarTimelineEntry, CalendarTimelineItem } from "./timelineSources.js";
+import type { CustomRouteResult, RouteUrl } from "../customRoute.js";
+import { requestUrl } from "../customRoute.js";
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
@@ -134,17 +136,13 @@ async function readAgendaPage(client: PoolClient, input: AgendaPageInput): Promi
   return { items, nextCursor: encodeCursor(dayAt(horizonOffset + 1), null) };
 }
 
-interface CalendarAgendaRouteRequestContext {
-  req: { url?: string };
-}
-
 /**
  * `GET /api/calendar/agenda?from=YYYY-MM-DD&direction=forward|backward[&limit=1..200][&cursor=...]`:
  * `{ items, nextCursor }` for the caller's tenant. An invalid parameter is a 400 `validation_failed` naming it.
  */
 export function createCalendarAgendaRouteHandler(pool: Pool) {
-  return async (ctx: CalendarAgendaRouteRequestContext): Promise<{ status: number; body: AgendaPage }> => {
-    const parameters = new URL(ctx.req.url ?? "/", "http://localhost").searchParams;
+  return async (ctx: RouteUrl): Promise<CustomRouteResult<AgendaPage>> => {
+    const parameters = requestUrl(ctx.req).searchParams;
     const from = parameters.get("from");
     if (!isCalendarDate(from)) {
       throw new ValidationError("'from' must be a calendar date YYYY-MM-DD", { field: "from" });

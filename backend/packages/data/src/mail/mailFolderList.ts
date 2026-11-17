@@ -9,6 +9,7 @@ import { toManifestLocale, type ManifestLocale } from "../manifest/catalogResolu
 import { MAILBOXES_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { mailThreadCopyCtes } from "./mailThreadListQuery.js";
 import { mailThreadPredicates } from "./mailThreadPredicates.js";
+import type { CustomRouteResult, RouteParams, RouteLocale } from "../customRoute.js";
 
 /**
  * System folders come first in this order and are named by the catalog entry `mail.folder.<specialPurpose>`; other
@@ -104,11 +105,6 @@ function presentFolders(folders: MailFolder[], catalogs: ModuleCatalogs, locale:
     );
 }
 
-interface MailFolderListRouteContext {
-  params: Record<string, string>;
-  identity: { user: { locale: string } };
-}
-
 /** A malformed id names no mailbox, so it gets the same 404 as an unknown one. */
 const mailboxIdSchema = z.uuid();
 
@@ -128,7 +124,7 @@ export function createMailFolderListRouteHandler(pool: Pool) {
     });
     return catalogsPromise;
   };
-  return async (ctx: MailFolderListRouteContext): Promise<{ status: number; body: MailFolder[] }> => {
+  return async (ctx: RouteParams & RouteLocale): Promise<CustomRouteResult<MailFolder[]>> => {
     const parsedId = mailboxIdSchema.safeParse(ctx.params.id);
     const folders = parsedId.success
       ? await withTransaction(pool, (client) => readMailboxFolders(client, parsedId.data), {

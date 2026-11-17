@@ -8,7 +8,7 @@ import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { countItemsGrouped, getItemById } from "../chokePoint/itemsStore.js";
 import { listPropertiesByDatabase } from "../chokePoint/propertiesStore.js";
 import { withTransaction } from "../db/pool.js";
-import { NotFoundError, ValidationError } from "../errors.js";
+import { NotFoundError } from "../errors.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { AREAS_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import type { TaskRecurrenceMode, TaskRecurrenceRule } from "../tasks/taskRecurrenceRule.js";
@@ -16,6 +16,8 @@ import { getTaskRecurrence } from "../tasks/taskRecurrenceStore.js";
 import { compileFilterNode, type FilterProperties } from "../views/filterCompiler.js";
 import { buildFilterProperties } from "../views/filterProperties.js";
 import type { FilterNode } from "../views/filterTree.js";
+import type { CustomRouteResult, RouteParams, RouteLocale } from "../customRoute.js";
+import { requireUuidParam } from "../customRoute.js";
 
 /** Days counting today. */
 const HORIZON_DAYS = 14;
@@ -259,28 +261,17 @@ async function readAreaOverview(
   };
 }
 
-/** Structurally matches `semprec-api`'s `AdapterRequestContext` without depending on its HTTP types. */
-interface AreaOverviewRouteRequestContext {
-  params: Record<string, string>;
-  identity: { user: { locale: string } };
-}
-
-const areaIdSchema = z.uuid();
-
 /**
  * `GET /api/areas/:id/overview`. REPEATABLE READ so the counts and the list describe one state of the data. Another
  * tenant's area answers exactly like an unknown id.
  */
 export function createAreaOverviewRouteHandler(pool: Pool) {
-  return async (ctx: AreaOverviewRouteRequestContext): Promise<{ status: number; body: unknown }> => {
-    const parsedId = areaIdSchema.safeParse(ctx.params.id);
-    if (!parsedId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
+  return async (ctx: RouteParams & RouteLocale): Promise<CustomRouteResult> => {
+    const id = requireUuidParam(ctx.params, "id");
     const collator = new Intl.Collator(toManifestLocale(ctx.identity.user.locale));
-    const overview = await withTransaction(
-      pool,
-      (client) => readAreaOverview(client, parsedId.data, new Date(), collator),
-      { isolation: "repeatable_read" },
-    );
+    const overview = await withTransaction(pool, (client) => readAreaOverview(client, id, new Date(), collator), {
+      isolation: "repeatable_read",
+    });
     if (overview === null) throw new NotFoundError("Area not found");
     return { status: 200, body: overview };
   };

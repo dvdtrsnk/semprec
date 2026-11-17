@@ -21,6 +21,8 @@ import {
   type SleepPlan,
 } from "./resolveSleepNights.js";
 import { lockSleepNight } from "./sleepWriteHooks.js";
+import type { CustomRouteResult, RouteParams, RouteBody, RouteUser, RouteUrl } from "../customRoute.js";
+import { requestUrl } from "../customRoute.js";
 
 const MAX_NIGHTS = 62;
 
@@ -175,10 +177,6 @@ export async function loadSleepNights(
   return { ...settings, timezone, planCount: plans.length, areaId, nights };
 }
 
-interface SleepNightsRouteRequestContext {
-  req: { url?: string };
-}
-
 function requiredParameter(parameters: URLSearchParams, name: "from" | "to"): string {
   const value = parameters.get(name);
   if (value === null) throw new ValidationError(`'${name}' is required`, { field: name });
@@ -187,8 +185,8 @@ function requiredParameter(parameters: URLSearchParams, name: "from" | "to"): st
 
 /** Factory called once with the pool by `customRouteMount.ts`. */
 export function sleepNightsGet(pool: Pool) {
-  return async (ctx: SleepNightsRouteRequestContext): Promise<{ status: number; body: unknown }> => {
-    const parameters = new URL(ctx.req.url ?? "/", "http://localhost").searchParams;
+  return async (ctx: RouteUrl): Promise<CustomRouteResult> => {
+    const parameters = requestUrl(ctx.req).searchParams;
     const from = requiredParameter(parameters, "from");
     const to = requiredParameter(parameters, "to");
     const body = await withTransaction(pool, (client) => loadSleepNights(client, { from, to }), {
@@ -196,12 +194,6 @@ export function sleepNightsGet(pool: Pool) {
     });
     return { status: 200, body };
   };
-}
-
-interface SleepNightPutRequestContext {
-  params: Record<string, string>;
-  body: unknown;
-  identity: { user: { id: string } };
 }
 
 /** A key the request omits is absent; null means "follow the plan". */
@@ -311,7 +303,7 @@ export async function upsertSleepNight(
 
 /** Factory called once with the pool by `customRouteMount.ts`; path and body are validated before any read. */
 export function sleepNightPut(pool: Pool) {
-  return async (ctx: SleepNightPutRequestContext): Promise<{ status: number; body: unknown }> => {
+  return async (ctx: RouteParams & RouteBody & RouteUser): Promise<CustomRouteResult> => {
     const night = ctx.params.night;
     if (!isCalendarDate(night)) {
       throw new ValidationError("'night' must be a calendar date YYYY-MM-DD", { field: "night" });

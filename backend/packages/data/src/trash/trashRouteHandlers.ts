@@ -22,14 +22,8 @@ import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 import { createActionQueueAffinity, type ActionQueueAffinity } from "../scheduler/actions.js";
 import { PAGES_MODULE_ID } from "../seed/pagesModuleKey.js";
 import { RETENTION_DAYS } from "./purgeExpiredTrash.js";
-
-/** Duck-typed custom-route request: `req.url` carries the query string; the caller's `users.locale` names system databases. */
-interface TrashItemsRouteRequestContext {
-  req: { url?: string };
-  identity: { user: { locale: string } };
-}
-
-type CustomRouteResult = { status: number; body: unknown };
+import type { CustomRouteResult, RouteBody, RouteUser, RouteLocale, RouteUrl } from "../customRoute.js";
+import { requestUrl } from "../customRoute.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_LIMIT = 50;
@@ -331,10 +325,11 @@ function daysUntil(clock: CalendarClock, purgeAt: Date, now: Date): number {
  * `GET /api/trash/items?cursor&limit`: trashed cascade roots across all databases, newest deletion first. Items of
  * archived databases are excluded. A Pages root adds `page: { title, path }` with its ancestors host first.
  * `limit` is 1..200 (default 50); `nextCursor` is opaque over `(deleted_at, id)`; `totalCount` ignores the cursor.
+ * System databases are named in the caller's `users.locale`.
  */
 export function createTrashItemsRouteHandler(pool: Pool) {
-  return async (ctx: TrashItemsRouteRequestContext): Promise<CustomRouteResult> => {
-    const url = new URL(ctx.req.url ?? "/", "http://localhost");
+  return async (ctx: RouteLocale & RouteUrl): Promise<CustomRouteResult> => {
+    const url = requestUrl(ctx.req);
     const limit = readLimit(url.searchParams.get("limit"));
     const cursor = readCursor(url.searchParams.get("cursor"));
     const now = new Date();
@@ -440,11 +435,6 @@ interface RestoreResult {
   status: RestoreStatus;
 }
 
-interface TrashRestoreRouteRequestContext {
-  body: unknown;
-  identity: { user: { id: string } };
-}
-
 const USER_WRITER: WriterIdentity = { writerKind: "user" };
 
 /** Lower-cased (both UUID spellings are one id), deduplicated, first occurrence first. */
@@ -514,7 +504,7 @@ async function restoreOneItem(
  */
 export function createTrashRestoreRouteHandler(pool: Pool) {
   const queueAffinity = createActionQueueAffinity();
-  return async (ctx: TrashRestoreRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: RouteBody & RouteUser): Promise<CustomRouteResult> => {
     const { itemIds, databaseIds } = parseRestoreBody(ctx.body);
     const actingUserId = ctx.identity.user.id;
     const results = await withTransaction(pool, async (client) => {

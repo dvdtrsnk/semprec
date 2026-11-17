@@ -6,6 +6,7 @@ import { requireSingleRow, withTransaction } from "../db/pool.js";
 import { NotFoundError } from "../errors.js";
 import { MAILBOXES_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { resolveMailModuleIds } from "./mailModuleIds.js";
+import type { CustomRouteResult, RouteParams } from "../customRoute.js";
 
 /** What removing one mailbox would affect; the confirmation dialog shows these counts. */
 export interface MailboxRemovalImpact {
@@ -119,18 +120,12 @@ export async function getMailboxRemovalImpact(
   };
 }
 
-interface CustomRouteRequestContext {
-  params: Record<string, string>;
-}
-
-type CustomRouteResult = { status: number; body: unknown };
-
 /** A malformed id gets the same 404 as an unknown one. */
 const mailboxIdSchema = z.string().uuid();
 
 /** A foreign mailbox answers exactly like an unknown one. */
 export function createMailboxRemovalImpactRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: RouteParams): Promise<CustomRouteResult> => {
     const parsedId = mailboxIdSchema.safeParse(ctx.params.id);
     const impact = parsedId.success
       ? await withTransaction(pool, (client) => getMailboxRemovalImpact(client, parsedId.data))

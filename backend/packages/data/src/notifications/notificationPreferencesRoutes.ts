@@ -8,14 +8,8 @@ import {
   patchNotificationPreferences,
   type NotificationPreferencesPatch,
 } from "./notificationPreferencesStore.js";
-
-/** Duck-typed custom-route context so this package need not import `semprec-api`'s HTTP types. */
-interface CustomRouteRequestContext {
-  body: unknown;
-  identity: { user: { id: string } };
-}
-
-type CustomRouteResult = { status: number; body: unknown };
+import type { CustomRouteResult, RouteBody, RouteUser } from "../customRoute.js";
+import { requireBodyObject } from "../customRoute.js";
 
 const BOOLEAN_FIELDS = [
   "approvals",
@@ -38,11 +32,9 @@ function isProblemsLevel(value: unknown): value is (typeof NOTIFICATION_PROBLEMS
 
 /** Runs before the store is called, so an invalid body writes nothing. */
 export function parseNotificationPreferencesPatch(body: unknown): NotificationPreferencesPatch {
-  if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    throw new ValidationError("Request body must be a JSON object");
-  }
+  const fields = requireBodyObject(body);
   const patch: NotificationPreferencesPatch = {};
-  const entries: [string, unknown][] = Object.entries(body);
+  const entries: [string, unknown][] = Object.entries(fields);
   for (const [field, value] of entries) {
     if (isBooleanField(field)) {
       if (typeof value !== "boolean") {
@@ -65,7 +57,7 @@ export function parseNotificationPreferencesPatch(body: unknown): NotificationPr
 
 /** `GET /api/notification-preferences`: a single-consumer read of the caller's own row. */
 export function createGetNotificationPreferencesRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: RouteBody & RouteUser): Promise<CustomRouteResult> => {
     const preferences = await getNotificationPreferences(pool, ctx.identity.user.id);
     return { status: 200, body: preferences };
   };
@@ -80,7 +72,7 @@ function patchesBadgeSwitch(patch: NotificationPreferencesPatch): boolean {
  * transaction, even when the value is unchanged.
  */
 export function createPatchNotificationPreferencesRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: RouteBody & RouteUser): Promise<CustomRouteResult> => {
     const patch = parseNotificationPreferencesPatch(ctx.body);
     const preferences = await withTransaction(pool, async (client) => {
       const patched = await patchNotificationPreferences(client, ctx.identity.user.id, patch);

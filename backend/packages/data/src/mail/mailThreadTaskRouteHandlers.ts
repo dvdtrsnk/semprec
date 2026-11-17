@@ -11,6 +11,7 @@ import {
   writeTaskOfThread,
   type ThreadTaskWriteContext,
 } from "./threadTasks.js";
+import type { RouteParams, RouteBody, RouteUser, RouteLocale } from "../customRoute.js";
 
 const UNPAIRED_SURROGATE = /\p{Cs}/u;
 
@@ -27,12 +28,6 @@ const bodySchema = z
 export interface MailThreadTaskRouteDependencies {
   /** The route has no model client of its own to fall back on. */
   aiGateway?: AiGatewayClientPort;
-}
-
-interface MailThreadTaskRouteContext {
-  params: Record<string, string>;
-  body: unknown;
-  identity: { user: { id: string; locale: string } };
 }
 
 /**
@@ -58,7 +53,7 @@ function requireAiGateway(dependencies: MailThreadTaskRouteDependencies): AiGate
 export function createMailThreadTaskCreateRouteHandler(pool: Pool, dependencies: MailThreadTaskRouteDependencies) {
   const queueAffinity = createActionQueueAffinity();
   return async (
-    ctx: MailThreadTaskRouteContext,
+    ctx: RouteParams & RouteBody & RouteUser & RouteLocale,
   ): Promise<{ status: number; body: { id: string; name: string; date: string | null } }> => {
     const requested = z.uuid().safeParse(ctx.params.threadId);
     if (!requested.success) throw new ValidationError("Invalid threadId", { field: "threadId" });

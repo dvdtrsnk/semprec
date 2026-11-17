@@ -7,10 +7,7 @@ import { guidanceReferenceStore, projectAgentGuidanceStore } from "../projectAge
 import { agentGuidanceDriftFindingsStore } from "./agentGuidanceDriftFindingsStore.js";
 import { resolveGuidanceDriftFinding } from "./resolveGuidanceDriftFinding.js";
 import { loadGuidanceSections } from "../projectAgentGuidance/projectAgentGuidanceSections.js";
-
-interface Context {
-  params: Record<string, string>;
-}
+import type { RouteParams } from "../customRoute.js";
 
 /** One active drift finding as the AGENT page's drift cards read it. */
 interface ProjectGuidanceDriftFindingView {
@@ -78,7 +75,7 @@ async function readDrift(tx: PoolClient, projectItemId: string) {
  * is invisible under RLS and answers the same 404.
  */
 export function createProjectGuidanceDriftReadRouteHandler(pool: Pool) {
-  return async (ctx: Context) => {
+  return async (ctx: RouteParams) => {
     const parsed = z.string().uuid().safeParse(ctx.params.id);
     if (!parsed.success) throw new ValidationError("Project id must be a UUID", { field: "id" });
     const body = await withTransaction(pool, (tx) => readDrift(tx, parsed.data), { isolation: "repeatable_read" });
@@ -94,7 +91,7 @@ const decisionSchema = z
   .strict();
 
 export function createResolveGuidanceDriftFindingRouteHandler(pool: Pool) {
-  return async (ctx: Context & { body: unknown; identity: { user: { id: string } } }) => {
+  return async (ctx: RouteParams & { body: unknown; identity: { user: { id: string } } }) => {
     const id = z.string().uuid().safeParse(ctx.params.id);
     const decision = decisionSchema.safeParse(ctx.body);
     if (!id.success) throw new ValidationError("Finding id must be a UUID", { field: "id" });

@@ -25,6 +25,7 @@ import {
 } from "./mailboxRemovalProviderCleanup.js";
 import { lockMailboxSync, MAILBOX_REMOVAL_SYNC_WAIT_MS } from "./mailboxSyncGuard.js";
 import { deleteMailServerSettings } from "./mailServerSettingsStore.js";
+import type { CustomRouteResult, RouteParams, RouteUser } from "../customRoute.js";
 
 /** `syncStatus` is `owner: 'system'`; the removal is its second sanctioned writer. */
 const MAILBOX_REMOVAL_ALLOWED_KEYS = ["syncStatus"] as const;
@@ -118,13 +119,6 @@ export async function removeMailbox(
   return true;
 }
 
-interface MailboxRemovalRouteRequestContext {
-  params: Record<string, string>;
-  identity: { user: { id: string } };
-}
-
-type CustomRouteResult = { status: number; body: unknown };
-
 /** A malformed id gets the same 404 as an unknown one. */
 const mailboxIdSchema = z.uuid();
 
@@ -138,7 +132,7 @@ export function createMailboxRemovalRouteHandler(
   options: { cleanupStepTimeoutMs?: number } = {},
 ) {
   const queueAffinity = createActionQueueAffinity();
-  return async (ctx: MailboxRemovalRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: RouteParams & RouteUser): Promise<CustomRouteResult> => {
     const parsedId = mailboxIdSchema.safeParse(ctx.params.id);
     if (!parsedId.success) throw new NotFoundError("Mailbox not found");
     const removed = await removeMailbox(pool, parsedId.data, {

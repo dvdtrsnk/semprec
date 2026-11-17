@@ -42,6 +42,7 @@ import {
   MailAdminConsentRequiredError,
   MailAuthorizationCodeRejectedError,
 } from "./providerTypes.js";
+import type { CustomRouteResult, RouteParams, RouteBody, RouteUser } from "../customRoute.js";
 
 /**
  * Served without a session. The redirect URI is this path on the configured redirect base URL, identical in the
@@ -97,13 +98,6 @@ export interface MailOauthRouteDependencies {
   mailLiveSync?: { restartAccount(mailboxItemId: string): Promise<void> };
 }
 
-interface MailOauthRouteContext {
-  identity: { user: { id: string } };
-  body: unknown;
-}
-
-type MailOauthRouteResult = { status: number; body: unknown };
-
 /** Missing deployment configuration fails with a plain error, which the adapter answers with a generic 500. */
 function requireOauthClient(
   dependencies: MailOauthRouteDependencies,
@@ -142,7 +136,7 @@ const startBodySchema = z.object({ provider: z.enum(MAIL_OAUTH_PROVIDERS) }).str
 
 /** `POST /api/mail/mailboxes/oauth/start`. The PKCE verifier stays sealed in the state row. */
 export function createMailOauthStartRouteHandler(pool: Pool, dependencies: MailOauthRouteDependencies) {
-  return async (ctx: MailOauthRouteContext): Promise<MailOauthRouteResult> => {
+  return async (ctx: RouteBody & RouteUser): Promise<CustomRouteResult> => {
     const body = startBodySchema.safeParse(ctx.body);
     if (!body.success) {
       throw new ValidationError("'provider' must be 'gmail' or 'outlook'", { field: "provider" });
@@ -186,11 +180,6 @@ function reauthorizationProvider(
   return provider;
 }
 
-interface MailboxReauthorizeRouteContext {
-  identity: { user: { id: string } };
-  params: Record<string, string>;
-}
-
 /** A malformed id names no mailbox, so it gets the same 404 as an unknown one. */
 const mailboxIdSchema = z.uuid();
 
@@ -200,7 +189,7 @@ const mailboxIdSchema = z.uuid();
  * the row lock. Locking it here, after the Mailboxes item, would invert the lock order of the completion and sync job.
  */
 export function createMailboxReauthorizeRouteHandler(pool: Pool, dependencies: MailOauthRouteDependencies) {
-  return async (ctx: MailboxReauthorizeRouteContext): Promise<MailOauthRouteResult> => {
+  return async (ctx: RouteParams & RouteUser): Promise<CustomRouteResult> => {
     const mailboxId = mailboxIdSchema.safeParse(ctx.params.id);
     if (!mailboxId.success) throw new NotFoundError("Mailbox not found");
     const authorizeUrl = await withTransaction(pool, async (transaction) => {
@@ -463,7 +452,7 @@ const completeBodySchema = z
  * No token, code or verifier is logged or returned.
  */
 export function createMailOauthCompleteRouteHandler(pool: Pool, dependencies: MailOauthRouteDependencies) {
-  return async (ctx: MailOauthRouteContext): Promise<MailOauthRouteResult> => {
+  return async (ctx: RouteBody & RouteUser): Promise<CustomRouteResult> => {
     const body = completeBodySchema.safeParse(ctx.body);
     if (!body.success) throw new ValidationError("The body must hold a non-empty 'state' and 'code'");
     const userId = ctx.identity.user.id;

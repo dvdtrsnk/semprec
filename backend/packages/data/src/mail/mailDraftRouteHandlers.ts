@@ -30,6 +30,7 @@ import {
   draftSubject as subject,
 } from "./mailDraftFields.js";
 import { MAIL_DRAFT_MODES } from "./mailDraftsStore.js";
+import type { CustomRouteResult, RouteParams, RouteBody, RouteUser, RouteLocale } from "../customRoute.js";
 
 /** Prefilled modes compute most fields, so they are optional here; `newDraftFieldsSchema` requires them for `new`. */
 const createBodySchema = z
@@ -78,28 +79,17 @@ function invalidBody(error: z.ZodError): ValidationError {
   return new ValidationError("The draft body is invalid", typeof field === "string" ? { field } : undefined);
 }
 
-interface DraftRouteContext {
-  params: Record<string, string>;
-  body: unknown;
-  identity: { user: { id: string } };
-}
-
-/** The user's locale, in which the quote of a reply is written. */
-interface DraftCreateRouteContext extends DraftRouteContext {
-  identity: { user: { id: string; locale: string } };
-}
-
-type DraftRouteResult<T> = Promise<{ status: number; body: T }>;
+type DraftRouteResult<T> = Promise<CustomRouteResult<T>>;
 
 /** A malformed id names no draft, so it gets the same 404 as an unknown one. */
-function draftIdOf(ctx: DraftRouteContext): string {
+function draftIdOf(ctx: RouteParams & RouteBody & RouteUser): string {
   const id = z.uuid().safeParse(ctx.params.id);
   if (!id.success) throw new NotFoundError("Draft not found");
   return id.data;
 }
 
 function writeContext(
-  ctx: DraftRouteContext,
+  ctx: RouteParams & RouteBody & RouteUser,
   queueAffinity: MailDraftWriteContext["queueAffinity"],
 ): MailDraftWriteContext {
   // A REST session is always a person; the writer is derived here, never read from the request.
@@ -112,11 +102,11 @@ function writeContext(
  *
  * With `mode` `reply`, `replyAll` or `forward`, `sourceEmailId` is required and `from`, `to`, `cc`, `bcc`, `subject`
  * and `threadId` are computed from the source (request values are ignored); `body` is the person's own text, followed
- * by the quote.
+ * by the quote, written in the user's locale.
  */
 export function createMailDraftCreateRouteHandler(pool: Pool, dependencies: MailDraftAttachmentRouteDependencies = {}) {
   const queueAffinity = createActionQueueAffinity();
-  return async (ctx: DraftCreateRouteContext): DraftRouteResult<EmailDraftView> => {
+  return async (ctx: RouteParams & RouteBody & RouteUser & RouteLocale): DraftRouteResult<EmailDraftView> => {
     const parsed = createBodySchema.safeParse(ctx.body);
     if (!parsed.success) throw invalidBody(parsed.error);
     const { mailboxId, sourceEmailId, mode, threadId, ...fields } = parsed.data;
@@ -156,7 +146,7 @@ export function createMailDraftCreateRouteHandler(pool: Pool, dependencies: Mail
 
 /** `GET /api/mail/drafts/:id`. */
 export function createMailDraftReadRouteHandler(pool: Pool) {
-  return async (ctx: DraftRouteContext): DraftRouteResult<EmailDraftView> => {
+  return async (ctx: RouteParams & RouteBody & RouteUser): DraftRouteResult<EmailDraftView> => {
     const draftId = draftIdOf(ctx);
     return { status: 200, body: await withTransaction(pool, (client) => readEmailDraft(client, draftId)) };
   };
@@ -165,7 +155,7 @@ export function createMailDraftReadRouteHandler(pool: Pool) {
 /** `PATCH /api/mail/drafts/:id`: `ifVersion` is the `updatedAt` the caller read; absent fields keep their value. */
 export function createMailDraftUpdateRouteHandler(pool: Pool) {
   const queueAffinity = createActionQueueAffinity();
-  return async (ctx: DraftRouteContext): DraftRouteResult<EmailDraftView> => {
+  return async (ctx: RouteParams & RouteBody & RouteUser): DraftRouteResult<EmailDraftView> => {
     const draftId = draftIdOf(ctx);
     const parsed = updateBodySchema.safeParse(ctx.body);
     if (!parsed.success) throw invalidBody(parsed.error);
@@ -210,7 +200,7 @@ export function createMailDraftAttachmentAddRouteHandler(
   dependencies: MailDraftAttachmentRouteDependencies,
 ) {
   const queueAffinity = createActionQueueAffinity();
-  return async (ctx: DraftRouteContext): DraftRouteResult<EmailDraftView> => {
+  return async (ctx: RouteParams & RouteBody & RouteUser): DraftRouteResult<EmailDraftView> => {
     const uploadLimitBytes = requireUploadLimit(dependencies);
     const draftId = draftIdOf(ctx);
     const parsed = attachBodySchema.safeParse(ctx.body);
@@ -232,7 +222,7 @@ export function createMailDraftAttachmentAddRouteHandler(
  */
 export function createMailDraftAttachmentRemoveRouteHandler(pool: Pool) {
   const queueAffinity = createActionQueueAffinity();
-  return async (ctx: DraftRouteContext): DraftRouteResult<EmailDraftView> => {
+  return async (ctx: RouteParams & RouteBody & RouteUser): DraftRouteResult<EmailDraftView> => {
     const draftId = draftIdOf(ctx);
     const fileItemId = z.uuid().safeParse(ctx.params.fileItemId);
     if (!fileItemId.success) throw new NotFoundError("Attachment not found");
@@ -253,7 +243,7 @@ export function createMailDraftAttachmentRemoveRouteHandler(pool: Pool) {
  * draft unsent.
  */
 export function createMailDraftSendRouteHandler(pool: Pool, dependencies: MailDraftSendRouteDependencies) {
-  return async (ctx: DraftRouteContext): DraftRouteResult<SentMailDraft> => {
+  return async (ctx: RouteParams & RouteBody & RouteUser): DraftRouteResult<SentMailDraft> => {
     const adapters = requireSendAdapters(dependencies);
     const draftId = draftIdOf(ctx);
     return { status: 200, body: await sendMailDraft(pool, draftId, adapters) };
@@ -263,7 +253,7 @@ export function createMailDraftSendRouteHandler(pool: Pool, dependencies: MailDr
 /** `DELETE /api/mail/drafts/:id`: discards the draft and answers its id. */
 export function createMailDraftDiscardRouteHandler(pool: Pool) {
   const queueAffinity = createActionQueueAffinity();
-  return async (ctx: DraftRouteContext): DraftRouteResult<{ id: string }> => {
+  return async (ctx: RouteParams & RouteBody & RouteUser): DraftRouteResult<{ id: string }> => {
     const draftId = draftIdOf(ctx);
     await withTransaction(pool, (client) => discardEmailDraft(client, draftId, writeContext(ctx, queueAffinity)));
     return { status: 200, body: { id: draftId } };

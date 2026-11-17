@@ -16,6 +16,7 @@ import { NotFoundError, ValidationError } from "../errors.js";
 import { JOURNAL_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import { describeJournalPeriods, JOURNAL_PERIOD_TYPES, parseJournalPeriodKey, weeksOfMonth } from "./journalPeriods.js";
+import type { CustomRouteResult, RouteParams } from "../customRoute.js";
 
 interface JournalPeriodEntry {
   item: ItemRow;
@@ -130,12 +131,8 @@ async function readJournalDayTimeline(
 }
 
 const periodType = z.enum(JOURNAL_PERIOD_TYPES);
-interface Context {
-  params: Record<string, string>;
-}
-
 export function createJournalPeriodReadRouteHandler(pool: Pool) {
-  return async (ctx: Context): Promise<{ status: number; body: unknown }> => {
+  return async (ctx: RouteParams): Promise<CustomRouteResult> => {
     const type = periodType.safeParse(ctx.params.type);
     if (!type.success) throw new ValidationError("Invalid journal period type", { field: "type" });
     const key = ctx.params.period;
@@ -199,7 +196,7 @@ export function createJournalPeriodReadRouteHandler(pool: Pool) {
 }
 
 export function createJournalPeriodEnsureRouteHandler(pool: Pool) {
-  return async (ctx: Context): Promise<{ status: number; body: unknown }> => {
+  return async (ctx: RouteParams): Promise<CustomRouteResult> => {
     const type = periodType.safeParse(ctx.params.type);
     if (!type.success) throw new ValidationError("Invalid journal period type", { field: "type" });
     const key = ctx.params.period;

@@ -23,15 +23,8 @@ import { CALENDAR_MODULE_ID } from "./calendarModuleId.js";
 import { createEventInCalendar } from "./defaultCalendarCreateHook.js";
 import { invitationEventFields } from "./invitationEventFields.js";
 import { enqueueInvitationReply } from "./invitationReplyJob.js";
-
-/** Matches `semprec-api`'s `AdapterRequestContext` structurally, with no dependency on its HTTP types. */
-interface RespondToInvitationRequestContext {
-  params: Record<string, string>;
-  body: unknown;
-  identity: { user: { id: string } };
-}
-
-const invitationIdSchema = z.uuid();
+import type { RouteParams, RouteBody, RouteUser } from "../customRoute.js";
+import { requireUuidParam } from "../customRoute.js";
 
 /** The calendar agent tool accepts the same answers. */
 export const INVITATION_RESPONSES = ["accepted", "tentative", "declined", "acknowledged"] as const;
@@ -167,11 +160,10 @@ async function respondToInvitation(client: PoolClient, input: RespondInput, now:
  */
 export function createRespondToInvitationRouteHandler(pool: Pool) {
   return async (
-    ctx: RespondToInvitationRequestContext,
+    ctx: RouteParams & RouteBody & RouteUser,
     writer: WriterIdentity = USER_WRITER,
   ): Promise<{ status: number; item: ItemRow }> => {
-    const id = invitationIdSchema.safeParse(ctx.params.id);
-    if (!id.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
+    const id = requireUuidParam(ctx.params, "id");
     const body = bodySchema.safeParse(ctx.body);
     if (!body.success) {
       const issue = body.error.issues[0];
@@ -184,7 +176,7 @@ export function createRespondToInvitationRouteHandler(pool: Pool) {
       respondToInvitation(
         client,
         {
-          invitationId: id.data,
+          invitationId: id,
           response: body.data.response,
           calendarId: body.data.calendarId,
           userId: ctx.identity.user.id,

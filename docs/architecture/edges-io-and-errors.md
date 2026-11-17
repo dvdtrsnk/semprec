@@ -77,6 +77,11 @@ same generic catalog.
   is optional. A handler reads a member with `requireCustomRouteDependency`, inside the request,
   never while the factory runs. A missing member fails that one request with
   `CustomRouteConfigurationError`, which becomes a generic 500, not a domain error.
+- A handler in `packages/data` types its request from `data/customRoute.ts`, which mirrors the
+  adapter's request structurally so the package imports no HTTP types: its context is the
+  intersection of the parts it reads (`RouteParams & RouteBody & RouteUser`, ...), and it answers
+  `CustomRouteResult`. The module also holds the parsers handlers share (`requireUuidParam`,
+  `requestUrl`, `requireBodyObject`).
 
 ### Application port
 

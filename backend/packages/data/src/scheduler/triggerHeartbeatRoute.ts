@@ -1,20 +1,8 @@
 import type { Pool } from "pg";
-import { z } from "zod";
 import { withTransaction } from "../db/pool.js";
-import { ValidationError } from "../errors.js";
 import { enqueueManualHeartbeatFire } from "./heartbeatAgentTools.js";
-
-/** Duck-typed shape of `semprec-api`'s custom-route mount, so this package imports no HTTP types. */
-interface CustomRouteRequestContext {
-  params: Record<string, string>;
-  body: unknown;
-  identity: { user: { id: string } };
-}
-
-type CustomRouteResult = { status: number; body: unknown };
-
-/** A malformed id is a 400 here, not a 500 from the `uuid` column. */
-const heartbeatIdSchema = z.string().uuid();
+import type { CustomRouteResult, RouteParams, RouteBody, RouteUser } from "../customRoute.js";
+import { requireUuidParam } from "../customRoute.js";
 
 /**
  * `POST /api/heartbeats/:id/trigger`: a person runs an automation now, attributed to the session user
@@ -27,12 +15,11 @@ const heartbeatIdSchema = z.string().uuid();
  * the tick thread's invalidation, so clients read the active run from the thread.
  */
 export function createTriggerHeartbeatRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
-    const parsedId = heartbeatIdSchema.safeParse(ctx.params.id);
-    if (!parsedId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
+  return async (ctx: RouteParams & RouteBody & RouteUser): Promise<CustomRouteResult> => {
+    const heartbeatId = requireUuidParam(ctx.params, "id");
     const fired = await withTransaction(pool, (client) =>
       enqueueManualHeartbeatFire(client, {
-        heartbeatId: parsedId.data,
+        heartbeatId,
         projectItemId: null,
         trigger: { triggeredByUserId: ctx.identity.user.id },
         refuseWhileActive: true,

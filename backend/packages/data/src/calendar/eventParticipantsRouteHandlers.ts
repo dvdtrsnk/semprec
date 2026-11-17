@@ -15,6 +15,8 @@ import {
   type EventParticipantRole,
 } from "./eventParticipantEdgeHook.js";
 import { inviteEventPerson, replaceEventPeople } from "./eventParticipantsWrites.js";
+import type { CustomRouteResult, RouteParams, RouteBody, RouteUser, RouteLocale } from "../customRoute.js";
+import { requireUuidParam } from "../customRoute.js";
 
 interface EventParticipant {
   personId: string;
@@ -87,23 +89,14 @@ function orderParticipants(participants: EventParticipant[], locale: string): Ev
   );
 }
 
-/** Matches `semprec-api`'s `AdapterRequestContext` structurally, without depending on its HTTP types. */
-interface EventPeopleRouteRequestContext {
-  params: Record<string, string>;
-  identity: { user: { locale: string } };
-}
-
-const eventIdSchema = z.uuid();
-
 /**
  * `GET /api/events/:id/people`. Organizer first, the rest collated by the caller's `users.locale`. Another tenant's
  * Event answers exactly like an unknown id.
  */
 export function createListEventPeopleRouteHandler(pool: Pool) {
-  return async (ctx: EventPeopleRouteRequestContext): Promise<{ status: number; body: unknown }> => {
-    const parsedId = eventIdSchema.safeParse(ctx.params.id);
-    if (!parsedId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
-    const participants = await withTransaction(pool, (client) => readEventParticipants(client, parsedId.data));
+  return async (ctx: RouteParams & RouteLocale): Promise<CustomRouteResult> => {
+    const id = requireUuidParam(ctx.params, "id");
+    const participants = await withTransaction(pool, (client) => readEventParticipants(client, id));
     if (participants === null) throw new NotFoundError("Event not found");
     const people = orderParticipants(participants, toManifestLocale(ctx.identity.user.locale));
     return { status: 200, body: { people } };
@@ -130,11 +123,6 @@ function bodyField(error: z.ZodError): string {
   return typeof field === "string" ? field : "body";
 }
 
-interface EventPeopleWriteRouteRequestContext extends EventPeopleRouteRequestContext {
-  body: unknown;
-  identity: { user: { id: string; locale: string } };
-}
-
 /** Read in the write's open transaction. */
 async function participantsAfterWrite(
   client: PoolClient,
@@ -151,9 +139,8 @@ async function participantsAfterWrite(
  * address when `sendInvites`. See `replaceEventPeople`. Shape errors are 400 before the transaction.
  */
 export function createReplaceEventPeopleRouteHandler(pool: Pool) {
-  return async (ctx: EventPeopleWriteRouteRequestContext): Promise<{ status: number; body: unknown }> => {
-    const eventId = eventIdSchema.safeParse(ctx.params.id);
-    if (!eventId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
+  return async (ctx: RouteParams & RouteBody & RouteUser & RouteLocale): Promise<CustomRouteResult> => {
+    const eventId = requireUuidParam(ctx.params, "id");
     const body = replaceBodySchema.safeParse(ctx.body);
     if (!body.success) {
       throw new ValidationError("The body must be { people: [{ personId }], sendInvites, mailboxId? }", {
@@ -162,13 +149,13 @@ export function createReplaceEventPeopleRouteHandler(pool: Pool) {
     }
     return withTransaction(pool, async (client) => {
       const counts = await replaceEventPeople(client, {
-        eventId: eventId.data.toLowerCase(),
+        eventId: eventId.toLowerCase(),
         personIds: body.data.people.map((entry) => entry.personId.toLowerCase()),
         sendInvites: body.data.sendInvites,
         mailboxId: body.data.mailboxId?.toLowerCase(),
         actingUserId: ctx.identity.user.id,
       });
-      const people = await participantsAfterWrite(client, eventId.data.toLowerCase(), ctx.identity.user.locale);
+      const people = await participantsAfterWrite(client, eventId.toLowerCase(), ctx.identity.user.locale);
       return { status: 200, body: { people, invited: counts.invited, linkedOnly: counts.linkedOnly } };
     });
   };
@@ -179,23 +166,21 @@ export function createReplaceEventPeopleRouteHandler(pool: Pool) {
  * Shape errors are 400 before the transaction.
  */
 export function createInviteEventPersonRouteHandler(pool: Pool) {
-  return async (ctx: EventPeopleWriteRouteRequestContext): Promise<{ status: number; body: unknown }> => {
-    const eventId = eventIdSchema.safeParse(ctx.params.id);
-    if (!eventId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
-    const personId = eventIdSchema.safeParse(ctx.params.personId);
-    if (!personId.success) throw new ValidationError("'personId' must be a UUID string", { field: "personId" });
+  return async (ctx: RouteParams & RouteBody & RouteUser & RouteLocale): Promise<CustomRouteResult> => {
+    const eventId = requireUuidParam(ctx.params, "id");
+    const personId = requireUuidParam(ctx.params, "personId");
     const body = inviteBodySchema.safeParse(ctx.body);
     if (!body.success) {
       throw new ValidationError("The body must be { mailboxId }, a mailbox UUID", { field: bodyField(body.error) });
     }
     return withTransaction(pool, async (client) => {
       await inviteEventPerson(client, {
-        eventId: eventId.data.toLowerCase(),
-        personId: personId.data.toLowerCase(),
+        eventId: eventId.toLowerCase(),
+        personId: personId.toLowerCase(),
         mailboxId: body.data.mailboxId.toLowerCase(),
         actingUserId: ctx.identity.user.id,
       });
-      const people = await participantsAfterWrite(client, eventId.data.toLowerCase(), ctx.identity.user.locale);
+      const people = await participantsAfterWrite(client, eventId.toLowerCase(), ctx.identity.user.locale);
       return { status: 200, body: { people } };
     });
   };

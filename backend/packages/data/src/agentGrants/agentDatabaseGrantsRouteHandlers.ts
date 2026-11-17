@@ -15,18 +15,8 @@ import {
   listAgentDatabaseGrantsForProject,
   setAgentDatabaseGrantForProjectSettings,
 } from "./agentDatabaseGrantsForProject.js";
-
-/**
- * The custom-route handler shape `semprec-api` casts these to. The adapter authenticates a session first (so an
- * agent run credential never gets here) and runs the handler inside the session's tenant.
- */
-interface CustomRouteRequestContext {
-  params: Record<string, string>;
-  body: unknown;
-  identity: { user: { locale: string } };
-}
-
-type CustomRouteResult = { status: number; body: unknown };
+import type { CustomRouteResult, RouteParams, RouteBody, RouteLocale } from "../customRoute.js";
+import { requireUuidParam } from "../customRoute.js";
 
 interface ProjectDatabaseGrantBody {
   databaseId: string;
@@ -38,18 +28,10 @@ interface ProjectDatabaseGrantBody {
   access: ProjectDatabaseAccessRow["access"];
 }
 
-const projectIdSchema = z.uuid();
-
 const patchBodySchema = z.strictObject({
   databaseId: z.uuid(),
   access: z.enum(["none", "read", "write"]),
 });
-
-function parseProjectId(params: Record<string, string>): string {
-  const parsed = projectIdSchema.safeParse(params.id);
-  if (!parsed.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
-  return parsed.data;
-}
 
 let catalogResolverPromise: Promise<CatalogResolver> | undefined;
 
@@ -85,11 +67,11 @@ async function toBody(
 
 /**
  * `GET /api/projects/:id/database-grants`: shaped for its single consumer, the Semp settings Collections list.
- * A missing, trashed or foreign project is 404.
+ * A missing, trashed or foreign project is 404. Session-only: an agent run credential never reaches it.
  */
 export function createListAgentDatabaseGrantsRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
-    const projectItemId = parseProjectId(ctx.params);
+  return async (ctx: RouteParams & RouteBody & RouteLocale): Promise<CustomRouteResult> => {
+    const projectItemId = requireUuidParam(ctx.params, "id");
     const locale = toManifestLocale(ctx.identity.user.locale);
     const catalogResolver = await getCatalogResolver();
     const entries = await withTransaction(pool, (client) => listAgentDatabaseGrantsForProject(client, projectItemId));
@@ -103,8 +85,8 @@ export function createListAgentDatabaseGrantsRouteHandler(pool: Pool) {
  * transaction. The body is validated before the transaction opens.
  */
 export function createPatchAgentDatabaseGrantRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
-    const projectItemId = parseProjectId(ctx.params);
+  return async (ctx: RouteParams & RouteBody & RouteLocale): Promise<CustomRouteResult> => {
+    const projectItemId = requireUuidParam(ctx.params, "id");
     const body = patchBodySchema.safeParse(ctx.body);
     if (!body.success) {
       const field = body.error.issues[0]?.path[0];

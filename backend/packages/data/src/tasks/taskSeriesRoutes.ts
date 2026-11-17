@@ -14,12 +14,7 @@ import {
   updateTaskRecurrenceTemplate,
   type TaskRecurrenceTemplate,
 } from "./taskRecurrenceStore.js";
-
-interface Context {
-  params: Record<string, string>;
-  body: unknown;
-  identity: { user: { id: string } };
-}
+import type { CustomRouteResult, RouteParams, RouteBody, RouteUser } from "../customRoute.js";
 
 /** The template fields a series edit may change; every other key, `persistent` included, is refused by name. */
 const TEMPLATE_FIELDS = ["name", "timeFrom", "timeTo", "notifications", "flagged", "description"] as const;
@@ -31,7 +26,7 @@ function isTemplateField(key: string): key is TemplateField {
 }
 
 /** Lower-cased: occurrences store `seriesId` as PostgreSQL prints it, and the query compares it as text. */
-function seriesIdOf(ctx: Context): string {
+function seriesIdOf(ctx: RouteParams & RouteBody & RouteUser): string {
   const result = z.uuid().safeParse(ctx.params.seriesId);
   if (!result.success) throw new ValidationError("Series id must be a UUID", { field: "seriesId" });
   return result.data.toLowerCase();
@@ -128,7 +123,7 @@ async function openOccurrenceIds(
  * `template`, and the current occurrence's `recurrence` and id.
  */
 export function createTaskSeriesPatchRouteHandler(pool: Pool) {
-  return async (ctx: Context): Promise<{ status: number; body: unknown }> => {
+  return async (ctx: RouteParams & RouteBody & RouteUser): Promise<CustomRouteResult> => {
     const seriesId = seriesIdOf(ctx);
     const patch = parsePatch(ctx.body);
     return withTransaction(pool, async (client) => {

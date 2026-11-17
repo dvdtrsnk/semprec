@@ -1,7 +1,6 @@
 import type { Pool } from "pg";
 import { getSystemHealthReport } from "./systemHealthReport.js";
-
-type CustomRouteResult = { status: number; body: unknown };
+import type { CustomRouteResult } from "../customRoute.js";
 
 /**
  * `GET /api/system-health`: a single-consumer read of the caller's own tenant only (operator

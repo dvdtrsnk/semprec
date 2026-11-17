@@ -27,18 +27,10 @@ import { TRANSCRIPT_MEETING_NOTES_COMPUTED_KEY } from "./transcriptionComputedKe
 import { clearActionItemState, listActionItemStates, setActionItemState } from "./transcriptActionItemStates.js";
 import { createActionItemTask, listEventActionItemProposals, removeActionItemTask } from "./transcriptActionItems.js";
 import { assignTranscriptSpeaker, listSpeakerCandidates } from "./transcriptSpeakerAssignment.js";
-
-/** Matches `semprec-api`'s adapter types structurally, without depending on that service. */
-interface CustomRouteRequestContext {
-  params: Record<string, string>;
-  body: unknown;
-}
-
-type CustomRouteResult = { status: number; body: unknown };
+import type { CustomRouteResult, RouteParams, RouteBody, RouteUser, RouteLocale, RouteUrl } from "../customRoute.js";
+import { requestUrl, requireUuidParam } from "../customRoute.js";
 
 const requestBodySchema = z.object({ fileItemId: z.string().uuid() });
-const transcriptIdSchema = z.string().uuid();
-
 async function resolveFilesDatabaseId(client: PoolClient): Promise<string> {
   const database = await getDatabaseByModuleId(client, FILES_MODULE_ID);
   if (!database) throw new NotFoundError(`Database for module '${FILES_MODULE_ID}' not found`);
@@ -60,7 +52,7 @@ function requireFileItemId(body: unknown): string {
  * check in the same transaction only turns an obvious repeat into a `409`.
  */
 export function createCreateTranscriptionRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: RouteParams & RouteBody): Promise<CustomRouteResult> => {
     const fileItemId = requireFileItemId(ctx.body);
     return withTransaction(pool, async (client) => {
       const filesDatabaseId = await resolveFilesDatabaseId(client);
@@ -100,10 +92,8 @@ export function createCreateTranscriptionRouteHandler(pool: Pool) {
  * `item_automation` row or Files `link` is a 404.
  */
 export function createRerunTranscriptionRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
-    const parsedId = transcriptIdSchema.safeParse(ctx.params.id);
-    if (!parsedId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
-    const transcriptId = parsedId.data;
+  return async (ctx: RouteParams & RouteBody): Promise<CustomRouteResult> => {
+    const transcriptId = requireUuidParam(ctx.params, "id");
     return withTransaction(pool, async (client) => {
       const transcripts = await getDatabaseByModuleId(client, TRANSCRIPTS_MODULE_ID);
       if (!transcripts) throw new NotFoundError(`Database for module '${TRANSCRIPTS_MODULE_ID}' not found`);
@@ -137,17 +127,11 @@ export function createRerunTranscriptionRouteHandler(pool: Pool) {
   };
 }
 
-interface SpeakersRouteRequestContext {
-  params: Record<string, string>;
-  identity: { user: { locale: string } };
-}
-
 /** Labels are composed from the `speakers` edges at read time; mappings are written through the generic relation endpoint. */
 export function createTranscriptSpeakersRouteHandler(pool: Pool) {
-  return async (ctx: SpeakersRouteRequestContext): Promise<CustomRouteResult> => {
-    const parsedId = transcriptIdSchema.safeParse(ctx.params.id);
-    if (!parsedId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
-    const speakers = await withTransaction(pool, (client) => listTranscriptSpeakers(client, parsedId.data));
+  return async (ctx: RouteParams & RouteLocale): Promise<CustomRouteResult> => {
+    const id = requireUuidParam(ctx.params, "id");
+    const speakers = await withTransaction(pool, (client) => listTranscriptSpeakers(client, id));
 
     const labeled = await labelTranscriptSpeakers(speakers, ctx.identity.user.locale);
     const body = { speakers: labeled.map(({ speaker, label, personId }) => ({ speaker, label, personId })) };
@@ -156,14 +140,11 @@ export function createTranscriptSpeakersRouteHandler(pool: Pool) {
 }
 
 export function createTranscriptDetailRouteHandler(pool: Pool) {
-  return async (ctx: SpeakersRouteRequestContext): Promise<CustomRouteResult> => {
-    const parsedId = transcriptIdSchema.safeParse(ctx.params.id);
-    if (!parsedId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
+  return async (ctx: RouteParams & RouteLocale): Promise<CustomRouteResult> => {
+    const id = requireUuidParam(ctx.params, "id");
     return {
       status: 200,
-      body: await withTransaction(pool, (client) =>
-        readTranscriptDetail(client, parsedId.data, ctx.identity.user.locale),
-      ),
+      body: await withTransaction(pool, (client) => readTranscriptDetail(client, id, ctx.identity.user.locale)),
     };
   };
 }
@@ -183,16 +164,14 @@ const actionItemStateBodySchema = z.object({ state: z.literal("noted").nullable(
  * foreign transcripts and items answer one 404; an `added` item is refused (`alreadyAdded`).
  */
 export function createTranscriptActionItemStateRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
-    const parsedId = transcriptIdSchema.safeParse(ctx.params.id);
-    if (!parsedId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
+  return async (ctx: RouteParams & RouteBody): Promise<CustomRouteResult> => {
+    const transcriptId = requireUuidParam(ctx.params, "id");
     const parsedActionItemId = actionItemIdSchema.safeParse(ctx.params.actionItemId);
     if (!parsedActionItemId.success) {
       throw new ValidationError("'actionItemId' must be a non-negative integer", { field: "actionItemId" });
     }
     const parsedBody = actionItemStateBodySchema.safeParse(ctx.body);
     if (!parsedBody.success) throw new ValidationError("'state' must be \"noted\" or null", { field: "state" });
-    const transcriptId = parsedId.data;
     const actionItemId = parsedActionItemId.data;
     const { state } = parsedBody.data;
     const notFound = () =>
@@ -233,21 +212,14 @@ export function createTranscriptActionItemStateRouteHandler(pool: Pool) {
   };
 }
 
-interface ActionItemTaskRouteRequestContext {
-  params: Record<string, string>;
-  body: unknown;
-  identity: { user: { id: string; locale: string } };
-}
-
 /** A malformed value is `validation_failed` on its field. */
 function readActionItemTaskPath(params: Record<string, string>): { transcriptId: string; actionItemId: number } {
-  const parsedId = transcriptIdSchema.safeParse(params.id);
-  if (!parsedId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
+  const id = requireUuidParam(params, "id");
   const parsedActionItemId = actionItemIdSchema.safeParse(params.actionItemId);
   if (!parsedActionItemId.success) {
     throw new ValidationError("'actionItemId' must be a non-negative integer", { field: "actionItemId" });
   }
-  return { transcriptId: parsedId.data, actionItemId: parsedActionItemId.data };
+  return { transcriptId: id, actionItemId: parsedActionItemId.data };
 }
 
 const actionItemTaskBodySchema = z.object({ name: z.string().optional(), date: z.iso.date().optional() });
@@ -258,7 +230,7 @@ const actionItemTaskBodySchema = z.object({ name: z.string().optional(), date: z
  */
 export function createTranscriptActionItemTaskRouteHandler(pool: Pool) {
   const queueAffinity = createActionQueueAffinity();
-  return async (ctx: ActionItemTaskRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: RouteParams & RouteBody & RouteUser & RouteLocale): Promise<CustomRouteResult> => {
     const path = readActionItemTaskPath(ctx.params);
     const parsedBody = actionItemTaskBodySchema.safeParse(ctx.body);
     if (!parsedBody.success) {
@@ -278,7 +250,7 @@ export function createTranscriptActionItemTaskRouteHandler(pool: Pool) {
 /** Answers the item's state afterwards, so a repeat answers the same. */
 export function createTranscriptActionItemTaskRemoveRouteHandler(pool: Pool) {
   const queueAffinity = createActionQueueAffinity();
-  return async (ctx: ActionItemTaskRouteRequestContext): Promise<CustomRouteResult> => {
+  return async (ctx: RouteParams & RouteBody & RouteUser & RouteLocale): Promise<CustomRouteResult> => {
     const path = readActionItemTaskPath(ctx.params);
     const body = await withTransaction(pool, (client) =>
       removeActionItemTask(client, { ...path, userId: ctx.identity.user.id, queueAffinity }),
@@ -289,21 +261,14 @@ export function createTranscriptActionItemTaskRemoveRouteHandler(pool: Pool) {
 
 /** Other-tenant, unknown and trashed Events answer the same `not_found`. */
 export function createEventTranscriptActionItemsRouteHandler(pool: Pool) {
-  return async (ctx: SpeakersRouteRequestContext): Promise<CustomRouteResult> => {
-    const parsedId = z.uuid().safeParse(ctx.params.id);
-    if (!parsedId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
+  return async (ctx: RouteParams & RouteLocale): Promise<CustomRouteResult> => {
+    const id = requireUuidParam(ctx.params, "id");
     const proposals = await withTransaction(pool, (client) =>
-      listEventActionItemProposals(client, parsedId.data, ctx.identity.user.locale),
+      listEventActionItemProposals(client, id, ctx.identity.user.locale),
     );
     if (proposals === null) throw new NotFoundError("Event not found");
     return { status: 200, body: proposals };
   };
-}
-
-interface SpeakerAssignRouteRequestContext {
-  params: Record<string, string>;
-  body: unknown;
-  identity: { user: { id: string; locale: string } };
 }
 
 const speakerKeySchema = z.string().min(1).max(256);
@@ -315,9 +280,8 @@ const speakerAssignmentBodySchema = z.object({ personId: z.uuid().nullable() });
  * other-tenant transcripts and people answer the same 404.
  */
 export function createTranscriptSpeakerAssignRouteHandler(pool: Pool) {
-  return async (ctx: SpeakerAssignRouteRequestContext): Promise<CustomRouteResult> => {
-    const parsedId = transcriptIdSchema.safeParse(ctx.params.id);
-    if (!parsedId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
+  return async (ctx: RouteParams & RouteBody & RouteUser & RouteLocale): Promise<CustomRouteResult> => {
+    const transcriptId = requireUuidParam(ctx.params, "id");
     const parsedSpeaker = speakerKeySchema.safeParse(ctx.params.speaker);
     if (!parsedSpeaker.success) {
       throw new ValidationError("'speaker' must be a speaker key of 1 to 256 characters", { field: "speaker" });
@@ -331,7 +295,7 @@ export function createTranscriptSpeakerAssignRouteHandler(pool: Pool) {
     }
     const speakers = await withTransaction(pool, (client) =>
       assignTranscriptSpeaker(client, {
-        transcriptId: parsedId.data,
+        transcriptId,
         speaker: parsedSpeaker.data,
         personId: parsedBody.data.personId,
         userId: ctx.identity.user.id,
@@ -348,20 +312,14 @@ export function createTranscriptSpeakerAssignRouteHandler(pool: Pool) {
 
 /** `GET /api/transcripts/:id/speaker-candidates`; 404 as for the assignment route. */
 export function createTranscriptSpeakerCandidatesRouteHandler(pool: Pool) {
-  return async (ctx: SpeakersRouteRequestContext): Promise<CustomRouteResult> => {
-    const parsedId = transcriptIdSchema.safeParse(ctx.params.id);
-    if (!parsedId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
-    const candidates = await withTransaction(pool, (client) => listSpeakerCandidates(client, parsedId.data));
+  return async (ctx: RouteParams & RouteLocale): Promise<CustomRouteResult> => {
+    const id = requireUuidParam(ctx.params, "id");
+    const candidates = await withTransaction(pool, (client) => listSpeakerCandidates(client, id));
     return { status: 200, body: candidates };
   };
 }
 
 const transcriptListCursorSchema = z.object({ at: z.iso.datetime({ precision: 6 }).nullable(), id: z.uuid() }).strict();
-
-interface TranscriptListRouteRequestContext {
-  req: { url?: string };
-  identity: { user: { locale: string } };
-}
 
 function readTranscriptListCursor(raw: string | null): TranscriptListCursor | null {
   if (raw === null) return null;
@@ -382,8 +340,8 @@ function readTranscriptListCursor(raw: string | null): TranscriptListCursor | nu
 
 /** An unknown, foreign or non-live filter id matches nothing, so the list is empty rather than an error. */
 export function createTranscriptListRouteHandler(pool: Pool) {
-  return async (ctx: TranscriptListRouteRequestContext): Promise<CustomRouteResult> => {
-    const url = new URL(ctx.req.url ?? "/", "http://localhost");
+  return async (ctx: RouteLocale & RouteUrl): Promise<CustomRouteResult> => {
+    const url = requestUrl(ctx.req);
     const rawLimit = url.searchParams.get("limit");
     if (rawLimit !== null && !/^[0-9]{1,3}$/.test(rawLimit))
       throw new ValidationError("Invalid limit", { field: "limit" });
@@ -480,14 +438,10 @@ GROUP BY event.id
   return new Map(rows.map((row) => [row.eventId, { count: row.count, doneCount: row.doneCount }]));
 }
 
-interface TranscriptSummariesRouteRequestContext {
-  req: { url?: string };
-}
-
 /** One key per requested id as written; an unknown, other-tenant, trashed or non-Event id answers zeros. */
 export function createTranscriptSummariesRouteHandler(pool: Pool) {
-  return async (ctx: TranscriptSummariesRouteRequestContext): Promise<CustomRouteResult> => {
-    const eventIds = readSummaryEventIds(new URL(ctx.req.url ?? "/", "http://localhost"));
+  return async (ctx: RouteUrl): Promise<CustomRouteResult> => {
+    const eventIds = readSummaryEventIds(requestUrl(ctx.req));
     const counted = await withTransaction(pool, (client) => countTranscriptsByEvent(client, eventIds));
     const body = Object.fromEntries(
       eventIds.map((id): [string, TranscriptSummary] => [
@@ -523,27 +477,20 @@ async function rejectOpenTranscriptCards(client: PoolClient, transcriptId: strin
   return rejected;
 }
 
-/** The deleting user is the writer of every trash it causes. */
-interface TranscriptDeleteRouteRequestContext {
-  params: Record<string, string>;
-  identity: { user: { id: string } };
-}
-
 /**
  * `DELETE /api/transcripts/:id`: one transaction trashes the recording as a unit, in the pipeline's
  * lock order (source Files item, then transcript): trashes the source, rejects open cards, trashes the
  * transcript and checks it still links the trashed source, else everything rolls back. Both trashes
  * share `now()`, the epoch `transcriptRestoreHook` restores them by. Already-trashed items are left,
- * so a repeat changes nothing. A running pipeline stops at its next check of the trashed items.
+ * so a repeat changes nothing. A running pipeline stops at its next check of the trashed items. The deleting user is
+ * the writer of every trash it causes.
  */
 export function createTranscriptDeleteRouteHandler(
   pool: Pool,
   queueAffinity: ActionQueueAffinity = createActionQueueAffinity(),
 ) {
-  return async (ctx: TranscriptDeleteRouteRequestContext): Promise<CustomRouteResult> => {
-    const parsedId = transcriptIdSchema.safeParse(ctx.params.id);
-    if (!parsedId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
-    const transcriptId = parsedId.data;
+  return async (ctx: RouteParams & RouteUser): Promise<CustomRouteResult> => {
+    const transcriptId = requireUuidParam(ctx.params, "id");
     const options = { queueAffinity, actingUserId: ctx.identity.user.id, writer: { writerKind: "user" as const } };
     return withTransaction(pool, async (client) => {
       const transcripts = await getDatabaseByModuleId(client, TRANSCRIPTS_MODULE_ID);

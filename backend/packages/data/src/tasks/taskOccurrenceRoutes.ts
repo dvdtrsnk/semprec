@@ -15,12 +15,7 @@ import {
   publicTaskRecurrenceTemplate,
   type TaskRecurrenceTemplate,
 } from "./taskRecurrenceStore.js";
-
-interface Context {
-  params: Record<string, string>;
-  body: unknown;
-  identity: { user: { id: string } };
-}
+import type { RouteParams, RouteBody, RouteUser } from "../customRoute.js";
 
 /** Every other key is refused by name. */
 const OCCURRENCE_FIELDS: ReadonlySet<string> = new Set(["status", "completedOn", "date", "timeFrom", "timeTo"]);
@@ -32,13 +27,13 @@ const OCCURRENCE_STATUSES: readonly unknown[] = ["notDone", "done", "wontDo"];
 const SERIES_PROPERTY_KEYS = ["seriesId", "occurrenceDate"] as const;
 
 /** Lower-cased: occurrences store `seriesId` as PostgreSQL prints it, and the queries compare it as text. */
-function seriesIdOf(ctx: Context): string {
+function seriesIdOf(ctx: RouteParams & RouteBody & RouteUser): string {
   const result = z.uuid().safeParse(ctx.params.seriesId);
   if (!result.success) throw new ValidationError("Series id must be a UUID", { field: "seriesId" });
   return result.data.toLowerCase();
 }
 
-function occurrenceDateOf(ctx: Context): string {
+function occurrenceDateOf(ctx: RouteParams & RouteBody & RouteUser): string {
   const date = ctx.params.date;
   if (!isCalendarDate(date)) {
     throw new ValidationError("The occurrence date must be a calendar date YYYY-MM-DD", { field: "occurrenceDate" });
@@ -100,7 +95,7 @@ function templateProperties(template: TaskRecurrenceTemplate): Record<string, un
  * 201 when created here, 200 when already stored, 409 when another request stored it concurrently.
  */
 export function createTaskOccurrenceMaterializeRouteHandler(pool: Pool) {
-  return async (ctx: Context): Promise<{ status: number; item: ItemRow }> => {
+  return async (ctx: RouteParams & RouteBody & RouteUser): Promise<{ status: number; item: ItemRow }> => {
     const seriesId = seriesIdOf(ctx);
     const occurrenceDate = occurrenceDateOf(ctx);
     const propertiesPatch = parsePatch(ctx.body);

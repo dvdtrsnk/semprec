@@ -4,19 +4,13 @@ import { getAiUsageSummary } from "./aiUsageSummary.js";
 import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
-
-/** Duck-typed custom-route context so this package need not import `semprec-api`'s HTTP types. */
-interface CustomRouteRequestContext {
-  req: { url?: string };
-  identity: { user: { locale: string } };
-}
-
-type CustomRouteResult = { status: number; body: unknown };
+import type { CustomRouteResult, RouteLocale, RouteUrl } from "../customRoute.js";
+import { requestUrl } from "../customRoute.js";
 
 /** `GET /api/ai-usage`: thin mapping onto `getAiUsageReport`, which owns every aggregation rule. */
 export function createAiUsageRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
-    const url = new URL(ctx.req.url ?? "/", "http://localhost");
+  return async (ctx: RouteLocale & RouteUrl): Promise<CustomRouteResult> => {
+    const url = requestUrl(ctx.req);
     const from = url.searchParams.get("from");
     const to = url.searchParams.get("to");
     if (!from || !to) {

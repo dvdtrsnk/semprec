@@ -2,11 +2,13 @@ import type { Pool } from "pg";
 import { withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
 import { searchMailContacts } from "./personEmailIndexStore.js";
+import type { CustomRouteResult, RouteUrl } from "../customRoute.js";
+import { requestUrl } from "../customRoute.js";
 
 /** Mounted by the authenticated custom-route adapter in the session's tenant scope. */
 export function createMailContactsRouteHandler(pool: Pool) {
-  return async (ctx: { req: { url?: string } }): Promise<{ status: number; body: unknown }> => {
-    const url = new URL(ctx.req.url ?? "/", "http://localhost");
+  return async (ctx: RouteUrl): Promise<CustomRouteResult> => {
+    const url = requestUrl(ctx.req);
     const q = (url.searchParams.get("q") ?? "").trim();
     const exclude = url.searchParams.get("exclude") ?? "";
     const rawLimit = url.searchParams.get("limit");

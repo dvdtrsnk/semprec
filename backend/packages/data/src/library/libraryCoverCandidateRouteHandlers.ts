@@ -18,15 +18,9 @@ import { disposeLibraryCover, prepareLibraryCover } from "./libraryCoverStorage.
 import { COVER_OVERRIDE_KEY, COVER_REMOVED_KEY, COVER_SOURCE_KEY } from "./libraryModuleContract.js";
 import { enqueueLibraryMetadataProcessing } from "./libraryMetadataJob.js";
 import { downloadLibraryCoverOutcome, type LibraryCoverDownloadOutcome } from "./openLibraryFetcher.js";
+import type { CustomRouteResult, RouteParams, RouteUser } from "../customRoute.js";
 
 const logger = createLogger("library-cover-candidates");
-
-interface CoverCandidateRouteContext {
-  params: Record<string, string>;
-  identity: { user: { id: string } };
-}
-
-type RouteResult = { status: number; body: unknown };
 
 export interface LibraryCoverCandidateSelectOptions {
   /** Default `downloadLibraryCoverOutcome`, which goes through `createOutboundHttp()`. */
@@ -64,7 +58,7 @@ async function locateLibraryItem(client: PoolClient, itemId: string): Promise<Da
 
 /** Reads the stored table only; makes no external request. */
 export function createLibraryCoverCandidatesListRouteHandler(pool: Pool) {
-  return async (ctx: CoverCandidateRouteContext): Promise<RouteResult> => {
+  return async (ctx: RouteParams & RouteUser): Promise<CustomRouteResult> => {
     const itemId = parseItemId(ctx.params);
     const candidates = await withClient(pool, async (client) => {
       await locateLibraryItem(client, itemId);
@@ -79,7 +73,7 @@ export function createLibraryCoverCandidatesListRouteHandler(pool: Pool) {
  * but leaves `coverOverride`, `coverRemoved` and `coverSource` untouched. Answers 202; the job runs later.
  */
 export function createLibraryCoverCandidatesRefreshRouteHandler(pool: Pool) {
-  return async (ctx: CoverCandidateRouteContext): Promise<RouteResult> => {
+  return async (ctx: RouteParams & RouteUser): Promise<CustomRouteResult> => {
     const itemId = parseItemId(ctx.params);
     const userId = ctx.identity.user.id;
     await withTransaction(pool, async (client) => {
@@ -117,7 +111,7 @@ export function createLibraryCoverCandidatesRefreshRouteHandler(pool: Pool) {
  */
 export function createLibraryCoverCandidateSelectHandler(pool: Pool, options: LibraryCoverCandidateSelectOptions = {}) {
   const downloadCover = options.downloadCover ?? downloadLibraryCoverOutcome;
-  return async (ctx: CoverCandidateRouteContext): Promise<RouteResult> => {
+  return async (ctx: RouteParams & RouteUser): Promise<CustomRouteResult> => {
     const itemId = parseItemId(ctx.params);
     const index = parseCandidateIndex(ctx.params);
     const userId = ctx.identity.user.id;

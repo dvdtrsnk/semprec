@@ -8,16 +8,11 @@ import { withTransaction } from "../db/pool.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import type { ItemRow } from "../types.js";
-
-interface Context {
-  params: Record<string, string>;
-  body: unknown;
-  identity: { user: { id: string } };
-}
+import type { RouteParams, RouteBody, RouteUser } from "../customRoute.js";
 
 /** The `owner: 'system'` properties these routes write as the Tasks module. */
 const SERIES_PROPERTY_KEYS = ["seriesId", "occurrenceDate", "recurrence"] as const;
-function taskId(ctx: Context): string {
+function taskId(ctx: RouteParams & RouteBody & RouteUser): string {
   const result = z.uuid().safeParse(ctx.params.id);
   if (!result.success) throw new ValidationError("Task id must be a UUID", { field: "id" });
   return result.data;
@@ -33,7 +28,7 @@ async function lockTask(client: PoolClient, id: string): Promise<{ databaseId: s
 
 async function writeSeriesProperties(
   client: PoolClient,
-  ctx: Context,
+  ctx: RouteParams & RouteBody & RouteUser,
   databaseId: string,
   taskId: string,
   propertiesPatch: Record<string, unknown>,
@@ -62,7 +57,7 @@ async function writeSeriesProperties(
  * path in the same transaction; a sent `date` also moves the anchor. A task without a date is refused on `date`.
  */
 export function createTaskRecurrenceSetRouteHandler(pool: Pool) {
-  return async (ctx: Context): Promise<{ status: number; item: ItemRow }> => {
+  return async (ctx: RouteParams & RouteBody & RouteUser): Promise<{ status: number; item: ItemRow }> => {
     const id = taskId(ctx);
     parseRequest(ctx.body);
     return withTransaction(pool, async (client) => {
@@ -79,7 +74,7 @@ export function createTaskRecurrenceSetRouteHandler(pool: Pool) {
  * series properties; the task keeps its `date`. A task without a series is returned unchanged.
  */
 export function createTaskRecurrenceClearRouteHandler(pool: Pool) {
-  return async (ctx: Context): Promise<{ status: number; item: ItemRow }> => {
+  return async (ctx: RouteParams & RouteBody & RouteUser): Promise<{ status: number; item: ItemRow }> => {
     const id = taskId(ctx);
     return withTransaction(pool, async (client) => {
       const { databaseId, task } = await lockTask(client, id);

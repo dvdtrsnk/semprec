@@ -1,12 +1,11 @@
 import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@semprec/module-registry";
 import type { Pool, PoolClient } from "pg";
-import { z } from "zod";
 import type { AgentRunDisplayStatus } from "../agentRuns/agentRunDisplayStatus.js";
 import { getAgentRunDetail, getAgentRunReplyOutcome } from "../agentRuns/agentRunDetail.js";
 import { agentRunErrorFields } from "../agentRuns/agentRunErrorSummary.js";
 import { getAgentRun } from "../agentRuns/agentRunsStore.js";
 import { withTransaction } from "../db/pool.js";
-import { NotFoundError, ValidationError } from "../errors.js";
+import { NotFoundError } from "../errors.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { findTickThread } from "../semp/sempTickThreadStore.js";
 import { formatHeartbeatRuleLabel } from "./heartbeatRuleLabel.js";
@@ -17,17 +16,8 @@ import {
   type HeartbeatRow,
   type LastFinishedOccurrenceRun,
 } from "./schedulerStore.js";
-
-/**
- * Duck-typed shape of `semprec-api`'s custom-route mount. The adapter authenticates a session first (an
- * agent run credential never reaches here) and runs the handler inside the session's tenant.
- */
-interface CustomRouteRequestContext {
-  params: Record<string, string>;
-  identity: { user: { locale: string } };
-}
-
-type CustomRouteResult = { status: number; body: unknown };
+import type { CustomRouteResult, RouteParams, RouteLocale } from "../customRoute.js";
+import { requireUuidParam } from "../customRoute.js";
 
 export type LastOccurrenceStatus = "ok" | "waiting_approval" | "failed";
 
@@ -48,8 +38,6 @@ export interface ProjectHeartbeatBody {
   lastOccurrence: LastOccurrence | null;
   threadId: string | null;
 }
-
-const projectIdSchema = z.uuid();
 
 let catalogsPromise: Promise<ModuleCatalogs> | undefined;
 
@@ -110,18 +98,18 @@ async function readLastOccurrence(
  * A single-consumer read for the project's agent screen; system heartbeats are not listed.
  *
  * `enabled` and `lastOccurrence.status` are independent: failing runs never switch an automation off.
- * A missing, trashed or other tenant's project answers the same 404.
+ * A missing, trashed or other tenant's project answers the same 404. Session-only: an agent run credential never
+ * reaches it.
  */
 export function createProjectHeartbeatsRouteHandler(pool: Pool) {
-  return async (ctx: CustomRouteRequestContext): Promise<CustomRouteResult> => {
-    const projectId = projectIdSchema.safeParse(ctx.params.id);
-    if (!projectId.success) throw new ValidationError("'id' must be a UUID string", { field: "id" });
+  return async (ctx: RouteParams & RouteLocale): Promise<CustomRouteResult> => {
+    const projectId = requireUuidParam(ctx.params, "id");
     const locale = ctx.identity.user.locale;
     const catalogs = await getSeedCatalogs();
     const label = (key: string) => resolveCatalogLabel(null, catalogs[toManifestLocale(locale)], catalogs.en, key);
     const rows = await withTransaction(pool, async (client) => {
-      if (!(await findLiveProject(client, projectId.data))) throw new NotFoundError("Project not found");
-      const heartbeats = await listHeartbeatsByProject(client, projectId.data, new Map(), "user");
+      if (!(await findLiveProject(client, projectId))) throw new NotFoundError("Project not found");
+      const heartbeats = await listHeartbeatsByProject(client, projectId, new Map(), "user");
       const lastRuns = await listLastFinishedOccurrenceRuns(
         client,
         heartbeats.map((heartbeat) => heartbeat.id),

@@ -11,12 +11,7 @@ import type { WriterIdentity } from "../chokePoint/writerKind.js";
 import { withTransaction } from "../db/pool.js";
 import { NotFoundError, ValidationError } from "../errors.js";
 import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
-
-interface Context {
-  params: Record<string, string>;
-  body: unknown;
-  identity: { user: { id: string } };
-}
+import type { CustomRouteResult, RouteParams, RouteBody, RouteUser } from "../customRoute.js";
 
 interface TaskHostEvent {
   eventId: string;
@@ -48,7 +43,7 @@ const RESCHEDULE_KEYS: ReadonlySet<string> = new Set(["date", "timeFrom", "timeT
 /** `addedAt` is `toISOString` form (UTC, milliseconds), so string comparison orders instants. */
 const hostEventMetadataSchema = z.object({ addedAt: z.iso.datetime({ precision: 3 }) });
 
-function uuidParam(ctx: Context, name: "id" | "eventId"): string {
+function uuidParam(ctx: RouteParams & RouteBody & RouteUser, name: "id" | "eventId"): string {
   const result = z.uuid().safeParse(ctx.params[name]);
   if (!result.success) throw new ValidationError(`Path parameter '${name}' must be a UUID`, { field: name });
   return result.data.toLowerCase();
@@ -141,9 +136,9 @@ function parseReschedule(body: unknown): Record<string, unknown> {
  */
 export function createTaskHostEventPutRouteHandler(pool: Pool) {
   return async (
-    ctx: Context,
+    ctx: RouteParams & RouteBody & RouteUser,
     writer: WriterIdentity = USER_WRITER,
-  ): Promise<{ status: number; body: TaskHostEventsBody }> => {
+  ): Promise<CustomRouteResult<TaskHostEventsBody>> => {
     const id = uuidParam(ctx, "id");
     const eventId = uuidParam(ctx, "eventId");
     const userId = ctx.identity.user.id;
@@ -176,9 +171,9 @@ export function createTaskHostEventPutRouteHandler(pool: Pool) {
  */
 export function createTaskHostEventRemoveRouteHandler(pool: Pool) {
   return async (
-    ctx: Context,
+    ctx: RouteParams & RouteBody & RouteUser,
     writer: WriterIdentity = USER_WRITER,
-  ): Promise<{ status: number; body: TaskHostEventsBody }> => {
+  ): Promise<CustomRouteResult<TaskHostEventsBody>> => {
     const id = uuidParam(ctx, "id");
     const eventId = uuidParam(ctx, "eventId");
     const userId = ctx.identity.user.id;
@@ -203,7 +198,7 @@ export function createTaskHostEventRemoveRouteHandler(pool: Pool) {
  * transaction; a refused value fails the request and the edges stay. Other keys are refused before any write.
  */
 export function createTaskHostEventsClearRouteHandler(pool: Pool) {
-  return async (ctx: Context): Promise<{ status: number; body: TaskHostEventsBody }> => {
+  return async (ctx: RouteParams & RouteBody & RouteUser): Promise<CustomRouteResult<TaskHostEventsBody>> => {
     const id = uuidParam(ctx, "id");
     const propertiesPatch = parseReschedule(ctx.body);
     const userId = ctx.identity.user.id;

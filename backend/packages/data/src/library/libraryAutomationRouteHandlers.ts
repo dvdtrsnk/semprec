@@ -17,11 +17,7 @@ import {
   type LibraryMetadataJobConfig,
 } from "./libraryMetadataJob.js";
 import { COVER_OVERRIDE_KEY, COVER_REMOVED_KEY, COVER_SOURCE_KEY } from "./libraryModuleContract.js";
-
-interface LibraryAutomationRetryRouteContext {
-  params: Record<string, string>;
-  identity: { user: { id: string } };
-}
+import type { CustomRouteResult, RouteParams, RouteUser } from "../customRoute.js";
 
 /** Read from the seeded `onItemEvent` heartbeat, not rebuilt, so a retry uses the tenant heartbeat's `source`. */
 export async function readJobConfig(client: PoolClient, database: DatabaseRow): Promise<LibraryMetadataJobConfig> {
@@ -51,7 +47,7 @@ function clearingPatch(properties: Record<string, unknown>): Record<string, unkn
  * property changed, because the status did. Answers 202.
  */
 export function createLibraryAutomationRetryRouteHandler(pool: Pool) {
-  return async (ctx: LibraryAutomationRetryRouteContext): Promise<{ status: number; body: unknown }> => {
+  return async (ctx: RouteParams & RouteUser): Promise<CustomRouteResult> => {
     const parsed = z.uuid().safeParse(ctx.params.id);
     if (!parsed.success) throw new ValidationError("Item id must be a UUID", { field: "id" });
     const itemId = parsed.data;

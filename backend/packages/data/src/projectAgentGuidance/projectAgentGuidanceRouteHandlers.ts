@@ -3,12 +3,8 @@ import { z } from "zod";
 import { withTransaction } from "../db/pool.js";
 import { ConflictError, ValidationError } from "../errors.js";
 import { loadGuidanceSections, saveGuidanceSections } from "./projectAgentGuidanceSections.js";
+import type { RouteParams, RouteBody, RouteUser } from "../customRoute.js";
 
-interface Context {
-  params: Record<string, string>;
-  body: unknown;
-  identity: { user: { id: string } };
-}
 const requestSchema = z
   .object({
     sections: z
@@ -17,19 +13,19 @@ const requestSchema = z
     expectedUpdatedAt: z.string().datetime({ offset: true }).nullable(),
   })
   .strict();
-function projectId(ctx: Context): string {
+function projectId(ctx: RouteParams & RouteBody & RouteUser): string {
   const result = z.string().uuid().safeParse(ctx.params.id);
   if (!result.success) throw new ValidationError("Project id must be a UUID", { field: "id" });
   return result.data;
 }
 export function createProjectAgentGuidanceReadRouteHandler(pool: Pool) {
-  return async (ctx: Context) => ({
+  return async (ctx: RouteParams & RouteBody & RouteUser) => ({
     status: 200,
     body: await withTransaction(pool, (tx) => loadGuidanceSections(tx, projectId(ctx))),
   });
 }
 export function createProjectAgentGuidanceSaveRouteHandler(pool: Pool) {
-  return async (ctx: Context) => {
+  return async (ctx: RouteParams & RouteBody & RouteUser) => {
     const id = projectId(ctx);
     const parsed = requestSchema.safeParse(ctx.body);
     if (!parsed.success) throw new ValidationError("Invalid guidance request", { field: "sections" });

@@ -25,10 +25,12 @@ import {
   type MailThreadMoveSelection,
 } from "./mailThreadActions.js";
 import { readMailThreadFacets, type MailThreadFacets } from "./mailThreadsFacetsStore.js";
+import type { CustomRouteResult, RouteParams, RouteUrl } from "../customRoute.js";
+import { requestUrl } from "../customRoute.js";
 
 export function createMailThreadListRouteHandler(pool: Pool) {
-  return async (ctx: { req: { url?: string } }) => {
-    const url = new URL(ctx.req.url ?? "/", "http://localhost");
+  return async (ctx: RouteUrl) => {
+    const url = requestUrl(ctx.req);
     const rawLimit = url.searchParams.get("limit");
     if (rawLimit !== null && !/^[0-9]{1,3}$/.test(rawLimit))
       throw new ValidationError("Invalid limit", { field: "limit" });
@@ -82,10 +84,10 @@ export function createMailThreadListRouteHandler(pool: Pool) {
 
 /** Remote images are an explicit opt-in: only `true` allows them, anything other than `false` or absent is a 400. */
 export function createMailThreadDetailRouteHandler(pool: Pool) {
-  return async (ctx: { req: { url?: string }; params: Record<string, string> }) => {
+  return async (ctx: RouteParams & RouteUrl) => {
     const threadId = z.uuid().safeParse(ctx.params.threadId);
     if (!threadId.success) throw new ValidationError("Invalid threadId", { field: "threadId" });
-    const raw = new URL(ctx.req.url ?? "/", "http://localhost").searchParams.get("allowRemoteImages");
+    const raw = requestUrl(ctx.req).searchParams.get("allowRemoteImages");
     if (raw !== null && raw !== "true" && raw !== "false")
       throw new ValidationError("Invalid allowRemoteImages", { field: "allowRemoteImages" });
     const body = await withTransaction(pool, (client) => getMailThreadDetail(client, threadId.data, raw === "true"), {
@@ -101,8 +103,8 @@ export function createMailThreadDetailRouteHandler(pool: Pool) {
  * tenant selects no thread and is no error.
  */
 export function createMailThreadFacetsRouteHandler(pool: Pool) {
-  return async (ctx: { req: { url?: string } }): Promise<{ status: number; body: MailThreadFacets }> => {
-    const url = new URL(ctx.req.url ?? "/", "http://localhost");
+  return async (ctx: RouteUrl): Promise<CustomRouteResult<MailThreadFacets>> => {
+    const url = requestUrl(ctx.req);
     const selected = (field: "areaId" | "projectId"): string | null => {
       const value = url.searchParams.get(field);
       if (value !== null && !z.uuid().safeParse(value).success)
@@ -245,8 +247,7 @@ async function moveMailThread(
  * recorded as pending and synced later; nothing is deleted.
  */
 export function createMailThreadArchiveRouteHandler(pool: Pool) {
-  return (ctx: { params: Record<string, string> }) =>
-    moveMailThread(pool, ctx.params.threadId, selectMailThreadArchiveMoves);
+  return (ctx: RouteParams) => moveMailThread(pool, ctx.params.threadId, selectMailThreadArchiveMoves);
 }
 
 /**
@@ -255,8 +256,7 @@ export function createMailThreadArchiveRouteHandler(pool: Pool) {
  * `mail_trash_folder_missing` when a mailbox has no Trash.
  */
 export function createMailThreadTrashRouteHandler(pool: Pool) {
-  return (ctx: { params: Record<string, string> }) =>
-    moveMailThread(pool, ctx.params.threadId, selectMailThreadTrashMoves);
+  return (ctx: RouteParams) => moveMailThread(pool, ctx.params.threadId, selectMailThreadTrashMoves);
 }
 
 /**
@@ -265,6 +265,5 @@ export function createMailThreadTrashRouteHandler(pool: Pool) {
  * `mail_sent_folder_missing`, each changing nothing.
  */
 export function createMailThreadRestoreRouteHandler(pool: Pool) {
-  return (ctx: { params: Record<string, string> }) =>
-    moveMailThread(pool, ctx.params.threadId, selectMailThreadRestoreMoves);
+  return (ctx: RouteParams) => moveMailThread(pool, ctx.params.threadId, selectMailThreadRestoreMoves);
 }
