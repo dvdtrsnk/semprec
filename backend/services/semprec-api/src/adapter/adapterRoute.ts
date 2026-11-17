@@ -1,16 +1,17 @@
 import type { CaptureAttachmentResponse, ConfirmationResult, KeptItem, ProposalWarning } from "@semprec/data";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { Pool } from "pg";
+import { DatabaseError, type Pool } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import {
   ChokePointError,
   ForbiddenError,
   RateLimitedError,
+  retryingTransientConflicts,
   type AuthenticatedIdentity,
   type ItemRow,
 } from "@semprec/data";
 import { authenticateRequest } from "../authHandler.js";
-import { toErrorResponseBody, statusForError } from "./errorContract.js";
+import { databaseErrorResponse, toErrorResponseBody, statusForError } from "./errorContract.js";
 import { toItemEnvelopeWithBlobs } from "./itemEnvelope.js";
 import { logger } from "../logger.js";
 import { PayloadTooLargeError, readJsonBody, sendJson } from "./http.js";
@@ -80,8 +81,11 @@ export interface AdapterRequestListenerOptions {
 }
 
 /**
- * Anything thrown other than a `ChokePointError`/`PayloadTooLargeError` is logged and answered with
- * a generic 500, never leaking details.
+ * The handler runs inside `retryingTransientConflicts`: a READ COMMITTED transaction it opens that fails
+ * with a serialization failure or deadlock is re-run up to three times. A Postgres error that still
+ * reaches here with a classified SQLSTATE gets its status (`databaseErrorResponse`). Anything else
+ * other than a `ChokePointError`/`PayloadTooLargeError` is logged and answered with a generic 500,
+ * never leaking details.
  */
 export function createAdapterRequestListener(
   pool: Pool,
@@ -97,7 +101,7 @@ export function createAdapterRequestListener(
       const run = async (): Promise<{ status: number; body: unknown }> => {
         const body = await readJsonBody(req, { maxBytes: MAX_BODY_BYTES });
         const params = options.extractParams?.(req) ?? {};
-        const handled = await handler({ req, identity, params, body });
+        const handled = await retryingTransientConflicts(() => handler({ req, identity, params, body }));
         // The full item envelope, never an empty 204; built here because the blob lookup needs the
         // tenant scope.
         return "item" in handled
@@ -127,6 +131,17 @@ export function createAdapterRequestListener(
         return;
       }
       const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+      if (err instanceof DatabaseError) {
+        const mapped = databaseErrorResponse(err);
+        if (mapped !== null) {
+          logger.warn(
+            { sqlState: err.code, constraint: err.constraint, method: req.method, path: pathname },
+            "Database error answered by its SQLSTATE",
+          );
+          sendJson(res, mapped.status, mapped.body, mapped.headers);
+          return;
+        }
+      }
       logger.error({ err, method: req.method, path: pathname }, "Unexpected error handling request");
       sendJson(res, 500, { error: { code: "internal_error" } });
     }

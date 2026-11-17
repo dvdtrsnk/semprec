@@ -736,4 +736,125 @@ describe("adapter route (issue #238)", () => {
     const body = (await res.json()) as { error: { code: string } };
     expect(body.error.code).toBe("payload_too_large");
   });
+
+  describe("Postgres errors that reach the adapter", () => {
+    type Condition =
+      | "unique_violation"
+      | "foreign_key_violation"
+      | "check_violation"
+      | "deadlock_detected"
+      | "serialization_failure"
+      | "division_by_zero";
+
+    /** Raises a real PostgreSQL error with the SQLSTATE `condition` names, in a transaction of the handler. */
+    async function raiseIn(condition: Condition, onAttempt: () => void = () => {}): Promise<never> {
+      await withTransaction(pool, async (client) => {
+        onAttempt();
+        await client.query("SELECT set_config('semprec_test.condition', $1, true)", [condition]);
+        await client.query(`DO $$
+          BEGIN
+            CASE current_setting('semprec_test.condition')
+              WHEN 'unique_violation' THEN RAISE EXCEPTION 'injected' USING ERRCODE = 'unique_violation';
+              WHEN 'foreign_key_violation' THEN RAISE EXCEPTION 'injected' USING ERRCODE = 'foreign_key_violation';
+              WHEN 'check_violation' THEN RAISE EXCEPTION 'injected' USING ERRCODE = 'check_violation';
+              WHEN 'deadlock_detected' THEN RAISE EXCEPTION 'injected' USING ERRCODE = 'deadlock_detected';
+              WHEN 'serialization_failure' THEN RAISE EXCEPTION 'injected' USING ERRCODE = 'serialization_failure';
+              ELSE RAISE EXCEPTION 'injected' USING ERRCODE = 'division_by_zero';
+            END CASE;
+          END $$`);
+      });
+      throw new Error("The injected error was not raised");
+    }
+
+    async function serve(handler: AdapterHandler, run: (url: string, token: string) => Promise<void>): Promise<void> {
+      const server = createServer(asVoid(createAdapterRequestListener(pool, handler)));
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("expected a bound TCP address");
+      try {
+        await run(`http://127.0.0.1:${address.port}`, await tokenFor(`db-${randomSuffix()}@example.com`));
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    }
+
+    let suffix = 0;
+    const randomSuffix = () => `${Date.now()}-${++suffix}`;
+
+    const post = (url: string, token: string) =>
+      fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({}),
+      });
+
+    it.each([
+      ["unique_violation", 409, "unique_violation"],
+      ["foreign_key_violation", 409, "foreign_key_violation"],
+      ["check_violation", 400, "check_violation"],
+    ] as const)("answers %s with %i and only its code", async (condition, status, code) => {
+      await serve(
+        () => raiseIn(condition),
+        async (url, token) => {
+          const res = await post(url, token);
+          expect(res.status).toBe(status);
+          expect(await res.json()).toEqual({ error: { code } });
+          expect(res.headers.get("retry-after")).toBeNull();
+        },
+      );
+    });
+
+    it("answers any other database error with the generic 500", async () => {
+      await serve(
+        () => raiseIn("division_by_zero"),
+        async (url, token) => {
+          const res = await post(url, token);
+          expect(res.status).toBe(500);
+          expect(await res.json()).toEqual({ error: { code: "internal_error" } });
+        },
+      );
+    });
+
+    it("re-runs a transaction that hit a deadlock and answers with the attempt that committed", async () => {
+      let attempts = 0;
+      await serve(
+        async () => {
+          const value = await withTransaction(pool, async (client) => {
+            attempts++;
+            if (attempts === 1) {
+              await client.query("DO $$ BEGIN RAISE EXCEPTION 'injected' USING ERRCODE = 'deadlock_detected'; END $$");
+            }
+            return attempts;
+          });
+          return { status: 200, body: { attempts: value } };
+        },
+        async (url, token) => {
+          const res = await post(url, token);
+          expect(res.status).toBe(200);
+          expect(await res.json()).toEqual({ attempts: 2 });
+        },
+      );
+    });
+
+    it.each(["deadlock_detected", "serialization_failure"] as const)(
+      "answers 503 transaction_conflict with Retry-After after %s on every attempt",
+      async (condition) => {
+        let handlerRuns = 0;
+        let attempts = 0;
+        await serve(
+          async () => {
+            handlerRuns++;
+            return raiseIn(condition, () => attempts++);
+          },
+          async (url, token) => {
+            const res = await post(url, token);
+            expect(res.status).toBe(503);
+            expect(res.headers.get("retry-after")).toBe("1");
+            expect(await res.json()).toEqual({ error: { code: "transaction_conflict" } });
+          },
+        );
+        expect({ handlerRuns, attempts }).toEqual({ handlerRuns: 1, attempts: 3 });
+      },
+    );
+  });
 });

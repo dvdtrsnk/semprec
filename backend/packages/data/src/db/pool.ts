@@ -1,4 +1,4 @@
-import { Client, Pool, type ClientConfig, type PoolClient } from "pg";
+import { Client, DatabaseError, Pool, type ClientConfig, type PoolClient } from "pg";
 import {
   enforceTenantScope,
   runDetachedAsSystem,
@@ -52,7 +52,7 @@ export function markManagedTransactionRollbackOnly(client: PoolClient, error: un
 /**
  * One module's state for the active `withTransaction` invocation of a client: created by `init` on first use and
  * keyed on the invocation, so it is unreachable once the invocation ends and nothing in it reaches another
- * transaction. A savepoint rollback does not reset it, so it may only hold facts that stay safe to
+ * transaction (a retry included). A savepoint rollback does not reset it, so it may only hold facts that stay safe to
  * act on after one.
  */
 export class TransactionLocal<T> {
@@ -355,15 +355,55 @@ export interface WithTransactionOptions {
   isolation?: TransactionIsolationLevel;
 }
 
+/** Attempts of one READ COMMITTED transaction inside `retryingTransientConflicts`, the first included. */
+export const TRANSIENT_CONFLICT_ATTEMPTS = 3;
+
+/** `true` inside `retryingTransientConflicts`; `false` inside a transaction body it is retrying. */
+const transientConflictRetry = new AsyncLocalStorage<boolean>();
+
+/** A serialization failure (`40001`) or a detected deadlock (`40P01`): the same work in a fresh transaction may pass. */
+export function isTransientConflict(err: unknown): err is DatabaseError {
+  return err instanceof DatabaseError && (err.code === "40001" || err.code === "40P01");
+}
+
+/**
+ * Inside `fn`, a READ COMMITTED `withTransaction` that fails with a transient conflict is rolled back and its body
+ * run again in a fresh transaction, up to `TRANSIENT_CONFLICT_ATTEMPTS` attempts; after the last one the conflict
+ * propagates. A transaction opened inside a body that is being retried is not retried on its own, so the outer
+ * transaction is retried as a whole. Explicit isolation levels are never retried: their callers handle conflicts.
+ */
+export function retryingTransientConflicts<T>(fn: () => Promise<T>): Promise<T> {
+  return transientConflictRetry.run(true, fn);
+}
+
 /**
  * The only sanctioned way to open a transaction: `runAfterCommit` callbacks are keyed on the client and only
  * this fires or discards them. Sets `app.tenant_id` locally after `BEGIN` and flushes search jobs before
  * `COMMIT`. The original error propagates even if `ROLLBACK` fails; such a client is destroyed, not pooled.
+ * Retries transient conflicts only inside `retryingTransientConflicts`.
  */
 export async function withTransaction<T>(
   pool: Pool,
   fn: (client: PoolClient) => Promise<T>,
   options: WithTransactionOptions = {},
+): Promise<T> {
+  if (options.isolation !== undefined || transientConflictRetry.getStore() !== true) {
+    return runTransaction(pool, fn, options);
+  }
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await transientConflictRetry.run(false, () => runTransaction(pool, fn, options));
+    } catch (err) {
+      if (!isTransientConflict(err) || attempt >= TRANSIENT_CONFLICT_ATTEMPTS) throw err;
+      logger.warn({ sqlState: err.code, attempt }, "withTransaction: retrying after a transient conflict");
+    }
+  }
+}
+
+async function runTransaction<T>(
+  pool: Pool,
+  fn: (client: PoolClient) => Promise<T>,
+  options: WithTransactionOptions,
 ): Promise<T> {
   const scope = enforceTenantScope("withTransaction");
   const client = await connectWithoutScopeHook(pool);

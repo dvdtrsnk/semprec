@@ -148,7 +148,7 @@ Rules live in `calendar/calendarRowHooks.ts` and `calendar/calendarTrashHooks.ts
 - Payload is `{ tenantId }` only; the handler checks it against the envelope tenant and sends a silent APNs push to
   active `ios` registrations, writing no `notifications` rows.
 - Concurrent writes of one tenant serialize on the job key in `graphile_worker.add_job`; a resulting `40P01` is the
-  accepted residual.
+  accepted residual, retried with the request's transaction by the HTTP adapter.
 
 ### Calendar tools over MCP
 

@@ -7,6 +7,9 @@ export {
   requireAffectedRows,
   requireManagedTransaction,
   markManagedTransactionRollbackOnly,
+  retryingTransientConflicts,
+  isTransientConflict,
+  TRANSIENT_CONFLICT_ATTEMPTS,
   type Queryable,
 } from "./db/pool.js";
 export { readItemPatchChangeMetadata } from "./chokePoint/itemPatchChangeMetadata.js";
