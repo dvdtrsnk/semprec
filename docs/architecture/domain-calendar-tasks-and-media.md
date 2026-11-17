@@ -235,7 +235,7 @@ Link rules declared in the `systemDatabases` manifest (engine: [data-model-and-w
 
 ## Event trash: lock order
 
-The Event delete hooks' registration order in `domainWriteHooks.ts` is part of the contract:
+The Event delete hooks' order in the `itemDeleteHooks` list of `domainWriteHooks.ts` is part of the contract:
 
 1. `valueLinkSourceDeleteHook`: locks the Tasks rows whose links the Event feeds (id order, `FOR UPDATE OF i`), then
    the links via `deleteValueLinkSourcesBySourceItem` ordered by item id, rule catalog position (`loadLinkRules`), link

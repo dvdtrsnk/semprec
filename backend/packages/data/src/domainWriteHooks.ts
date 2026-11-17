@@ -1,3 +1,7 @@
+// Composition point for the choke point's per-process hook registries: the one place that imports every
+// domain's hook and registers it, so chokePoint/ never has to. Side-effect only. `index.ts` imports it first,
+// so every process registers before any write; a test that deep-imports a choke-point module (bypassing the
+// barrel) must import this file itself.
 import {
   applyRecurrenceCommand,
   validateRecurrenceCommand,
@@ -22,11 +26,22 @@ import { registerItemReadProjection } from "./chokePoint/hooks.js";
 import { registerRelatedRowContributor } from "./chokePoint/relatedContributors.js";
 import { personMailThreadsRelatedRow } from "./mail/threadRelatedCount.js";
 import { threadTaskPeopleEdgeChangedHook } from "./mail/threadTaskPeople.js";
-// Composition point for the choke point's per-process hook registries: the one place that imports every
-// domain's hook and registers it, so chokePoint/ never has to. Side-effect only. `index.ts` imports it first,
-// so every process registers before any write; a test that deep-imports a choke-point module (bypassing the
-// barrel) must import this file itself.
 import {
+  type ItemCreateHook,
+  type ItemDeleteHook,
+  type ItemPreWritePreparation,
+  type ItemPreWriteTransform,
+  type ItemPurgeHook,
+  type ItemRestoreHook,
+  type ItemDeletePreLockHook,
+  type ItemRestorePreLockHook,
+  type ItemPurgePreLockHook,
+  type ItemUpdateHook,
+  type ItemUpdatePreLockHook,
+  type RelationEdgeBeforeLinkBreakHook,
+  type RelationEdgeChangedHook,
+  type RelationEdgeDeleteHook,
+  type RelationEdgeWriteHook,
   registerItemCreateHook,
   registerItemPreWriteTransform,
   registerItemUpdateCommand,
@@ -199,7 +214,290 @@ import {
 } from "./sleep/sleepWriteHooks.js";
 import { SLEEP_NIGHTS_MODULE_ID, SLEEP_PLANS_MODULE_ID, SLEEP_SETTINGS_MODULE_ID } from "./seed/sleepModuleKeys.js";
 
-registerItemPreWriteTransform(TASKS_MODULE_ID, taskPreWriteTransform, prepareTaskProposal);
+// Each list below is the complete, ordered set of rules for one write event: hooks run sequentially in list order
+// inside the writer's transaction, and the first rejection rolls the write back. Order matters only within a list.
+
+/** Per owning module, in run order; each transform receives the previous one's output. */
+const itemPreWriteTransforms: readonly (readonly [string, ItemPreWriteTransform, ItemPreWritePreparation])[] = [
+  [TASKS_MODULE_ID, taskPreWriteTransform, prepareTaskProposal],
+  [
+    BOOKS_MODULE_ID,
+    booksPreWriteTransform,
+    async (context) => ({
+      patch: await booksPreWriteTransform(context),
+      deferredKeys: [],
+    }),
+  ],
+  // Library cover properties, after the Books year rule above.
+  [BOOKS_MODULE_ID, libraryCoverPreWriteTransform, prepareLibraryCoverWrite],
+  [MOVIES_MODULE_ID, libraryCoverPreWriteTransform, prepareLibraryCoverWrite],
+  [PROJECTS_MODULE_ID, projectWriteTransform, prepareProjectWrite],
+  [
+    FILES_MODULE_ID,
+    filesItemPreWriteTransform,
+    async ({ stored, patch }) => ({
+      patch,
+      deferredKeys: stored === null && !Object.hasOwn(patch, "type") && Object.hasOwn(patch, "file") ? ["type"] : [],
+    }),
+  ],
+  // Events: the time transform first, so the iCalendar sequence compares normalized times.
+  [EVENTS_MODULE_ID, eventTimePreWriteTransform, prepareEventTime],
+  [EVENTS_MODULE_ID, eventIcalIdentityTransform, prepareEventIcalIdentity],
+  // The next occurrence day of a recurring Event, after the time transform normalized it.
+  [EVENTS_MODULE_ID, nextOccurrenceDateTransform, prepareNextOccurrenceDate],
+  // A calendar subscription's `subscriptionUrl` is normalized and judged before the row is written.
+  [CALENDARS_MODULE_ID, calendarSubscriptionUrlTransform, prepareCalendarSubscriptionUrl],
+  // Sleep databases: HH:MM times, valid values, one settings item and one exception per night.
+  [SLEEP_SETTINGS_MODULE_ID, sleepPreWriteTransform, prepareSleepWrite],
+  [SLEEP_PLANS_MODULE_ID, sleepPreWriteTransform, prepareSleepWrite],
+  [SLEEP_NIGHTS_MODULE_ID, sleepPreWriteTransform, prepareSleepWrite],
+];
+
+/** Per owning module; a pre-lock hook only takes the locks that must precede the item's row lock. */
+const itemUpdatePreLockHooks: readonly (readonly [string, ItemUpdatePreLockHook])[] = [
+  // Lock order: the default mark before the calendar's row.
+  [CALENDARS_MODULE_ID, calendarItemUpdatePreLockHook],
+  // Lock order: the night's lock before the exception's row, as the PUT does.
+  [SLEEP_NIGHTS_MODULE_ID, sleepNightUpdatePreLockHook],
+];
+
+const itemDeletePreLockHooks: readonly (readonly [string, ItemDeletePreLockHook])[] = [
+  // Lock order: the default mark before the calendar's row.
+  [CALENDARS_MODULE_ID, calendarItemDeletePreLockHook],
+  // The whole recurring task series, before the cascade locks the named task.
+  [TASKS_MODULE_ID, taskSeriesItemDeletePreLockHook],
+];
+
+const itemRestorePreLockHooks: readonly (readonly [string, ItemRestorePreLockHook])[] = [
+  [CALENDARS_MODULE_ID, calendarItemRestorePreLockHook],
+  [TASKS_MODULE_ID, taskSeriesItemRestorePreLockHook],
+];
+
+const itemPurgePreLockHooks: readonly (readonly [string, ItemPurgePreLockHook])[] = [
+  [TASKS_MODULE_ID, taskSeriesItemPurgePreLockHook],
+];
+
+/** After a real insert. */
+const itemCreateHooks: readonly ItemCreateHook[] = [
+  // Events: the date and time rules judge what the transforms stored.
+  eventValidationItemCreateHook,
+  eventRecurrenceItemCreateHook,
+  blobReferenceItemCreateHook,
+  mcpServerItemCreateHook,
+  // After the blob reference hook.
+  recipePhotoWriteHook,
+  // Recipe `sourceUrl`, after the photo hook.
+  recipeSourceUrlWriteHook,
+  itemSearchCreateHook,
+  itemSearchInboxCreateHook,
+  libraryRatingItemCreateHook,
+  journalItemCreateHook,
+  journalDayRelinkItemCreateHook,
+  inboxItemCreateHook,
+  inboxTypeItemCreateHook,
+  mailboxConnectionLimitCreateHook,
+  areaItemCreateHook,
+  // A company created with a `web` feeds the resolver rules like an update of its `web`.
+  linkRuleItemCreateHook,
+  eventReminderValuesItemCreateHook,
+  // A new Event gets its calendar, after every Events rule above accepted it.
+  defaultCalendarCreateHook,
+  // Calendars: name, colour and single-default rules.
+  calendarItemCreateHook,
+  personBirthdayItemCreateHook,
+  sleepItemCreateHook,
+  // A wake day is in at most one plan; after the sleep validation hook.
+  keepWakeDaysInOnePlan,
+  // Every change of sleep data, or of the System settings time zone, enqueues the debounced resync push. After the
+  // validation and plan hooks, so a refused write enqueues nothing.
+  sleepResyncCreateHook,
+  // Every write that can change a reminders-feed fire time enqueues the debounced resync push. After the validation
+  // hooks, so a refused write throws before it enqueues.
+  remindersResyncCreateHook,
+];
+
+/** After the row update. */
+const itemUpdateHooks: readonly ItemUpdateHook[] = [
+  // A cancelled, restored or moved occurrence recomputes its series' next occurrence day.
+  nextOccurrenceSeriesItemUpdateHook,
+  eventValidationItemUpdateHook,
+  eventRecurrenceItemUpdateHook,
+  blobReferenceItemUpdateHook,
+  mcpServerItemUpdateHook,
+  recipePhotoWriteHook,
+  recipeSourceUrlWriteHook,
+  mailMessageFlagsItemUpdateHook,
+  taskRecurrenceItemUpdateHook,
+  itemSearchUpdateHook,
+  itemSearchTitleUpdateHook,
+  itemSearchInboxUpdateHook,
+  libraryRatingItemUpdateHook,
+  inboxTypeItemUpdateHook,
+  mailboxConnectionLimitUpdateHook,
+  areaItemUpdateHook,
+  linkRuleItemHook,
+  peopleLastContactItemUpdateHook,
+  eventReminderValuesItemUpdateHook,
+  calendarItemUpdateHook,
+  personBirthdayItemUpdateHook,
+  sleepItemUpdateHook,
+  keepWakeDaysInOnePlan,
+  // A task's `hiddenUntil` and `effectiveDate` follow its host Events' dates and times (the task's own `date` is
+  // handled by the Tasks transform).
+  taskHostEventScheduleItemUpdateHook,
+  // A task set to `done` before the end of its last host event is completed in that event; back to `notDone` or
+  // `wontDo` removes the edge. After the host-state hooks and the recurrence advance.
+  taskCompletedInEventHook,
+  sleepResyncUpdateHook,
+  // A moved Event queues an updated invitation.
+  eventInvitationItemUpdateHook,
+  remindersResyncUpdateHook,
+  // An open Processing proposals card that refers to an archived project becomes `invalid` in the same transaction.
+  proposalReferenceItemUpdateHook,
+];
+
+/**
+ * Per trashed row of the cascade. The Event lock order (`valueLinkSourceDeleteHook`, then
+ * `transcriptCompanyLinkReleaseItemDeleteHook`, then `eventHostedTasksDeleteHook`) is part of the contract.
+ */
+const itemDeleteHooks: readonly ItemDeleteHook[] = [
+  nextOccurrenceSeriesItemDeleteHook,
+  itemSearchDeleteHook,
+  // A user's or agent's trash of a Mailboxes item is refused (only the mailbox removal, as the system writer,
+  // trashes it).
+  mailboxDeleteHook,
+  valueLinkSourceDeleteHook,
+  peopleLastContactItemDeleteHook,
+  // A transcript's company link ends when its Event is trashed.
+  transcriptCompanyLinkReleaseItemDeleteHook,
+  // A trashed page takes its subpages and its block in the parent's document with it.
+  pageItemDeleteHook,
+  // A trashed item of any database but Pages takes its live subpages with it.
+  hostItemDeleteHook,
+  // A system, subscription or last own calendar cannot be deleted; the default mark moves to another own calendar
+  // and the calendar's live Events are trashed with it.
+  calendarItemDeleteHook,
+  // Trashing an Event returns its hosted tasks to their day (edges stay). After the host-state hooks, which the
+  // recomputations use.
+  eventHostedTasksDeleteHook,
+  // Deleting any instance of a recurring task series trashes the whole series under one `deletedAt`: turns the
+  // repeat rule off and records its instance. After the value-link detach, which makes the attachments' links
+  // their own.
+  taskSeriesItemDeleteHook,
+  sleepResyncDeleteHook,
+  // A trashed Event queues a cancellation.
+  eventInvitationItemDeleteHook,
+  transcriptProblemDeleteHook,
+  remindersResyncDeleteHook,
+  proposalReferenceItemDeleteHook,
+];
+
+/** Per restored row of the cascade; a restore sends no invitation. */
+const itemRestoreHooks: readonly ItemRestoreHook[] = [
+  nextOccurrenceSeriesItemRestoreHook,
+  itemSearchRestoreHook,
+  transcriptRestoreHook,
+  // A restored Journal entry takes its period back, or the restore is refused while another entry holds it.
+  journalItemRestoreHook,
+  // A restored company feeds the resolver rules like an update of its `web`.
+  linkRuleItemRestoreHook,
+  peopleLastContactItemRestoreHook,
+  pageItemRestoreHook,
+  // A restored mailbox without a sync state gets a default one; its folders and messages of its deletion epoch
+  // return.
+  mailboxItemRestoreHook,
+  // Restore brings back the subpages of the item's deletion epoch.
+  hostItemRestoreHook,
+  // Restore brings back the calendar's Events of its deletion epoch.
+  calendarItemRestoreHook,
+  // Restoring an Event removes its hosted tasks' edges instead of relinking, locking the tasks first.
+  eventHostedTasksRestoreHook,
+  // Restoring any instance of a recurring task series restores it and turns the repeat rule back on.
+  taskSeriesItemRestoreHook,
+  sleepResyncRestoreHook,
+  remindersResyncRestoreHook,
+  // A Processing proposals card returns to `proposed` when the item it refers to comes back.
+  proposalReferenceItemRestoreHook,
+];
+
+/** Per row actually removed by the purge. */
+const itemPurgeHooks: readonly ItemPurgeHook[] = [
+  // Purging a Processing proposals card sweeps the expired stored responses of its card actions.
+  idempotentResponsesPurgeHook,
+  mailItemPurgeHook,
+  libraryCoverCandidatesPurgeHook,
+  calendarFeedStatePurgeHook,
+];
+
+const relationEdgeWriteHooks: readonly RelationEdgeWriteHook[] = [
+  transcriptSpeakerEdgeWriteHook,
+  threadValueEdgeWriteHook,
+  libraryWatchedWithEdgeWriteHook,
+  inboxTypeEdgeWriteHook,
+  inboxTypeLockWriteHook,
+  inboxSourceEdgeWriteHook,
+  eventParticipantEdgeWriteHook,
+];
+
+const relationEdgeDeleteHooks: readonly RelationEdgeDeleteHook[] = [
+  threadValueEdgeDeleteHook,
+  inboxTypeEdgeDeleteHook,
+  inboxSourceEdgeDeleteHook,
+];
+
+const relationEdgeChangedHooks: readonly RelationEdgeChangedHook[] = [
+  itemSearchEdgeChangedHook,
+  inboxTypeLockChangedHook,
+  // Removing a `Files.events` edge ends the file's company link. Must precede `linkRuleEdgeHook`: it reads the
+  // file's `projects` link, which that hook deletes.
+  eventAttachmentLinkReleaseEdgeChangedHook,
+  linkRuleEdgeHook,
+  // Every change of a thread's company or project (link engine's included) publishes `mailThread`. After
+  // `linkRuleEdgeHook`, which queues the rule evaluation that follows the change.
+  threadValueEdgeChangedHook,
+  peopleLastContactEdgeChangedHook,
+  // Removing a transcript's Event edge ends its company link and detaches the Event from the transcript's project
+  // and people links.
+  transcriptCompanyLinkReleaseEdgeChangedHook,
+  // Removing a Tasks `sourceEvents` edge detaches the Event from the task's project and people links of any state.
+  // After `linkRuleEdgeHook`, which recomputes the links that are `on`.
+  taskSourceEventLinkDetachEdgeChangedHook,
+  projectDerivedValueEdgeChangedHook,
+  // Each reported create or delete of an Inbox type edge (a repeated create included) queues the Inbox tick and
+  // the recompute of the item's Journal day.
+  inboxTypeEdgeChangedHook,
+  // A task's `hiddenUntil` and `effectiveDate` follow its host-event edges.
+  taskHostEventEdgeChangedHook,
+  // Transcripts `event` and Events `people` edge changes queue the speaker suggestion of the affected transcripts.
+  // It touches nothing else, so its position does not matter.
+  transcriptSpeakerSuggestionEdgeChangedHook,
+  threadTaskPeopleEdgeChangedHook,
+];
+
+/** A user or agent edge write, before the write ends a value link; lock only. */
+const relationEdgeBeforeLinkBreakHooks: readonly RelationEdgeBeforeLinkBreakHook[] = [
+  // Takes the item row `linkRuleEdgeHook` locks.
+  linkRuleEdgeLockHook,
+];
+
+for (const [moduleId, transform, prepare] of itemPreWriteTransforms) {
+  registerItemPreWriteTransform(moduleId, transform, prepare);
+}
+for (const [moduleId, hook] of itemUpdatePreLockHooks) registerItemUpdatePreLockHook(moduleId, hook);
+for (const [moduleId, hook] of itemDeletePreLockHooks) registerItemDeletePreLockHook(moduleId, hook);
+for (const [moduleId, hook] of itemRestorePreLockHooks) registerItemRestorePreLockHook(moduleId, hook);
+for (const [moduleId, hook] of itemPurgePreLockHooks) registerItemPurgePreLockHook(moduleId, hook);
+for (const hook of itemCreateHooks) registerItemCreateHook(hook);
+for (const hook of itemUpdateHooks) registerItemUpdateHook(hook);
+for (const hook of itemDeleteHooks) registerItemDeleteHook(hook);
+for (const hook of itemRestoreHooks) registerItemRestoreHook(hook);
+for (const hook of itemPurgeHooks) registerItemPurgeHook(hook);
+for (const hook of relationEdgeWriteHooks) registerRelationEdgeWriteHook(hook);
+for (const hook of relationEdgeDeleteHooks) registerRelationEdgeDeleteHook(hook);
+for (const hook of relationEdgeChangedHooks) registerRelationEdgeChangedHook(hook);
+for (const hook of relationEdgeBeforeLinkBreakHooks) registerRelationEdgeBeforeLinkBreakHook(hook);
+
+// Module-specific extensions of update, trash and approval: at most one per module.
 registerItemPatchApprovalContribution(TASKS_MODULE_ID, projectRecurrenceApproval);
 registerItemUpdateCommand(TASKS_MODULE_ID, {
   key: "recurrence",
@@ -211,75 +509,15 @@ registerItemUpdateCommand(TASKS_MODULE_ID, {
     return applyRecurrenceCommand(client, stored, patch, value, writer);
   },
 });
-registerItemPreWriteTransform(BOOKS_MODULE_ID, booksPreWriteTransform, async (context) => ({
-  patch: await booksPreWriteTransform(context),
-  deferredKeys: [],
-}));
-// Library cover properties, after the Books year rule above.
-registerItemPreWriteTransform(BOOKS_MODULE_ID, libraryCoverPreWriteTransform, prepareLibraryCoverWrite);
-registerItemPreWriteTransform(MOVIES_MODULE_ID, libraryCoverPreWriteTransform, prepareLibraryCoverWrite);
-registerItemPreWriteTransform(PROJECTS_MODULE_ID, projectWriteTransform, prepareProjectWrite);
-registerItemPreWriteTransform(FILES_MODULE_ID, filesItemPreWriteTransform, async ({ stored, patch }) => ({
-  patch,
-  deferredKeys: stored === null && !Object.hasOwn(patch, "type") && Object.hasOwn(patch, "file") ? ["type"] : [],
-}));
-// Events: the time transform first, so the iCalendar sequence compares normalized times.
-registerItemPreWriteTransform(EVENTS_MODULE_ID, eventTimePreWriteTransform, prepareEventTime);
-registerItemPreWriteTransform(EVENTS_MODULE_ID, eventIcalIdentityTransform, prepareEventIcalIdentity);
-// The next occurrence day of a recurring Event, after the time transform normalized it.
-registerItemPreWriteTransform(EVENTS_MODULE_ID, nextOccurrenceDateTransform, prepareNextOccurrenceDate);
-// A cancelled, restored or moved occurrence recomputes its series' next occurrence day.
-registerItemUpdateHook(nextOccurrenceSeriesItemUpdateHook);
-registerItemDeleteHook(nextOccurrenceSeriesItemDeleteHook);
-registerItemRestoreHook(nextOccurrenceSeriesItemRestoreHook);
-// Events: the date and time rules judge what the transforms above stored.
-registerItemCreateHook(eventValidationItemCreateHook);
-registerItemUpdateHook(eventValidationItemUpdateHook);
-registerItemCreateHook(eventRecurrenceItemCreateHook);
-registerItemUpdateHook(eventRecurrenceItemUpdateHook);
-registerItemCreateHook(blobReferenceItemCreateHook);
-registerItemUpdateHook(blobReferenceItemUpdateHook);
-registerItemCreateHook(mcpServerItemCreateHook);
-// One hook for both registries, after the blob reference hooks above.
-registerItemCreateHook(recipePhotoWriteHook);
-// Recipe `sourceUrl`, after the photo hook above.
-registerItemCreateHook(recipeSourceUrlWriteHook);
-registerItemCreateHook(itemSearchCreateHook);
-registerItemUpdateHook(mcpServerItemUpdateHook);
-registerItemUpdateHook(recipePhotoWriteHook);
-registerItemUpdateHook(recipeSourceUrlWriteHook);
-registerItemUpdateHook(mailMessageFlagsItemUpdateHook);
-registerItemUpdateHook(taskRecurrenceItemUpdateHook);
-registerItemUpdateHook(itemSearchUpdateHook);
-registerRelationEdgeChangedHook(itemSearchEdgeChangedHook);
-registerItemUpdateHook(itemSearchTitleUpdateHook);
-registerItemDeleteHook(itemSearchDeleteHook);
-registerItemRestoreHook(itemSearchRestoreHook);
-registerItemCreateHook(itemSearchInboxCreateHook);
-registerItemUpdateHook(itemSearchInboxUpdateHook);
-registerRelationEdgeWriteHook(transcriptSpeakerEdgeWriteHook);
-registerItemRestoreHook(transcriptRestoreHook);
-registerRelationEdgeWriteHook(threadValueEdgeWriteHook);
-registerRelationEdgeDeleteHook(threadValueEdgeDeleteHook);
-registerItemCreateHook(libraryRatingItemCreateHook);
-registerItemUpdateHook(libraryRatingItemUpdateHook);
-registerRelationEdgeWriteHook(libraryWatchedWithEdgeWriteHook);
-registerRelationEdgeWriteHook(inboxTypeEdgeWriteHook);
-registerRelationEdgeDeleteHook(inboxTypeEdgeDeleteHook);
-registerRelationEdgeWriteHook(inboxTypeLockWriteHook);
-registerRelationEdgeChangedHook(inboxTypeLockChangedHook);
-registerRelationEdgeWriteHook(inboxSourceEdgeWriteHook);
-registerRelationEdgeDeleteHook(inboxSourceEdgeDeleteHook);
-registerItemCreateHook(journalItemCreateHook);
-// A restored Journal entry takes its period back, or the restore is refused while another entry holds it.
-registerItemRestoreHook(journalItemRestoreHook);
-registerItemCreateHook(journalDayRelinkItemCreateHook);
-registerItemCreateHook(inboxItemCreateHook);
-registerItemCreateHook(inboxTypeItemCreateHook);
-registerItemUpdateHook(inboxTypeItemUpdateHook);
-// Purging a Processing proposals card sweeps the expired stored responses of its card actions.
-registerItemPurgeHook(idempotentResponsesPurgeHook);
+// An agent run's request to trash a Mailboxes item is refused before it is queued for approval.
+registerItemDeleteApprovalGuard(MAILBOXES_MODULE_ID, mailboxDeleteApprovalGuard);
+// A recurring task's trash covers its whole series; the delete impact reader feeds the delete preview and the
+// `item.delete` approval projection.
+registerItemCascadeExpansion(TASKS_MODULE_ID, taskSeriesCascadeExpansion);
+registerItemDeleteImpactReader(TASKS_MODULE_ID, taskDeleteImpactReader);
+registerAutomationBatchReader(readAutomationForItems);
 
+// Read-time registries.
 registerItemReadProjection({
   ownerModuleId: EMAILS_MODULE_ID,
   project: (item) =>
@@ -294,164 +532,6 @@ registerItemReadProjection({
       : item,
 });
 
-registerItemCreateHook(mailboxConnectionLimitCreateHook);
-registerItemUpdateHook(mailboxConnectionLimitUpdateHook);
-// A user's or agent's trash of a Mailboxes item is refused (only the mailbox removal, as the system writer, trashes
-// it); an agent run's request is refused before it is queued for approval.
-registerItemDeleteHook(mailboxDeleteHook);
-registerItemDeleteApprovalGuard(MAILBOXES_MODULE_ID, mailboxDeleteApprovalGuard);
-registerItemPurgeHook(mailItemPurgeHook);
-
-registerItemCreateHook(areaItemCreateHook);
-registerItemUpdateHook(areaItemUpdateHook);
-
-registerItemUpdateHook(linkRuleItemHook);
-// A company created with a `web`, or restored, feeds the resolver rules like an update of its `web`.
-registerItemCreateHook(linkRuleItemCreateHook);
-registerItemRestoreHook(linkRuleItemRestoreHook);
-// Removing a `Files.events` edge ends the file's company link. Must precede `linkRuleEdgeHook`: it reads the
-// file's `projects` link, which that hook deletes.
-registerRelationEdgeChangedHook(eventAttachmentLinkReleaseEdgeChangedHook);
-registerRelationEdgeChangedHook(linkRuleEdgeHook);
-// Takes the item row `linkRuleEdgeHook` locks, for a user or agent edge write, before the write ends a value link.
-registerRelationEdgeBeforeLinkBreakHook(linkRuleEdgeLockHook);
-registerItemDeleteHook(valueLinkSourceDeleteHook);
-// Every change of a thread's company or project (link engine's included) publishes `mailThread`. After
-// `linkRuleEdgeHook`, which queues the rule evaluation that follows the change.
-registerRelationEdgeChangedHook(threadValueEdgeChangedHook);
-registerAutomationBatchReader(readAutomationForItems);
-
-registerRelationEdgeChangedHook(peopleLastContactEdgeChangedHook);
-registerItemUpdateHook(peopleLastContactItemUpdateHook);
-registerItemDeleteHook(peopleLastContactItemDeleteHook);
-registerItemRestoreHook(peopleLastContactItemRestoreHook);
-
-// A transcript's company link ends when its Event edge is removed or its Event trashed; removing the edge also
-// detaches the Event from the transcript's project and people links.
-registerRelationEdgeChangedHook(transcriptCompanyLinkReleaseEdgeChangedHook);
-registerItemDeleteHook(transcriptCompanyLinkReleaseItemDeleteHook);
-
-// Removing a Tasks `sourceEvents` edge detaches the Event from the task's project and people links of any state.
-// After `linkRuleEdgeHook`, which recomputes the links that are `on`.
-registerRelationEdgeChangedHook(taskSourceEventLinkDetachEdgeChangedHook);
-
-registerRelationEdgeChangedHook(projectDerivedValueEdgeChangedHook);
-
-registerItemCreateHook(eventReminderValuesItemCreateHook);
-registerItemUpdateHook(eventReminderValuesItemUpdateHook);
-
-// Each reported create or delete of an Inbox type edge (a repeated create included) queues the Inbox tick and
-// the recompute of the item's Journal day.
-registerRelationEdgeChangedHook(inboxTypeEdgeChangedHook);
-
-// A trashed page takes its subpages and its block in the parent's document with it; restore brings them back.
-registerItemDeleteHook(pageItemDeleteHook);
-registerItemRestoreHook(pageItemRestoreHook);
-
-// A restored mailbox without a sync state gets a default one; its folders and messages of its deletion epoch return.
-registerItemRestoreHook(mailboxItemRestoreHook);
-
-registerRelationEdgeWriteHook(eventParticipantEdgeWriteHook);
-
-// A new Event gets its calendar, after every Events rule above accepted it.
-registerItemCreateHook(defaultCalendarCreateHook);
-
-// A trashed item of any database but Pages takes its live subpages with it; restore brings back those of its
-// deletion epoch.
-registerItemDeleteHook(hostItemDeleteHook);
-registerItemRestoreHook(hostItemRestoreHook);
-
-// Calendars: name, colour and single-default rules; a subscription's `subscriptionUrl` is normalized and judged
-// before the row is written.
-registerItemPreWriteTransform(CALENDARS_MODULE_ID, calendarSubscriptionUrlTransform, prepareCalendarSubscriptionUrl);
-registerItemCreateHook(calendarItemCreateHook);
-registerItemUpdateHook(calendarItemUpdateHook);
-// Lock order: the default mark before the calendar's row.
-registerItemUpdatePreLockHook(CALENDARS_MODULE_ID, calendarItemUpdatePreLockHook);
-
-registerItemCreateHook(personBirthdayItemCreateHook);
-registerItemUpdateHook(personBirthdayItemUpdateHook);
-// A system, subscription or last own calendar cannot be deleted; the default mark moves to another own calendar
-// and the calendar's live Events are trashed with it. Restore brings back the Events of its deletion epoch.
-registerItemDeleteHook(calendarItemDeleteHook);
-registerItemRestoreHook(calendarItemRestoreHook);
-// Lock order: the default mark before the calendar's row.
-registerItemDeletePreLockHook(CALENDARS_MODULE_ID, calendarItemDeletePreLockHook);
-registerItemRestorePreLockHook(CALENDARS_MODULE_ID, calendarItemRestorePreLockHook);
-
-// Sleep databases: HH:MM times, valid values, one settings item and one exception per night.
-for (const moduleId of [SLEEP_SETTINGS_MODULE_ID, SLEEP_PLANS_MODULE_ID, SLEEP_NIGHTS_MODULE_ID]) {
-  registerItemPreWriteTransform(moduleId, sleepPreWriteTransform, prepareSleepWrite);
-}
-registerItemCreateHook(sleepItemCreateHook);
-registerItemUpdateHook(sleepItemUpdateHook);
-// Lock order: the night's lock before the exception's row, as the PUT does.
-registerItemUpdatePreLockHook(SLEEP_NIGHTS_MODULE_ID, sleepNightUpdatePreLockHook);
-// A wake day is in at most one plan; after the validation hooks above.
-registerItemCreateHook(keepWakeDaysInOnePlan);
-registerItemUpdateHook(keepWakeDaysInOnePlan);
-
-// A task's `hiddenUntil` and `effectiveDate` follow its host-event edges and those Events' dates and times
-// (the task's own `date` and create are handled by the Tasks transform above).
-registerRelationEdgeChangedHook(taskHostEventEdgeChangedHook);
-registerItemUpdateHook(taskHostEventScheduleItemUpdateHook);
-
-// A task set to `done` before the end of its last host event is completed in that event; back to `notDone` or
-// `wontDo` removes the edge. After the host-state hooks and the recurrence advance.
-registerItemUpdateHook(taskCompletedInEventHook);
-
-// Trashing an Event returns its hosted tasks to their day (edges stay); restoring it removes the edges instead of
-// relinking, locking the tasks first. After the host-state hooks, which the recomputations use.
-registerItemDeleteHook(eventHostedTasksDeleteHook);
-registerItemRestoreHook(eventHostedTasksRestoreHook);
-
-// Deleting any instance of a recurring task series trashes the whole series under one `deletedAt`; restoring any
-// instance restores it. The pre-lock hooks lock the series before the cascade locks the named task; the delete hook
-// turns the repeat rule off and records its instance, the restore hook turns it back on. The delete impact reader
-// feeds the delete preview and the `item.delete` approval projection. Must follow the value-link detach above, which
-// makes the attachments' links their own.
-registerItemCascadeExpansion(TASKS_MODULE_ID, taskSeriesCascadeExpansion);
-registerItemDeletePreLockHook(TASKS_MODULE_ID, taskSeriesItemDeletePreLockHook);
-registerItemRestorePreLockHook(TASKS_MODULE_ID, taskSeriesItemRestorePreLockHook);
-registerItemPurgePreLockHook(TASKS_MODULE_ID, taskSeriesItemPurgePreLockHook);
-registerItemDeleteHook(taskSeriesItemDeleteHook);
-registerItemRestoreHook(taskSeriesItemRestoreHook);
-registerItemDeleteImpactReader(TASKS_MODULE_ID, taskDeleteImpactReader);
-
-// Every change of sleep data, or of the System settings time zone, enqueues the debounced resync push. After the
-// validation and plan hooks, so a refused write enqueues nothing.
-registerItemCreateHook(sleepResyncCreateHook);
-registerItemUpdateHook(sleepResyncUpdateHook);
-registerItemDeleteHook(sleepResyncDeleteHook);
-registerItemRestoreHook(sleepResyncRestoreHook);
-
-registerItemPurgeHook(libraryCoverCandidatesPurgeHook);
-
-registerItemPurgeHook(calendarFeedStatePurgeHook);
-
-// A downloaded ICS feed becomes the calendar's `subscribedEvents` items. Not a write hook: the feed sweep calls it
-// inside its own per-calendar transaction.
-registerCalendarFeedConsumer(async (client, feed) => {
-  await importSubscribedEvents(client, feed);
-});
-
-// A moved Event queues an updated invitation, a trashed one a cancellation. A restore sends nothing.
-registerItemUpdateHook(eventInvitationItemUpdateHook);
-registerItemDeleteHook(eventInvitationItemDeleteHook);
-
-registerItemDeleteHook(transcriptProblemDeleteHook);
-
-// Transcripts `event` and Events `people` edge changes queue the speaker suggestion of the affected transcripts.
-// It touches nothing else, so its position among edge hooks does not matter.
-registerRelationEdgeChangedHook(transcriptSpeakerSuggestionEdgeChangedHook);
-
-// Every write that can change a reminders-feed fire time enqueues the debounced resync push. After the validation
-// hooks, so a refused write throws before it enqueues.
-registerItemCreateHook(remindersResyncCreateHook);
-registerItemUpdateHook(remindersResyncUpdateHook);
-registerItemDeleteHook(remindersResyncDeleteHook);
-registerItemRestoreHook(remindersResyncRestoreHook);
-
 registerItemSearchGroup({ type: "task", ownerModuleIds: [TASKS_MODULE_ID] });
 registerItemSearchGroup({ type: "event", ownerModuleIds: [EVENTS_MODULE_ID] });
 registerItemSearchGroup({ type: "project", ownerModuleIds: [PROJECTS_MODULE_ID] });
@@ -462,14 +542,12 @@ registerItemSearchGroup({ type: "file", ownerModuleIds: [FILES_MODULE_ID] });
 registerThreadSearchGroup(mailGlobalSearchGroup);
 registerThreadSearchGroup(sempThreadSearchGroup);
 
-// A read contributor, not a write hook: a person's related collections list their mail threads under Threads
-// (the People manifest omits the Emails collection).
+// A person's related collections list their mail threads under Threads (the People manifest omits the Emails
+// collection).
 registerRelatedRowContributor(PEOPLE_MODULE_ID, personMailThreadsRelatedRow);
 
-// An open Processing proposals card that refers to an archived project or deleted item becomes `invalid` in the
-// same transaction, and returns to `proposed` when the item comes back.
-registerItemUpdateHook(proposalReferenceItemUpdateHook);
-registerItemDeleteHook(proposalReferenceItemDeleteHook);
-registerItemRestoreHook(proposalReferenceItemRestoreHook);
-
-registerRelationEdgeChangedHook(threadTaskPeopleEdgeChangedHook);
+// A downloaded ICS feed becomes the calendar's `subscribedEvents` items. Not a write hook: the feed sweep calls it
+// inside its own per-calendar transaction.
+registerCalendarFeedConsumer(async (client, feed) => {
+  await importSubscribedEvents(client, feed);
+});

@@ -168,8 +168,12 @@ empties the write registries.
 
 - `Set` semantics: registering the same function twice is a no-op; hooks run sequentially in
   registration order inside the caller's transaction; the first rejection rolls the write back.
-- A domain exports its hook next to its own logic and adds one line to `domainWriteHooks.ts`;
-  it never edits `itemWrites.ts`, `relationOps.ts` or `itemTrash.ts`.
+- `domainWriteHooks.ts` holds one explicit, ordered list per write event (`itemCreateHooks`,
+  `itemUpdateHooks`, `itemDeleteHooks`, ..., `itemPreWriteTransforms` and the pre-lock lists keyed by
+  module), so the complete set of rules a write runs, and their order, reads from one list. Order
+  matters only within a list.
+- A domain exports its hook next to its own logic and adds it to the list of its event in
+  `domainWriteHooks.ts`; it never edits `itemWrites.ts`, `relationOps.ts` or `itemTrash.ts`.
 
 ### Read-time registries
 
