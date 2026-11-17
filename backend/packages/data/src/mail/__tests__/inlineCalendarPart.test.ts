@@ -137,6 +137,7 @@ describe("an inline text/calendar part of a multipart/alternative message (issue
         uidNext: 2,
         exists: 1,
       });
+      vi.spyOn(connection, "search").mockResolvedValue([1]);
       vi.spyOn(connection, "fetch").mockImplementation(async function* () {
         yield {
           seq: 1,

@@ -489,13 +489,16 @@ export class ImapFlowMailClient implements ImapMailClient {
       .filter((uid) => uid >= sinceUid)
       .sort((a, b) => a - b)
       .slice(0, limit);
-    if (uids.length === 0) return [];
+    const [first] = uids;
+    if (first === undefined) return [];
+    // The batch is a prefix of every UID from sinceUid up, so the range holds exactly these messages.
+    const range = `${first}:${uids[uids.length - 1]}`;
     const raws: FetchMessageObject[] = [];
     // No `source: true` (see walkBodyStructure); only bounded metadata is fetched here.
     // `labels: true` is a no-op on non-Gmail servers.
     for await (const raw of this.providerStream(() =>
       this.client.fetch(
-        uids.join(","),
+        range,
         {
           uid: true,
           envelope: true,
