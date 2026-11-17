@@ -112,7 +112,7 @@ superseded behaviour) and the link points to the closest current rule.
 | `2026-10-07-cross-tenant-router-functions` | [tenancy-and-security.md — Cross-tenant router functions](tenancy-and-security.md#cross-tenant-router-functions) |  |
 | `2026-10-08-deploy-time-tenant-work-runs-as-the-runtime-role` | [migrations-and-seeding.md — Deploy-time tenant work](migrations-and-seeding.md#deploy-time-tenant-work) |  |
 | `2026-10-08-issue-metadata-selects-relay-model-tiers` | [delivery-and-operations.md — Model tiers](delivery-and-operations.md#model-tiers) |  |
-| `2026-10-08-items-partitions-attached-under-share-update-exclusive` | [transactions-and-side-effects.md — DDL locks](transactions-and-side-effects.md#ddl-locks) |  |
+| `2026-10-08-items-partitions-attached-under-share-update-exclusive` | [data-model-and-writes.md — Storage](data-model-and-writes.md#storage) | dropped |
 | `2026-10-08-per-tenant-queue-lanes` | [tenancy-and-security.md — Queue lanes and job keys](tenancy-and-security.md#queue-lanes-and-job-keys) |  |
 | `2026-10-09-item-create-domain-hooks` | [data-model-and-writes.md — Create (`createItemWithClient`)](data-model-and-writes.md#create-createitemwithclient) |  |
 | `2026-10-16-column-tightening-cutover-backfills-as-the-owner` | [migrations-and-seeding.md — Deploy-time tenant work](migrations-and-seeding.md#deploy-time-tenant-work) | dropped |

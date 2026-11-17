@@ -35,10 +35,10 @@ Related documents:
 - `FORCE ROW LEVEL SECURITY` is not used. The migrating superuser owns the tables and bypasses RLS
   anyway. What protects the data is that no runtime role is a superuser, has `BYPASSRLS` or owns a
   table. Every service checks this at startup (`backend/packages/data/src/db/runtimeRoleAssertion.ts`).
-- RLS on the partitioned `items` parent can be bypassed by addressing a partition directly, so no
-  runtime role holds any privilege on an `items_p_*` partition.
 - Child tables reference their parent through composite tenant-consistent foreign keys over
-  `(tenant_id, …)`, so a child row cannot point into another tenant.
+  `(tenant_id, …)`, so a child row cannot point into another tenant. A key to an item is only
+  `(tenant_id, <column>) REFERENCES items (tenant_id, id)`, with no single-column twin
+  ([data-model-and-writes.md — Storage](data-model-and-writes.md#storage)).
 - An operator with superuser access can read every tenant. There is no per-user content encryption
   beyond the secrets described under [Third-party secrets](#third-party-secrets).
 
@@ -58,8 +58,8 @@ Related documents:
 
 `backend/packages/data/src/db/tenancyInvariants.ts` (`verifyTenancyCli.ts`, run by `deploy/deploy.sh`)
 refuses a catalog that breaks any of these: table classification, `tenant_id` column shape, RLS and
-both policies, the strict `app_tenant_default()`, runtime role attributes, partition privileges,
-`SECURITY DEFINER` function shape, and validated tenant foreign keys. The verifier checks the
+both policies, the strict `app_tenant_default()`, runtime role attributes, foreign keys to `items` over
+`(tenant_id, id)`, `SECURITY DEFINER` function shape, and validated tenant foreign keys. The verifier checks the
 declared shapes. It does not prove arbitrary policy expressions or function bodies correct.
 
 ## Database roles
@@ -91,8 +91,8 @@ The rules:
   migration. Such a function is owned by the migrating role, runs exactly one narrow statement with
   identifiers and literals escaped through `format('%I'/'%L')`, references objects
   schema-qualified, revokes `EXECUTE` from `PUBLIC` and grants it to the one role that needs it. A
-  runtime role never gets DDL through a schema `CREATE` grant or through table ownership. The
-  existing ones are `create_items_partition(uuid)` and `drop_items_partition(uuid)`.
+  runtime role never gets DDL through a schema `CREATE` grant or through table ownership. No such
+  function exists: the choke point runs no DDL.
 - A definer function that reads or writes a tenant table confines itself to `app_current_tenant()`,
   either by filtering on it or by checking the referenced row's tenant.
 - Its `search_path` is `pg_catalog`, then only schemas in which no runtime role can create objects,
@@ -351,7 +351,7 @@ tenant by earliest, first or `LIMIT 1`.
 
 - `POST /api/account/exports` inserts a `pending` row and enqueues `tenantExport` (`maxAttempts: 1`)
   in one transaction. At most one export per tenant is pending or running.
-- `tenancy/tenantExportJob.ts` exports every non-partition public table commented
+- `tenancy/tenantExportJob.ts` exports every public table commented
   `semprec:tenancy=tenant`, except `EXPORT_EXCLUDED_TABLES`. A new tenant table holding a server-only
   secret must be added to that list in the same change. Rows are read with
   `to_jsonb(t) WHERE t.tenant_id = app_current_tenant()` through a cursor, inside one
@@ -375,11 +375,11 @@ tenant by earliest, first or `LIMIT 1`.
     connection, then re-reads the tenant.
   - Bytes are removed before rows: blob keys from both roots, export files, and the `<root>/<tenantId>`
     directories, again just before finalisation. A failed file deletion blocks finalisation.
-  - It purges every non-partition table commented `semprec:tenancy=tenant`, in the foreign-key order
-    computed by `orderTablesForPurge` (`tenantPurgeOrder.ts`). Deletes run in chunks of 1000, one
-    transaction per chunk, each with an explicit `tenant_id = $1` predicate on top of RLS. Item
-    partitions are dropped through `drop_items_partition` with `lock_timeout = '5s'`, before and again
-    just before `items`.
+  - It purges every table commented `semprec:tenancy=tenant`, children before parents in the
+    foreign-key order computed by `orderTablesForPurge` (`tenantPurgeOrder.ts`), so no delete meets a
+    key a later table still holds. Deletes run in chunks of 1000, one transaction per chunk, each with
+    an explicit `tenant_id = $1` predicate on top of RLS. A row a running writer adds behind the
+    order fails a delete or the final check, and the tenant is retried on the next run.
   - Finalisation, in one transaction:
     1. assert that no tenant row remains;
     2. delete the user and its identity rows;

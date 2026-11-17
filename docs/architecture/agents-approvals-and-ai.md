@@ -22,7 +22,8 @@ run. See also [data-model-and-writes.md](data-model-and-writes.md), [transaction
 - Every choke-point call that records or checks `ai_agent` ownership first calls `assertAuthenticatedAgentIdentity`
   (`backend/packages/data/src/chokePoint/authorization.ts`): an agent actor without `agentProjectItemId`, or whose id
   is not a live Projects item, is refused `403 owner_violation`. Any future column storing an agent identity is
-  verified the same way, fresh on every mutating call (items are partitioned, so no FK can do it).
+  verified the same way, fresh on every mutating call: a foreign key to `items` accepts a trashed item and an item of
+  any database, so it cannot do it.
 - Writes of an `/mcp` client on a human token are recorded as `writerKind: 'agent'` without run ids, so agent audits
   include them.
 - `humanWriterUserId` reaches item create/update hook contexts only for a `restSession` actor without

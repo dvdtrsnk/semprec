@@ -197,11 +197,46 @@ empties the write registries.
 
 ### Storage
 
-- `items` is list-partitioned by `database_id`. `create_items_partition(uuid)` (`SECURITY DEFINER`)
-  creates a standalone table and `ATTACH`es it, so other tenants' item reads/writes do not wait; see
-  transactions doc, *DDL locks*.
-- No table carries a foreign key to an item id (composite partition key); dependents are removed
-  explicitly by `deleteItemDependents` or purge hooks.
+- `items` is one ordinary table: primary key `id`, `UNIQUE (tenant_id, id)` as the target of every
+  item foreign key (and the access path of id lookups under RLS), `(database_id, id)` for reads and
+  keyset sweeps by database, and `(tenant_id, deleted_at DESC, id)` over trashed rows for trash reads
+  and the purge sweep.
+  Creating a database runs no DDL; deleting one (`deleteDatabaseWithItems`) deletes its remaining items
+  and then the row, in the caller's transaction.
+- Every foreign key to an item is `(tenant_id, <column>) REFERENCES items (tenant_id, id)`: FK checks
+  ignore RLS, so another tenant's item id fails exactly like a random one, and the deploy-time verifier
+  refuses any other shape (`itemForeignKey`). An FK violation (23503) reaches an HTTP caller as 409
+  `foreign_key_violation` with no constraint name; a write that names an item still checks it first
+  when the caller needs a specific error or a tenant-scoped not-found (missing, trashed and foreign ids
+  alike), because the key accepts a trashed item and says nothing about its database.
+- Every referencing column is indexed, alone or after `tenant_id`.
+- Every item key is `DEFERRABLE INITIALLY DEFERRED`, checked at commit; `CASCADE` and `SET NULL` still act at
+  the delete statement. The check at commit lets the idempotency reservation precede its item, lets the
+  permanent purge (`purgeExpiredTrashSubtree`, archived-database `deleteItemChunk`) delete an item before the
+  dependents its owners remove, and keeps a dependent insert from taking the item's `FOR KEY SHARE` lock ahead
+  of the writer's own row lock, so concurrent item writers queue on the item row as they did without keys.
+  A delete that leaves a `NO ACTION` dependent behind fails the commit.
+
+| Column | On item delete | Why |
+|---|---|---|
+| `item_relations.item_a`, `.item_b`; `view_items.item_id`; `item_search_index.item_id`; `docs.item_id` (doc children cascade from `docs`); `value_links.item_id` (sources cascade from the link); `task_recurrence.item_id`; `project_kept_dates.item_id`; `item_automation.item_id`; `item_origins.item_id`; `library_cover_candidates.item_id`; `calendar_feed_state.calendar_item_id`; `agent_database_grants.project_item_id`; `recording_requests.file_item_id`; `transcript_action_item_states.transcript_item_id` | `CASCADE` | Rows derived from or keyed by the item whose removal is a plain delete with no side effect. |
+| `mail_account_server_settings.mailbox_item_id`; `mail_account_sync_state.item_id`; `mail_attachments.message_item_id` (blobs and Files items stay); `mail_message_flag_sync_state.message_item_id`; `external_credentials.item_id` | `CASCADE` | Plain deletes with no side effect; mailbox removal deletes the settings, sync state and credential itself when the mailbox is trashed. An MCP server's credential goes with its item too. |
+| `mail_folder_sync_state.item_id`; `mail_drafts.email_item_id`; `mail_oauth_states.mailbox_item_id`; `mcp_server_connection_state.mcp_server_item_id`; `person_email_index.item_id` | `CASCADE` | State of the item that no reader needs once it is gone; a purged person's addresses become claimable by another person. |
+| `idempotency_keys.item_id` | `CASCADE` | Reserved before its item is inserted in the same transaction (`insertItemWithReplay`); a replay that finds no key creates the item again. |
+| `value_link_sources.source_item_id` | `NO ACTION` | Removing the sources ends links left without one and invalidates their items (`deleteItemDependents`). |
+| `inbox_attachments.inbox_item_id` | `NO ACTION` | Removing an attachment releases its blobs when unreferenced (`deleteItemDependents`); a cascade would leak them. |
+| `mail_message_meta.item_id` | `NO ACTION` | Removing the meta row may trash the thread's Threads item and delete the thread (`mailItemPurgeHook`). |
+| `item_origins.inbox_item_id`, `.source_transcript_id`; `mail_drafts.source_email_item_id`; `recording_requests.event_item_id`, `.project_item_id`; `transcript_action_item_states.task_item_id`, `.owner_person_id`; `task_recurrence.trashed_active_item_id`; `semp_problems.project_item_id`; `semp_threads.subject_proposal_id`; `views.creator_project_item_id` | `SET NULL (column)` | Optional references whose row outlives the item; every reader already treats the item as possibly gone, and null reads the same as a missing item. |
+| `item_origins.proposal_id` | no key | Provenance read after its Processing proposals card is purged (siblings grouped by card); `NOT NULL`. |
+| `databases.parent_item_id`, `.owner_project_item_id` | no key | `items.database_id` references `databases`, so a key would close a cycle the tenant purge cannot order; an inline database whose owner is purged while it still holds items outlives the owner. |
+| `mail_message_meta.mailbox_item_id`; `mail_drafts.mailbox_item_id`; `mail_message_move_sync_state.mailbox_item_id` | no key | A mailbox and its emails are separate purge roots in no fixed order; the email's rows must outlive a purged mailbox. |
+| `mail_message_move_sync_state.message_item_id` | no key | The provider-move ledger, which no path deletes; a cascade would drop an operation the drain may still own, `NO ACTION` would block every moved message's purge. |
+| `mail_threads.item_id` | no key | The thread row belongs to its messages and is deleted with the last of them; it can outlive its Threads item, and a key would block that purge or cascade into the messages. |
+| `credential_access_log.item_id`; `ai_gateway_calls.project_item_id`; `agent_runs.project_item_id` | no key | History that must keep the id after the item goes. Writers may name a purged project (a heartbeat of a purged project still runs), and a gateway call must never fail to record its cost. |
+| `agent_run_read_allowances.item_id` | no key | Per-turn rows built from stored message references, which may name items purged since. |
+| `project_heartbeats.project_item_id`; `project_agent_guidance`, `project_agent_guidance_versions`, `agent_guidance_drift_findings` (`.project_item_id`); `mcp_tool_registrations.mcp_server_item_id`; `project_mcp_grants.project_item_id` | no key | Agent state with no purge path: it outlives its project or MCP server. A cascade would skip the domain delete (guidance) or run into run history that `NO ACTION`/`RESTRICT` keys protect (heartbeats, registrations); `NO ACTION` would block the project's purge; the grants route accepts an unchecked project id. |
+| `semp_threads.subject_inbox_item_id` | no key | A thread stays listed after its subject is gone (`subject_exists`); `NOT NULL` for an item thread and its messages are protected by `ai_gateway_calls`. |
+| `semp_problems.source_id`, `notifications.source_id` | no key | Polymorphic, keyed by `source_table`. |
 
 ### Properties
 
@@ -337,5 +372,5 @@ empties the write registries.
 - After `purge_at` the daily task purges in repeatable steps: items in chunks of 500 (owned inline
   databases first, depth-first, each item with `deleteItemDependents` and purge hooks), then one final
   transaction that removes dependent schema in other databases (rollups over it, paired relation
-  sides, one-directional relations targeting it) and drops the database with its partition. Every
+  sides, one-directional relations targeting it) and deletes the database. Every
   deleting transaction first re-checks the database under `FOR NO KEY UPDATE`.
