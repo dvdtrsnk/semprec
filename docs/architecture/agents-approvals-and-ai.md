@@ -266,7 +266,7 @@ The project set on a mail thread never takes part in a send decision.
   `ref`, `role`, `optional`, `enabled`, relations targeting item ids or `{ ref }`), `pageSections` and `newOptions`
   (`backend/packages/data/src/inbox/proposalEnvelope.ts`, `proposalEnvelopeValidation.ts`). The top level mirrors the
   primary step; exactly one primary; no ref cycles; disabled or unreferenced optional steps are skipped.
-- `confirmProposalWithClient` (`inbox/proposalActions.ts`) locks the card, writes every enabled step in dependency order
+- `confirmProposalWithClient` (`inbox/proposalConfirm.ts`) locks the card, writes every enabled step in dependency order
   in one transaction under the user's authority, and is idempotent: an already `confirmed` card returns its stored
   result. Failures roll everything back with 400 naming `ref` and field.
 - Update steps carry `before`/`after`. Confirm locks update items (sorted), then relation-definition advisory keys
