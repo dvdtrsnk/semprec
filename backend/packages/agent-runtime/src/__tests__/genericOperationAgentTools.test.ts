@@ -9,7 +9,6 @@ import {
   getTenantZeroId,
   getTestPool,
   resetDatabase,
-  runMailboxAddressesOwnerCutoverMigration,
   upsertMailMessageMeta,
 } from "@semprec/data/testSupport";
 import {
@@ -176,7 +175,7 @@ describe("generic operation AgentTools (issue #220)", () => {
       expect(rows[0]?.body).toBe(raw);
     });
 
-    it("refuses mailbox address edits in fresh and cut-over tenants through the agent tool", async () =>
+    it("refuses mailbox address edits through the agent tool", async () =>
       runInTenant(getTenantZeroId(), async () => {
         const runtime = await createRuntimeRolePool(pool, "semprec_data");
         const failures: unknown[] = [];
@@ -211,34 +210,25 @@ describe("generic operation AgentTools (issue #220)", () => {
             task: "edit mailbox",
           });
           const tools = createGenericOperationAgentTools(runtime, moduleRegistry, testMetadataResolver);
-          for (const phase of ["fresh", "cutover"] as const) {
-            if (phase === "cutover") {
-              // Restore the historical property owner before the actual tenant cutover.
-              await pool.query("UPDATE properties SET owner = 'user' WHERE database_id = $1 AND key = 'addresses'", [
-                fixture.databaseId,
-              ]);
-              await runMailboxAddressesOwnerCutoverMigration(runtime);
-            }
-            const before = await createChokePoint(runtime).getItem(fixture.databaseId, fixture.mailboxId);
-            if (!before) throw new Error("Mailbox missing");
-            const refused = await tools["item.patch"](run.id, {
-              itemId: fixture.mailboxId,
-              properties: { addresses: "bad@example.test" },
-              ifVersion: before.updatedAt,
-            });
-            expect(refused.error).toBe(true);
-            expect(refused.result).toMatch(/^owner_violation:/);
-            expect(await createChokePoint(runtime).getItem(fixture.databaseId, fixture.mailboxId)).toEqual(before);
-            const allowed = await tools["item.patch"](run.id, {
-              itemId: fixture.mailboxId,
-              properties: { name: `Allowed ${phase}` },
-              ifVersion: before.updatedAt,
-            });
-            expect(allowed.error).toBe(false);
-            expect(
-              (await createChokePoint(runtime).getItem(fixture.databaseId, fixture.mailboxId))?.properties,
-            ).toMatchObject({ name: `Allowed ${phase}`, addresses: "owner@example.test" });
-          }
+          const before = await createChokePoint(runtime).getItem(fixture.databaseId, fixture.mailboxId);
+          if (!before) throw new Error("Mailbox missing");
+          const refused = await tools["item.patch"](run.id, {
+            itemId: fixture.mailboxId,
+            properties: { addresses: "bad@example.test" },
+            ifVersion: before.updatedAt,
+          });
+          expect(refused.error).toBe(true);
+          expect(refused.result).toMatch(/^owner_violation:/);
+          expect(await createChokePoint(runtime).getItem(fixture.databaseId, fixture.mailboxId)).toEqual(before);
+          const allowed = await tools["item.patch"](run.id, {
+            itemId: fixture.mailboxId,
+            properties: { name: "Allowed" },
+            ifVersion: before.updatedAt,
+          });
+          expect(allowed.error).toBe(false);
+          expect(
+            (await createChokePoint(runtime).getItem(fixture.databaseId, fixture.mailboxId))?.properties,
+          ).toMatchObject({ name: "Allowed", addresses: "owner@example.test" });
         } catch (error) {
           failures.push(error);
         }

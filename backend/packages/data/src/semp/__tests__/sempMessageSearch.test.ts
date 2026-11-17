@@ -10,7 +10,6 @@ import { createAgentRun } from "../../agentRuns/agentRunsStore.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import { createPool, withTransaction } from "../../db/pool.js";
 import { runMigrations } from "../../db/migrate.js";
-import { activateCzechHunspellSearch } from "../../mail/czechHunspellSearch.js";
 import { createHeartbeat } from "../../scheduler/schedulerStore.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { createSempChatThread, sendSempMessage } from "../../sempThreads/sempThreadsStore.js";
@@ -795,6 +794,13 @@ describe("Semp message search with the Hunspell configuration", () => {
     for (const file of ASSET_FILES) await rm(path.join(dir, file), { force: true });
   }
 
+  /** Switches the `czech` configuration to Hunspell through the SQL function; true when it is now active. */
+  async function activateHunspell(pool: Pool): Promise<boolean> {
+    const { rows } = await pool.query<{ active: boolean }>("SELECT activate_czech_hunspell_search() AS active");
+    if (!rows[0]) throw new Error("activate_czech_hunspell_search() returned no row");
+    return rows[0].active;
+  }
+
   it(
     "finds faktura by faktury once Hunspell is active, and uctenka by účtenka in both modes",
     async () => {
@@ -811,7 +817,7 @@ describe("Semp message search with the Hunspell configuration", () => {
 
         await installAssets(pool);
         try {
-          expect(await activateCzechHunspellSearch(pool)).toBe(true);
+          expect(await activateHunspell(pool)).toBe(true);
           const after = await startThread(tenantId, ["Nova účtenka", "Druha faktura pro odberatele"], pool);
           expect(new Set(await findThreads(tenantId, "faktury", pool))).toEqual(new Set([before, after]));
           expect(new Set(await findThreads(tenantId, "uctenka", pool))).toEqual(new Set([before, after]));
@@ -836,7 +842,7 @@ describe("Semp message search with the Hunspell configuration", () => {
 
         await installAssets(pool);
         try {
-          expect(await activateCzechHunspellSearch(pool)).toBe(true);
+          expect(await activateHunspell(pool)).toBe(true);
           // The stored vector still has the form the unaccent/simple configuration made of the word.
           expect(await findThreads(tenantId, "fakturu", pool)).toEqual([]);
           const missingOnly = await inTenant(

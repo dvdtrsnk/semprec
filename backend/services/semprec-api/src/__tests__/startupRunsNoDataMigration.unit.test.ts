@@ -5,10 +5,10 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 /**
- * No service starts by running a data migration, a cutover or a backfill: a one-time application-code step
- * belongs to the deploy CLI (`db/runMigrationsCli.ts`), which runs it as the migrating role after the SQL
- * migrations (docs/adr/2026-09-10-app-code-post-migration-steps.md). The API start once ran one outside any
- * tenant scope, and under the production default of strict scope that process died before it listened.
+ * No service starts by running a data migration, a cutover or a backfill. The only deploy-time steps are the SQL
+ * migrations and the queue schema, and both run in the deploy CLI (`db/runMigrationsCli.ts`) as the migrating
+ * role. A service start runs outside any tenant scope, so under the production default of strict scope a data step
+ * there would stop the process before it listens.
  *
  * `ensureQueueSchema` and `grantQueueSchemaPrivileges` are deliberately not matched: they are idempotent schema
  * steps, each enters its own `runAsSystem("queue-schema", ...)`, and every queue runtime calls them at start.
@@ -71,13 +71,11 @@ describe("a service start runs no data migration", () => {
   });
 
   it("matches the migration, cutover and backfill runners and leaves the idempotent schema steps alone", () => {
-    expect(findDataMigration("await runHeartbeatFireQueueSplitMigration(pool);")).toBe(
-      "runHeartbeatFireQueueSplitMigration",
-    );
+    expect(findDataMigration("await runExampleSplitMigration(pool);")).toBe("runExampleSplitMigration");
     expect(findDataMigration("await runMigrations(pool);")).toBe("runMigrations");
-    expect(findDataMigration("await runDocHistoryCutoverMigration(pool);")).toBe("runDocHistoryCutoverMigration");
-    expect(findDataMigration("await runItemSearchBackfillCutover(pool, false);")).toBe("runItemSearchBackfillCutover");
-    expect(findDataMigration("await runMailThreadBackfillJob(pool);")).toBe("runMailThreadBackfillJob");
+    expect(findDataMigration("await runExampleCutoverMigration(pool);")).toBe("runExampleCutoverMigration");
+    expect(findDataMigration("await runExampleBackfillCutover(pool, false);")).toBe("runExampleBackfillCutover");
+    expect(findDataMigration("await runExampleBackfillJob(pool);")).toBe("runExampleBackfillJob");
     expect(
       findDataMigration("await ensureQueueSchema(pool);\nawait grantQueueSchemaPrivileges(pool);"),
     ).toBeUndefined();
@@ -91,23 +89,23 @@ describe("a service start runs no data migration", () => {
         mkdirSync(dirname(join(root, path)), { recursive: true });
         writeFileSync(join(root, path), text);
       };
-      write("semprec-a/src/queueRuntime.ts", "await runHeartbeatFireQueueSplitMigration(pool);\n");
-      write("semprec-a/src/nested/deep.ts", "await runDocHistoryCutoverMigration(pool);\n");
+      write("semprec-a/src/queueRuntime.ts", "await runExampleSplitMigration(pool);\n");
+      write("semprec-a/src/nested/deep.ts", "await runExampleCutoverMigration(pool);\n");
       write("semprec-a/src/clean.ts", "await ensureQueueSchema(pool);\n");
       // Everything below is outside the scan: a test directory, a test file, another extension, a directory
       // outside `src`, and a symbolic link to a file that would match.
-      write("semprec-a/src/__tests__/helper.ts", "await runHeartbeatFireQueueSplitMigration(pool);\n");
-      write("semprec-a/src/queueRuntime.test.ts", "await runHeartbeatFireQueueSplitMigration(pool);\n");
-      write("semprec-a/src/notes.md", "runHeartbeatFireQueueSplitMigration\n");
-      write("semprec-a/scripts/migrate.ts", "await runHeartbeatFireQueueSplitMigration(pool);\n");
-      write("elsewhere/linked-target.ts", "await runHeartbeatFireQueueSplitMigration(pool);\n");
+      write("semprec-a/src/__tests__/helper.ts", "await runExampleSplitMigration(pool);\n");
+      write("semprec-a/src/queueRuntime.test.ts", "await runExampleSplitMigration(pool);\n");
+      write("semprec-a/src/notes.md", "runExampleSplitMigration\n");
+      write("semprec-a/scripts/migrate.ts", "await runExampleSplitMigration(pool);\n");
+      write("elsewhere/linked-target.ts", "await runExampleSplitMigration(pool);\n");
       symlinkSync(join(root, "elsewhere/linked-target.ts"), join(root, "semprec-a/src/linked.ts"));
       symlinkSync(join(root, "elsewhere"), join(root, "semprec-a/src/linked-directory"));
       mkdirSync(join(root, "semprec-b"));
 
       expect(offenders(root)).toEqual([
-        "semprec-a/src/nested/deep.ts: runDocHistoryCutoverMigration",
-        "semprec-a/src/queueRuntime.ts: runHeartbeatFireQueueSplitMigration",
+        "semprec-a/src/nested/deep.ts: runExampleCutoverMigration",
+        "semprec-a/src/queueRuntime.ts: runExampleSplitMigration",
       ]);
     } finally {
       rmSync(root, { recursive: true, force: true });

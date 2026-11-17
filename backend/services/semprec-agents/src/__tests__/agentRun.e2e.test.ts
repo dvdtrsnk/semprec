@@ -38,7 +38,7 @@ import {
   listMcpToolGrantsForProject,
   setProjectMcpGrantForAgentPage,
   seedSystem,
-  runProjectAgentGuidanceCutoverMigration,
+  seedSystemProjectAgentGuidance,
   upsertMcpToolRegistration,
   withTransaction,
 } from "@semprec/data";
@@ -96,6 +96,8 @@ let runtime: AgentsQueueRuntime | undefined;
 let faux: FauxProviderHandle;
 let fauxGateway: GatewayModel;
 let requestHeaders: Record<string, string | null>[];
+/** The account `beforeEach` creates; the owner of the project guidance rows. */
+let ownerUserId: string;
 
 async function jobCount(taskName: string): Promise<number> {
   const { rows } = await pool.query<{ count: string }>(
@@ -178,7 +180,9 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     registry ??= await loadFullModuleRegistry();
     await resetDatabase(pool);
     await seedSystem(pool);
-    await createUser(pool, { email: "owner@example.com", passwordHash: "unused", tenantId: getTenantZeroId() });
+    ownerUserId = (
+      await createUser(pool, { email: "owner@example.com", passwordHash: "unused", tenantId: getTenantZeroId() })
+    ).id;
     runtime = undefined;
     composition.during = undefined;
 
@@ -207,12 +211,13 @@ describe("agent sessions in semprec-agents (issue #647)", () => {
     });
   }
 
-  it("composes converted project guidance into the next real agent session", async () => {
+  it("composes seeded project guidance into the next real agent session", async () => {
     const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
     try {
       await runInTenant(getTenantZeroId(), async () => {
         const projectItemId = await seededSemprecProjectItemId();
-        await runProjectAgentGuidanceCutoverMigration(runtimePool);
+        // The guidance rows the sign-up path seeds for a new account.
+        await withTransaction(runtimePool, (client) => seedSystemProjectAgentGuidance(client, ownerUserId));
         const expected =
           "## Purpose\nsupervise Semprec, the personal life-organization system, and delegate to project agents.\n\n" +
           "## Allowed\nread the schema-derived permission manifest for any project and delegate tasks to its agent.\n\n" +

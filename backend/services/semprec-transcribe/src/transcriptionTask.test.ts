@@ -53,10 +53,9 @@ import {
   inTenantZero,
   getTestPool,
   resetDatabase,
-  runTenantCutoverMigrations,
   withTenantTransaction,
 } from "@semprec/data/testSupport";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runInTenant } from "@semprec/shared";
 import { wireRealtimeHooks } from "@semprec/realtime";
 import type { AiGatewayClientPort, AiGatewayCompletionInput, AiGatewayCompletionResult } from "@semprec/shared";
 import { CORE_TASK_NAMES, enqueueJob, registerTask, runOnce } from "@semprec/queue";
@@ -5894,51 +5893,6 @@ describe("transcription steps 4-8 (merge, summarize, match, suggest speakers, fi
         expect(after.properties.status).toBe("done");
         expect(await readMatch(after.id)).toEqual({ eventIds: [eventId], cards: [] });
         expect(await readAutomation(after.id)).toMatchObject({ status: "done", attempts: 1 });
-      });
-
-      it("gets its notes from the job the backfill cutover enqueues, and the next cutover run enqueues nothing", async () => {
-        const { file } = await createSourceFile();
-        const before = await finishWithoutNotes(file.id);
-        const runtime = await createRuntimeRolePool(pool, "semprec_data");
-        const failures: unknown[] = [];
-        try {
-          await runAsSystem("test cutover", () => runTenantCutoverMigrations(runtime));
-          expect(await readTranscriptionJobs()).toEqual([{ key: `transcription-job:${file.id}`, attempts: 0 }]);
-
-          const taskList = {
-            [CORE_TASK_NAMES.TRANSCRIPTION_JOB]: registerTask(
-              CORE_TASK_NAMES.TRANSCRIPTION_JOB,
-              createTranscriptionTask(runtime, blobStorage, gatewayClient, summaryClient),
-            ),
-          };
-          await runOnce({ pgPool: pool, taskList });
-
-          expect(await readTranscriptionJobs()).toEqual([]);
-          const after = await readTranscript(file.id);
-          expect(after.id).toBe(before.id);
-          expect(after.properties.status).toBe("done");
-          expect(after.computed.meetingNotes).toEqual({ ...FAKE_NOTES, actionItems: [] });
-          expect(await readAutomation(after.id)).toEqual({ status: "done", error: null, attempts: 2 });
-          // The first run's notes call and the rerun's; no audio stage ran again.
-          expect(summaryClient.calls.map((call) => call.operation)).toEqual([
-            "transcript_summary",
-            "transcript_summary",
-          ]);
-          expect(gatewayClient.diarizeCalls).toHaveLength(1);
-          expect(gatewayClient.transcribeCalls).toHaveLength(1);
-
-          await runAsSystem("test cutover", () => runTenantCutoverMigrations(runtime));
-          expect(await readTranscriptionJobs()).toEqual([]);
-        } catch (error) {
-          failures.push(error);
-        }
-        try {
-          await runtime.end();
-        } catch (error) {
-          failures.push(error);
-        }
-        if (failures.length === 1) throw failures[0];
-        if (failures.length > 1) throw new AggregateError(failures, "Backfill cutover test or cleanup failed");
       });
 
       it("leaves status done and writes no notification when its last attempt fails", async () => {

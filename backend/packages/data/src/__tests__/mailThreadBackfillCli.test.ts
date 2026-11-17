@@ -176,11 +176,11 @@ async function runScenario(withholdAcknowledgement: boolean): Promise<ScenarioRe
     }
     for (let attempt = 0; attempt < 2; attempt += 1) {
       await runCli(url.toString());
-      const { rows } = await database.query<{ key: string | null; max_attempts: number }>(
-        "SELECT key, max_attempts FROM graphile_worker.jobs WHERE task_identifier = $1 ORDER BY key",
-        ["mailThreadBackfill"],
+      // The deploy CLI only runs the SQL migrations and the queue schema: it queues no job.
+      const { rows } = await database.query<{ task_identifier: string }>(
+        "SELECT task_identifier FROM graphile_worker.jobs ORDER BY task_identifier",
       );
-      expect(rows).toEqual([{ key: "mail-thread-backfill", max_attempts: 3 }]);
+      expect(rows).toEqual([]);
     }
   } catch (error) {
     primary = { value: error };
@@ -290,7 +290,7 @@ it("reaches application configuration refusal without a loader", () => {
   expect(result.stderr).not.toContain("ERR_MODULE_NOT_FOUND");
 });
 
-it("runs the compiled migration root twice and queues one keyed mail-thread backfill", async () => {
+it("runs the compiled migration root twice and queues no job", async () => {
   const result = await runScenario(false);
   if (result.failure) throw result.failure.value;
   expect(result.creatorSettled).toBe(true);

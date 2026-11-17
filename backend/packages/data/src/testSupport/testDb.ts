@@ -6,7 +6,6 @@ import { getTenantZeroId, tenantZeroSessionOptions } from "./tenantFixtures.js";
 export { storeCredential } from "../credentials/externalCredentialsStore.js";
 export { ensureMailAccountSyncState, recordProviderAccountAddress } from "../mail/mailAccountSyncStateStore.js";
 export { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
-export { runMailboxAddressesOwnerCutoverMigration } from "../mail/mailboxAddressesOwnerCutoverMigration.js";
 export { ensureFolderItem } from "../mail/folderDiscovery.js";
 // Test-only: exercises the existing mail-ingest owner from cross-package integration fixtures.
 export { ingestEmailMessage } from "../mail/ingest.js";
@@ -27,7 +26,6 @@ export {
 } from "./tenantFixtures.js";
 export { createTestModuleItem, createTestProjectItem } from "./projectFixtures.js";
 export { recordingTransport, sendAdapters, transportFor } from "./mailSendFakes.js";
-export { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
 export { stubDnsLookup, type DnsLookupStub } from "./dnsLookupStub.js";
 export { writePageTextBlocks } from "./pageFixtures.js";
 export { createSeriesOccurrence, startTaskSeries } from "./taskSeriesFixtures.js";
@@ -97,7 +95,7 @@ export async function resetDatabase(pool: Pool): Promise<void> {
   await pool.query("INSERT INTO tenants (id, status) VALUES ($1, 'active')", [getTenantZeroId()]);
   await pool.query(`TRUNCATE graphile_worker._private_jobs RESTART IDENTITY CASCADE`);
   // `databasesStore.createDatabase` creates one `items_p_<id>` partition per database and
-  // there is no DEFAULT partition (see migration 0001's header note), so the TRUNCATE above
+  // `items` has no DEFAULT partition, so the TRUNCATE above
   // never removes the partition tables themselves — only their rows. Left unchecked across a
   // whole test run (every `seedSystem` call creates a couple dozen fresh ones), the resulting
   // catalog/lock-table bloat eventually exhausts Postgres's shared memory. Dropping every

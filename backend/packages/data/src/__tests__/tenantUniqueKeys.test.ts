@@ -11,9 +11,8 @@ import {
 import { createUser } from "../auth/usersStore.js";
 
 /**
- * Issue #1065: with the legacy global keys dropped (migration 0082), each formerly global
- * uniqueness holds per tenant only. The same key value is accepted once in each of two tenants,
- * and a second row with that value inside one tenant is still refused with `23505`.
+ * Issue #1065: each uniqueness below holds per tenant only. The same key value is accepted once in
+ * each of two tenants, and a second row with that value inside one tenant is still refused with `23505`.
  *
  * Every row is written with raw SQL because the test targets the unique keys themselves: the
  * production writers absorb a same-tenant duplicate on purpose (`ON CONFLICT`), so they cannot
@@ -49,24 +48,6 @@ const CASES: KeyCase[] = [
     constraint: "person_email_index_pkey",
     insert: (client) =>
       client.query("INSERT INTO person_email_index (email, item_id) VALUES ('shared@example.com', $1)", [randomUUID()]),
-  },
-  {
-    table: "module_migrations",
-    constraint: "module_migrations_pkey",
-    insert: (client) =>
-      client.query(
-        `INSERT INTO module_migrations (module_id, database_key, from_version, to_version)
-         VALUES ('sharedModule', 'sharedDatabase', '1.0.0', '2.0.0')`,
-      ),
-  },
-  {
-    table: "module_migration_progress",
-    constraint: "module_migration_progress_pkey",
-    insert: (client) =>
-      client.query(
-        `INSERT INTO module_migration_progress (module_id, database_key, from_version, to_version)
-         VALUES ('sharedModule', 'sharedDatabase', '1.0.0', '2.0.0')`,
-      ),
   },
   {
     table: "blobs",

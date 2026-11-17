@@ -8,7 +8,6 @@ import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.j
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import * as viewsStore from "../../chokePoint/viewsStore.js";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
-import { runTenantCutoverMigrations } from "../../db/tenantCutoverMigrations.js";
 import { withTransaction } from "../../db/pool.js";
 import { ConflictError } from "../../errors.js";
 import { seedSystem } from "../../seed/seedSystem.js";
@@ -18,7 +17,6 @@ import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } f
 import type { ViewRow } from "../../types.js";
 import { createTaskHostEventPutRouteHandler } from "../taskHostEventRouteHandlers.js";
 import { countTasksToday, TASKS_TODAY_VIEW_KEY, tasksTodayFilter } from "../todayView.js";
-import { runTasksTodayViewCutoverMigration } from "../todayViewCutoverMigration.js";
 
 interface SeededTenant {
   id: string;
@@ -318,56 +316,6 @@ describe("the Today system view (issue #1798)", () => {
     expect(await systemKeyViewCount()).toBe(1);
     const all = await runInTenant(tenant.id, () => cp.listViewsByDatabase(tenant.tasksId));
     expect(all.filter((view) => view.isDefault)).toHaveLength(1);
-  });
-
-  describe("cutover for a tenant seeded before it", () => {
-    async function removeTodayView(): Promise<void> {
-      // Synthetic state: the write path refuses to delete a system view, and a tenant seeded before this issue has none.
-      await runInTenant(tenant.id, () => pool.query("DELETE FROM views WHERE config ? 'systemKey'"));
-      expect(await todayViews()).toHaveLength(0);
-    }
-
-    it("creates the view on the first run and nothing on the second", async () => {
-      await removeTodayView();
-      await runInTenant(tenant.id, () => runTasksTodayViewCutoverMigration(pool));
-      const [created] = await todayViews();
-      expect(created).toMatchObject({
-        databaseId: tenant.tasksId,
-        type: "table",
-        createdBy: "system",
-        isDefault: false,
-        config: { systemKey: TASKS_TODAY_VIEW_KEY, filter: tasksTodayFilter({ openOnly: false }) },
-      });
-      await runInTenant(tenant.id, () => runTasksTodayViewCutoverMigration(pool));
-      const after = await todayViews();
-      expect(after.map((view) => view.id)).toEqual([created?.id]);
-      expect(await systemKeyViewCount()).toBe(1);
-    });
-
-    it("leaves a view that exists untouched", async () => {
-      const [before] = await todayViews();
-      await runInTenant(tenant.id, () => runTasksTodayViewCutoverMigration(pool));
-      expect(await todayViews()).toEqual([before]);
-    });
-
-    it("skips a tenant that has no Tasks database", async () => {
-      const unseeded = await createTestTenant(admin);
-      await runInTenant(unseeded, () => runTasksTodayViewCutoverMigration(pool));
-      expect(await systemKeyViewCount({ id: unseeded, tasksId: "", eventsId: "" })).toBe(0);
-    });
-
-    it("runs as a step of runTenantCutoverMigrations", async () => {
-      await removeTodayView();
-      await runTenantCutoverMigrations(pool);
-      expect(await todayViews()).toHaveLength(1);
-    }, 120_000);
-
-    it("serves the list through the view it created", async () => {
-      await removeTodayView();
-      await runInTenant(tenant.id, () => runTasksTodayViewCutoverMigration(pool));
-      const taskId = await task({ date: "2026-10-16" });
-      expect(await todayList()).toContain(taskId);
-    });
   });
 
   describe("unique key index", () => {

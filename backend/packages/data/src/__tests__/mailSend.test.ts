@@ -13,7 +13,6 @@ import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { generatePermissionManifest } from "../manifest/permissionManifest.js";
 import { createEmailDraft } from "../mail/draft.js";
 import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
-import { runMailboxAddressesOwnerCutoverMigration } from "../mail/mailboxAddressesOwnerCutoverMigration.js";
 import { ingestEmailMessage } from "../mail/ingest.js";
 import { ensureFolderItem } from "../mail/folderDiscovery.js";
 import { reindexItemSearch, searchItems } from "../mail/search.js";
@@ -1445,42 +1444,6 @@ describe("drafts and authorized SMTP sending (issue #95)", () => {
       );
       return rows.map((row) => row.person_id);
     }
-
-    tenantIt("reads and sends from a historically user-owned mailbox after the owner cutover", async () => {
-      // Recreate the pre-cutover schema; the earlier release binary is not run here.
-      await ownerPool.query("UPDATE properties SET owner = 'user' WHERE database_id = $1 AND key = 'addresses'", [
-        mailboxesId,
-      ]);
-      await chokePoint.updateItem({
-        databaseId: mailboxesId,
-        itemId: mailboxId,
-        propertiesPatch: { addresses: "me@example.com" },
-      });
-      const before = await chokePoint.getItem(mailboxesId, mailboxId);
-      expect(before?.properties.addresses).toBe("me@example.com");
-      await runMailboxAddressesOwnerCutoverMigration(pool);
-      const after = await chokePoint.getItem(mailboxesId, mailboxId);
-      expect(after?.properties.addresses).toBe(before?.properties.addresses);
-      const transport = recordingTransport();
-      const draftId = await newDraftWithSubject("Legacy mailbox");
-      await sendDraftEmail(
-        pool,
-        {
-          mailboxItemId: mailboxId,
-          draftItemId: draftId,
-          actor: { type: "user" },
-          from: { address: "me@example.com" },
-          to: [{ address: "bob@example.com" }],
-          subject: "Legacy mailbox",
-          bodyText: "hi",
-        },
-        moduleIds,
-        sendAdapters(transportFor(transport)),
-      );
-      expect(transport.sent).toHaveLength(1);
-      expect(transport.sent[0]!.envelope.from).toBe("me@example.com");
-      expect((await chokePoint.getItem(emailsId, draftId))?.properties.read).toBe(true);
-    });
 
     tenantIt("actual send preserves read and unscoped unread search returns only an inbox message", async () => {
       const sentId = await sendMail({ to: ["bob@example.com"] });

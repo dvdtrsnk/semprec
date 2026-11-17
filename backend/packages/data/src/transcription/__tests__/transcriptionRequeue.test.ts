@@ -13,7 +13,6 @@ import {
   FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
   TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
 } from "../transcriptionActions.js";
-import { runTranscriptionRequeueHeartbeatCutoverMigration } from "../transcriptionRequeueHeartbeatCutoverMigration.js";
 import { createRerunTranscriptionRouteHandler } from "../transcriptionRouteHandlers.js";
 import {
   readTranscriptionSourceFileItemId,
@@ -186,34 +185,6 @@ describe("transcription requeue sweep and rerun route (issue #186)", () => {
         },
       ]);
       expect(rows[0]?.next_fire_at?.getTime()).toBeGreaterThan(Date.now());
-    });
-
-    it("is backfilled once onto a populated install seeded without it", async () => {
-      const seeded = await readSweepHeartbeats();
-      await pool.query(`DELETE FROM project_heartbeats WHERE action_id = $1`, [TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID]);
-
-      await runTranscriptionRequeueHeartbeatCutoverMigration(pool);
-      await runTranscriptionRequeueHeartbeatCutoverMigration(pool);
-
-      expect(await readSweepHeartbeats()).toEqual(seeded);
-    });
-
-    it("backfills nothing when there is no Files transcription trigger to anchor it to", async () => {
-      await pool.query(`DELETE FROM project_heartbeats WHERE action_id = ANY($1::text[])`, [
-        [TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID, FILES_TRANSCRIPTION_TRIGGER_ACTION_ID],
-      ]);
-
-      await runTranscriptionRequeueHeartbeatCutoverMigration(pool);
-
-      expect(await readSweepHeartbeats()).toEqual([]);
-    });
-
-    it("is a no-op on a database that has not been seeded yet", async () => {
-      await resetDatabase(pool);
-
-      await runTranscriptionRequeueHeartbeatCutoverMigration(pool);
-
-      expect(await readSweepHeartbeats()).toEqual([]);
     });
   });
 

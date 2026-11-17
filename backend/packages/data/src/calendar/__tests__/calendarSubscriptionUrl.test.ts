@@ -1,6 +1,6 @@
 import "../../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runInTenant } from "@semprec/shared";
 import type { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -10,12 +10,10 @@ import { prepareItemPreWriteTransforms } from "../../chokePoint/hooks.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 import type { WriterIdentity } from "../../chokePoint/writerKind.js";
 import { withTransaction } from "../../db/pool.js";
-import { runTenantCutoverMigrations } from "../../db/tenantCutoverMigrations.js";
 import { CALENDARS_MODULE_ID } from "../../seed/calendarsKeys.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { CALENDAR_MODULE_ID } from "../calendarModuleId.js";
-import { runCalendarSubscriptionUrlCutoverMigration } from "../calendarSubscriptionUrlCutoverMigration.js";
 
 let admin: Pool;
 let runtime: Pool;
@@ -59,8 +57,8 @@ const REFUSED_URLS: Array<[string, string]> = [
 const itemRow = z.object({ properties: z.record(z.string(), z.unknown()) });
 
 /** A tenant with one English-speaking user, so its calendars are seeded as `Personal`, `Work` and so on. */
-async function seededTenant(status: "active" | "suspended" = "active"): Promise<string> {
-  const tenantId = await createTestTenant(admin, { status });
+async function seededTenant(): Promise<string> {
+  const tenantId = await createTestTenant(admin);
   await createUser(admin, { tenantId, email: `${randomUUID()}@example.com`, passwordHash: "unused", locale: "en" });
   await runInTenant(tenantId, () => seedSystem(runtime));
   return tenantId;
@@ -399,16 +397,12 @@ describe("calendar subscription URL (issue gh-1925)", () => {
   });
 });
 
-describe("calendar subscription URL cutover (issue gh-1925)", () => {
+describe("calendar subscription URL property (issue gh-1925)", () => {
   let active: string;
-  let suspended: string;
-  let withoutCalendars: string;
 
   beforeEach(async () => {
     await resetDatabase(admin);
     active = await seededTenant();
-    suspended = await seededTenant("suspended");
-    withoutCalendars = await createTestTenant(admin);
   });
 
   const propertyRow = z.object({
@@ -433,15 +427,6 @@ describe("calendar subscription URL cutover (issue gh-1925)", () => {
     return z.array(propertyRow).parse(rows);
   }
 
-  /** Reproduces a tenant seeded before issue gh-1925: its Calendars database has no `subscriptionUrl` definition. */
-  async function revertToOldShape(tenantId: string): Promise<void> {
-    await admin.query(
-      `DELETE FROM properties p USING databases d
-        WHERE d.id = p.database_id AND d.tenant_id = $1 AND d.owner_module_id = 'calendars' AND p.key = 'subscriptionUrl'`,
-      [tenantId],
-    );
-  }
-
   it("declares the property in a fresh seed as a user-owned url property without a name or config", async () => {
     expect(await definitions(active)).toEqual([
       {
@@ -457,38 +442,7 @@ describe("calendar subscription URL cutover (issue gh-1925)", () => {
     ]);
   });
 
-  it("gives an active and a suspended tenant a definition identical to a fresh seed, touching no calendar", async () => {
-    const [fresh] = await definitions(active);
-    await revertToOldShape(active);
-    await revertToOldShape(suspended);
-    // Only the Calendars items: the same cutover run creates the default Inbox item types and records them in System settings.
-    const calendars = await admin.query(
-      `SELECT i.id, i.properties, i.updated_at FROM items i JOIN databases d ON d.id = i.database_id
-        WHERE d.owner_module_id = 'calendars' ORDER BY i.id`,
-    );
-    expect(await definitions(active)).toEqual([]);
-    expect(await definitions(suspended)).toEqual([]);
-
-    await runAsSystem("test calendar subscription URL cutover", () => runTenantCutoverMigrations(runtime));
-
-    for (const tenantId of [active, suspended]) {
-      const added = await definitions(tenantId);
-      expect(added).toEqual([{ ...fresh, id: expect.any(String) }]);
-    }
-    expect(
-      (
-        await admin.query(
-          `SELECT i.id, i.properties, i.updated_at FROM items i JOIN databases d ON d.id = i.database_id
-        WHERE d.owner_module_id = 'calendars' ORDER BY i.id`,
-        )
-      ).rows,
-    ).toEqual(calendars.rows);
-  });
-
-  it("makes the added property writable on a subscription calendar through the choke point", async () => {
-    await revertToOldShape(active);
-    await runInTenant(active, () => runCalendarSubscriptionUrlCutoverMigration(runtime));
-
+  it("makes the property writable on a subscription calendar through the choke point", async () => {
     const feed = await runInTenant(active, async () => {
       const cp = createChokePoint(runtime);
       const calendars = (await cp.listDatabases()).find((database) => database.ownerModuleId === CALENDARS_MODULE_ID);
@@ -511,28 +465,5 @@ describe("calendar subscription URL cutover (issue gh-1925)", () => {
     });
 
     expect(feed.properties.subscriptionUrl).toBe("https://example.com/a.ics");
-  });
-
-  it("changes nothing when it runs a second time", async () => {
-    await revertToOldShape(active);
-    await runInTenant(active, () => runCalendarSubscriptionUrlCutoverMigration(runtime));
-    const afterFirst = await definitions(active);
-    expect(afterFirst).toHaveLength(1);
-
-    await runInTenant(active, () => runCalendarSubscriptionUrlCutoverMigration(runtime));
-    await runAsSystem("test calendar subscription URL cutover", () => runTenantCutoverMigrations(runtime));
-
-    expect(await definitions(active)).toEqual(afterFirst);
-  });
-
-  it("skips a tenant without a Calendars database", async () => {
-    await runInTenant(withoutCalendars, () => runCalendarSubscriptionUrlCutoverMigration(runtime));
-
-    expect(await definitions(withoutCalendars)).toEqual([]);
-    const { rows } = await admin.query<{ count: number }>(
-      "SELECT count(*)::int AS count FROM databases WHERE tenant_id = $1",
-      [withoutCalendars],
-    );
-    expect(rows[0]?.count).toBe(0);
   });
 });

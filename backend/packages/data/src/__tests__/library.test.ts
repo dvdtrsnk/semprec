@@ -8,13 +8,10 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { CORE_TASK_NAMES, enqueueJob, runOnce, runWorker } from "@semprec/queue";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runInTenant } from "@semprec/shared";
 import { createLibraryMetadataFetcher } from "../library/libraryMetadataFetcher.js";
 import { LibraryMetadataConfigurationError } from "../library/libraryMetadataConfig.js";
 import { downloadLibraryCover } from "../library/openLibraryFetcher.js";
-import { runLibraryHeartbeatConfigCutoverMigration } from "../library/libraryHeartbeatConfigCutoverMigration.js";
-import { runLibraryBooksYearIsbnCutoverMigration } from "../library/libraryBooksYearIsbnCutoverMigration.js";
-import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 import { generateSchemaProjection } from "../manifest/schemaProjection.js";
 import {
@@ -420,41 +417,6 @@ describe("library module (issue #25)", () => {
     });
   });
 
-  it("upgrades both heartbeat configs and leaves the second run unchanged", async () => {
-    const booksId = await getDatabaseIdByModule("books");
-    const moviesId = await getDatabaseIdByModule("movies");
-    await pool.query(
-      `UPDATE project_heartbeats SET action_config = (action_config - 'authorKey' - 'yearKey' - 'isbnKey' - 'typeKey') || '{"source":"none"}'::jsonb WHERE action_id = ANY($1::text[]) AND action_config->>'databaseId' = ANY($2::text[])`,
-      [
-        [LIBRARY_METADATA_TRIGGER_ACTION_ID, LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID],
-        [booksId, moviesId],
-      ],
-    );
-    const read = async () =>
-      (
-        await pool.query<{ id: string; action_config: Record<string, unknown>; xmin: string }>(
-          `SELECT id, action_config, xmin::text FROM project_heartbeats WHERE action_id = ANY($1::text[]) AND action_config->>'databaseId' = ANY($2::text[]) ORDER BY id`,
-          [
-            [LIBRARY_METADATA_TRIGGER_ACTION_ID, LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID],
-            [booksId, moviesId],
-          ],
-        )
-      ).rows;
-    await inTenantZero(() => runLibraryHeartbeatConfigCutoverMigration(pool));
-    const first = await read();
-    expect(first).toHaveLength(4);
-    expect(first.filter((row) => row.action_config.databaseId === booksId).map((row) => row.action_config)).toEqual(
-      Array(2).fill(
-        expect.objectContaining({ source: "openLibrary", authorKey: "author", yearKey: "year", isbnKey: "isbn" }),
-      ),
-    );
-    expect(first.filter((row) => row.action_config.databaseId === moviesId).map((row) => row.action_config)).toEqual(
-      Array(2).fill(expect.objectContaining({ source: "tmdb", yearKey: "year", typeKey: "type" })),
-    );
-    await inTenantZero(() => runLibraryHeartbeatConfigCutoverMigration(pool));
-    expect(await read()).toEqual(first);
-  });
-
   it("rejects unsupported source before fetching, creating automation or enqueueing", async () => {
     const databaseId = await getDatabaseIdByModule("books");
     const item = await inTenantZero(() => chokePoint.createItem({ databaseId, properties: { name: "Book" } }));
@@ -651,7 +613,6 @@ describe("library module (issue #25)", () => {
           pool,
           registry,
           fetcher,
-          undefined,
           undefined,
           undefined,
           undefined,
@@ -1883,7 +1844,7 @@ describe("library automation_error recipient in a tenant (issue #1018)", () => {
   });
 });
 
-describe("Books year and ISBN tenant cutover", () => {
+describe("Books year and ISBN properties", () => {
   let admin: Pool;
   let runtime: Pool;
   let tenantId: string;
@@ -1918,40 +1879,6 @@ describe("Books year and ISBN tenant cutover", () => {
     ]);
     return rows;
   }
-  it("upgrades the populated tenant through the registered runner without changing another tenant", async () => {
-    const other = await createTestTenant(admin);
-    await runInTenant(other, () => seedSystem(runtime));
-    const oldConfig = async () =>
-      runtime.query(
-        `UPDATE project_heartbeats SET action_config = (action_config - 'authorKey' - 'yearKey' - 'isbnKey' - 'typeKey') || '{"source":"none"}'::jsonb
-       WHERE action_id = ANY($1::text[])`,
-        [[LIBRARY_METADATA_TRIGGER_ACTION_ID, LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID]],
-      );
-    const snapshotConfigs = async () =>
-      (
-        await runtime.query<{ id: string; action_config: Record<string, unknown>; xmin: string }>(
-          `SELECT id, action_config, xmin::text FROM project_heartbeats WHERE action_id = ANY($1::text[]) ORDER BY id`,
-          [[LIBRARY_METADATA_TRIGGER_ACTION_ID, LIBRARY_METADATA_RETRY_SWEEP_ACTION_ID]],
-        )
-      ).rows;
-    await runInTenant(tenantId, oldConfig);
-    await runInTenant(other, oldConfig);
-    const otherBefore = await runInTenant(other, snapshotConfigs);
-    await runInTenant(tenantId, () => runLibraryHeartbeatConfigCutoverMigration(runtime));
-    const scoped = await runInTenant(tenantId, snapshotConfigs);
-    expect(scoped).toHaveLength(4);
-    expect(scoped.filter((row) => row.action_config.source === "openLibrary")).toHaveLength(2);
-    expect(scoped.filter((row) => row.action_config.source === "tmdb")).toHaveLength(2);
-    expect(await runInTenant(other, snapshotConfigs)).toEqual(otherBefore);
-    await runAsSystem("test registered library heartbeat cutover", () => runTenantCutoverMigrations(runtime));
-    const otherAfter = await runInTenant(other, snapshotConfigs);
-    expect(otherAfter.filter((row) => row.action_config.source === "openLibrary")).toHaveLength(2);
-    expect(otherAfter.filter((row) => row.action_config.source === "tmdb")).toHaveLength(2);
-    await runAsSystem("test registered library heartbeat cutover again", () => runTenantCutoverMigrations(runtime));
-    expect(await runInTenant(other, snapshotConfigs)).toEqual(otherAfter);
-    expect(await runInTenant(tenantId, snapshotConfigs)).toEqual(scoped);
-  });
-
   it("seeds both Books fields for a fresh tenant through the runtime role", async () =>
     runInTenant(tenantId, async () => {
       const properties = await snapshot();
@@ -1966,57 +1893,6 @@ describe("Books year and ISBN tenant cutover", () => {
         name: null,
       });
     }));
-  it("runs the registered cutover on a populated tenant and leaves it unchanged on a second run", async () => {
-    await runInTenant(tenantId, async () => {
-      // Recreate the older schema shape; the current seed always creates both properties.
-      await runtime.query("DELETE FROM properties WHERE database_id = $1 AND key = ANY($2::text[])", [
-        booksId,
-        ["year", "isbn"],
-      ]);
-    });
-    const run = () => runAsSystem("test Books cutover", () => runTenantCutoverMigrations(runtime));
-    await run();
-    const upgraded = await runInTenant(tenantId, snapshot);
-    expect(upgraded.find((property) => property.key === "year")).toMatchObject({ type: "number", owner: "user" });
-    expect(upgraded.find((property) => property.key === "isbn")).toMatchObject({ type: "text", owner: "user" });
-    await run();
-    expect(await runInTenant(tenantId, snapshot)).toEqual(upgraded);
-  });
-  it("adds both missing properties to the locked schema once and preserves existing properties", async () =>
-    runInTenant(tenantId, async () => {
-      // Direct fixture SQL recreates the schema of an older build.
-      await runtime.query("DELETE FROM properties WHERE database_id = $1 AND key = ANY($2::text[])", [
-        booksId,
-        ["year", "isbn"],
-      ]);
-      const before = await snapshot();
-      await runLibraryBooksYearIsbnCutoverMigration(runtime);
-      const upgraded = await snapshot();
-      expect(upgraded.filter((p) => p.key !== "year" && p.key !== "isbn")).toEqual(before);
-      expect(upgraded.find((p) => p.key === "year")).toMatchObject({ type: "number", owner: "user", name: null });
-      expect(upgraded.find((p) => p.key === "isbn")).toMatchObject({ type: "text", owner: "user", name: null });
-      await runLibraryBooksYearIsbnCutoverMigration(runtime);
-      expect(await snapshot()).toEqual(upgraded);
-      const db = await runtime.query<{ schema_locked: boolean }>("SELECT schema_locked FROM databases WHERE id = $1", [
-        booksId,
-      ]);
-      expect(db.rows[0]?.schema_locked).toBe(true);
-    }));
-  it.each(["year", "isbn"])(
-    "preserves an existing %s property when adding its missing neighbour",
-    async (existingKey) =>
-      runInTenant(tenantId, async () => {
-        await runtime.query("DELETE FROM properties WHERE database_id = $1 AND key = $2", [
-          booksId,
-          existingKey === "year" ? "isbn" : "year",
-        ]);
-        const existing = (await snapshot()).find((p) => p.key === existingKey);
-        await runLibraryBooksYearIsbnCutoverMigration(runtime);
-        const result = await snapshot();
-        expect(result.find((p) => p.key === existingKey)).toEqual(existing);
-        expect(result.map((p) => p.key)).toContain(existingKey === "year" ? "isbn" : "year");
-      }),
-  );
   it("stores numeric year and text ISBN through the choke point and refuses text year on create and update", async () =>
     runInTenant(tenantId, async () => {
       const api = createChokePoint(runtime);
@@ -2050,19 +1926,6 @@ describe("Books year and ISBN tenant cutover", () => {
         expect(properties?.find((p) => p.key === "isbn")?.name).toBe("ISBN");
       }
     }));
-  it("does not change another tenant and skips a tenant without Books", async () => {
-    const empty = await createTestTenant(admin);
-    await runInTenant(tenantId, async () => {
-      await runtime.query("DELETE FROM properties WHERE database_id = $1 AND key = ANY($2::text[])", [
-        booksId,
-        ["year", "isbn"],
-      ]);
-    });
-    await runInTenant(empty, () => runLibraryBooksYearIsbnCutoverMigration(runtime));
-    await runInTenant(tenantId, async () => {
-      expect((await snapshot()).map((p) => p.key)).not.toContain("year");
-    });
-  });
 });
 
 describe("library cover override (issue gh-1793)", () => {

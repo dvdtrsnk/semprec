@@ -26,7 +26,6 @@ import {
   registerItemUpdateHook,
   resetDatabase,
   startTaskSeries,
-  runMailboxAddressesOwnerCutoverMigration,
   tenantForNextTestUser,
   upsertMailMessageMeta,
 } from "@semprec/data/testSupport";
@@ -1188,7 +1187,7 @@ describe("item routes (issue #241)", () => {
     expect(await renamed.json()).toMatchObject({ properties: { name: "Renamed", targetDatabase: "journal" } });
   });
 
-  it("refuses address edits for fresh and cut-over mailboxes over authenticated REST", async () => {
+  it("refuses address edits for a seeded mailbox over authenticated REST", async () => {
     await seedSystem(pool, createViewTypeRegistry());
     const headers = { ...(await authHeader()), "Content-Type": "application/json" };
     const runtime = await createRuntimeRolePool(pool, "semprec_data");
@@ -1222,43 +1221,34 @@ describe("item routes (issue #241)", () => {
             { databaseId: db.id, itemId: item.id, propertiesPatch: { addresses: "owner@example.test" } },
             { allowedSystemKeys: ["addresses"] },
           );
-          return { id: item.id, dbId: db.id };
+          return { id: item.id };
         }),
       );
       const url = `${base}/api/items/${mailbox.id}`;
-      for (const phase of ["fresh", "cutover"] as const) {
-        if (phase === "cutover") {
-          // Restore the historical property owner before running the real tenant cutover.
-          await pool.query("UPDATE properties SET owner = 'user' WHERE database_id = $1 AND key = 'addresses'", [
-            mailbox.dbId,
-          ]);
-          await runInTenant(getTenantZeroId(), () => runMailboxAddressesOwnerCutoverMigration(runtime));
-        }
-        const before = await fetch(url, { headers });
-        const body = z
-          .object({ updatedAt: z.string(), properties: z.record(z.string(), z.unknown()) })
-          .parse(await before.json());
-        const refused = await fetch(url, {
-          method: "PATCH",
-          headers,
-          body: JSON.stringify({ properties: { addresses: "bad@example.test" }, ifVersion: body.updatedAt }),
-        });
-        expect(refused.status).toBe(403);
-        expect(await refused.json()).toMatchObject({ error: { code: "owner_violation" } });
-        const unchanged = z
-          .object({ updatedAt: z.string(), properties: z.record(z.string(), z.unknown()) })
-          .parse(await (await fetch(url, { headers })).json());
-        expect(unchanged).toEqual(body);
-        const allowed = await fetch(url, {
-          method: "PATCH",
-          headers,
-          body: JSON.stringify({ properties: { name: `Allowed ${phase}` }, ifVersion: body.updatedAt }),
-        });
-        expect(allowed.status).toBe(200);
-        expect(await allowed.json()).toMatchObject({
-          properties: { name: `Allowed ${phase}`, addresses: "owner@example.test" },
-        });
-      }
+      const before = await fetch(url, { headers });
+      const body = z
+        .object({ updatedAt: z.string(), properties: z.record(z.string(), z.unknown()) })
+        .parse(await before.json());
+      const refused = await fetch(url, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties: { addresses: "bad@example.test" }, ifVersion: body.updatedAt }),
+      });
+      expect(refused.status).toBe(403);
+      expect(await refused.json()).toMatchObject({ error: { code: "owner_violation" } });
+      const unchanged = z
+        .object({ updatedAt: z.string(), properties: z.record(z.string(), z.unknown()) })
+        .parse(await (await fetch(url, { headers })).json());
+      expect(unchanged).toEqual(body);
+      const allowed = await fetch(url, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ properties: { name: "Allowed" }, ifVersion: body.updatedAt }),
+      });
+      expect(allowed.status).toBe(200);
+      expect(await allowed.json()).toMatchObject({
+        properties: { name: "Allowed", addresses: "owner@example.test" },
+      });
     } catch (error) {
       failures.push(error);
     }

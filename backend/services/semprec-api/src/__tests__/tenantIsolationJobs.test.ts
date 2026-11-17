@@ -1647,20 +1647,6 @@ const cases: Record<string, TaskCase> = {
       ).toEqual([{ key: "recipientsPeople" }, { key: "senderPeople" }]);
     },
   },
-  [CORE_TASK_NAMES.MAIL_LEGACY_EMAIL_MIGRATION]: {
-    tenancy: "tenant",
-    async seed(tenant) {
-      const { emailsDatabaseId, itemId } = await createEmail(tenant);
-      return { emailsDatabaseId, itemId };
-    },
-    async expectDone(tenant, payload) {
-      expect(
-        await rows(tenant, "SELECT migration_status FROM mail_message_meta WHERE item_id = $1", [
-          requirePayloadString(payload, "itemId"),
-        ]),
-      ).toEqual([{ migration_status: "partial" }]);
-    },
-  },
   [CORE_TASK_NAMES.JOURNAL_INBOX_RECOMPUTE]: {
     tenancy: "tenant",
     async seed(tenant) {
@@ -1972,83 +1958,6 @@ const cases: Record<string, TaskCase> = {
       });
     },
   },
-  [CORE_TASK_NAMES.MAIL_MESSAGE_PREVIEW_BACKFILL]: {
-    tenancy: "system",
-    touchesTenantTables: true,
-    async seed(tenant) {
-      const { itemId } = await createEmail(tenant);
-      // A row from before preview_text/ingested_at existed: no production path writes one without them.
-      await inTenant(tenant, () =>
-        pool.query(`INSERT INTO mail_message_meta (item_id, message_id, envelope) VALUES ($1, $2, '{}'::jsonb)`, [
-          itemId,
-          `<${randomUUID()}@example.com>`,
-        ]),
-      );
-      return marked([itemId], async () => {
-        expect(
-          await rows(
-            tenant,
-            "SELECT preview_text IS NOT NULL AS has_preview, ingested_at IS NOT NULL AS has_time FROM mail_message_meta WHERE item_id = $1",
-            [itemId],
-          ),
-        ).toEqual([{ has_preview: true, has_time: true }]);
-      });
-    },
-  },
-  [CORE_TASK_NAMES.MAIL_THREAD_BACKFILL]: {
-    tenancy: "system",
-    touchesTenantTables: true,
-    async seed(tenant) {
-      const itemId = randomUUID();
-      // A sent message stored before #1474 gave sends a thread. No production writer leaves thread_id NULL now.
-      await inTenant(tenant, () =>
-        pool.query(`INSERT INTO mail_message_meta (item_id, message_id, envelope) VALUES ($1, $2, '{}'::jsonb)`, [
-          itemId,
-          `<${randomUUID()}@example.com>`,
-        ]),
-      );
-      return marked([itemId], async () => {
-        expect(
-          await rows(tenant, "SELECT thread_id IS NOT NULL AS threaded FROM mail_message_meta WHERE item_id = $1", [
-            itemId,
-          ]),
-        ).toEqual([{ threaded: true }]);
-      });
-    },
-  },
-  [CORE_TASK_NAMES.MAIL_GMAIL_PSEUDO_FOLDER_CLEANUP]: {
-    tenancy: "system",
-    touchesTenantTables: true,
-    async seed(tenant) {
-      const mailboxItemId = await createMailbox(tenant, "gmail_api");
-      // The folder an earlier Gmail sync created for a label that is not a real folder.
-      const folderItemId = await inTenant(tenant, () =>
-        withTransaction(pool, async (client) => {
-          const moduleIds = await resolveMailModuleIds(client);
-          const { rows } = await client.query<{ id: string }>(
-            "SELECT id FROM properties WHERE database_id = $1 AND key = 'mailbox'",
-            [moduleIds.foldersDatabaseId],
-          );
-          const mailboxRelationPropertyId = rows[0]?.id;
-          if (!mailboxRelationPropertyId) throw new Error("expected the Folders mailbox relation property");
-          return ensureFolderItem(client, {
-            foldersDatabaseId: moduleIds.foldersDatabaseId,
-            mailboxItemId,
-            mailboxRelationPropertyId,
-            providerId: "UNREAD",
-            name: "Unread",
-            behavior: "label",
-            specialPurpose: "none",
-          });
-        }),
-      );
-      return marked([folderItemId], async () => {
-        expect(
-          await rows(tenant, "SELECT 1 AS present FROM items WHERE id = $1 AND deleted_at IS NULL", [folderItemId]),
-        ).toEqual([]);
-      });
-    },
-  },
   [CORE_TASK_NAMES.MAIL_ACCOUNT_SYNC_SWEEP]: {
     tenancy: "system",
     touchesTenantTables: true,
@@ -2078,18 +1987,6 @@ const cases: Record<string, TaskCase> = {
       );
       return marked([stateId], async () => {
         expect(await rows(tenant, "SELECT 1 FROM mail_oauth_states WHERE id = $1", [stateId])).toEqual([]);
-      });
-    },
-  },
-  [CORE_TASK_NAMES.MAIL_SEARCH_TEXT_REINDEX]: {
-    tenancy: "system",
-    touchesTenantTables: true,
-    async seed(tenant) {
-      const { itemId } = await createEmail(tenant);
-      return marked([itemId], async () => {
-        expect(await rows(tenant, "SELECT 1 AS present FROM item_search_index WHERE item_id = $1", [itemId])).toEqual([
-          { present: 1 },
-        ]);
       });
     },
   },
@@ -2606,7 +2503,6 @@ describe("background task isolation across two tenants: api runtime (issue #1056
       undefined,
       { loadGmailLabels: gmailAdapters.loadGmailLabels },
       undefined,
-      undefined,
       moduleRegistry,
       undefined,
       replayApprovedGenericOperation,
@@ -2719,7 +2615,6 @@ describe("background task isolation across two tenants: api runtime (issue #1056
       const tasks = createApiCoreTaskList(
         pool,
         registry,
-        undefined,
         undefined,
         undefined,
         undefined,

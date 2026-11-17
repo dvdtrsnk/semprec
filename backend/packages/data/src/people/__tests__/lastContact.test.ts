@@ -14,7 +14,6 @@ import { getPropertyByKey } from "../../chokePoint/propertiesStore.js";
 import { writeComputed } from "../../chokePoint/itemsStore.js";
 import { TRANSCRIPTION_OWNER_PROCESS } from "../../transcription/transcriptionJob.js";
 import { withTransaction } from "../../db/pool.js";
-import { runTenantCutoverMigrations } from "../../db/tenantCutoverMigrations.js";
 import { today } from "../../calendarTime.js";
 import { getSystemTimezone } from "../../systemSettings.js";
 import { seedSystem } from "../../seed/seedSystem.js";
@@ -42,7 +41,6 @@ import {
   readContactMoment,
   recomputePersonLastContact,
 } from "../lastContact.js";
-import { runPeopleLastContactCutoverMigration } from "../peopleLastContactCutoverMigration.js";
 import { findOrphanedOwnerProcessIds } from "../../manifest/moduleRegistryDriftCheck.js";
 import { KNOWN_OWNER_PROCESS_IDS } from "../../manifest/knownActionIds.js";
 
@@ -1079,136 +1077,5 @@ describe("People lastContact (issue #1660)", () => {
       }
     }
     settle(primary, failures);
-  });
-});
-
-/** A tenant provisioned before issue #1660: its People database has no lastContact property. */
-async function removeLastContactProperty(tenant: string, peopleId: string): Promise<void> {
-  // The seed now creates the property and no public writer removes a system property, so a
-  // pre-#1660 People database is produced by deleting the row directly.
-  await admin.query("DELETE FROM properties WHERE tenant_id = $1 AND database_id = $2 AND key = 'lastContact'", [
-    tenant,
-    peopleId,
-  ]);
-}
-
-async function lastContactProperties(tenant: string, peopleId: string) {
-  return runInTenant(tenant, async () => {
-    const { rows } = await pool.query<{ type: string; owner: string; owner_process: string | null; config: unknown }>(
-      "SELECT type, owner, owner_process, config FROM properties WHERE database_id = $1 AND key = 'lastContact'",
-      [peopleId],
-    );
-    return rows;
-  });
-}
-
-describe("People lastContact cutover (issue #1660)", () => {
-  it("run twice on a populated tenant, adds the property once and recomputes every live person; B is untouched", async () => {
-    const a = await catalog(tenantA);
-    const b = await catalog(tenantB);
-    const dateA = dayFromToday(-4);
-    const linked = await createPerson(tenantA, a, "Linked");
-    await linkEvent(tenantA, a, await createEvent(tenantA, a, dateA), linked);
-    const unlinked = await createPerson(tenantA, a, "Unlinked");
-    const trashed = await createPerson(tenantA, a, "Trashed");
-    await runInTenant(tenantA, () => chokePoint.softDeleteItem(a.peopleId, trashed));
-    const personB = await createPerson(tenantB, b, "B");
-    await linkEvent(tenantB, b, await createEvent(tenantB, b, dayFromToday(-6)), personB);
-    await removeLastContactProperty(tenantA, a.peopleId);
-    await discardQueuedJobs();
-
-    await runInTenant(tenantA, () => runPeopleLastContactCutoverMigration(pool));
-    await runInTenant(tenantA, () => runPeopleLastContactCutoverMigration(pool));
-
-    expect(await lastContactProperties(tenantA, a.peopleId)).toEqual([
-      { type: "date", owner: "system", owner_process: PEOPLE_MODULE_ID, config: {} },
-    ]);
-    expect(await queuedRecomputes()).toEqual(
-      [linked, unlinked]
-        .sort()
-        .map((id) => ({ key: peopleLastContactJobKey(id), queue_name: `people-last-contact:${tenantA}` })),
-    );
-    await runRecomputes();
-    expect(await lastContactOf(tenantA, a, linked)).toBe(dateA);
-    expect(await lastContactOf(tenantA, a, unlinked)).toBeUndefined();
-    expect(await lastContactOf(tenantB, b, personB)).toBeUndefined();
-  });
-
-  it("hands an existing compatible date property to the people process; a user write is then refused", async () => {
-    const a = await catalog(tenantA);
-    const person = await createPerson(tenantA, a);
-    // A user-owned `lastContact` date property with its own config, as a populated install could hold
-    // before #1660; no public writer adds a property to the schema-locked People database.
-    await admin.query(
-      `UPDATE properties SET owner = 'user', owner_process = NULL, config = '{"includeTime": false}'::jsonb
-       WHERE tenant_id = $1 AND database_id = $2 AND key = 'lastContact'`,
-      [tenantA, a.peopleId],
-    );
-    await runInTenant(tenantA, () =>
-      chokePoint.updateItem({ databaseId: a.peopleId, itemId: person, propertiesPatch: { lastContact: "2020-01-01" } }),
-    );
-    await discardQueuedJobs();
-
-    await runInTenant(tenantA, () => runPeopleLastContactCutoverMigration(pool));
-
-    expect(await lastContactProperties(tenantA, a.peopleId)).toEqual([
-      { type: "date", owner: "system", owner_process: PEOPLE_MODULE_ID, config: { includeTime: false } },
-    ]);
-    expect(await lastContactOf(tenantA, a, person)).toBe("2020-01-01");
-    await expect(
-      runInTenant(tenantA, () =>
-        chokePoint.updateItem({
-          databaseId: a.peopleId,
-          itemId: person,
-          propertiesPatch: { lastContact: "2021-01-01" },
-        }),
-      ),
-    ).rejects.toMatchObject({ status: 403, code: "owner_violation" });
-    await runRecomputes();
-    expect(await lastContactOf(tenantA, a, person)).toBeNull();
-  });
-
-  it("fails a tenant whose lastContact is not a date before writing, queuing or emitting anything", async () => {
-    const a = await catalog(tenantA);
-    const person = await createPerson(tenantA, a);
-    // An incompatible populated state: a text property under the key, which only direct SQL produces now.
-    await admin.query(
-      `UPDATE properties SET type = 'text', owner = 'user', owner_process = NULL
-       WHERE tenant_id = $1 AND database_id = $2 AND key = 'lastContact'`,
-      [tenantA, a.peopleId],
-    );
-    await discardQueuedJobs();
-    const before = await storedItem(tenantA, person);
-
-    const effects = await observeEffects(() =>
-      expect(runInTenant(tenantA, () => runPeopleLastContactCutoverMigration(pool))).rejects.toThrow(
-        "The People lastContact property has type 'text', not 'date'",
-      ),
-    );
-    expect(effects).toEqual({ invalidations: [], jobInserts: [] });
-    expect(await lastContactProperties(tenantA, a.peopleId)).toEqual([
-      { type: "text", owner: "user", owner_process: null, config: {} },
-    ]);
-    expect(await storedItem(tenantA, person)).toEqual(before);
-    expect(await queuedRecomputes()).toEqual([]);
-    expect(await allQueuedJobs()).toEqual([]);
-  });
-
-  it("is registered in runTenantCutoverMigrations and restores the property in every tenant", async () => {
-    const a = await catalog(tenantA);
-    const b = await catalog(tenantB);
-    await removeLastContactProperty(tenantA, a.peopleId);
-    await removeLastContactProperty(tenantB, b.peopleId);
-
-    await runAsSystem("test:cutovers", () => runTenantCutoverMigrations(pool));
-
-    for (const [tenant, peopleId] of [
-      [tenantA, a.peopleId],
-      [tenantB, b.peopleId],
-    ] as const) {
-      expect(await lastContactProperties(tenant, peopleId)).toEqual([
-        { type: "date", owner: "system", owner_process: PEOPLE_MODULE_ID, config: {} },
-      ]);
-    }
   });
 });

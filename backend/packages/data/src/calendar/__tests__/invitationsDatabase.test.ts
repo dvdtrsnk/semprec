@@ -1,28 +1,24 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runInTenant } from "@semprec/shared";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
-import * as databasesStore from "../../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
 import { withTransaction } from "../../db/pool.js";
-import { runTenantCutoverMigrations } from "../../db/tenantCutoverMigrations.js";
 import { createDriftCheckAction } from "../../manifest/driftCheck.js";
 import { KNOWN_OWNER_PROCESS_IDS } from "../../manifest/knownActionIds.js";
 import { CALENDARS_MODULE_ID } from "../../seed/calendarsKeys.js";
 import { INVITATIONS_MODULE_ID } from "../../seed/invitationsKeys.js";
-import { lockTenantSeedInTransaction, seedSystem } from "../../seed/seedSystem.js";
+import { seedSystem } from "../../seed/seedSystem.js";
 import {
   createRuntimeRolePool,
   createTestTenant,
   getTenantZeroId,
   getTestPool,
   resetDatabase,
-  withTenantTransaction,
 } from "../../testSupport/testDb.js";
 import { CALENDAR_MODULE_ID } from "../calendarModuleId.js";
-import { runInvitationsDatabaseCutoverMigration } from "../invitationsDatabaseCutoverMigration.js";
 
 let adminPool: Pool;
 let dataPool: Pool;
@@ -88,7 +84,6 @@ const databaseRows = z.array(
   }),
 );
 const countRows = z.array(z.object({ count: z.number() }));
-const idRows = z.array(z.object({ id: z.string() }));
 const itemRow = z.object({ id: z.string(), properties: z.record(z.string(), z.unknown()) });
 
 async function seedTenant(tenantId: string): Promise<void> {
@@ -152,40 +147,6 @@ async function createInvitation(tenantId: string, properties: Record<string, unk
     ),
   );
   return { databaseId: database.id, itemId: row.id };
-}
-
-/**
- * Removes the invitations database, leaving the state of a tenant seeded before issue gh-1901. The database is
- * locked and system-owned and no public path drops it, so this runs in the tenant's scope on the admin pool;
- * the database and its partition go through the store's own drop.
- */
-async function revertToOldShape(tenantId: string): Promise<void> {
-  const database = await requireDatabase(tenantId, INVITATIONS_MODULE_ID);
-  await withTenantTransaction(adminPool, tenantId, async (client) => {
-    await client.query(
-      "DELETE FROM relation_definitions WHERE property_id_a IN (SELECT id FROM properties WHERE database_id = $1)",
-      [database.id],
-    );
-    await client.query("DELETE FROM items WHERE database_id = $1", [database.id]);
-    await client.query("DELETE FROM properties WHERE database_id = $1", [database.id]);
-    await client.query("DELETE FROM views WHERE database_id = $1", [database.id]);
-    await databasesStore.dropDatabaseWithPartition(client, database.id);
-  });
-  expect(await databaseOf(tenantId, INVITATIONS_MODULE_ID)).toBeNull();
-}
-
-/** Every row of `tenantId` in the tables the cutover writes, on the admin pool filtered by the tenant. */
-async function tenantRows(tenantId: string) {
-  const read = async (sql: string) =>
-    (await adminPool.query<{ row: unknown }>(sql, [tenantId])).rows.map((entry) => entry.row);
-  return {
-    databases: await read("SELECT to_jsonb(d) AS row FROM databases d WHERE tenant_id = $1 ORDER BY id"),
-    properties: await read("SELECT to_jsonb(p) AS row FROM properties p WHERE tenant_id = $1 ORDER BY id"),
-    relationDefinitions: await read(
-      "SELECT to_jsonb(r) AS row FROM relation_definitions r WHERE tenant_id = $1 ORDER BY id",
-    ),
-    items: await read("SELECT to_jsonb(i) AS row FROM items i WHERE tenant_id = $1 ORDER BY id"),
-  };
 }
 
 describe("invitations system database (issue gh-1901)", () => {
@@ -341,177 +302,6 @@ describe("invitations system database (issue gh-1901)", () => {
       expect(orphans.map((row) => row.key).sort()).toEqual(
         [...EXPECTED_PROPERTIES.map(([key]) => key), ...EXPECTED_RELATIONS.map(([key]) => key)].sort(),
       );
-    });
-  });
-
-  describe("cutover", () => {
-    it("adds the database to a tenant seeded earlier, as the fresh seed creates it, and a second run changes nothing", async () => {
-      const tenantId = getTenantZeroId();
-      const fresh = await createTestTenant(adminPool);
-      await seedTenant(tenantId);
-      await seedTenant(fresh);
-      await revertToOldShape(tenantId);
-
-      await runInTenant(tenantId, () => runInvitationsDatabaseCutoverMigration(dataPool));
-
-      const cutOver = await requireDatabase(tenantId, INVITATIONS_MODULE_ID);
-      const seeded = await requireDatabase(fresh, INVITATIONS_MODULE_ID);
-      const calendars = await requireDatabase(tenantId, CALENDARS_MODULE_ID);
-      expect(cutOver).toMatchObject({
-        name: seeded.name,
-        key: seeded.key,
-        system: true,
-        schema_locked: true,
-        owner_module_id: INVITATIONS_MODULE_ID,
-        owner_project_item_id: calendars.owner_project_item_id,
-      });
-      expect(await propertiesOf(cutOver.id)).toEqual(await propertiesOf(seeded.id));
-      expect(await relationsOf(cutOver.id)).toEqual(await relationsOf(seeded.id));
-      expect(await relationsOf(cutOver.id)).toHaveLength(EXPECTED_RELATIONS.length);
-
-      const before = await tenantRows(tenantId);
-      await runInTenant(tenantId, () => runInvitationsDatabaseCutoverMigration(dataPool));
-      expect(await tenantRows(tenantId)).toEqual(before);
-    });
-
-    it("runs through runTenantCutoverMigrations for every tenant that lacks the database", async () => {
-      const first = getTenantZeroId();
-      const second = await createTestTenant(adminPool);
-      await seedTenant(first);
-      await seedTenant(second);
-      await revertToOldShape(first);
-      await revertToOldShape(second);
-
-      await runAsSystem("test invitations cutover", () => runTenantCutoverMigrations(dataPool));
-
-      for (const tenantId of [first, second]) {
-        const database = await requireDatabase(tenantId, INVITATIONS_MODULE_ID);
-        expect(database.schema_locked).toBe(true);
-        expect(await relationsOf(database.id)).toHaveLength(EXPECTED_RELATIONS.length);
-      }
-    });
-
-    it("leaves another tenant without the database untouched", async () => {
-      const tenantId = getTenantZeroId();
-      const other = await createTestTenant(adminPool);
-      await seedTenant(tenantId);
-      await seedTenant(other);
-      await revertToOldShape(tenantId);
-      await revertToOldShape(other);
-      const otherBefore = await tenantRows(other);
-
-      await runInTenant(tenantId, () => runInvitationsDatabaseCutoverMigration(dataPool));
-
-      expect(await databaseOf(tenantId, INVITATIONS_MODULE_ID)).not.toBeNull();
-      expect(await tenantRows(other)).toEqual(otherBefore);
-      expect(await databaseOf(other, INVITATIONS_MODULE_ID)).toBeNull();
-    });
-
-    it("keeps the rows of an invitations database that already exists", async () => {
-      const tenantId = getTenantZeroId();
-      await seedTenant(tenantId);
-      await createInvitation(tenantId);
-      const before = await tenantRows(tenantId);
-
-      await runInTenant(tenantId, () => runInvitationsDatabaseCutoverMigration(dataPool));
-
-      expect(await tenantRows(tenantId)).toEqual(before);
-    });
-
-    it("does nothing for a tenant without a calendars database", async () => {
-      const bare = await createTestTenant(adminPool);
-      await expect(runInTenant(bare, () => runInvitationsDatabaseCutoverMigration(dataPool))).resolves.toBeUndefined();
-      const { rows } = await adminPool.query("SELECT count(*)::int AS count FROM databases WHERE tenant_id = $1", [
-        bare,
-      ]);
-      expect(countRows.parse(rows)).toEqual([{ count: 0 }]);
-    });
-
-    it("writes nothing when a database the relations point at is missing", async () => {
-      const tenantId = getTenantZeroId();
-      await seedTenant(tenantId);
-      await revertToOldShape(tenantId);
-      // Raw SQL, labeled: no public path removes a system database, and a renamed module id is the smallest way to
-      // make the Mailboxes lookup find nothing while the other databases stay.
-      await adminPool.query(
-        "UPDATE databases SET owner_module_id = 'mailboxesRenamed' WHERE tenant_id = $1 AND owner_module_id = 'mailboxes'",
-        [tenantId],
-      );
-
-      await expect(runInTenant(tenantId, () => runInvitationsDatabaseCutoverMigration(dataPool))).rejects.toThrow(
-        "The mailboxes database has not been seeded",
-      );
-
-      expect(await databaseOf(tenantId, INVITATIONS_MODULE_ID)).toBeNull();
-      const { rows } = await adminPool.query(
-        "SELECT count(*)::int AS count FROM properties WHERE tenant_id = $1 AND key = 'suggestedCalendar'",
-        [tenantId],
-      );
-      expect(countRows.parse(rows)).toEqual([{ count: 0 }]);
-    });
-
-    it("writes nothing when the calendars database has no owner project item", async () => {
-      const tenantId = getTenantZeroId();
-      await seedTenant(tenantId);
-      await revertToOldShape(tenantId);
-      // Raw SQL, labeled: a state the seed cannot produce.
-      await adminPool.query(
-        "UPDATE databases SET owner_project_item_id = NULL WHERE tenant_id = $1 AND owner_module_id = $2",
-        [tenantId, CALENDARS_MODULE_ID],
-      );
-
-      await expect(runInTenant(tenantId, () => runInvitationsDatabaseCutoverMigration(dataPool))).rejects.toThrow(
-        "The calendars database has no owner project item",
-      );
-
-      expect(await databaseOf(tenantId, INVITATIONS_MODULE_ID)).toBeNull();
-    });
-
-    const deadline = <T>(promise: Promise<T>, label: string): Promise<T> => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const expired = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), 20_000);
-      });
-      return Promise.race([promise, expired]).finally(() => clearTimeout(timer));
-    };
-
-    it("serializes two cutovers of a tenant on the seed lock, so exactly one creates the database", async () => {
-      const tenantId = getTenantZeroId();
-      await seedTenant(tenantId);
-      await revertToOldShape(tenantId);
-      // A transaction on its own admin connection, in the tenant's scope, that holds the seed lock.
-      const holder = await adminPool.connect();
-      let runs: Promise<void>[] = [];
-      let outcomes: PromiseSettledResult<void>[];
-      try {
-        await holder.query("BEGIN");
-        await holder.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
-        const pidRows = await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
-        const holderPid = pidRows.rows[0]?.pid;
-        if (holderPid === undefined) throw new Error("No backend pid");
-        await lockTenantSeedInTransaction(holder, "test seed lock holder");
-        runs = [1, 2].map(() => runInTenant(tenantId, () => runInvitationsDatabaseCutoverMigration(dataPool)));
-        // Both wait for the seed lock before their existence check; bounded probes of short statements.
-        let waiting = 0;
-        for (let probe = 0; probe < 4000 && waiting < 2; probe += 1) {
-          const { rows } = await adminPool.query(
-            "SELECT count(*)::int AS count FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
-            [holderPid],
-          );
-          waiting = countRows.parse(rows)[0]?.count ?? 0;
-        }
-        expect(waiting).toBe(2);
-        await holder.query("COMMIT");
-      } finally {
-        holder.release(true);
-        outcomes = await deadline(Promise.allSettled(runs), "both cutovers to settle");
-      }
-      expect(outcomes.map((outcome) => outcome.status)).toEqual(["fulfilled", "fulfilled"]);
-      const { rows } = await adminPool.query("SELECT id FROM databases WHERE tenant_id = $1 AND owner_module_id = $2", [
-        tenantId,
-        INVITATIONS_MODULE_ID,
-      ]);
-      expect(idRows.parse(rows)).toHaveLength(1);
     });
   });
 });

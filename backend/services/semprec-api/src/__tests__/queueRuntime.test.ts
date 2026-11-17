@@ -7,13 +7,9 @@ import { getTestPool, inTenantZero, resetDatabase } from "@semprec/data/testSupp
 import {
   DRIFT_CHECK_ACTION_ID,
   seedSystem,
-  createHeartbeat,
   loadFullModuleRegistry,
   mergeModuleTaskListForAffinity,
-  runHeartbeatFireQueueSplitMigration,
-  withTransaction,
 } from "@semprec/data";
-import { runAsSystem } from "@semprec/shared";
 import { ModuleRegistry } from "@semprec/module-registry";
 import { createApiQueueRuntime, type ApiQueueRuntime } from "../queueRuntime.js";
 import * as apiFixtureModule from "./fixtures/apiFixtureModule.js";
@@ -75,14 +71,6 @@ async function knownCrontabIdentifiers(pool: Pool): Promise<string[]> {
     "SELECT identifier FROM graphile_worker._private_known_crontabs ORDER BY identifier",
   );
   return rows.map((row) => row.identifier).sort();
-}
-
-async function getSemprecProjectId(pool: Pool): Promise<string> {
-  const { rows } = await pool.query("SELECT id FROM databases WHERE owner_module_id = 'projects'");
-  if (rows.length === 0) throw new Error("getSemprecProjectId: no database with owner_module_id 'projects'");
-  const { rows: items } = await pool.query("SELECT id FROM items WHERE database_id = $1 LIMIT 1", [rows[0].id]);
-  if (items.length === 0) throw new Error("getSemprecProjectId: the projects database has no seeded items");
-  return items[0].id as string;
 }
 
 let pool: Pool;
@@ -202,52 +190,6 @@ describe("createApiQueueRuntime (issue #91)", () => {
       );
       const lastExecution = rows[0]?.last_execution;
       return lastExecution !== null && lastExecution !== undefined && new Date(lastExecution) > seededLastExecution;
-    });
-  });
-
-  it("moves a legacy heartbeatFire job under its split task name in the deploy-time migration, and the deterministic heartbeat actually executes in the API runtime", async () => {
-    await seedSystem(pool);
-    const projectItemId = await getSemprecProjectId(pool);
-    const heartbeat = await withTransaction(pool, (client) =>
-      createHeartbeat(client, {
-        projectItemId,
-        name: "Legacy deterministic (issue #91 install migration)",
-        rule: { kind: "dailyTime", at: "09:00" },
-        actionId: "noop",
-      }),
-    );
-    await inTenantZero(() =>
-      enqueueJob(
-        pool,
-        "heartbeatFire",
-        { heartbeatId: heartbeat.id, occurrenceId: "legacy-occurrence", generation: 0 },
-        { jobKey: "legacy-key-issue-91", maxAttempts: 3, queueName: "legacy-queue" },
-      ),
-    );
-
-    // The step the deploy runs from `runMigrationsCli.ts`; the API start no longer runs it.
-    await runAsSystem("deploy migrations", () => runHeartbeatFireQueueSplitMigration(pool));
-
-    const registry = await buildRegistryWith("apiFixtureModule.js", "fixture-api-queue-runtime");
-    runtime = await createApiQueueRuntime(pool, registry);
-
-    expect(await jobCountFor(pool, "heartbeatFire")).toBe(0);
-    expect(await jobCountFor(pool, CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE)).toBe(1);
-
-    // Presence alone only proves the deploy-time migration ran, not that the API runtime actually owns and
-    // runs `heartbeatFireCore` — this runtime's action registry has no handler for `"noop"`, so
-    // the job errors rather than completing, but graphile-worker still has to claim and invoke
-    // it to discover that. `attempts >= 1` is the positive proof of real execution: the same
-    // "claimed and invoked, regardless of business-payload validity" idiom the
-    // `heartbeatFireAgent`-only-in-agents-runtime test below uses for the same reason.
-    await waitFor(async () => {
-      const { rows } = await pool.query<{ attempts: number }>(
-        `SELECT jobs.attempts FROM graphile_worker._private_jobs jobs
-         JOIN graphile_worker._private_tasks tasks ON tasks.id = jobs.task_id
-         WHERE tasks.identifier = $1`,
-        [CORE_TASK_NAMES.HEARTBEAT_FIRE_CORE],
-      );
-      return (rows[0]?.attempts ?? 0) >= 1;
     });
   });
 

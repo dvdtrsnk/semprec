@@ -1,28 +1,19 @@
-import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { runInTenant } from "@semprec/shared";
 import "../domainWriteHooks.js";
-import {
-  createRuntimeRolePool,
-  createTestTenant,
-  getTenantZeroId,
-  getTestPool,
-  resetDatabase,
-} from "../testSupport/testDb.js";
+import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { createRelationWithClient } from "../chokePoint/relationOps.js";
-import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { withTransaction } from "../db/pool.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { createEmailDraft } from "../mail/draft.js";
 import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
-import { EMAIL_INGEST_ALLOWED_SYSTEM_KEYS, ingestEmailMessage } from "../mail/ingest.js";
-import { getMailMessageMetaByItemId, upsertMailMessageMeta } from "../mail/mailMessageMetaStore.js";
-import { handleMailMessagePreviewBackfillTask } from "../mail/mailMessagePreviewBackfillJob.js";
+import { ingestEmailMessage } from "../mail/ingest.js";
+import { getMailMessageMetaByItemId } from "../mail/mailMessageMetaStore.js";
 import { buildMailPreview, htmlToPlainText } from "../mail/mailPlainText.js";
 import { sendDraftEmail, type SendEmailModuleIds } from "../mail/send.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
@@ -224,90 +215,5 @@ describe("mail preview and ingest time on ingest and send", () => {
     const after = await getMailMessageMetaByItemId(pool, draft.id);
     expect(after?.previewText).toBe("hi bob");
     expect(after?.ingestedAt?.getTime()).toBe(claimed?.ingestedAt?.getTime());
-  });
-});
-
-describe("mailMessagePreviewBackfill", () => {
-  let admin: Pool;
-  let pool: Pool;
-  let tenantA: string;
-  let tenantB: string;
-
-  async function legacyMessage(tenantId: string, body: string, updatedAt: string): Promise<string> {
-    const itemId = await runInTenant(tenantId, () =>
-      withTransaction(pool, async (client) => {
-        const emails = await getDatabaseByModuleId(client, "emails");
-        if (!emails) throw new Error("Emails database was not seeded");
-        const item = await createItemWithClient(
-          client,
-          { databaseId: emails.id, properties: { name: "Legacy", body } },
-          { allowedSystemKeys: EMAIL_INGEST_ALLOWED_SYSTEM_KEYS },
-        );
-        // No preview or ingest time: this is how a row looked before the columns existed.
-        await upsertMailMessageMeta(client, {
-          itemId: item.id,
-          mailboxItemId: null,
-          messageId: `<${randomUUID()}@example.com>`,
-          envelope: {},
-        });
-        return item.id;
-      }),
-    );
-    await admin.query("UPDATE items SET updated_at = $2 WHERE id = $1", [itemId, updatedAt]);
-    return itemId;
-  }
-
-  async function snapshot(): Promise<{ item_id: string; preview_text: string | null; ingested_at: Date | null }[]> {
-    const { rows } = await admin.query(
-      "SELECT item_id, preview_text, ingested_at FROM mail_message_meta ORDER BY item_id",
-    );
-    return rows;
-  }
-
-  beforeAll(async () => {
-    admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
-  });
-
-  beforeEach(async () => {
-    await resetDatabase(admin);
-    tenantA = getTenantZeroId();
-    tenantB = await createTestTenant(admin);
-    await runInTenant(tenantA, () => seedSystem(pool));
-    await runInTenant(tenantB, () => seedSystem(pool));
-  });
-
-  afterAll(async () => {
-    await pool?.end();
-    await admin?.end();
-  });
-
-  it("fills ingested_at from the item and the preview from its body in every tenant, and a second run changes nothing", async () => {
-    const a = await legacyMessage(tenantA, "Hello   from\nA", "2026-01-02T03:04:05.000Z");
-    const b = await legacyMessage(tenantB, "y".repeat(500), "2026-02-03T04:05:06.000Z");
-
-    await handleMailMessagePreviewBackfillTask(pool);
-
-    const first = await snapshot();
-    const rowA = first.find((r) => r.item_id === a);
-    const rowB = first.find((r) => r.item_id === b);
-    expect(rowA?.preview_text).toBe("Hello from A");
-    expect(rowA?.ingested_at?.toISOString()).toBe("2026-01-02T03:04:05.000Z");
-    expect(rowB?.preview_text).toBe("y".repeat(200));
-    expect(rowB?.ingested_at?.toISOString()).toBe("2026-02-03T04:05:06.000Z");
-
-    await handleMailMessagePreviewBackfillTask(pool);
-    expect(await snapshot()).toEqual(first);
-  });
-
-  it("does not overwrite values already present", async () => {
-    const a = await legacyMessage(tenantA, "from the body", "2026-01-02T03:04:05.000Z");
-    await admin.query("UPDATE mail_message_meta SET preview_text = 'kept' WHERE item_id = $1", [a]);
-
-    await handleMailMessagePreviewBackfillTask(pool);
-
-    const row = (await snapshot()).find((r) => r.item_id === a);
-    expect(row?.preview_text).toBe("kept");
-    expect(row?.ingested_at?.toISOString()).toBe("2026-01-02T03:04:05.000Z");
   });
 });

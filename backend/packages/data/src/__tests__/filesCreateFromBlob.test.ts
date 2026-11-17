@@ -3,7 +3,7 @@ import { Readable } from "node:stream";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { DateTime } from "luxon";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runInTenant } from "@semprec/shared";
 import "../domainWriteHooks.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
@@ -15,7 +15,6 @@ import { findOrCreateBlob, recordDetectedBlobMimeType } from "../blobs/blobsStor
 import { sweepUnreferencedBlobs } from "../blobs/unreferencedBlobSweep.js";
 import { getSystemSettingsDatabaseId, getSystemSettingsItemId, getSystemTimezone } from "../systemSettings.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
-import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
 
 class MemoryStorage implements BlobStorageWriter {
   readonly bytes = new Map<string, Buffer>();
@@ -433,32 +432,5 @@ describe("Files creation from standalone blobs", () => {
       expect(failures[0]).toEqual(failures[1]);
       expect((await api.listItems(files.id)).items).toEqual([]);
     });
-  });
-
-  it("installs the Files date default through the registered populated-tenant runner", async () => {
-    const files = await runInTenant(owner, () => db("files"));
-    await runInTenant(owner, () =>
-      withTransaction(runtime, async (client) => {
-        // Recreate the older Files schema without the default.
-        await client.query(
-          "UPDATE properties SET config = config - 'default' WHERE database_id = $1 AND key = 'date'",
-          [files.id],
-        );
-      }),
-    );
-    const run = () => runAsSystem("test Files default cutover", () => runTenantCutoverMigrations(runtime));
-    await run();
-    const read = () =>
-      runInTenant(owner, () =>
-        runtime.query<{ config: unknown; xmin: string }>(
-          "SELECT config, xmin::text FROM properties WHERE database_id = $1 AND key = 'date'",
-          [files.id],
-        ),
-      );
-    const first = await read();
-    expect(first.rows).toHaveLength(1);
-    expect(first.rows[0]?.config).toMatchObject({ default: "today" });
-    await run();
-    expect((await read()).rows).toEqual(first.rows);
   });
 });

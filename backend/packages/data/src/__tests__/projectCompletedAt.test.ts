@@ -1,6 +1,5 @@
 import "../domainWriteHooks.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { runAsSystem, runInTenant } from "@semprec/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
@@ -9,7 +8,6 @@ import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { withTransaction } from "../db/pool.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { getSystemSettingsDatabaseId, getSystemSettingsItemId, getSystemTimezone } from "../systemSettings.js";
-import { runTenantCutoverMigrations } from "../db/tenantCutoverMigrations.js";
 import { today } from "../calendarTime.js";
 
 let admin: Pool;
@@ -43,72 +41,6 @@ describe("Projects completion date", () => {
   afterAll(async () => {
     await data.end();
     await admin.end();
-  });
-
-  it("adds the property to a suspended maintained tenant and replay does not rewrite it", async () => {
-    const otherTenant = await createTestTenant(admin);
-    const otherDatabaseId = await runInTenant(otherTenant, async () => {
-      await seedSystem(data);
-      const db = await withTransaction(data, (client) => getDatabaseByModuleId(client, "projects"));
-      if (!db) throw new Error("Other tenant Projects missing");
-      return db.id;
-    });
-    const removed = await admin.query(
-      "DELETE FROM properties WHERE tenant_id = $1 AND database_id = $2 AND key = 'completedAt'",
-      [tenant, databaseId],
-    );
-    expect(removed.rowCount).toBe(1);
-    const otherRemoved = await admin.query(
-      "DELETE FROM properties WHERE tenant_id = $1 AND database_id = $2 AND key = 'completedAt'",
-      [otherTenant, otherDatabaseId],
-    );
-    expect(otherRemoved.rowCount).toBe(1);
-    const suspended = await admin.query("UPDATE tenants SET status = 'suspended' WHERE id = $1", [tenant]);
-    expect(suspended.rowCount).toBe(1);
-    const run = () => runAsSystem("project completion cutover test", () => runTenantCutoverMigrations(data));
-    await run();
-    const read = () =>
-      runInTenant(tenant, () =>
-        data.query<{ id: string; version: string }>(
-          "SELECT id, xmin::text AS version FROM properties WHERE database_id = $1 AND key = 'completedAt'",
-          [databaseId],
-        ),
-      );
-    const first = await read();
-    expect(first.rows).toHaveLength(1);
-    const other = await runInTenant(otherTenant, () =>
-      data.query<{ id: string; version: string }>(
-        "SELECT id, xmin::text AS version FROM properties WHERE database_id = $1 AND key = 'completedAt'",
-        [otherDatabaseId],
-      ),
-    );
-    expect(other.rows).toHaveLength(1);
-    expect(
-      (
-        await runInTenant(otherTenant, () =>
-          data.query("SELECT id FROM properties WHERE database_id = $1 AND key = 'completedAt'", [databaseId]),
-        )
-      ).rows,
-    ).toEqual([]);
-    expect(
-      (
-        await runInTenant(otherTenant, () =>
-          data.query("SELECT id FROM properties WHERE database_id = $1 AND key = 'completedAt'", [randomUUID()]),
-        )
-      ).rows,
-    ).toEqual([]);
-    await run();
-    expect((await read()).rows).toEqual(first.rows);
-    expect(
-      (
-        await runInTenant(otherTenant, () =>
-          data.query<{ id: string; version: string }>(
-            "SELECT id, xmin::text AS version FROM properties WHERE database_id = $1 AND key = 'completedAt'",
-            [otherDatabaseId],
-          ),
-        )
-      ).rows,
-    ).toEqual(other.rows);
   });
 
   it("sets the tenant day on entering terminal state, retains it across terminal states and clears it on return", async () => {

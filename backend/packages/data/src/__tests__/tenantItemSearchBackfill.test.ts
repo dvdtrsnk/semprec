@@ -26,11 +26,7 @@ import { recomputeJournalInboxDay } from "../inbox/journalInboxCompute.js";
 import { reindexItemSearch } from "../mail/search.js";
 import { indexItem } from "../search/itemSearchIndexer.js";
 import { buildItemSearchQuery } from "../search/itemSearchQuery.js";
-import {
-  enqueueItemSearchBackfill,
-  handleItemSearchBackfillTask,
-  runItemSearchBackfillCutover,
-} from "../search/itemSearchBackfill.js";
+import { enqueueItemSearchBackfill, handleItemSearchBackfillTask } from "../search/itemSearchBackfill.js";
 import { createApiCoreTaskList } from "../worker.js";
 import { createActionRegistry } from "../scheduler/actions.js";
 import { manifest } from "../seed/systemDatabasesModuleManifest.js";
@@ -84,7 +80,7 @@ async function task(title = "Invoice"): Promise<{ id: string; databaseId: string
   return cp.createItem({ databaseId: await db("tasks"), properties: { name: title } });
 }
 async function removeIndex(itemIds: string[]): Promise<void> {
-  // Simulates pre-deploy items: the public write path now always creates their index rows.
+  // Simulates unindexed items: the public write path always creates their index rows.
   await withTransaction(pool, (client) =>
     client.query("DELETE FROM item_search_index WHERE item_id = ANY($1::uuid[])", [itemIds]),
   );
@@ -562,31 +558,6 @@ describe("tenant item search backfill task", () => {
     expect(await readJobPayloadsByIdentifier(admin, taskName)).toEqual([]);
   });
 
-  it("deploy fills every live non-Emails item, including legacy seed data, and repeat deploy leaves index rows unchanged", async () => {
-    await runInTenant(tenant, async () => {
-      const live = await task();
-      const trashed = await task("Trashed");
-      await cp.softDeleteItem(trashed.databaseId, trashed.id);
-      await cp.createItem({ databaseId: await db("emails"), properties: {} });
-      await removeIndex([live.id, trashed.id]);
-    });
-    await runAsSystem("test deploy", () => runItemSearchBackfillCutover(pool));
-    await runQueuedBackfill();
-    const before = await runInTenant(tenant, async () => {
-      const eligible = await pool.query<{ id: string; database_id: string }>(
-        `SELECT i.id, i.database_id FROM items i JOIN databases d ON d.id = i.database_id
-         WHERE i.deleted_at IS NULL AND d.owner_module_id IS DISTINCT FROM $1 ORDER BY i.id`,
-        ["emails"],
-      );
-      const indexed = await rows();
-      expect(indexed.map((row) => ({ id: row.item_id, database_id: row.database_id }))).toEqual(eligible.rows);
-      return indexed;
-    });
-    await runAsSystem("test repeat deploy", () => runItemSearchBackfillCutover(pool));
-    await runQueuedBackfill();
-    expect(await runInTenant(tenant, rows)).toEqual(before);
-  });
-
   it("registers the task in the API affinity and tenant tenancy catalogs", () => {
     expect(taskName).toBe("itemSearchBackfill");
     expect(CORE_TASK_AFFINITY[taskName]).toBe("api");
@@ -594,7 +565,7 @@ describe("tenant item search backfill task", () => {
     expect(createApiCoreTaskList(pool, createActionRegistry())[taskName]).toBeTypeOf("function");
   });
 
-  it("backfills legacy items across committed chunks, queues a distinct cursor on the tenant lane, and preserves existing rows on repeat deploy", async () => {
+  it("backfills unindexed items across committed chunks, queues a distinct cursor on the tenant lane, and preserves existing rows on a repeat run", async () => {
     const items: string[] = [];
     let databaseId = "";
     await runInTenant(tenant, async () => {
@@ -746,7 +717,7 @@ describe("tenant item search backfill task", () => {
       foreignDb = database.id;
     });
     // Issue #1652: the title property queued the other tenant's own backfill of its collection. Run it
-    // before simulating a pre-deploy item, so only this tenant's jobs run below.
+    // before simulating an unindexed item, so only this tenant's jobs run below.
     await runQueuedBackfill();
     await runInTenant(other, () => removeIndex([foreignId]));
     await runInTenant(tenant, async () => {
@@ -795,14 +766,7 @@ describe("tenant item search backfill task", () => {
     });
   });
 
-  it("refuses an owner pool for the deploy cutover before enqueuing", async () => {
-    await expect(runAsSystem("test cutover", () => runItemSearchBackfillCutover(admin))).rejects.toThrow(
-      /row-level security/,
-    );
-    expect(await readJobPayloadsByIdentifier(admin, taskName)).toEqual([]);
-  });
-
-  it("full and missing-only deploy jobs retain distinct keys and preserve stored page text", async () => {
+  it("full and missing-only jobs retain distinct keys and preserve stored page text", async () => {
     const item = await runInTenant(tenant, async () => {
       const created = await task("Rebuild target");
       await withTransaction(pool, (client) => indexItem(client, created.id, { pageText: "Retained page projection" }));
@@ -811,8 +775,10 @@ describe("tenant item search backfill task", () => {
       );
       return created;
     });
-    await runAsSystem("test missing-only enqueue", () => runItemSearchBackfillCutover(pool));
-    await runAsSystem("test full enqueue", () => runItemSearchBackfillCutover(pool, false));
+    await runInTenant(tenant, async () => {
+      await withTransaction(pool, (client) => enqueueItemSearchBackfill(client, { onlyMissing: true }));
+      await withTransaction(pool, (client) => enqueueItemSearchBackfill(client, { onlyMissing: false }));
+    });
     const jobs = await readJobPayloadsByIdentifier(admin, taskName);
     expect(jobs).toHaveLength(2);
     expect(jobs).toEqual(
@@ -837,7 +803,7 @@ describe("tenant item search backfill task", () => {
     });
   });
 
-  it("retains distinct legacy body and page projections during a full queued rebuild", async () => {
+  it("retains distinct body and page projections during a full queued rebuild", async () => {
     const fixtures = await runInTenant(tenant, async () => {
       const withPage = await task("With page");
       const withoutPage = await task("Without page");
@@ -856,7 +822,9 @@ describe("tenant item search backfill task", () => {
       }
       return { withPage, withoutPage };
     });
-    await runAsSystem("test full legacy rebuild", () => runItemSearchBackfillCutover(pool, false));
+    await runInTenant(tenant, () =>
+      withTransaction(pool, (client) => enqueueItemSearchBackfill(client, { onlyMissing: false })),
+    );
     await runQueuedBackfill();
     await runInTenant(tenant, async () => {
       for (const [item, body, page] of [
@@ -873,21 +841,6 @@ describe("tenant item search backfill task", () => {
         expect(await has(item.id, body)).toBe(true);
       }
     });
-  });
-
-  it("enqueues once per maintained tenant on each deploy and preserves the missing-only contract", async () => {
-    const statuses = ["provisioning", "suspended", "deleting"] as const;
-    const ids: string[] = [tenant];
-    for (const status of statuses) ids.push(await createTestTenant(admin, { status }));
-    await runAsSystem("test deploy", () => runItemSearchBackfillCutover(pool));
-    await runAsSystem("test repeat deploy", () => runItemSearchBackfillCutover(pool));
-    const payloads = await readJobPayloadsByIdentifier(admin, taskName);
-    expect(payloads).toHaveLength(3);
-    expect(payloads).toEqual(
-      expect.arrayContaining(
-        ids.slice(0, 3).map((tenantId) => expect.objectContaining({ tenantId, payload: { onlyMissing: true } })),
-      ),
-    );
   });
 
   it("rolls back a failing chunk and leaves no continuation or partial index rows", async () => {
