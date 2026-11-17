@@ -14,6 +14,7 @@
   "status.reply.shortText": "A reply did not finish.",
   "status.guidanceDrift.title": "Project guidance needs attention",
   "status.guidanceDrift.text": "Review the guidance for {projectName}.",
+  "status.guidanceDrift.textClaim": "{projectName}: {claim}",
   "status.guidanceDrift.shortText": "Project guidance needs attention.",
   "status.libraryAutomation.title": "Library automation needs attention",
   "status.libraryAutomation.text": "The library automation could not finish.",
